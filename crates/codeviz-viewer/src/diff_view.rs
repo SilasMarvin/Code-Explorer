@@ -86,6 +86,8 @@ pub(crate) struct DiffView {
     impact: HashMap<usize, u32>,
     pub(crate) affected: Vec<Affected>,
     pub(crate) entry_count: usize,
+    /// Whether the entries are the functions nothing calls, for want of declared ones.
+    pub(crate) roots: bool,
     /// The old version, with moved functions under their new ids.
     old: System,
     /// What each moved node was called before.
@@ -116,7 +118,6 @@ impl DiffView {
         };
         explorer.retire_calls(&removed);
         let explorer = &*explorer;
-        let after = explorer.system();
         let map = explorer.map();
         let tile = |unit: &codeviz_ir::UnitId| map.tile_of(unit);
         let changes: HashMap<usize, Change> = diff
@@ -155,11 +156,7 @@ impl DiffView {
                 }
             }
         }
-        let entries: Vec<(usize, String)> = after
-            .entries()
-            .iter()
-            .filter_map(|e| Some((tile(&e.unit)?, e.label.clone())))
-            .collect();
+        let (entries, roots) = entry_points(explorer, &changes);
         let mut affected: Vec<Affected> = entries
             .iter()
             .filter_map(|(tile, label)| {
@@ -170,7 +167,9 @@ impl DiffView {
                 })
             })
             .collect();
-        affected.sort_by(|a, b| a.hops.cmp(&b.hops).then_with(|| a.label.cmp(&b.label)));
+        // What a change reaches comes before what changed itself, nearest first.
+        affected
+            .sort_by(|a, b| (a.hops == 0, a.hops, &a.label).cmp(&(b.hops == 0, b.hops, &b.label)));
 
         let (before_at, after_at) = versions(explorer, &before, &changes);
         Self {
@@ -182,6 +181,7 @@ impl DiffView {
             impact,
             affected,
             entry_count: entries.len(),
+            roots,
             moved: diff
                 .moved
                 .iter()
@@ -282,6 +282,31 @@ impl DiffView {
             .map(|(a, b)| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t))
             .collect()
     }
+}
+
+/// Where things start, by node and name: the declared entries, or else whatever
+/// nothing calls (`main`, a framework's callbacks, a library's API). Says which.
+fn entry_points(
+    explorer: &Explorer,
+    changes: &HashMap<usize, Change>,
+) -> (Vec<(usize, String)>, bool) {
+    let map = explorer.map();
+    let declared: Vec<(usize, String)> = explorer
+        .system()
+        .entries()
+        .iter()
+        .filter_map(|e| Some((map.tile_of(&e.unit)?, e.label.clone())))
+        .collect();
+    if !declared.is_empty() {
+        return (declared, false);
+    }
+    let graph = explorer.graph();
+    let roots = (0..map.tiles.len())
+        .filter(|&t| graph.callers(t).next().is_none())
+        .filter(|&t| changes.get(&t) != Some(&Change::Removed))
+        .filter_map(|t| Some((t, explorer.unit_name(explorer.tile_unit(t)?))))
+        .collect();
+    (roots, true)
 }
 
 /// Where each node sits in the old version and in the new one: each laid out alone,
@@ -567,7 +592,6 @@ pub(crate) fn change_color(change: Change) -> Color {
 
 /// What changed, how it is drawn, and what it reaches: top right of the graph.
 /// Rows focus their node.
-#[expect(clippy::too_many_lines, reason = "one card, top to bottom")]
 pub(crate) fn diff_card(
     ctx: &egui::Context,
     area: egui::Rect,
@@ -628,30 +652,19 @@ pub(crate) fn diff_card(
                         DiffStyle::Impact => {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "Reaches {} of {} entry points",
+                                    "Reaches {} of {} {}",
                                     view.affected.len(),
-                                    view.entry_count
+                                    view.entry_count,
+                                    if view.roots {
+                                        "functions nothing calls"
+                                    } else {
+                                        "entry points"
+                                    }
                                 ))
                                 .small()
                                 .color(MUTED),
                             );
-                            for affected in &view.affected {
-                                let note = match affected.hops {
-                                    0 => "changed itself".to_owned(),
-                                    1 => "calls a change".to_owned(),
-                                    n => format!("{n} calls from a change"),
-                                };
-                                let text =
-                                    egui::RichText::new(format!("{}  · {note}", affected.label))
-                                        .color(egui_color(MODIFIED));
-                                if ui
-                                    .add(egui::Label::new(text).sense(egui::Sense::click()))
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    chosen = Some(affected.tile);
-                                }
-                            }
+                            chosen = impact_list(ui, view, area.height() * 0.5);
                         }
                         DiffStyle::Morph => {
                             ui.horizontal(|ui| {
@@ -684,6 +697,33 @@ pub(crate) fn diff_card(
     if let Some(tile) = chosen {
         explorer.focus_node(tile);
     }
+}
+
+/// The entry points a change reaches, nearest first, in a list that scrolls past
+/// `max_height`. Returns the node of a row clicked.
+fn impact_list(ui: &mut egui::Ui, view: &DiffView, max_height: f32) -> Option<usize> {
+    let mut chosen = None;
+    egui::ScrollArea::vertical()
+        .max_height(max_height)
+        .show(ui, |ui| {
+            for affected in &view.affected {
+                let note = match affected.hops {
+                    0 => "changed itself".to_owned(),
+                    1 => "calls a change".to_owned(),
+                    n => format!("{n} calls from a change"),
+                };
+                let text = egui::RichText::new(format!("{}  · {note}", affected.label))
+                    .color(egui_color(MODIFIED));
+                if ui
+                    .add(egui::Label::new(text).sense(egui::Sense::click()))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    chosen = Some(affected.tile);
+                }
+            }
+        });
+    chosen
 }
 
 /// Every change, grouped by container, in a list that scrolls past `max_height`.
