@@ -81,7 +81,7 @@ pub fn analyze(root: &Path, options: AnalyzeOptions) -> Result<Analysis, Error> 
     let mut extractor = extract::Extractor::new(options)?;
     let mut files_parsed = 0;
     for package in &packages {
-        for file in discover::source_files(package)? {
+        for file in discover::source_files(package, options.include_tests)? {
             let source = std::fs::read(&file.path).map_err(|source| Error::Io {
                 path: file.path.clone(),
                 source,
@@ -98,7 +98,7 @@ pub fn analyze(root: &Path, options: AnalyzeOptions) -> Result<Analysis, Error> 
     });
     document.root = Some(format!("file://{}", root.display()));
     let crate_names = packages.iter().map(|p| p.crate_name.clone()).collect();
-    resolve::assemble(&extractor.finish(), &crate_names, &mut document);
+    resolve::assemble(&mut extractor.finish(), &crate_names, &mut document);
     document.canonicalize();
     Ok(Analysis {
         document,

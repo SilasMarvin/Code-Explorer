@@ -7,9 +7,12 @@ use codeviz_ir::{Arm, CallKey, ExitKind, Mode, Step};
 use tree_sitter::Node;
 
 use crate::{
-    extract::{CallTarget, Extractor, File, Owner, RawCall, RawUnit, RouteHint, UnitKind},
+    extract::{
+        CallTarget, Extractor, File, Owner, RawCall, RawUnit, Receiver, ReceiverRoot, RouteHint,
+        UnitKind,
+    },
     hash::content_hash,
-    syntax::{is_constructor, label, location, path_segments, text},
+    syntax::{is_constructor, label, location, path_segments, receiver_type_path, text},
 };
 
 pub(crate) struct Context<'a> {
@@ -19,6 +22,8 @@ pub(crate) struct Context<'a> {
     pub(crate) owner: Option<&'a Owner>,
     /// A `Result` return type makes tail calls propagate errors.
     pub(crate) returns_result: bool,
+    /// The function's or closure's parameter list, for declared binding types.
+    pub(crate) parameters: Option<Node<'a>>,
 }
 
 pub(crate) struct Built {
@@ -45,7 +50,11 @@ pub(crate) fn build(
         calls: Vec::new(),
         occurrences: HashMap::new(),
         closures: 0,
+        bindings: HashMap::new(),
     };
+    if let Some(parameters) = cx.parameters {
+        builder.parameters(parameters);
+    }
     let steps = builder.block_or_expr(body, true);
     Built {
         calls: builder.calls,
@@ -60,11 +69,107 @@ struct Builder<'a, 'b, 'f> {
     calls: Vec<RawCall>,
     occurrences: HashMap<String, usize>,
     closures: usize,
+    /// Binding name → (type path, whether the type was written down). Scopes are
+    /// ignored: the last binding of a name wins.
+    bindings: HashMap<String, (Vec<String>, bool)>,
 }
 
 impl Builder<'_, '_, '_> {
     fn source(&self) -> &[u8] {
         self.file.source
+    }
+
+    fn parameters(&mut self, parameters: Node<'_>) {
+        let source = self.file.source;
+        let mut cursor = parameters.walk();
+        let params: Vec<Node<'_>> = parameters.named_children(&mut cursor).collect();
+        for param in params {
+            if param.kind() != "parameter" {
+                continue;
+            }
+            let (Some(name), Some(ty)) = (
+                param
+                    .child_by_field_name("pattern")
+                    .and_then(|p| binding_name(p, source)),
+                param
+                    .child_by_field_name("type")
+                    .and_then(|t| receiver_type_path(t, source)),
+            ) else {
+                continue;
+            };
+            self.bindings.insert(name, (ty, true));
+        }
+    }
+
+    /// Records the type of `let name: Type = ..`, `let name = Type { .. }` and
+    /// `let name = Type::constructor(..)`.
+    fn let_binding(&mut self, declaration: Node<'_>) {
+        let source = self.file.source;
+        let Some(name) = declaration
+            .child_by_field_name("pattern")
+            .and_then(|p| binding_name(p, source))
+        else {
+            return;
+        };
+        let declared = declaration
+            .child_by_field_name("type")
+            .and_then(|t| receiver_type_path(t, source));
+        if let Some(ty) = declared {
+            self.bindings.insert(name, (ty, true));
+            return;
+        }
+        let Some(value) = declaration.child_by_field_name("value") else {
+            return;
+        };
+        let guessed = match value.kind() {
+            "struct_expression" => value
+                .child_by_field_name("name")
+                .and_then(|n| path_segments(n, source))
+                .map(|ty| (ty, true)),
+            "call_expression" => value
+                .child_by_field_name("function")
+                .and_then(|f| path_segments(f, source))
+                .filter(|segments| segments.len() >= 2)
+                .and_then(|mut segments| {
+                    segments.pop();
+                    is_constructor(&segments).then_some((segments, false))
+                }),
+            _ => None,
+        };
+        if let Some(binding) = guessed {
+            self.bindings.insert(name, binding);
+        }
+    }
+
+    /// What a method is called on, when declarations say.
+    fn receiver(&self, node: Node<'_>) -> Option<Receiver> {
+        match node.kind() {
+            "self" => Some(Receiver {
+                root: ReceiverRoot::SelfValue,
+                fields: Vec::new(),
+            }),
+            "identifier" => {
+                let (path, declared) = self.bindings.get(text(node, self.source()))?;
+                Some(Receiver {
+                    root: ReceiverRoot::Typed {
+                        path: path.clone(),
+                        declared: *declared,
+                    },
+                    fields: Vec::new(),
+                })
+            }
+            "field_expression" => {
+                let mut receiver = self.receiver(node.child_by_field_name("value")?)?;
+                let field = node.child_by_field_name("field")?;
+                receiver.fields.push(text(field, self.source()).to_owned());
+                Some(receiver)
+            }
+            "parenthesized_expression" | "reference_expression" | "unary_expression" => {
+                let last = node.named_child_count().checked_sub(1)?;
+                self.receiver(node.named_child(u32::try_from(last).ok()?)?)
+            }
+            _ => None,
+        }
     }
 
     fn block_or_expr(&mut self, node: Node<'_>, tail: bool) -> Vec<Step> {
@@ -86,6 +191,10 @@ impl Builder<'_, '_, '_> {
             .collect();
         let last = children.len().saturating_sub(1);
         for (index, child) in children.into_iter().enumerate() {
+            if matches!(steps.last(), Some(Step::Exit { .. })) {
+                // Anything after an exit in the same block is unreachable.
+                break;
+            }
             match child.kind() {
                 "expression_statement" => {
                     // Block-like expressions (`match`, `if`) are statements even
@@ -101,6 +210,7 @@ impl Builder<'_, '_, '_> {
                     if let Some(value) = child.child_by_field_name("value") {
                         self.expr(value, false, steps);
                     }
+                    self.let_binding(child);
                     if let Some(alternative) = child.child_by_field_name("alternative") {
                         let otherwise = self.block_or_expr(alternative, false);
                         steps.push(Step::Branch {
@@ -240,10 +350,12 @@ impl Builder<'_, '_, '_> {
                 arms.push(arm(&pattern, body));
             }
         }
-        if arms.len() == 1 {
-            arms.push(arm("_", Vec::new()));
+        // `match never {}` cannot be reached; a single arm always runs.
+        match arms.len() {
+            0 => {}
+            1 => steps.extend(arms.into_iter().flat_map(|a| a.body)),
+            _ => steps.push(Step::Branch { guard, arms }),
         }
-        steps.push(Step::Branch { guard, arms });
     }
 
     fn return_expression(&mut self, node: Node<'_>, steps: &mut Vec<Step>) {
@@ -302,9 +414,9 @@ impl Builder<'_, '_, '_> {
                     .child_by_field_name("field")
                     .map(|field| CallTarget::Method {
                         name: text(field, source).to_owned(),
-                        on_self: function
+                        receiver: function
                             .child_by_field_name("value")
-                            .is_some_and(|v| v.kind() == "self"),
+                            .and_then(|v| self.receiver(v)),
                     })
             }
             _ => path_segments(function, source).map(CallTarget::Path),
@@ -408,6 +520,7 @@ impl Builder<'_, '_, '_> {
             module: self.cx.module,
             owner: self.cx.owner,
             returns_result: false,
+            parameters: node.child_by_field_name("parameters"),
         };
         let built = build(self.ex, self.file, &cx, body);
         self.ex.push_unit(RawUnit {
@@ -473,8 +586,11 @@ impl Builder<'_, '_, '_> {
             }
             let name = text(*callee, source).to_owned();
             let target = if before(2).is_some_and(|t| t.kind() == ".") {
-                let on_self = before(3).is_some_and(|t| t.kind() == "self");
-                CallTarget::Method { name, on_self }
+                let receiver = before(3).filter(|t| t.kind() == "self").map(|_| Receiver {
+                    root: ReceiverRoot::SelfValue,
+                    fields: Vec::new(),
+                });
+                CallTarget::Method { name, receiver }
             } else {
                 let mut segments = vec![name];
                 let mut offset = 2;
@@ -566,4 +682,13 @@ fn arm(label: &str, body: Vec<Step>) -> Arm {
 
 fn exit(kind: ExitKind, label: Option<String>) -> Step {
     Step::Exit { kind, label }
+}
+
+/// `x`, `mut x` → `x`. Destructuring patterns bind no single name.
+fn binding_name(pattern: Node<'_>, source: &[u8]) -> Option<String> {
+    match pattern.kind() {
+        "identifier" => Some(text(pattern, source).to_owned()),
+        "mut_pattern" => binding_name(pattern.named_child(0)?, source),
+        _ => None,
+    }
 }

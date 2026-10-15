@@ -1,12 +1,17 @@
 //! Cross-file pass: resolves written call targets and assembles the IR document.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write as _,
+};
 
 use codeviz_ir::{
     CallKey, Certainty, Dispatch, Document, Entry, Invocation, Step, Target, Unit, UnitId,
 };
 
-use crate::extract::{CallTarget, Extraction, RawCall, RawUnit, UnitKind};
+use crate::extract::{
+    CallTarget, Extraction, Fields, RawCall, RawUnit, Receiver, ReceiverRoot, UnitKind,
+};
 
 /// Bound on `use` indirection, so import cycles cannot loop forever.
 const MAX_IMPORT_HOPS: usize = 8;
@@ -17,10 +22,12 @@ pub(crate) fn id(path: &[String]) -> UnitId {
 }
 
 pub(crate) fn assemble(
-    extraction: &Extraction,
+    extraction: &mut Extraction,
     crate_names: &HashSet<String>,
     document: &mut Document,
 ) {
+    disambiguate(&mut extraction.units);
+    let extraction = &*extraction;
     let index = Index::new(extraction, crate_names);
     for raw in &extraction.units {
         document.units.push(index.unit(raw));
@@ -36,18 +43,25 @@ struct Index<'a> {
     /// Method name to methods a by-name match may pick: inherent methods and methods
     /// of traits declared in the analyzed source.
     methods: HashMap<&'a str, Vec<usize>>,
+    /// `(type name, method name)` to every method on that type, trait impls included.
+    by_type: HashMap<(&'a str, &'a str), Vec<usize>>,
 }
 
 impl<'a> Index<'a> {
     fn new(extraction: &'a Extraction, crate_names: &'a HashSet<String>) -> Self {
         let mut by_path: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
         let mut methods: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut by_type: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
         for (index, unit) in extraction.units.iter().enumerate() {
             if !matches!(unit.kind, UnitKind::Function { .. }) {
                 continue;
             }
             by_path.entry(unit.lookup_path()).or_default().push(index);
             if let Some(owner) = &unit.owner {
+                by_type
+                    .entry((owner.type_name.as_str(), unit.name.as_str()))
+                    .or_default()
+                    .push(index);
                 let local = owner
                     .trait_name
                     .as_ref()
@@ -62,6 +76,7 @@ impl<'a> Index<'a> {
             crate_names,
             by_path,
             methods,
+            by_type,
         }
     }
 
@@ -109,7 +124,9 @@ impl<'a> Index<'a> {
             CallTarget::Path(segments) | CallTarget::Reference(segments) => {
                 self.resolve_path(caller, segments)
             }
-            CallTarget::Method { name, on_self } => self.resolve_method(caller, name, *on_self),
+            CallTarget::Method { name, receiver } => {
+                self.resolve_method(caller, name, receiver.as_ref())
+            }
             CallTarget::Closure(path) => {
                 return vec![Target {
                     unit: id(path),
@@ -173,26 +190,86 @@ impl<'a> Index<'a> {
         &self,
         caller: &RawUnit,
         name: &str,
-        on_self: bool,
+        receiver: Option<&Receiver>,
     ) -> (Vec<usize>, Certainty) {
-        let candidates = self.methods.get(name).map_or(&[][..], Vec::as_slice);
-        if on_self && let Some(owner) = &caller.owner {
-            let same_type: Vec<usize> = candidates
-                .iter()
-                .copied()
-                .filter(|&i| {
-                    self.extraction
-                        .units
-                        .get(i)
-                        .and_then(|u| u.owner.as_ref())
-                        .is_some_and(|o| o.type_name == owner.type_name)
-                })
-                .collect();
-            if !same_type.is_empty() {
-                return (same_type, Certainty::Exact);
-            }
+        let Some((ty, certainty)) = receiver.and_then(|r| self.receiver_type(caller, r)) else {
+            // Nothing is known about the receiver: match by name.
+            let candidates = self.methods.get(name).map_or(&[][..], Vec::as_slice);
+            return (candidates.to_vec(), Certainty::Inferred);
+        };
+        let type_name = ty.last().map_or("", String::as_str);
+        let on_type = self
+            .by_type
+            .get(&(type_name, name))
+            .map_or(&[][..], Vec::as_slice);
+        if !on_type.is_empty() {
+            return (on_type.to_vec(), certainty);
         }
-        (candidates.to_vec(), Certainty::Inferred)
+        // The type is known but defines no such method here: a provided method of a
+        // local trait, or something from std or a dependency.
+        let provided: Vec<usize> = self
+            .methods
+            .get(name)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&i| {
+                self.extraction
+                    .units
+                    .get(i)
+                    .and_then(|u| u.owner.as_ref())
+                    .is_some_and(|o| o.trait_name.as_deref() == Some(o.type_name.as_str()))
+            })
+            .collect();
+        (provided, Certainty::Inferred)
+    }
+
+    /// The type path of a receiver, following declared field types.
+    fn receiver_type(
+        &self,
+        caller: &RawUnit,
+        receiver: &Receiver,
+    ) -> Option<(Vec<String>, Certainty)> {
+        let (mut ty, certainty) = match &receiver.root {
+            ReceiverRoot::SelfValue => {
+                let owner = caller.owner.as_ref()?;
+                let mut path = caller.module.clone();
+                path.push(owner.type_name.clone());
+                (path, Certainty::Exact)
+            }
+            ReceiverRoot::Typed { path, declared } => {
+                let certainty = if *declared {
+                    Certainty::Exact
+                } else {
+                    Certainty::Inferred
+                };
+                (self.absolute(&caller.module, path.clone(), 0)?, certainty)
+            }
+        };
+        for field in &receiver.fields {
+            let (struct_path, fields) = self.struct_fields(&ty)?;
+            let field_ty = fields.get(field)?;
+            let module = struct_path.get(..struct_path.len().saturating_sub(1))?;
+            ty = self.absolute(module, field_ty.clone(), 0)?;
+        }
+        Some((ty, certainty))
+    }
+
+    /// A struct's fields by exact path, or by name when only one struct has it.
+    fn struct_fields(&self, ty: &[String]) -> Option<(&Vec<String>, &Fields)> {
+        if let Some((path, fields)) = self.extraction.fields.get_key_value(ty) {
+            return Some((path, fields));
+        }
+        let name = ty.last()?;
+        let mut matches = self
+            .extraction
+            .fields
+            .iter()
+            .filter(|(path, _)| path.last() == Some(name));
+        match (matches.next(), matches.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
     }
 
     /// Rewrites a path as written in `module` into a full path from a crate root.
@@ -304,4 +381,34 @@ fn without_calls(steps: &[Step], dropped: &HashSet<CallKey>) -> Vec<Step> {
             other => other.clone(),
         })
         .collect()
+}
+
+/// Items repeated under different `#[cfg]`s (or impls the id grammar cannot tell apart)
+/// share a path. Later ones get a `{variant#n}` suffix, in source order. Modules and
+/// types live in a different Rust namespace from functions, so a function that shares a
+/// module's path gets the suffix too.
+fn disambiguate(units: &mut [RawUnit]) {
+    let is_group = |unit: &RawUnit| {
+        matches!(
+            unit.kind,
+            UnitKind::Crate | UnitKind::Module | UnitKind::Type(_)
+        )
+    };
+    let mut seen: HashMap<Vec<String>, usize> = units
+        .iter()
+        .filter(|u| is_group(u))
+        .map(|u| (u.path.clone(), 1))
+        .collect();
+    for unit in units.iter_mut() {
+        if is_group(unit) {
+            continue;
+        }
+        let count = seen.entry(unit.path.clone()).or_default();
+        if *count > 0
+            && let Some(last) = unit.path.last_mut()
+        {
+            let _ = write!(last, "{{variant#{count}}}");
+        }
+        *count += 1;
+    }
 }

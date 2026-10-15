@@ -67,7 +67,12 @@ pub(crate) fn packages(root: &Path) -> Result<Vec<Package>, Error> {
     Ok(packages)
 }
 
-pub(crate) fn source_files(package: &Package) -> Result<Vec<SourceFile>, Error> {
+/// Every `.rs` file under the package's `src/`. Directories named `tests` hold
+/// `#[cfg(test)]` modules by convention and are skipped unless `include_tests`.
+pub(crate) fn source_files(
+    package: &Package,
+    include_tests: bool,
+) -> Result<Vec<SourceFile>, Error> {
     let mut files = Vec::new();
     for entry in walk(&package.src_dir) {
         let entry = entry.map_err(|source| Error::Walk {
@@ -81,6 +86,13 @@ pub(crate) fn source_files(package: &Package) -> Result<Vec<SourceFile>, Error> 
         let Ok(relative) = path.strip_prefix(&package.src_dir) else {
             continue;
         };
+        if !include_tests
+            && relative
+                .parent()
+                .is_some_and(|dir| dir.iter().any(|s| s == "tests"))
+        {
+            continue;
+        }
         files.push(SourceFile {
             module: module_path(&package.crate_name, relative),
             path: path.to_path_buf(),

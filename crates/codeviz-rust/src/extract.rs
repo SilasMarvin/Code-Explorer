@@ -12,7 +12,10 @@ use tree_sitter::{Node, Parser};
 use crate::{
     AnalyzeOptions, Error, body,
     hash::content_hash,
-    syntax::{collect_use, doc_comment, is_test_only, location, text, type_name},
+    syntax::{
+        collect_use, compact, doc_comment, is_test_only, location, receiver_type_path, text,
+        type_name,
+    },
 };
 
 /// The type (and trait) a method is implemented on.
@@ -20,6 +23,30 @@ use crate::{
 pub(crate) struct Owner {
     pub(crate) type_name: String,
     pub(crate) trait_name: Option<String>,
+    /// The trait as written, with generic arguments, for ids: `From<&str>`.
+    pub(crate) trait_text: Option<String>,
+}
+
+/// Field name → field type path as written.
+pub(crate) type Fields = HashMap<String, Vec<String>>;
+
+/// What a method is called on, as far as declarations reveal it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Receiver {
+    pub(crate) root: ReceiverRoot,
+    /// Field accesses after the root: `self.inner.users` → `["inner", "users"]`.
+    pub(crate) fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReceiverRoot {
+    SelfValue,
+    /// A binding whose type was written down (`declared`) or guessed from a
+    /// `Type::constructor(..)` initializer.
+    Typed {
+        path: Vec<String>,
+        declared: bool,
+    },
 }
 
 /// A call target as written, before resolution.
@@ -28,7 +55,10 @@ pub(crate) enum CallTarget {
     /// `f(..)`, `module::f(..)`, `Type::f(..)`, `Self::f(..)`.
     Path(Vec<String>),
     /// `receiver.name(..)`.
-    Method { name: String, on_self: bool },
+    Method {
+        name: String,
+        receiver: Option<Receiver>,
+    },
     /// A function passed by name, e.g. `get(handlers::health)`. Kept only if it resolves.
     Reference(Vec<String>),
     /// A closure defined at the call site, by its unit path.
@@ -153,6 +183,8 @@ pub(crate) struct Extraction {
     /// Names of traits declared in the analyzed source.
     pub(crate) traits: HashSet<String>,
     pub(crate) routes: Vec<RouteHint>,
+    /// Struct path → its fields.
+    pub(crate) fields: HashMap<Vec<String>, Fields>,
     groups: HashSet<Vec<String>>,
 }
 
@@ -252,14 +284,17 @@ impl Extractor {
                         _ => "union",
                     };
                     self.type_unit(module, text(name, source), kind);
+                    if kind == "struct" {
+                        self.struct_fields(module, text(name, source), node, source);
+                    }
                 }
             }
             "impl_item" => {
+                let trait_node = node.child_by_field_name("trait");
                 let owner = node.child_by_field_name("type").map(|ty| Owner {
-                    type_name: type_name(ty, source),
-                    trait_name: node
-                        .child_by_field_name("trait")
-                        .map(|tr| type_name(tr, source)),
+                    type_name: compact(&type_name(ty, source)),
+                    trait_name: trait_node.map(|tr| type_name(tr, source)),
+                    trait_text: trait_node.map(|tr| trait_label(tr, source)),
                 });
                 if let (Some(owner), Some(body)) = (owner, node.child_by_field_name("body")) {
                     self.type_unit(module, &owner.type_name, "type");
@@ -275,7 +310,8 @@ impl Extractor {
                 self.type_unit(module, &name, "trait");
                 let owner = Owner {
                     type_name: name.clone(),
-                    trait_name: Some(name),
+                    trait_name: Some(name.clone()),
+                    trait_text: Some(name),
                 };
                 if let Some(body) = node.child_by_field_name("body") {
                     self.items(file, body, module, Some(&owner));
@@ -342,10 +378,10 @@ impl Extractor {
         }
         let mut path = parent.clone();
         if let Some(owner) = owner
-            && let Some(trait_name) = &owner.trait_name
+            && let (Some(trait_name), Some(trait_text)) = (&owner.trait_name, &owner.trait_text)
             && trait_name != &owner.type_name
         {
-            path.push(format!("{{impl#{trait_name}}}"));
+            path.push(format!("{{impl#{trait_text}}}"));
         }
         path.push(name.clone());
 
@@ -369,6 +405,7 @@ impl Extractor {
                 module,
                 owner,
                 returns_result,
+                parameters: node.child_by_field_name("parameters"),
             },
             block,
         );
@@ -397,6 +434,41 @@ impl Extractor {
         });
     }
 
+    fn struct_fields(&mut self, module: &[String], name: &str, node: Node<'_>, source: &[u8]) {
+        let Some(body) = node.child_by_field_name("body") else {
+            return;
+        };
+        let mut fields = HashMap::new();
+        let mut cursor = body.walk();
+        let mut position = 0;
+        for child in body.named_children(&mut cursor) {
+            let (field, ty) = match child.kind() {
+                "field_declaration" => (
+                    child
+                        .child_by_field_name("name")
+                        .map(|n| text(n, source).to_owned()),
+                    child.child_by_field_name("type"),
+                ),
+                "visibility_modifier" | "attribute_item" | "line_comment" | "block_comment" => {
+                    continue;
+                }
+                // Tuple struct fields are named by position.
+                _ if body.kind() == "ordered_field_declaration_list" => {
+                    position += 1;
+                    (Some((position - 1).to_string()), Some(child))
+                }
+                _ => continue,
+            };
+            if let (Some(field), Some(ty)) = (field, ty.and_then(|t| receiver_type_path(t, source)))
+            {
+                fields.insert(field, ty);
+            }
+        }
+        let mut path = module.to_vec();
+        path.push(name.to_owned());
+        self.out.fields.insert(path, fields);
+    }
+
     pub(crate) fn push_unit(&mut self, unit: RawUnit) {
         self.out.units.push(unit);
     }
@@ -404,4 +476,14 @@ impl Extractor {
     pub(crate) fn push_route(&mut self, route: RouteHint) {
         self.out.routes.push(route);
     }
+}
+
+/// A trait's own name with its generic arguments: `std::convert::From<&str>` → `From<&str>`.
+fn trait_label(node: Node<'_>, source: &[u8]) -> String {
+    let arguments = (node.kind() == "generic_type")
+        .then(|| node.child_by_field_name("type_arguments"))
+        .flatten()
+        .map(|args| compact(text(args, source)))
+        .unwrap_or_default();
+    format!("{}{arguments}", type_name(node, source))
 }

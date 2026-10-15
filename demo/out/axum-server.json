@@ -1002,7 +1002,7 @@
           "targets": [
             {
               "unit": "rust:axum_server::store::Store::insert_order",
-              "certainty": "inferred"
+              "certainty": "exact"
             }
           ],
           "location": {
@@ -1308,7 +1308,7 @@
           "targets": [
             {
               "unit": "rust:axum_server::store::Store::user",
-              "certainty": "inferred"
+              "certainty": "exact"
             }
           ],
           "location": {
@@ -1417,7 +1417,7 @@
           "targets": [
             {
               "unit": "rust:axum_server::store::Store::email_taken",
-              "certainty": "inferred"
+              "certainty": "exact"
             }
           ],
           "location": {
@@ -1436,7 +1436,7 @@
           "targets": [
             {
               "unit": "rust:axum_server::store::Store::insert_user",
-              "certainty": "inferred"
+              "certainty": "exact"
             }
           ],
           "location": {

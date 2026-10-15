@@ -114,20 +114,46 @@ fn trait_impls_get_distinct_ids() {
 }
 
 #[test]
-fn methods_on_self_are_exact_and_others_inferred() {
+fn receivers_resolve_through_declared_types() {
     let document = analyze_files(&[(
         "lib.rs",
-        "pub struct A; pub struct B;
-         impl A { fn run(&self, b: B) { self.step(); b.solo(); } fn step(&self) {} }
-         impl B { fn solo(&self) {} }",
+        "use std::sync::Arc;
+         pub struct A { inner: Arc<Inner> } pub struct B; pub struct Inner;
+         impl A {
+             fn run(&self, b: &B, opaque: u8) {
+                 self.step();
+                 b.solo();
+                 self.inner.work();
+                 let made = Inner::new();
+                 made.work();
+                 opaque.solo();
+                 unknown.solo();
+             }
+             fn step(&self) {}
+         }
+         impl B { fn solo(&self) {} }
+         impl Inner { fn new() -> Self { Inner } fn work(&self) {} }",
     )]);
-    let run = unit(&document, "app::A::run");
-    let certainties: Vec<Certainty> = run
+    let resolved: Vec<(String, Option<Certainty>)> = unit(&document, "app::A::run")
         .calls
         .iter()
-        .flat_map(|c| c.targets.iter().map(|t| t.certainty))
+        .map(|c| (c.text.clone(), c.targets.first().map(|t| t.certainty)))
         .collect();
-    assert_eq!(certainties, vec![Certainty::Exact, Certainty::Inferred]);
+    assert_eq!(
+        resolved,
+        vec![
+            (".step".into(), Some(Certainty::Exact)),
+            (".solo".into(), Some(Certainty::Exact)),
+            (".work".into(), Some(Certainty::Exact)),
+            ("Inner::new".into(), Some(Certainty::Exact)),
+            // Guessed from the `Inner::new()` initializer.
+            (".work".into(), Some(Certainty::Inferred)),
+            // `u8` is known and has no `solo` here: not a guess at `B::solo`.
+            (".solo".into(), None),
+            // Nothing known about `unknown`: matched by name.
+            (".solo".into(), Some(Certainty::Inferred)),
+        ]
+    );
 }
 
 #[test]

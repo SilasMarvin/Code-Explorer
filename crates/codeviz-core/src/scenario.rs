@@ -2,11 +2,12 @@
 //!
 //! A scenario is a reachable exit together with the chain of propagating call sites
 //! that carries it to the entry. Branches that rejoin are not scenarios, so the count
-//! stays linear in call sites rather than exponential in branches.
+//! stays linear in call sites rather than exponential in branches. Only edges resolved
+//! with confidence carry exits; a name-guessed edge would invent impossible ones.
 
 use std::{borrow::Cow, collections::HashMap, rc::Rc};
 
-use codeviz_ir::{ExitKind, Mode, Step, Unit, UnitId};
+use codeviz_ir::{Certainty, ExitKind, Mode, Step, Unit, UnitId};
 
 use crate::{Level, System, Zoom};
 
@@ -167,13 +168,19 @@ impl Finder<'_> {
                         path.pop();
                         continue;
                     };
+                    // Guessed edges would chain into exits that cannot happen.
                     let resolved: Vec<&UnitId> = invocation
                         .targets
                         .iter()
+                        .filter(|t| t.certainty != Certainty::Inferred)
                         .map(|t| &t.unit)
                         .filter(|id| self.system.unit(id).is_some())
                         .collect();
-                    if resolved.is_empty() && invocation.propagates {
+                    let guessed = invocation
+                        .targets
+                        .iter()
+                        .any(|t| t.certainty == Certainty::Inferred);
+                    if resolved.is_empty() && !guessed && invocation.propagates {
                         out.push(Escape {
                             outcome: Outcome {
                                 kind: ExitKind::Error,

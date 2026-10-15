@@ -73,6 +73,49 @@ pub(crate) fn is_constructor(segments: &[String]) -> bool {
         .is_some_and(char::is_uppercase)
 }
 
+/// Type text made safe for an id: whitespace between words becomes `_`, other
+/// whitespace is dropped. `(Entity, Entity)` → `(Entity,Entity)`, `dyn Fn` → `dyn_Fn`.
+pub(crate) fn compact(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pending_space = false;
+    for c in text.chars() {
+        if c.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        if pending_space && out.chars().last().is_some_and(word) && word(c) {
+            out.push('_');
+        }
+        pending_space = false;
+        out.push(c);
+    }
+    out
+}
+
+/// The type whose methods a value of this type dispatches to, looking through
+/// references and smart pointers: `&Arc<Store>` → `["Store"]`.
+pub(crate) fn receiver_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
+    const POINTERS: [&str; 5] = ["Arc", "Rc", "Box", "Cow", "Pin"];
+    match node.kind() {
+        "reference_type" => receiver_type_path(node.child_by_field_name("type")?, source),
+        "generic_type" => {
+            let base = path_segments(node.child_by_field_name("type")?, source)?;
+            if base.last().is_some_and(|b| POINTERS.contains(&b.as_str())) {
+                let arguments = node.child_by_field_name("type_arguments")?;
+                let mut cursor = arguments.walk();
+                let first = arguments.named_children(&mut cursor).next()?;
+                receiver_type_path(first, source)
+            } else {
+                Some(base)
+            }
+        }
+        "type_identifier" | "scoped_type_identifier" => path_segments(node, source),
+        "primitive_type" => Some(vec![text(node, source).to_owned()]),
+        _ => None,
+    }
+}
+
 pub(crate) fn type_name(node: Node<'_>, source: &[u8]) -> String {
     match node.kind() {
         "generic_type" | "reference_type" => node
