@@ -230,6 +230,11 @@ pub(crate) struct Explorer {
     journey_tiles: Vec<HashMap<usize, usize>>,
     /// What reaches the node at the center of attention, and what it reaches.
     reach: Option<(usize, Reach)>,
+    /// The same for the focused node, which decides what quiet mode keeps.
+    focus_reach: Option<(usize, Reach)>,
+    quiet: Quiet,
+    /// Nodes focused before the current one, most recent last.
+    focus_history: Vec<usize>,
     pub(crate) hovered_tile: Option<usize>,
     /// Lane label to color index, in order of first appearance across journeys.
     lane_colors: HashMap<String, usize>,
@@ -260,6 +265,9 @@ impl Explorer {
             graph_focus: None,
             journey_tiles: Vec::new(),
             reach: None,
+            focus_reach: None,
+            quiet: Quiet::Off,
+            focus_history: Vec::new(),
             hovered_tile: None,
             lane_colors: HashMap::new(),
             revision: 0,
@@ -528,6 +536,9 @@ impl Explorer {
 
     /// Focuses a node. When the active journey runs it, its cursor moves there too.
     pub(crate) fn focus_node(&mut self, tile: usize) {
+        if let Some(previous) = self.graph_focus().filter(|&p| p != tile) {
+            self.focus_history.push(previous);
+        }
         match self.track().find_tile(&self.map, tile) {
             Some(span) => self.select(Some(span)),
             None => self.graph_focus = Some(tile),
@@ -556,6 +567,67 @@ impl Explorer {
         }
     }
 
+    /// What calls `tile`, each once, in the order the focus card numbers them.
+    pub(crate) fn callers_of(&self, tile: usize) -> Vec<usize> {
+        let mut callers: Vec<usize> = self.graph.callers(tile).collect();
+        callers.sort_unstable();
+        callers.dedup();
+        callers
+    }
+
+    /// Returns to the node focused before this one. Returns whether there was one.
+    pub(crate) fn focus_back(&mut self) -> bool {
+        let Some(tile) = self.focus_history.pop() else {
+            return false;
+        };
+        match self.track().find_tile(&self.map, tile) {
+            Some(span) => self.select(Some(span)),
+            None => self.graph_focus = Some(tile),
+        }
+        true
+    }
+
+    /// Lets the focus follow the journey's cursor again.
+    pub(crate) fn unfocus(&mut self) {
+        if let Some(previous) = self.graph_focus.take() {
+            self.focus_history.push(previous);
+        }
+    }
+
+    pub(crate) fn quiet(&self) -> Quiet {
+        self.quiet
+    }
+
+    pub(crate) fn set_quiet(&mut self, quiet: Quiet) {
+        self.quiet = quiet;
+    }
+
+    /// Calls between `tile` and the focus, the nearer way: zero for the focus itself.
+    pub(crate) fn focus_distance(&self, tile: usize) -> Option<u32> {
+        let (focus, reach) = self.focus_reach.as_ref()?;
+        if *focus == tile {
+            return Some(0);
+        }
+        match (reach.upstream.get(&tile), reach.downstream.get(&tile)) {
+            (Some(&up), Some(&down)) => Some(up.min(down)),
+            (Some(&hops), None) | (None, Some(&hops)) => Some(hops),
+            (None, None) => None,
+        }
+    }
+
+    /// Whether quiet mode leaves a node showing: near enough the focus, or under the
+    /// journey's cursor.
+    pub(crate) fn shown(&self, tile: usize) -> bool {
+        let Some(radius) = self.quiet.radius() else {
+            return true;
+        };
+        if self.graph_focus().is_none() {
+            return true;
+        }
+        self.focus_distance(tile).is_some_and(|d| d <= radius)
+            || self.focus().and_then(|u| self.map.tile_of(u)) == Some(tile)
+    }
+
     /// The node at the center of attention: under the pointer, else focused.
     pub(crate) fn attention(&self) -> Option<usize> {
         self.hovered_tile.or_else(|| self.graph_focus())
@@ -572,11 +644,20 @@ impl Explorer {
 
     /// Recomputes [`Self::reach`] when attention moved. Returns whether it did.
     pub(crate) fn refresh_reach(&mut self) -> bool {
+        let focus = self.graph_focus();
+        let mut moved = false;
+        if self.focus_reach.as_ref().map(|(tile, _)| *tile) != focus {
+            self.focus_reach = focus.map(|tile| (tile, self.graph.reach(tile)));
+            moved = true;
+        }
         let attention = self.attention();
         if self.reach.as_ref().map(|(tile, _)| *tile) == attention {
-            return false;
+            return moved;
         }
-        self.reach = attention.map(|tile| (tile, self.graph.reach(tile)));
+        self.reach = match (attention, &self.focus_reach) {
+            (Some(tile), Some((focus, reach))) if tile == *focus => Some((tile, reach.clone())),
+            (attention, _) => attention.map(|tile| (tile, self.graph.reach(tile))),
+        };
         true
     }
 
@@ -731,6 +812,24 @@ impl Explorer {
             Step::Over => after(current),
             Step::Out => span.parent.and_then(after).or(span.parent),
             Step::Start => Some(journey.root()),
+            Step::End => journey.spans().last().map(|(id, _)| id),
+            Step::Next => journey
+                .spans()
+                .skip(current.index() + 1)
+                .find(|(_, s)| s.parent == span.parent)
+                .map(|(id, _)| id),
+            Step::Previous => journey
+                .spans()
+                .take(current.index())
+                .filter(|(_, s)| s.parent == span.parent)
+                .last()
+                .map(|(id, _)| id),
+            Step::Child => journey
+                .spans()
+                .skip(current.index() + 1)
+                .find(|(_, s)| s.parent == Some(current))
+                .map(|(id, _)| id),
+            Step::Parent => span.parent,
         };
         if next.is_some() {
             self.select(next);
@@ -756,6 +855,47 @@ pub(crate) enum Step {
     /// The previous call in time.
     Back,
     Start,
+    /// The last call in time.
+    End,
+    /// The next call made by the same caller.
+    Next,
+    /// The previous call made by the same caller.
+    Previous,
+    /// The first call this one makes.
+    Child,
+    /// The call that made this one.
+    Parent,
+}
+
+/// How much of the graph shows around the focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Quiet {
+    /// Everything.
+    #[default]
+    Off,
+    /// Only what is within two calls of the focus, either way.
+    Near,
+    /// Only the focus and what it calls or is called by directly.
+    Direct,
+}
+
+impl Quiet {
+    /// Calls from the focus still shown, if limited.
+    pub(crate) fn radius(self) -> Option<u32> {
+        match self {
+            Self::Off => None,
+            Self::Near => Some(2),
+            Self::Direct => Some(1),
+        }
+    }
+
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Near,
+            Self::Near => Self::Direct,
+            Self::Direct => Self::Off,
+        }
+    }
 }
 
 /// Steps the cursor on a timer.
@@ -850,6 +990,51 @@ mod tests {
 
         explorer.step(Step::Start);
         assert_eq!(at(&explorer), "main");
+    }
+
+    #[test]
+    fn walking_the_call_tree() {
+        let mut explorer = explorer();
+        explorer.step(Step::Child);
+        assert_eq!(at(&explorer), "a");
+        explorer.step(Step::Next);
+        assert_eq!(at(&explorer), "b", "next skips a's own calls");
+        assert_eq!(explorer.step(Step::Next), None, "b is main's last call");
+        explorer.step(Step::Previous);
+        assert_eq!(at(&explorer), "a");
+        explorer.step(Step::Child);
+        assert_eq!(at(&explorer), "c");
+        assert_eq!(explorer.step(Step::Child), None);
+        explorer.step(Step::Parent);
+        assert_eq!(at(&explorer), "a");
+        explorer.step(Step::End);
+        assert_eq!(at(&explorer), "b");
+    }
+
+    #[test]
+    fn quiet_mode_keeps_the_focus_neighborhood() {
+        let mut explorer = explorer();
+        let tile = |name: &str| {
+            explorer
+                .map()
+                .tile_of(&UnitId::new(format!("x:{name}")))
+                .unwrap()
+        };
+        let (main, a, b, c) = (tile("main"), tile("a"), tile("b"), tile("c"));
+        explorer.focus_node(a);
+        explorer.refresh_reach();
+        explorer.set_quiet(Quiet::Direct);
+        assert!(explorer.shown(a) && explorer.shown(main) && explorer.shown(c));
+        explorer.focus_node(b);
+        explorer.refresh_reach();
+        assert!(!explorer.shown(c), "c is not on any call chain through b");
+        assert!(
+            !explorer.shown(a),
+            "siblings only meet through their caller"
+        );
+        assert!(explorer.focus_back());
+        explorer.refresh_reach();
+        assert_eq!(explorer.graph_focus(), Some(a));
     }
 
     #[test]

@@ -15,7 +15,9 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
-    explorer::{Autoplay, Clustering, Confidence, Explorer, SpanRef, Step, Track, is_conditional},
+    explorer::{
+        Autoplay, Clustering, Confidence, Explorer, Quiet, SpanRef, Step, Track, is_conditional,
+    },
     graph_view::{self, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     scene::{accent, lane_color},
@@ -26,10 +28,15 @@ pub(crate) struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Search>()
+            .init_resource::<KeyHelp>()
             .init_resource::<Sources>()
             .add_systems(EguiPrimaryContextPass, draw_ui);
     }
 }
+
+/// Whether the key reference is showing.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct KeyHelp(pub(crate) bool);
 
 #[derive(Resource, Debug, Default)]
 struct Search {
@@ -65,6 +72,7 @@ fn draw_ui(
     mut search: ResMut<Search>,
     mut sources: ResMut<Sources>,
     mut panel: ResMut<JourneyPanel>,
+    mut help: ResMut<KeyHelp>,
     mut cameras: Query<(&mut Camera, &GlobalTransform), With<OrbitCamera>>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
@@ -141,6 +149,9 @@ fn draw_ui(
         focus_card(ctx, graph_area, &mut explorer);
         if panel.mode != PanelMode::Full {
             legend(ctx, graph_area, &mut explorer);
+        }
+        if help.0 {
+            key_help(ctx, graph_area, &mut help.0);
         }
         if let Some(area) = panel_area {
             let bar = journey_panel::draw(ctx, area, &mut explorer, &mut panel);
@@ -705,11 +716,103 @@ enum Named {
 /// Tier, then bigger first, then a stable tiebreak.
 type LabelRank = (u8, std::cmp::Reverse<usize>, usize);
 
+/// Where a label may go around its node, in order of preference.
+const SIDES: [egui::Align2; 4] = [
+    egui::Align2::LEFT_CENTER,
+    egui::Align2::RIGHT_CENTER,
+    egui::Align2::CENTER_BOTTOM,
+    egui::Align2::CENTER_TOP,
+];
+
+/// Labels already placed and nodes they must not cover.
+struct Placer<'a> {
+    painter: &'a egui::Painter,
+    taken: Vec<egui::Rect>,
+}
+
+impl Placer<'_> {
+    /// Paints `job` on a pill on the first side of `node` (a disc of `edge` points)
+    /// where it overlaps nothing already placed, or the first side anyway when
+    /// `force` is set. Returns whether it was placed.
+    fn place(
+        &mut self,
+        node: egui::Pos2,
+        edge: f32,
+        job: egui::text::LayoutJob,
+        stroke: Option<egui::Color32>,
+        force: bool,
+    ) -> bool {
+        let galley = self.painter.layout_job(job);
+        let size = galley.size();
+        let gap = edge + 6.0;
+        let ppp = self.painter.pixels_per_point();
+        let spot = |side: egui::Align2| {
+            let anchor = match side {
+                egui::Align2::LEFT_CENTER => node + egui::vec2(gap, 0.0),
+                egui::Align2::RIGHT_CENTER => node - egui::vec2(gap, 0.0),
+                egui::Align2::CENTER_BOTTOM => node - egui::vec2(0.0, gap),
+                _ => node + egui::vec2(0.0, gap),
+            };
+            let rect = side.anchor_size(anchor, size);
+            egui::Rect::from_min_size(
+                egui::emath::GuiRounding::round_to_pixels(rect.min, ppp),
+                size,
+            )
+        };
+        let pad = egui::vec2(5.0, 2.0);
+        let free = SIDES
+            .iter()
+            .map(|&side| spot(side))
+            .find(|rect| !self.taken.iter().any(|r| r.intersects(rect.expand2(pad))));
+        let Some(rect) = free.or_else(|| force.then(|| spot(SIDES[0]))) else {
+            return false;
+        };
+        let pill = rect.expand2(pad);
+        self.taken.push(pill);
+        self.painter.rect_filled(pill, 4.0, PILL);
+        if let Some(color) = stroke {
+            self.painter.rect_stroke(
+                pill,
+                4.0,
+                egui::Stroke::new(1.0, color.gamma_multiply(0.45)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        self.painter.galley(rect.min, galley, egui::Color32::WHITE);
+        true
+    }
+}
+
+/// A label in two parts: the name, then a quieter note.
+fn label_job(
+    lead: Option<(String, egui::Color32)>,
+    name: &str,
+    note: Option<String>,
+    color: egui::Color32,
+    size: f32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let format = |color, size| egui::TextFormat {
+        font_id: egui::FontId::proportional(size),
+        color,
+        ..default()
+    };
+    if let Some((lead, lead_color)) = lead {
+        job.append(&lead, 0.0, format(lead_color, size));
+        job.append(" ", 0.0, format(color, size));
+    }
+    job.append(name, 0.0, format(color, size));
+    if let Some(note) = note {
+        job.append(&note, 6.0, format(MUTED, size - 1.5));
+    }
+    job
+}
+
 /// Names beside graph nodes, most important first, each on a dark pill so it reads
-/// over links and glow. The focus's callees carry the order it calls them in, and its
-/// callers where in their own calls they call it. A name that would overlap one
-/// already placed is left out; zooming in makes room for more. Container names float
-/// at the middle of their functions.
+/// over links and glow. The focus's callees lead with the order it calls them in, and
+/// its callers note where in their own calls they call it. A name tries each side of
+/// its node and is left out when none is free, and never covers a node that matters;
+/// zooming in makes room for more. Container names fill whatever space is left.
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
@@ -728,10 +831,23 @@ fn draw_graph_labels(
         .into_iter()
         .filter_map(|span| explorer.unit_id(span).and_then(|u| map.tile_of(u)))
         .collect();
+    // Where each shown node sits on screen, and how far its edge is from its middle.
+    let discs: Vec<Option<(egui::Pos2, f32)>> = (0..map.tiles.len())
+        .map(|tile| {
+            let world = explorer.tile_point(tile).filter(|_| explorer.shown(tile))?;
+            let node = to_screen(world)?;
+            let radius = graph_view::node_size(graph, tile) / 2.0;
+            let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
+            Some((node, edge))
+        })
+        .collect();
 
     // Lower ranks are placed first and win any overlap.
     let mut order: Vec<(LabelRank, Named)> = Vec::new();
-    for tile in 0..map.tiles.len() {
+    for (tile, disc) in discs.iter().enumerate() {
+        if disc.is_none() {
+            continue;
+        }
         let tier = match related(tile) {
             _ if center == Some(tile) => 0,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -756,23 +872,29 @@ fn draw_graph_labels(
             slot.1 += 1;
         }
     }
-    for (group, &(_, count)) in centers.iter().enumerate() {
-        if count >= 2 {
-            order.push(((4, std::cmp::Reverse(count), group), Named::Group(group)));
+    if explorer.quiet().radius().is_none() {
+        for (group, &(_, count)) in centers.iter().enumerate() {
+            if count >= 2 {
+                order.push(((7, std::cmp::Reverse(count), group), Named::Group(group)));
+            }
         }
     }
     order.sort_by_key(|&(key, _)| key);
 
-    let mut taken: Vec<egui::Rect> = Vec::new();
-    let mut place = |at: egui::Pos2, galley: std::sync::Arc<egui::Galley>, color, force: bool| {
-        let rect = egui::Rect::from_min_size(at, galley.size()).expand2(egui::vec2(5.0, 2.0));
-        if !force && taken.iter().any(|r| r.intersects(rect)) {
-            return;
-        }
-        taken.push(rect);
-        painter.rect_filled(rect, 4.0, PILL);
-        painter.galley(at, galley, color);
+    // Labels keep off the nodes that matter, so they never hide a neighbor.
+    let mut placer = Placer {
+        painter,
+        taken: order
+            .iter()
+            .filter(|((tier, _, _), _)| *tier <= 3)
+            .filter_map(|&(_, named)| match named {
+                Named::Node(tile) => discs[tile],
+                Named::Group(_) => None,
+            })
+            .map(|(node, edge)| egui::Rect::from_center_size(node, egui::Vec2::splat(edge * 2.0)))
+            .collect(),
     };
+    let focus = explorer.graph_focus();
     for ((tier, _, _), named) in order {
         match named {
             Named::Group(group) => {
@@ -782,55 +904,56 @@ fn draw_graph_labels(
                 };
                 let color = explorer
                     .group_color(group)
-                    .map_or(MUTED, |c| egui_color(lane_color(c)));
+                    .map_or(MUTED, |c| egui_color(lane_color(c)))
+                    .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
                 let label = map.groups.get(group).map_or("", |g| g.label.as_str());
-                let galley = painter.layout_no_wrap(
-                    label.to_uppercase(),
-                    egui::FontId::proportional(11.5),
-                    color.gamma_multiply(0.85),
-                );
-                let at = at - galley.size() / 2.0;
-                place(at, galley, color, false);
+                let job = label_job(None, &label.to_uppercase(), None, color, 11.0);
+                placer.place(at, 0.0, job, None, false);
             }
             Named::Node(tile) => {
-                let Some(world) = explorer.tile_point(tile) else {
+                let Some((node, edge)) = discs[tile] else {
                     continue;
                 };
-                let Some(node) = to_screen(world) else {
-                    continue;
-                };
-                // Start the name just past the node's edge, however near it is.
-                let radius = graph_view::node_size(graph, tile) / 2.0;
-                let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
                 let name = node_name(explorer, tile);
-                let focus = explorer.graph_focus();
-                let text = match (related(tile), focus) {
-                    (Some(Relation::Downstream(1)), Some(focus)) if center == Some(focus) => {
-                        format!("{}  {name}", numbered(&call_steps(explorer, focus, tile)))
-                    }
-                    (Some(Relation::Upstream(1)), Some(focus)) if center == Some(focus) => {
-                        let steps = call_steps(explorer, tile, focus);
-                        let total = graph.sequence(tile).len();
-                        format!("{name}  · calls it {} of {total}", numbered(&steps))
-                    }
-                    _ if explorer.hovered_tile == Some(tile) => {
-                        format!("{name}  · click to focus, shift-click for its journey")
-                    }
-                    _ => name,
-                };
-                let color = match (tier, related(tile)) {
+                let relation = related(tile);
+                let color = match (tier, relation) {
                     (0, _) => egui::Color32::WHITE,
                     (_, Some(Relation::Upstream(1))) => CALLER_TEXT,
                     (_, Some(Relation::Downstream(1))) => CALLEE_TEXT,
-                    (_, Some(Relation::Upstream(_))) => CALLER_TEXT.gamma_multiply(0.75),
-                    (_, Some(Relation::Downstream(_))) => CALLEE_TEXT.gamma_multiply(0.75),
+                    (_, Some(Relation::Upstream(_))) => CALLER_TEXT.gamma_multiply(0.7),
+                    (_, Some(Relation::Downstream(_))) => CALLEE_TEXT.gamma_multiply(0.7),
                     (2 | 5, None) => egui::Color32::from_rgb(225, 229, 238),
-                    _ => egui::Color32::from_rgb(170, 177, 192),
+                    _ => egui::Color32::from_rgb(160, 167, 182),
                 };
-                let size = if tier == 0 { 16.0 } else { 13.0 };
-                let galley = painter.layout_no_wrap(text, egui::FontId::proportional(size), color);
-                let at = node + egui::vec2(edge + 6.0, -galley.size().y / 2.0);
-                place(at, galley, color, tier == 0);
+                let focused = focus.filter(|&f| center == Some(f));
+                let (lead, aside) = match (relation, focused) {
+                    (Some(Relation::Downstream(1)), Some(focus)) => {
+                        let steps = call_steps(explorer, focus, tile);
+                        (Some((numbered(&steps), color)), None)
+                    }
+                    (Some(Relation::Upstream(1)), Some(focus)) => {
+                        let steps = call_steps(explorer, tile, focus);
+                        let total = graph.sequence(tile).len();
+                        (
+                            None,
+                            Some(format!("calls it {} of {total}", numbered(&steps))),
+                        )
+                    }
+                    _ => (None, None),
+                };
+                let size = match tier {
+                    0 => 16.0,
+                    1 => 14.0,
+                    _ => 12.5,
+                };
+                let stroke = (tier <= 1).then_some(color);
+                placer.place(
+                    node,
+                    edge,
+                    label_job(lead, &name, aside, color, size),
+                    stroke,
+                    tier == 0,
+                );
             }
         }
     }
@@ -843,10 +966,8 @@ fn focus_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
     let Some(focus) = explorer.graph_focus() else {
         return;
     };
+    let callers = explorer.callers_of(focus);
     let graph = explorer.graph();
-    let mut callers: Vec<usize> = graph.callers(focus).collect();
-    callers.sort_unstable();
-    callers.dedup();
     let calls = graph.sequence(focus).to_vec();
     let reach = graph.reach(focus);
     let routes: Vec<String> = explorer
@@ -897,12 +1018,21 @@ fn focus_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
                     );
                     if !callers.is_empty() {
                         ui.add_space(4.0);
-                        ui.label(egui::RichText::new("CALLED BY").small().color(CALLER_TEXT));
-                        for &caller in &callers {
+                        ui.label(
+                            egui::RichText::new("CALLED BY  (shift + number)")
+                                .small()
+                                .color(CALLER_TEXT),
+                        );
+                        for (index, &caller) in callers.iter().enumerate() {
                             let steps = call_steps(explorer, caller, focus);
                             let total = explorer.graph().sequence(caller).len();
+                            let key = if index < 9 {
+                                format!("{}", index + 1)
+                            } else {
+                                "  ".to_owned()
+                            };
                             let text = format!(
-                                "{}  · calls it {} of {total}",
+                                "{key}  {}  · calls it {} of {total}",
                                 node_name(explorer, caller),
                                 numbered(&steps)
                             );
@@ -921,12 +1051,13 @@ fn focus_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
                     if !calls.is_empty() {
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new("CALLS, IN ORDER")
+                            egui::RichText::new("CALLS, IN ORDER  (number)")
                                 .small()
                                 .color(CALLEE_TEXT),
                         );
                         for (index, &callee) in calls.iter().enumerate().take(14) {
-                            let text = format!("{:>2}  {}", index + 1, node_name(explorer, callee));
+                            let text =
+                                format!("{:>2}   {}", index + 1, node_name(explorer, callee));
                             if ui
                                 .add(
                                     egui::Label::new(egui::RichText::new(text).color(CALLEE_TEXT))
@@ -956,6 +1087,7 @@ fn focus_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
 /// How the graph is clustered, and per container how many of its calls stay inside
 /// it: a container whose functions mostly call each other holds together when only
 /// calls pull, and one that leaks calls everywhere scatters.
+#[expect(clippy::too_many_lines, reason = "one panel, top to bottom")]
 fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
     let stats = explorer.graph().group_stats();
     let total: usize = stats.iter().map(|s| s.internal + s.outgoing).sum();
@@ -991,6 +1123,20 @@ fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
+                    color_key(ui, explorer.active());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Show").small().color(MUTED));
+                        let mut quiet = explorer.quiet();
+                        ui.selectable_value(&mut quiet, Quiet::Off, "All")
+                            .on_hover_text("Every function (Q)");
+                        ui.selectable_value(&mut quiet, Quiet::Near, "2 calls")
+                            .on_hover_text("Only what is within two calls of the focus (Q)");
+                        ui.selectable_value(&mut quiet, Quiet::Direct, "1 call")
+                            .on_hover_text("Only what the focus calls and what calls it (Q)");
+                        if quiet != explorer.quiet() {
+                            explorer.set_quiet(quiet);
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Cluster by").small().color(MUTED));
                         ui.selectable_value(&mut clustering, Clustering::Modules, "Modules")
@@ -1041,11 +1187,117 @@ fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
         .text(
             egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
-            "click a node to focus · shift-click opens its journey · Enter traces from it · \
-             J journey · M swap · K clustering · F front · drag to orbit · scroll or pinch to zoom",
+            "click a node to focus · shift-click opens its journey · drag to orbit · \
+             scroll or pinch to zoom · H for keys",
             egui::FontId::proportional(12.0),
             MUTED,
         );
+}
+
+/// What each color in the graph means.
+fn color_key(ui: &mut egui::Ui, active: usize) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let swatch = |ui: &mut egui::Ui, color: egui::Color32, text: &str| {
+            ui.label(egui::RichText::new("■").color(color));
+            ui.label(egui::RichText::new(text).small());
+            ui.add_space(6.0);
+        };
+        swatch(ui, egui::Color32::WHITE, "focus");
+        swatch(ui, CALLER_TEXT, "calls in");
+        swatch(ui, CALLEE_TEXT, "calls out");
+        swatch(ui, egui_color(accent(active)), "journey");
+    });
+    ui.label(
+        egui::RichText::new("bright = one call away, dimmer = further")
+            .small()
+            .color(MUTED),
+    );
+}
+
+/// Every key, grouped by what it moves.
+const KEYS: [(&str, &[(&str, &str)]); 3] = [
+    (
+        "Journey",
+        &[
+            ("← →", "previous / next call by the same caller"),
+            ("↓", "into the first call this one makes"),
+            ("↑", "out to its caller"),
+            ("[  ]", "back / forward one call in time"),
+            ("Home  End", "first / last call"),
+            ("Space", "play"),
+            ("Tab", "next open journey"),
+            ("Enter", "trace a journey from the focus"),
+            (
+                "Shift Enter",
+                "pull the cursor's call out as its own journey",
+            ),
+            ("X", "close the journey"),
+        ],
+    ),
+    (
+        "Graph",
+        &[
+            ("1 – 9", "focus the focus's nth call"),
+            ("Shift 1 – 9", "focus its nth caller"),
+            ("Backspace", "back to the previous focus"),
+            ("Esc", "focus the journey's cursor again"),
+            ("Q", "quiet: all → within 2 calls → within 1"),
+            ("K", "cluster by modules / calls"),
+            ("F", "face the focus head-on"),
+            ("R", "frame the whole graph"),
+        ],
+    ),
+    (
+        "Layout",
+        &[
+            ("J", "show or hide the journey"),
+            ("M", "swap graph and journey"),
+            ("H  /", "this list"),
+        ],
+    ),
+];
+
+fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
+    egui::Area::new("key_help".into())
+        .pivot(egui::Align2::CENTER_CENTER)
+        .fixed_pos(area.center())
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 240))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                .corner_radius(10.0)
+                .inner_margin(egui::Margin::symmetric(18, 14))
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        for (title, keys) in KEYS {
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(title).strong().size(14.0));
+                                ui.add_space(4.0);
+                                egui::Grid::new(title).spacing(egui::vec2(12.0, 4.0)).show(
+                                    ui,
+                                    |ui| {
+                                        for (key, what) in keys {
+                                            ui.label(
+                                                egui::RichText::new(*key)
+                                                    .monospace()
+                                                    .color(egui::Color32::WHITE),
+                                            );
+                                            ui.label(egui::RichText::new(*what).color(MUTED));
+                                            ui.end_row();
+                                        }
+                                    },
+                                );
+                            });
+                            ui.add_space(16.0);
+                        }
+                    });
+                    if ui.small_button("close").clicked() {
+                        *open = false;
+                    }
+                });
+        });
 }
 
 pub(crate) fn short(text: &str, max: usize) -> String {

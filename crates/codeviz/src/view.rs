@@ -35,6 +35,9 @@ pub(crate) struct ViewArgs {
     /// What pulls the graph's nodes together.
     #[arg(long, value_enum, default_value_t = ClusterArg::Modules)]
     cluster: ClusterArg,
+    /// Show only what is near the focus.
+    #[arg(long, value_enum, default_value_t = QuietArg::Off)]
+    quiet: QuietArg,
     /// Open with this function (entry label or unit id suffix) focused in the graph.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
@@ -51,6 +54,16 @@ enum JourneyArg {
     Docked,
     /// Below a strip of graph.
     Full,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum QuietArg {
+    /// Everything.
+    Off,
+    /// Within two calls of the focus.
+    Near,
+    /// Within one call of the focus.
+    Direct,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -121,6 +134,11 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .with_clustering(match args.cluster {
             ClusterArg::Modules => "modules",
             ClusterArg::Calls => "calls",
+        })
+        .with_quiet(match args.quiet {
+            QuietArg::Off => "off",
+            QuietArg::Near => "near",
+            QuietArg::Direct => "direct",
         });
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

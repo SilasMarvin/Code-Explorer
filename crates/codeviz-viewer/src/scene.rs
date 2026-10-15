@@ -8,6 +8,7 @@ use crate::{
     explorer::{Autoplay, Clustering, Explorer, SpanRef, Step, Track},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
+    ui::KeyHelp,
 };
 
 pub(crate) struct ScenePlugin;
@@ -36,14 +37,14 @@ impl Plugin for ScenePlugin {
     }
 }
 
-/// Each journey's accent: its chip, and its path through the graph. Kept clear of
-/// the amber and blue that mark what calls in and out.
-const ACCENTS: [(f32, f32, f32); 5] = [
-    (0.55, 0.95, 0.75),
-    (0.98, 0.55, 0.88),
-    (0.62, 0.95, 0.5),
-    (0.72, 0.62, 1.0),
-    (0.4, 0.95, 0.85),
+/// Each journey's accent: its chip, and its path through the graph. Saturated, and
+/// clear of the amber and blue that mark what calls in and out, so a path stands out
+/// from the pale container colors.
+pub(crate) const ACCENTS: [(f32, f32, f32); 4] = [
+    (0.3, 1.0, 0.62),
+    (1.0, 0.42, 0.86),
+    (0.68, 0.52, 1.0),
+    (0.78, 1.0, 0.32),
 ];
 
 pub(crate) fn accent(track: usize) -> Color {
@@ -55,16 +56,17 @@ pub(crate) fn accent(track: usize) -> Color {
 #[derive(Component, Debug)]
 pub(crate) struct Tile(pub(crate) usize);
 
-/// Container colors: distinct, mid-saturation hues that read on a dark background.
+/// Container colors: pale, low-chroma hues that tell containers apart without being
+/// mistaken for the saturated amber, blue and accents that carry meaning.
 pub(crate) const PALETTE: [(f32, f32, f32); 8] = [
-    (0.36, 0.62, 0.95),
-    (0.95, 0.63, 0.28),
-    (0.45, 0.80, 0.52),
-    (0.82, 0.48, 0.86),
-    (0.95, 0.83, 0.35),
-    (0.40, 0.80, 0.82),
-    (0.93, 0.45, 0.55),
-    (0.62, 0.66, 0.76),
+    (0.66, 0.62, 0.84),
+    (0.62, 0.78, 0.64),
+    (0.84, 0.62, 0.68),
+    (0.56, 0.76, 0.78),
+    (0.82, 0.77, 0.58),
+    (0.64, 0.67, 0.76),
+    (0.72, 0.74, 0.52),
+    (0.80, 0.67, 0.61),
 ];
 
 pub(crate) fn lane_color(lane: usize) -> Color {
@@ -118,6 +120,9 @@ fn on_node_click(
     let Ok(tile) = tiles.get(click.entity) else {
         return;
     };
+    if !explorer.shown(tile.0) {
+        return;
+    }
     if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
         if let Some(unit) = explorer.tile_unit(tile.0).cloned() {
             explorer.add_track(unit);
@@ -128,7 +133,9 @@ fn on_node_click(
 }
 
 fn on_node_over(over: On<PointerOver>, tiles: Query<&Tile>, mut explorer: ResMut<Explorer>) {
-    if let Ok(tile) = tiles.get(over.entity) {
+    if let Ok(tile) = tiles.get(over.entity)
+        && explorer.shown(tile.0)
+    {
         explorer.hovered_tile = Some(tile.0);
     }
 }
@@ -153,30 +160,86 @@ fn stop_on_rebuild(
     }
 }
 
+/// Digit keys, for picking the nth call or caller.
+const DIGITS: [KeyCode; 9] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+    KeyCode::Digit7,
+    KeyCode::Digit8,
+    KeyCode::Digit9,
+];
+
+/// The arrows walk the journey's call tree: left and right between the calls one
+/// caller makes, down into a call, up to its caller. The brackets step through time
+/// one call at a time, the way the journey actually runs.
+fn journey_step(keys: &ButtonInput<KeyCode>) -> Option<Step> {
+    [
+        (KeyCode::ArrowRight, Step::Next),
+        (KeyCode::ArrowLeft, Step::Previous),
+        (KeyCode::ArrowDown, Step::Child),
+        (KeyCode::ArrowUp, Step::Parent),
+        (KeyCode::BracketRight, Step::Into),
+        (KeyCode::BracketLeft, Step::Back),
+        (KeyCode::Home, Step::Start),
+        (KeyCode::End, Step::End),
+    ]
+    .into_iter()
+    .find(|&(key, _)| keys.just_pressed(key))
+    .map(|(_, step)| step)
+}
+
+/// The graph's keys: digits walk to the focus's nth call (with shift, its nth caller),
+/// Backspace goes back to the node focused before, Escape hands the focus back to the
+/// journey's cursor, Q quiets everything far from the focus.
+fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
+    if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key))
+        && let Some(focus) = explorer.graph_focus()
+    {
+        let target = if shift {
+            explorer.callers_of(focus).get(index).copied()
+        } else {
+            explorer.graph().sequence(focus).get(index).copied()
+        };
+        if let Some(tile) = target {
+            explorer.focus_node(tile);
+        }
+    }
+    if keys.just_pressed(KeyCode::Backspace) && !explorer.focus_back() {
+        explorer.back();
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        explorer.unfocus();
+    }
+    if keys.just_pressed(KeyCode::KeyQ) {
+        let next = explorer.quiet().next();
+        explorer.set_quiet(next);
+    }
+    if keys.just_pressed(KeyCode::KeyK) {
+        let next = match explorer.clustering() {
+            Clustering::Modules => Clustering::Calls,
+            Clustering::Calls => Clustering::Modules,
+        };
+        explorer.set_clustering(next);
+    }
+}
+
 fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
     mut autoplay: ResMut<Autoplay>,
     mut panel: ResMut<JourneyPanel>,
+    mut help: ResMut<KeyHelp>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    let step = if keys.just_pressed(KeyCode::ArrowRight) {
-        Some(if shift { Step::Over } else { Step::Into })
-    } else if keys.just_pressed(KeyCode::ArrowDown) {
-        Some(Step::Into)
-    } else if keys.just_pressed(KeyCode::ArrowLeft) {
-        Some(Step::Back)
-    } else if keys.just_pressed(KeyCode::ArrowUp) {
-        Some(Step::Out)
-    } else if keys.just_pressed(KeyCode::Home) {
-        Some(Step::Start)
-    } else {
-        None
-    };
-    if let Some(step) = step {
+    if let Some(step) = journey_step(&keys) {
         autoplay.playing = false;
         explorer.step(step);
     }
+    graph_navigation(&keys, &mut explorer, shift);
     if keys.just_pressed(KeyCode::Space) {
         autoplay.playing = !autoplay.playing;
     }
@@ -197,9 +260,6 @@ fn keyboard(
         let active = explorer.active();
         explorer.close_track(active);
     }
-    if keys.just_pressed(KeyCode::Backspace) {
-        explorer.back();
-    }
     if keys.just_pressed(KeyCode::KeyJ) {
         if panel.mode == PanelMode::Hidden {
             explorer.journey_for_focus();
@@ -217,12 +277,8 @@ fn keyboard(
             PanelMode::Hidden | PanelMode::Docked => PanelMode::Full,
         };
     }
-    if keys.just_pressed(KeyCode::KeyK) {
-        let next = match explorer.clustering() {
-            Clustering::Modules => Clustering::Calls,
-            Clustering::Calls => Clustering::Modules,
-        };
-        explorer.set_clustering(next);
+    if keys.just_pressed(KeyCode::Slash) || keys.just_pressed(KeyCode::KeyH) {
+        help.0 = !help.0;
     }
 }
 

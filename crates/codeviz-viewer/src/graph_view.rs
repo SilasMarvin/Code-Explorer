@@ -12,7 +12,7 @@ use codeviz_layout::{ForceGraph, Reach};
 use crate::{
     camera::{FRONT, OrbitCamera},
     explorer::Explorer,
-    scene::{PALETTE, Tile, accent, lane_color},
+    scene::{ACCENTS, PALETTE, Tile, accent, lane_color},
 };
 
 pub(crate) const CALLER: Color = Color::srgb(1.0, 0.62, 0.2);
@@ -30,8 +30,10 @@ pub(crate) enum NodeLook {
     Upstream(u32),
     /// Called from the focus, this many calls away (capped at [`FARTHEST_SHADE`]).
     Downstream(u32),
-    /// Run by the active journey, unrelated to the focus.
+    /// Run by the active journey, unrelated to the focus: in that journey's accent.
     Journey(usize),
+    /// Left out by quiet mode: a faint speck that keeps the shape of the graph.
+    Hidden,
     /// Unrelated to the focus.
     Faded(usize),
     /// Anything while nothing is focused, in its container's color.
@@ -74,10 +76,22 @@ pub(crate) fn node_materials(
             glow(materials, darken(CALLEE), strength),
         );
     }
+    for track in 0..ACCENTS.len() {
+        let base = accent(track);
+        table.insert(NodeLook::Journey(track), glow(materials, base, 0.35));
+    }
+    table.insert(
+        NodeLook::Hidden,
+        materials.add(StandardMaterial {
+            base_color: Color::srgba(0.6, 0.65, 0.75, 0.08),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        }),
+    );
     for color in 0..PALETTE.len() {
         let base = lane_color(color);
         table.insert(NodeLook::Plain(color), glow(materials, base, 1.2));
-        table.insert(NodeLook::Journey(color), glow(materials, base, 0.3));
         table.insert(
             NodeLook::Faded(color),
             materials.add(StandardMaterial {
@@ -115,6 +129,9 @@ pub(crate) fn relation(reach: &Reach, tile: usize) -> Option<Relation> {
 
 pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     let color = explorer.tile_color(tile) % PALETTE.len();
+    if !explorer.shown(tile) {
+        return NodeLook::Hidden;
+    }
     let center = explorer.attention();
     if center == Some(tile) {
         return NodeLook::Focus;
@@ -125,7 +142,9 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     match relation(reach, tile) {
         Some(Relation::Upstream(hops)) => NodeLook::Upstream(hops.min(FARTHEST_SHADE)),
         Some(Relation::Downstream(hops)) => NodeLook::Downstream(hops.min(FARTHEST_SHADE)),
-        None if explorer.journey_lane(tile).is_some() => NodeLook::Journey(color),
+        None if explorer.journey_lane(tile).is_some() => {
+            NodeLook::Journey(explorer.active() % ACCENTS.len())
+        }
         None => NodeLook::Faded(color),
     }
 }
@@ -141,13 +160,19 @@ pub(crate) fn track_attention(mut explorer: ResMut<Explorer>) {
 pub(crate) fn style_nodes(
     explorer: Res<Explorer>,
     materials: Res<NodeMaterials>,
-    mut nodes: Query<(&Tile, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut nodes: Query<(&Tile, &mut MeshMaterial3d<StandardMaterial>, &mut Transform)>,
 ) {
     if !explorer.is_changed() {
         return;
     }
-    for (tile, mut material) in &mut nodes {
+    for (tile, mut material, mut transform) in &mut nodes {
         let look = node_look(&explorer, tile.0);
+        // Specks left out by quiet mode shrink as well as fade.
+        let size =
+            node_size(explorer.graph(), tile.0) * if look == NodeLook::Hidden { 0.35 } else { 1.0 };
+        if (transform.scale.x - size).abs() > f32::EPSILON {
+            transform.scale = Vec3::splat(size);
+        }
         if let Some(wanted) = materials.0.get(&look)
             && &material.0 != wanted
         {
@@ -208,6 +233,9 @@ pub(crate) fn draw_graph(explorer: Res<Explorer>, mut gizmos: Gizmos) {
         let (Some(a), Some(b)) = (point(from), point(to)) else {
             continue;
         };
+        if !(explorer.shown(from) && explorer.shown(to)) {
+            continue;
+        }
         // A link lights up when it takes one step nearer the focus (amber) or one
         // step further out from it (blue).
         let lit = reach.and_then(|reach| {
@@ -261,19 +289,41 @@ pub(crate) fn draw_graph(explorer: Res<Explorer>, mut gizmos: Gizmos) {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F turns to face the graph head-on, still centered on the focus.
+/// F turns to face the graph head-on, still centered on the focus; R pulls back to
+/// take in the whole graph; Q's quiet mode refits to what it leaves showing.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyF) {
+    for mut camera in &mut cameras {
+        if keys.just_pressed(KeyCode::KeyF) {
+            camera.turn_to(FRONT);
+            orbit_focus(&explorer, &mut camera);
+        }
+        if keys.just_pressed(KeyCode::KeyQ) {
+            orbit_focus(&explorer, &mut camera);
+        }
+        if keys.just_pressed(KeyCode::KeyR) {
+            frame_all(&explorer, &mut camera);
+        }
+    }
+}
+
+/// Looks at the middle of the graph from far enough back to see all of it.
+fn frame_all(explorer: &Explorer, camera: &mut OrbitCamera) {
+    let points: Vec<Vec3> = (0..explorer.map().tiles.len())
+        .filter_map(|t| explorer.tile_point(t))
+        .collect();
+    if points.is_empty() {
         return;
     }
-    for mut camera in &mut cameras {
-        camera.turn_to(FRONT);
-        orbit_focus(&explorer, &mut camera);
-    }
+    let middle = points.iter().copied().sum::<Vec3>() / points.len() as f32;
+    let radius = points
+        .iter()
+        .map(|p| p.distance(middle))
+        .fold(0.0, f32::max);
+    camera.glide_to(middle, (radius * 2.6).max(MIN_ORBIT_DISTANCE));
 }
 
 /// Orbits the focused node from far enough back to see everything it calls and
@@ -289,6 +339,7 @@ pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut OrbitCamera) {
     let reach = graph
         .callers(focus)
         .chain(graph.callees(focus))
+        .filter(|&t| explorer.shown(t))
         .filter_map(|t| explorer.tile_point(t))
         .map(|p| p.distance(at))
         .fold(0.0, f32::max);

@@ -26,7 +26,7 @@ use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::UnitId;
 
 use crate::{
-    explorer::{Autoplay, Clustering, Explorer},
+    explorer::{Autoplay, Clustering, Explorer, Quiet},
     journey_panel::{JourneyPanel, PanelMode},
 };
 
@@ -43,6 +43,7 @@ pub struct Viewer {
     also: Vec<UnitId>,
     panel: PanelMode,
     clustering: Clustering,
+    quiet: Quiet,
     focus: Option<UnitId>,
 }
 
@@ -60,6 +61,7 @@ impl Viewer {
             also: Vec::new(),
             panel: PanelMode::default(),
             clustering: Clustering::default(),
+            quiet: Quiet::default(),
             focus: None,
         }
     }
@@ -115,6 +117,18 @@ impl Viewer {
         self
     }
 
+    /// Shows only what is within `near` (two calls) or `direct` (one call) of the
+    /// focus; anything else shows everything.
+    #[must_use]
+    pub fn with_quiet(mut self, name: &str) -> Self {
+        self.quiet = match name {
+            "near" => Quiet::Near,
+            "direct" => Quiet::Direct,
+            _ => Quiet::Off,
+        };
+        self
+    }
+
     /// Opens with this function focused in the graph.
     #[must_use]
     pub fn with_focus(mut self, unit: UnitId) -> Self {
@@ -162,6 +176,7 @@ impl Viewer {
             explorer.add_track(root);
         }
         explorer.set_clustering(self.clustering);
+        explorer.set_quiet(self.quiet);
         if let Some(tile) = self
             .focus
             .take()
