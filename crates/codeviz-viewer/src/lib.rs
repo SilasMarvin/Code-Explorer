@@ -55,6 +55,7 @@ pub struct Viewer {
 #[derive(Debug)]
 struct Comparison {
     before: System,
+    moved: codeviz_core::Moves,
     both: Option<System>,
     style: DiffStyle,
     morph: Option<f32>,
@@ -83,10 +84,14 @@ impl Viewer {
     /// Shows `after` with what changed since `before` drawn over the graph.
     #[must_use]
     pub fn compare(before: Vec<Document>, after: Vec<Document>) -> Self {
-        let both = System::new(codeviz_core::union(&before, after.clone()));
-        let mut viewer = Self::new(System::new(after));
+        let system = System::new(after.clone());
+        // Moved functions take their new ids on both sides.
+        let (before, moved) = codeviz_core::align(before, &system);
+        let both = System::new(codeviz_core::union(&before, after));
+        let mut viewer = Self::new(system);
         viewer.diff = Some(Comparison {
             before: System::new(before),
+            moved,
             both: Some(both),
             style: DiffStyle::default(),
             morph: None,
@@ -243,7 +248,8 @@ impl Viewer {
     pub fn run(mut self) -> AppExit {
         let mut explorer = self.explorer();
         let diff = self.diff.take().map(|comparison| {
-            let diff = Diff::between(&comparison.before, explorer.system());
+            let diff =
+                Diff::between(&comparison.before, explorer.system()).with_moves(comparison.moved);
             let mut view = DiffView::new(&mut explorer, &diff, comparison.before);
             view.style = comparison.style;
             if let Some(t) = comparison.morph {

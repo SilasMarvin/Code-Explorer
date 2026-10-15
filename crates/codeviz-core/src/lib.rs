@@ -15,7 +15,7 @@ mod system;
 mod upstream;
 mod zoom;
 
-pub use diff::{Call, Change, Diff, union};
+pub use diff::{Call, Change, Diff, Moves, align, union};
 pub use journey::{
     Condition, ExitMarker, Journey, JourneyOptions, Span, SpanId, SpanTarget, StopReason,
 };

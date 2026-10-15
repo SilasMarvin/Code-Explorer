@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use codeviz_core::{Change, Diff, System};
+use codeviz_core::{Change, Diff, System, align};
 use codeviz_ir::Document;
 
 use crate::{ir::Language, view::Display};
@@ -72,10 +72,9 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
         old.label,
         new.as_ref().map_or("working tree", |c| c.label.as_str())
     );
-    let diff = Diff::between(
-        &System::new(vec![before.clone()]),
-        &System::new(vec![after.clone()]),
-    );
+    let new_system = System::new(vec![after.clone()]);
+    let (aligned, moved) = align(vec![before.clone()], &new_system);
+    let diff = Diff::between(&System::new(aligned), &new_system).with_moves(moved);
     if args.summary {
         return print(&title, &diff);
     }
@@ -195,8 +194,16 @@ fn print(title: &str, diff: &Diff) -> anyhow::Result<()> {
             Change::Added => '+',
             Change::Removed => '-',
             Change::Modified => '~',
+            Change::Moved => '>',
         };
-        let _ = writeln!(out, "{sign} {unit}");
+        match diff.moved.get(unit) {
+            Some(was) => {
+                let _ = writeln!(out, "{sign} {unit}  (was {was})");
+            }
+            None => {
+                let _ = writeln!(out, "{sign} {unit}");
+            }
+        }
     }
     write!(std::io::stdout().lock(), "{out}")?;
     Ok(())

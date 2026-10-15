@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use codeviz_ir::{CallKey, Document, Invocation, Unit, UnitId};
+use codeviz_ir::{CallKey, Certainty, Document, Invocation, Role, Unit, UnitId};
 
 use crate::System;
 
@@ -16,6 +16,8 @@ pub enum Change {
     Removed,
     /// In both versions, with different content.
     Modified,
+    /// Renamed or moved: the same function under a new id, perhaps changed too.
+    Moved,
 }
 
 /// A call from one unit to another.
@@ -25,6 +27,8 @@ pub type Call = (UnitId, UnitId);
 pub struct Diff {
     /// Every unit that changed; anything absent is the same in both versions.
     pub units: HashMap<UnitId, Change>,
+    /// The id each moved unit had before, by its new id.
+    pub moved: Moves,
     pub added_calls: HashSet<Call>,
     pub removed_calls: HashSet<Call>,
 }
@@ -56,9 +60,21 @@ impl Diff {
         let (old, new) = (pairs(&old_calls), pairs(&new_calls));
         Self {
             units,
+            moved: Moves::new(),
             added_calls: new.difference(&old).cloned().collect(),
             removed_calls: old.difference(&new).cloned().collect(),
         }
+    }
+
+    /// Marks the units that moved, by new id with the id each had before. `before`
+    /// should already be [`align`]ed, so they are otherwise compared as one unit.
+    #[must_use]
+    pub fn with_moves(mut self, moved: Moves) -> Self {
+        for new in moved.keys() {
+            self.units.insert(new.clone(), Change::Moved);
+        }
+        self.moved = moved;
+        self
     }
 
     #[must_use]
@@ -81,6 +97,130 @@ impl Diff {
 }
 
 type Calls = HashMap<UnitId, HashSet<UnitId>>;
+
+/// Old ids by the new id of the unit that moved there.
+pub type Moves = HashMap<UnitId, UnitId>;
+
+/// Whether a unit that went away and one that appeared are the same, moved.
+type Rule<'a> = dyn Fn(&Unit, &Unit) -> bool + 'a;
+
+/// Finds the functions of `before` that were renamed or moved in `after`, and
+/// rewrites `before` to call them by their new ids, so a diff of the result compares
+/// each with itself. A function moved when the new one lists the old id among its
+/// `aliases`; when the two have the same content hash; or when they share kind,
+/// parent and everything they call, at least two functions resolved exactly. Only
+/// one-to-one matches count.
+#[must_use]
+pub fn align(before: Vec<Document>, after: &System) -> (Vec<Document>, Moves) {
+    let old = System::new(before.clone());
+    let functions = |system: &System| -> Vec<UnitId> {
+        system
+            .units()
+            .filter(|u| u.role == Role::Invocable && system.owner(&u.id) == &u.id)
+            .map(|u| u.id.clone())
+            .collect()
+    };
+    let mut gone: Vec<UnitId> = functions(&old)
+        .into_iter()
+        .filter(|id| after.unit(id).is_none())
+        .collect();
+    let mut new: Vec<UnitId> = functions(after)
+        .into_iter()
+        .filter(|id| old.unit(id).is_none())
+        .collect();
+    gone.sort();
+    new.sort();
+    let exact = |system: &System, id: &UnitId| -> Option<HashSet<UnitId>> {
+        let unit = system.unit(id)?;
+        let targets: HashSet<UnitId> = unit
+            .calls
+            .iter()
+            .flat_map(|c| &c.targets)
+            .filter(|t| t.certainty == Certainty::Exact)
+            .map(|t| system.owner(&t.unit).clone())
+            .filter(|t| t != id)
+            .collect();
+        (targets.len() >= 2).then_some(targets)
+    };
+    let mut moves = Moves::new();
+    let rules: [&Rule; 3] = [
+        &|was, now| now.aliases.contains(&was.id),
+        &|was, now| was.content_hash.is_some() && was.content_hash == now.content_hash,
+        &|was, now| {
+            was.kind == now.kind
+                && was.parent == now.parent
+                && exact(&old, &was.id).is_some_and(|c| Some(c) == exact(after, &now.id))
+        },
+    ];
+    for rule in rules {
+        let matches = |a: &UnitId, b: &UnitId| {
+            old.unit(a)
+                .zip(after.unit(b))
+                .is_some_and(|(was, now)| rule(was, now))
+        };
+        let mut found = Vec::new();
+        for was in &gone {
+            let mut candidates = new.iter().filter(|now| matches(was, now));
+            if let (Some(now), None) = (candidates.next(), candidates.next())
+                && gone.iter().filter(|other| matches(other, now)).count() == 1
+            {
+                found.push((was.clone(), now.clone()));
+            }
+        }
+        for (was, now) in found {
+            gone.retain(|id| *id != was);
+            new.retain(|id| *id != now);
+            moves.insert(now, was);
+        }
+    }
+    let renames: HashMap<&UnitId, &UnitId> = moves.iter().map(|(now, was)| (was, now)).collect();
+    let before = before
+        .into_iter()
+        .map(|document| rename(document, &renames))
+        .collect();
+    (before, moves)
+}
+
+/// `document` with every id that `renames` moves, or that sits inside one (`f` and
+/// `f::{closure#0}`), rewritten.
+fn rename(mut document: Document, renames: &HashMap<&UnitId, &UnitId>) -> Document {
+    if renames.is_empty() {
+        return document;
+    }
+    let fix = |id: &mut UnitId| {
+        let text = id.as_str();
+        let moved = renames.iter().find_map(|(was, now)| {
+            let rest = text.strip_prefix(was.as_str())?;
+            let inside =
+                rest.is_empty() || rest.starts_with(|c: char| !(c.is_alphanumeric() || c == '_'));
+            inside.then(|| format!("{now}{rest}"))
+        });
+        if let Some(moved) = moved {
+            *id = UnitId::new(moved);
+        }
+    };
+    for unit in &mut document.units {
+        fix(&mut unit.id);
+        if let Some(parent) = &mut unit.parent {
+            fix(parent);
+        }
+        for call in &mut unit.calls {
+            call.targets.iter_mut().for_each(|t| fix(&mut t.unit));
+            if let Some(via) = &mut call.via {
+                fix(via);
+            }
+        }
+    }
+    for entry in &mut document.entries {
+        fix(&mut entry.unit);
+        entry.chain.iter_mut().for_each(&fix);
+    }
+    for link in &mut document.links {
+        fix(&mut link.from);
+        fix(&mut link.to);
+    }
+    document
+}
 
 /// Different content: by hash when both versions have one, else by what they call.
 fn rewritten(old: &Unit, new: &Unit, old_calls: &Calls, new_calls: &Calls) -> bool {
@@ -291,5 +431,78 @@ mod tests {
         );
         assert_eq!(diff.added_calls, HashSet::from([(id("main"), id("b"))]));
         assert!(diff.removed_calls.is_empty(), "main still calls a");
+    }
+
+    fn documents(units: &[&str]) -> Vec<Document> {
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        vec![Document::from_json(&json).unwrap()]
+    }
+
+    fn function(id: &str, hash: &str, calls: &[&str]) -> String {
+        let calls: Vec<String> = calls
+            .iter()
+            .map(|c| {
+                format!(
+                    r#"{{ "key": "{c}#0", "text": "{c}", "targets": [{{ "unit": "x:{c}", "certainty": "exact" }}] }}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{ "id": "x:{id}", "name": "{id}", "kind": "fn", "role": "invocable", "parent": "x:m", "content_hash": {{ "algo": "t", "value": "{hash}" }}, "calls": [{}] }}"#,
+            calls.join(",")
+        )
+    }
+
+    #[test]
+    fn moved_functions_are_matched_and_take_their_new_ids() {
+        let module = r#"{ "id": "x:m", "name": "m", "kind": "module", "role": "group" }"#;
+        let closure = r#"{ "id": "x:old::{closure#0}", "name": "{closure#0}", "kind": "closure", "role": "invocable", "parent": "x:old", "calls": [] }"#;
+        let before = documents(&[
+            module,
+            &function("main", "1", &["old", "renamed_from"]),
+            // Moved unchanged: the same hash.
+            &function("old", "h", &[]),
+            closure,
+            // Renamed and rewritten: the same calls.
+            &function("renamed_from", "2", &["a", "b"]),
+            &function("a", "a", &[]),
+            &function("b", "b", &[]),
+            // Gone for good.
+            &function("dropped", "3", &["a"]),
+        ]);
+        let after = System::new(documents(&[
+            module,
+            &function("main", "1x", &["new", "renamed_to"]),
+            &function("new", "h", &[]),
+            &function("renamed_to", "2x", &["a", "b"]),
+            &function("a", "a", &[]),
+            &function("b", "b", &[]),
+        ]));
+        let id = |name: &str| UnitId::new(format!("x:{name}"));
+        let (aligned, moved) = align(before, &after);
+        assert_eq!(
+            moved,
+            Moves::from([
+                (id("new"), id("old")),
+                (id("renamed_to"), id("renamed_from"))
+            ])
+        );
+        let aligned = System::new(aligned);
+        assert!(
+            aligned.unit(&id("new::{closure#0}")).is_some(),
+            "what was inside moves with it"
+        );
+        let diff = Diff::between(&aligned, &after).with_moves(moved);
+        assert_eq!(diff.change(&id("new")), Some(Change::Moved));
+        assert_eq!(diff.change(&id("renamed_to")), Some(Change::Moved));
+        assert_eq!(diff.change(&id("dropped")), Some(Change::Removed));
+        assert!(
+            diff.added_calls.is_empty(),
+            "calls to a moved function are the same calls: {:?}",
+            diff.added_calls
+        );
     }
 }

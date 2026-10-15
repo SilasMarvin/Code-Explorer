@@ -621,6 +621,13 @@ fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, sourc
         }
     };
     ui.label(egui::RichText::new(place).small().color(MUTED));
+    if let Some(was) = view.moved_from(tile) {
+        ui.label(
+            egui::RichText::new(format!("was {was}"))
+                .small()
+                .color(color),
+        );
+    }
     if change.is_none() {
         ui.label(egui::RichText::new("Unchanged.").small().color(MUTED));
     }
@@ -1089,9 +1096,11 @@ fn draw_graph_labels(
                         n => format!("{n} calls from a change"),
                     });
                 let (lead, aside) = match (relation, focused) {
-                    _ if change.is_some() => {
-                        (change.map(|c| (diff_view::sign(c).to_owned(), color)), None)
-                    }
+                    _ if change.is_some() => (
+                        change.map(|c| (diff_view::sign(c).to_owned(), color)),
+                        diff.and_then(|d| d.moved_from(tile))
+                            .map(|was| format!("was {}", tail(was))),
+                    ),
                     _ if impact_note.is_some() => (None, impact_note),
                     (Some(Relation::Downstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, focus, tile);
@@ -1397,10 +1406,11 @@ fn diff_key(ui: &mut egui::Ui) {
         swatch(ui, diff_view::ADDED, "added");
         swatch(ui, diff_view::MODIFIED, "rewritten");
         swatch(ui, diff_view::REMOVED, "removed");
+        swatch(ui, diff_view::MOVED, "moved");
         swatch(ui, Color::WHITE, "focus");
     });
     ui.label(
-        egui::RichText::new("dashed = call removed · dim gold = reaches a change")
+        egui::RichText::new("dashed = call removed · dim gold (Impact) = reaches a change")
             .small()
             .color(MUTED),
     );
@@ -1491,6 +1501,12 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
                     }
                 });
         });
+}
+
+/// The last two segments of a path: `orders::Order::total` is `Order.total`.
+fn tail(path: &str) -> String {
+    let segments: Vec<&str> = path.split("::").collect();
+    segments[segments.len().saturating_sub(2)..].join(".")
 }
 
 pub(crate) fn short(text: &str, max: usize) -> String {

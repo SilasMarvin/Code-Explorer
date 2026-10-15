@@ -20,7 +20,7 @@ use codeviz_layout::ForceGraph;
 
 use crate::{
     camera::OrbitCamera,
-    explorer::Explorer,
+    explorer::{Clustering, Explorer},
     graph_view::{self, NodeLook},
     scene::{PALETTE, Tile},
     ui::{MUTED, egui_color},
@@ -29,6 +29,7 @@ use crate::{
 pub(crate) const ADDED: Color = Color::srgb(0.32, 0.95, 0.5);
 pub(crate) const REMOVED: Color = Color::srgb(1.0, 0.34, 0.34);
 pub(crate) const MODIFIED: Color = Color::srgb(1.0, 0.8, 0.22);
+pub(crate) const MOVED: Color = Color::srgb(0.42, 0.78, 1.0);
 
 /// Steps each version's own layout runs from the shared one.
 const VERSION_STEPS: usize = 160;
@@ -60,6 +61,7 @@ pub(crate) struct Totals {
     pub(crate) added: usize,
     pub(crate) removed: usize,
     pub(crate) modified: usize,
+    pub(crate) moved: usize,
     pub(crate) calls_added: usize,
     pub(crate) calls_removed: usize,
 }
@@ -84,12 +86,16 @@ pub(crate) struct DiffView {
     impact: HashMap<usize, u32>,
     pub(crate) affected: Vec<Affected>,
     pub(crate) entry_count: usize,
-    /// The old version.
+    /// The old version, with moved functions under their new ids.
     old: System,
+    /// What each moved node was called before.
+    moved: HashMap<usize, String>,
     /// Where each node sits in the old version, the new one, and both together.
     before: Vec<[f32; 3]>,
     after: Vec<[f32; 3]>,
     shared: Vec<[f32; 3]>,
+    /// The clustering `before` and `after` were laid out under.
+    laid_out_for: Clustering,
     /// From 0 (before) to 1 (after).
     pub(crate) morph: f32,
     pub(crate) playing: bool,
@@ -131,6 +137,7 @@ impl DiffView {
             added: count(Change::Added),
             removed: count(Change::Removed),
             modified: count(Change::Modified),
+            moved: count(Change::Moved),
             calls_added: added_calls.len(),
             calls_removed: removed_calls.len(),
         };
@@ -165,24 +172,7 @@ impl DiffView {
             .collect();
         affected.sort_by(|a, b| a.hops.cmp(&b.hops).then_with(|| a.label.cmp(&b.label)));
 
-        let shared = graph.positions.clone();
-        let settle = |system: &System| {
-            let mut version = ForceGraph::new(system, map, explorer.clustering().forces());
-            version.positions.clone_from(&shared);
-            for _ in 0..VERSION_STEPS {
-                version.step();
-            }
-            version.positions
-        };
-        let (mut before_at, mut after_at) = (settle(&before), settle(after));
-        // What one side lacks grows or shrinks where the other side has it.
-        for (&tile, &change) in &changes {
-            match change {
-                Change::Added => before_at[tile] = after_at[tile],
-                Change::Removed => after_at[tile] = before_at[tile],
-                Change::Modified => {}
-            }
-        }
+        let (before_at, after_at) = versions(explorer, &before, &changes);
         Self {
             style: DiffStyle::default(),
             totals,
@@ -192,10 +182,23 @@ impl DiffView {
             impact,
             affected,
             entry_count: entries.len(),
+            moved: diff
+                .moved
+                .iter()
+                .filter_map(|(now, was)| {
+                    // The old id, without its scheme: where the function used to live.
+                    let path = was
+                        .as_str()
+                        .split_once(':')
+                        .map_or(was.as_str(), |(_, p)| p);
+                    Some((map.tile_of(now)?, path.to_owned()))
+                })
+                .collect(),
             old: before,
             before: before_at,
             after: after_at,
-            shared,
+            shared: graph.positions.clone(),
+            laid_out_for: explorer.clustering(),
             morph: 0.0,
             playing: true,
             clock: 0.0,
@@ -205,6 +208,11 @@ impl DiffView {
     /// The version the diff starts from.
     pub(crate) fn old(&self) -> &System {
         &self.old
+    }
+
+    /// What a moved node was called before.
+    pub(crate) fn moved_from(&self, tile: usize) -> Option<&str> {
+        self.moved.get(&tile).map(String::as_str)
     }
 
     pub(crate) fn change(&self, tile: usize) -> Option<Change> {
@@ -274,6 +282,34 @@ impl DiffView {
             .map(|(a, b)| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t))
             .collect()
     }
+}
+
+/// Where each node sits in the old version and in the new one: each laid out alone,
+/// starting from the graph as it stands. What one side lacks grows or shrinks where
+/// the other side has it.
+fn versions(
+    explorer: &Explorer,
+    old: &System,
+    changes: &HashMap<usize, Change>,
+) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let settle = |system: &System| {
+        let forces = explorer.clustering().forces();
+        let mut version = ForceGraph::new(system, explorer.map(), forces);
+        version.positions.clone_from(&explorer.graph().positions);
+        for _ in 0..VERSION_STEPS {
+            version.step();
+        }
+        version.positions
+    };
+    let (mut before, mut after) = (settle(old), settle(explorer.system()));
+    for (&tile, &change) in changes {
+        match change {
+            Change::Added => before[tile] = after[tile],
+            Change::Removed => after[tile] = before[tile],
+            Change::Modified | Change::Moved => {}
+        }
+    }
+    (before, after)
 }
 
 fn ease(t: f32) -> f32 {
@@ -350,6 +386,20 @@ fn animate(
             explorer.set_changed();
         }
         return;
+    }
+    if view.laid_out_for != explorer.clustering() {
+        // Regathered since the versions were laid out: settle the shared layout under
+        // the new forces, then lay both versions out again from it.
+        let explorer = explorer.bypass_change_detection();
+        if !entered {
+            let shared = view.shared.clone();
+            explorer.place_nodes(&shared);
+        }
+        explorer.settle_now();
+        view.shared.clone_from(&explorer.graph().positions);
+        let (before, after) = versions(explorer, &view.old, &view.changes);
+        (view.before, view.after) = (before, after);
+        view.laid_out_for = explorer.clustering();
     }
     if view.playing {
         view.clock += time.delta_secs();
@@ -502,6 +552,7 @@ pub(crate) fn sign(change: Change) -> &'static str {
         Change::Added => "+",
         Change::Removed => "−",
         Change::Modified => "~",
+        Change::Moved => "→",
     }
 }
 
@@ -510,6 +561,7 @@ pub(crate) fn change_color(change: Change) -> Color {
         Change::Added => ADDED,
         Change::Removed => REMOVED,
         Change::Modified => MODIFIED,
+        Change::Moved => MOVED,
     }
 }
 
@@ -539,6 +591,9 @@ pub(crate) fn diff_card(
                     let totals = view.totals;
                     ui.horizontal(|ui| {
                         let count = |ui: &mut egui::Ui, change, n: usize, what: &str| {
+                            if n == 0 {
+                                return;
+                            }
                             ui.label(
                                 egui::RichText::new(format!("{}{n} {what}", sign(change)))
                                     .color(egui_color(change_color(change))),
@@ -547,6 +602,7 @@ pub(crate) fn diff_card(
                         count(ui, Change::Added, totals.added, "added");
                         count(ui, Change::Modified, totals.modified, "rewritten");
                         count(ui, Change::Removed, totals.removed, "removed");
+                        count(ui, Change::Moved, totals.moved, "moved");
                     });
                     ui.label(
                         egui::RichText::new(format!(
@@ -665,7 +721,12 @@ fn status_list(
                     ..Default::default()
                 };
                 header.append(label, 0.0, format(egui::Color32::from_rgb(215, 220, 230)));
-                for change in [Change::Added, Change::Modified, Change::Removed] {
+                for change in [
+                    Change::Added,
+                    Change::Modified,
+                    Change::Moved,
+                    Change::Removed,
+                ] {
                     let n = rows.iter().filter(|r| r.0 == change).count();
                     if n > 0 {
                         let text = format!("{}{n}", sign(change));

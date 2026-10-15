@@ -203,6 +203,8 @@ impl Clustering {
 
 /// Simulation steps run before the graph is first shown, so it opens nearly settled.
 const PRESETTLE_STEPS: usize = 200;
+/// At most this many steps to settle at once.
+const SETTLE_NOW_STEPS: usize = 600;
 /// Below this mean speed the graph counts as settled and stops simulating.
 const SETTLED_SPEED: f32 = 0.002;
 
@@ -505,6 +507,16 @@ impl Explorer {
         }
         self.settling = speed > SETTLED_SPEED;
         true
+    }
+
+    /// Runs the simulation until the graph settles, all at once.
+    pub(crate) fn settle_now(&mut self) {
+        for _ in 0..SETTLE_NOW_STEPS {
+            if self.graph.step() < SETTLED_SPEED {
+                break;
+            }
+        }
+        self.settling = false;
     }
 
     /// Gives lanes and containers their colors after the journeys changed, and asks

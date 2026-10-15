@@ -12,7 +12,7 @@ use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
     camera::{FRONT, OrbitCamera},
-    diff_view::{ADDED, DiffView, MODIFIED, REMOVED, diff_look, draw_diff_graph},
+    diff_view::{ADDED, DiffView, MODIFIED, MOVED, REMOVED, diff_look, draw_diff_graph},
     explorer::Explorer,
     scene::{ACCENTS, PALETTE, Tile, accent, lane_color},
 };
@@ -93,6 +93,10 @@ pub(crate) fn node_materials(
     table.insert(
         NodeLook::Changed(Change::Modified),
         glow(materials, MODIFIED, 2.4),
+    );
+    table.insert(
+        NodeLook::Changed(Change::Moved),
+        glow(materials, MOVED, 2.4),
     );
     table.insert(
         NodeLook::Changed(Change::Removed),
