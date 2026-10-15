@@ -195,8 +195,9 @@ impl Track {
 const TRACK_GAP: f32 = 3.5;
 /// Space between layered journeys.
 const LAYER_GAP: f32 = 9.0;
-/// Space between the graph and the journeys pulled out in front of it.
-const PULL_DISTANCE: f32 = 10.0;
+
+/// Space between the graph and the journeys pulled out of it.
+const PULL_DISTANCE: f32 = 8.0;
 /// Simulation steps run before the graph is first shown, so it opens nearly settled.
 const PRESETTLE_STEPS: usize = 200;
 /// Below this mean speed the graph counts as settled and stops simulating.
@@ -277,6 +278,8 @@ pub(crate) struct Explorer {
     graph: Option<ForceGraph>,
     /// Whether the graph is still moving.
     settling: bool,
+    /// A node focused in the graph, until the cursor moves.
+    graph_focus: Option<usize>,
     /// Map tiles each journey runs, with the color each is drawn in there.
     journey_tiles: Vec<HashMap<usize, usize>>,
     /// What can reach the cursor's unit.
@@ -309,6 +312,7 @@ impl Explorer {
             framing: 0,
             graph: None,
             settling: false,
+            graph_focus: None,
             journey_tiles: Vec::new(),
             upstream: None,
             upstream_tiles: HashMap::new(),
@@ -380,8 +384,10 @@ impl Explorer {
         self.track().selected
     }
 
+    /// Moves the active cursor. The graph's focus follows it again.
     pub(crate) fn select(&mut self, span: Option<SpanId>) {
         self.track_mut().selected = span;
+        self.graph_focus = None;
     }
 
     /// Makes `track` active with its cursor on `span`.
@@ -635,17 +641,14 @@ impl Explorer {
                     .iter()
                     .map(|t| t.scene.bounds.1[0] - t.scene.bounds.0[0])
                     .fold(0.0, f32::max);
-                let shift = Vec3::new(
-                    -width / 2.0,
-                    low - PULL_DISTANCE / 2.0,
-                    near + PULL_DISTANCE,
-                );
+                let shift = Vec3::new(-width / 2.0, low - PULL_DISTANCE, near + PULL_DISTANCE);
                 for track in &mut self.tracks {
                     track.offset += shift;
                     place_bars(track, tick, false);
                 }
             }
         }
+        self.color_groups();
         self.refresh_journey_tiles();
     }
 
@@ -711,6 +714,11 @@ impl Explorer {
         }
     }
 
+    /// What the open journeys occupy in the world, as `(min, max)`.
+    pub(crate) fn journeys_bounds(&self) -> (Vec3, Vec3) {
+        self.journey_bounds()
+    }
+
     /// Everything drawn, as `(min, max)`: the journeys, and the map when shown.
     pub(crate) fn bounds(&self) -> (Vec3, Vec3) {
         let (mut min, mut max) = self.journey_bounds();
@@ -738,6 +746,56 @@ impl Explorer {
         self.codebase = !self.codebase;
         self.hovered_tile = None;
         self.arrange();
+    }
+
+    /// The node the graph centers on and lights up around: one clicked in the graph,
+    /// else the function under the cursor.
+    pub(crate) fn graph_focus(&self) -> Option<usize> {
+        self.graph_focus
+            .or_else(|| self.focus().and_then(|f| self.map.tile_of(f)))
+    }
+
+    /// A node focused by clicking it in the graph, if the cursor has not moved since.
+    pub(crate) fn clicked_node(&self) -> Option<usize> {
+        self.graph_focus
+    }
+
+    pub(crate) fn focus_node(&mut self, tile: usize) {
+        self.graph_focus = Some(tile);
+    }
+
+    /// Starts the active journey at the focused node.
+    pub(crate) fn trace_from_focus(&mut self) {
+        if let Some(unit) = self
+            .graph_focus
+            .and_then(|t| self.map.tile(t))
+            .map(|t| t.unit.clone())
+        {
+            self.start_from(unit);
+        } else {
+            self.trace_from_selected();
+        }
+    }
+
+    /// The color index for a map tile's container, shared with journey bars.
+    pub(crate) fn tile_color(&self, tile: usize) -> usize {
+        self.map
+            .tile(tile)
+            .and_then(|t| self.map.groups.get(t.group))
+            .and_then(|g| g.unit.as_ref())
+            .and_then(|unit| self.lane_colors.get(unit.as_str()))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Gives every container on the map a color, after those the journeys use.
+    fn color_groups(&mut self) {
+        for group in &self.map.groups {
+            if let Some(unit) = &group.unit {
+                let next = self.lane_colors.len();
+                self.lane_colors.entry(unit.to_string()).or_insert(next);
+            }
+        }
     }
 
     fn refresh_journey_tiles(&mut self) {

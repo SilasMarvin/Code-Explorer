@@ -13,6 +13,7 @@ mod camera;
 mod capture;
 mod explorer;
 mod geometry;
+mod graph_view;
 mod scene;
 mod ui;
 
@@ -38,6 +39,7 @@ pub struct Viewer {
     codebase: bool,
     also: Vec<UnitId>,
     arrangement: geometry::Arrangement,
+    front: bool,
 }
 
 impl Viewer {
@@ -54,6 +56,7 @@ impl Viewer {
             codebase: false,
             also: Vec::new(),
             arrangement: geometry::Arrangement::default(),
+            front: false,
         }
     }
 
@@ -95,6 +98,13 @@ impl Viewer {
             "graph" => geometry::Arrangement::Graph,
             _ => geometry::Arrangement::Stacked,
         };
+        self
+    }
+
+    /// In the graph, opens facing the journeys instead of orbiting the focus.
+    #[must_use]
+    pub fn facing_journeys(mut self, front: bool) -> Self {
+        self.front = front;
         self
     }
 
@@ -173,6 +183,7 @@ impl Viewer {
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
+        .insert_resource(graph_view::GraphCamera { front: self.front })
         .init_resource::<Autoplay>();
         if let Some(path) = self.screenshot {
             app.add_plugins(capture::CapturePlugin(path));

@@ -32,6 +32,9 @@ pub(crate) struct ViewArgs {
     /// How to arrange the journeys in space.
     #[arg(long, value_enum, default_value_t = Arrange::Stacked)]
     arrange: Arrange,
+    /// With `--arrange graph`, open facing the journeys instead of orbiting the focus.
+    #[arg(long)]
+    front: bool,
     /// Open with the rest of the codebase shown around the journey.
     #[arg(long)]
     codebase: bool,
@@ -95,6 +98,7 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     viewer = viewer
         .with_step(args.step)
         .with_codebase(args.codebase)
+        .facing_journeys(args.front)
         .with_arrangement(match args.arrange {
             Arrange::Stacked => "stacked",
             Arrange::Layers => "layers",

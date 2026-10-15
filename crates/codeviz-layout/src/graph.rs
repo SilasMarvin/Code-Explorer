@@ -47,6 +47,8 @@ pub struct ForceGraph {
     groups: Vec<usize>,
     /// Links between tiles, each pair once, lower index first.
     pub links: Vec<(usize, usize)>,
+    /// The same links with their direction: `(caller, callee)`, sorted.
+    pub calls: Vec<(usize, usize)>,
     config: ForceConfig,
 }
 
@@ -54,7 +56,7 @@ impl ForceGraph {
     /// Seeds every tile at a deterministic point in a ball around the origin.
     #[must_use]
     pub fn new(system: &System, map: &CodebaseMap, config: ForceConfig) -> Self {
-        let mut links = HashSet::new();
+        let mut calls = HashSet::new();
         for unit in system.units() {
             let Some(from) = map.tile_of(&unit.id) else {
                 continue;
@@ -63,12 +65,19 @@ impl ForceGraph {
                 if let Some(to) = map.tile_of(&target.unit)
                     && to != from
                 {
-                    links.insert((from.min(to), from.max(to)));
+                    calls.insert((from, to));
                 }
             }
         }
-        let mut links: Vec<(usize, usize)> = links.into_iter().collect();
+        let mut links: Vec<(usize, usize)> = calls
+            .iter()
+            .map(|&(a, b)| (a.min(b), a.max(b)))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
         links.sort_unstable();
+        let mut calls: Vec<(usize, usize)> = calls.into_iter().collect();
+        calls.sort_unstable();
 
         let radius = (map.tiles.len() as f32).sqrt() * 2.0;
         let positions = map
@@ -81,8 +90,28 @@ impl ForceGraph {
             groups: map.tiles.iter().map(|t| t.group).collect(),
             positions,
             links,
+            calls,
             config,
         }
+    }
+
+    /// Tiles that call `tile`.
+    pub fn callers(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
+        self.calls.iter().filter(move |c| c.1 == tile).map(|c| c.0)
+    }
+
+    /// Tiles `tile` calls.
+    pub fn callees(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
+        self.calls.iter().filter(move |c| c.0 == tile).map(|c| c.1)
+    }
+
+    /// How many links touch `tile`.
+    #[must_use]
+    pub fn degree(&self, tile: usize) -> usize {
+        self.links
+            .iter()
+            .filter(|(a, b)| *a == tile || *b == tile)
+            .count()
     }
 
     /// Whether `a` and `b` are linked.
@@ -224,6 +253,12 @@ mod tests {
         let tile = |name: &str| map.tile_of(&codeviz_ir::UnitId::new(name)).unwrap();
         assert!(graph.linked(tile("x:a"), tile("x:b")));
         assert!(!graph.linked(tile("x:a"), tile("x:c")));
+        assert_eq!(
+            graph.callees(tile("x:a")).collect::<Vec<_>>(),
+            [tile("x:b")]
+        );
+        assert_eq!(graph.callers(tile("x:a")).count(), 0);
+        assert_eq!(graph.degree(tile("x:b")), 2);
 
         let mut speed = f32::MAX;
         for _ in 0..500 {

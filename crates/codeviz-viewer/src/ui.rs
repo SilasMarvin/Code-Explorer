@@ -15,6 +15,7 @@ use crate::{
     camera::{CameraMode, JourneyCamera},
     explorer::{Autoplay, Confidence, Explorer, SpanRef, Step, Track, is_conditional},
     geometry::Arrangement,
+    graph_view,
     scene::{accent, lane_color},
 };
 
@@ -798,6 +799,7 @@ fn draw_track_labels(
 /// Above this many tiles, only the lit-up ones are named.
 const MAP_LABEL_ALL_LIMIT: usize = 400;
 const CALLER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 196, 110);
+const CALLEE_TEXT: egui::Color32 = egui::Color32::from_rgb(130, 215, 255);
 
 /// Group names, tile names (routes for entries that reach the cursor), and a caption
 /// saying what reaches it.
@@ -818,7 +820,7 @@ fn draw_map_labels(
             .map(|p| egui::pos2(p.x, p.y))
     };
     if explorer.graph().is_some() {
-        draw_graph_labels(&painter, &to_screen, explorer);
+        draw_graph_labels(&painter, &to_screen, explorer, transform.up().into());
     } else {
         draw_tile_labels(&painter, &to_screen, explorer);
     }
@@ -831,62 +833,117 @@ fn draw_map_labels(
             CALLER_TEXT,
         );
     }
+    if explorer.graph().is_some() {
+        painter.text(
+            egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
+            egui::Align2::LEFT_BOTTOM,
+            "click a node to focus it · Enter traces from it · F faces the journey · \
+             drag to orbit · scroll or pinch to zoom",
+            egui::FontId::proportional(12.0),
+            MUTED,
+        );
+    }
 }
 
-/// Above this many nodes, the graph names only what is lit, run, or pointed at.
-const GRAPH_LABEL_ALL_LIMIT: usize = 80;
-
-/// Names beside graph nodes: routes for entry points, function names for the rest.
+/// Names beside graph nodes, most important first, each on a dark pill so it reads
+/// over links and glow. A name that would overlap one already placed is left out;
+/// zooming in makes room for more.
 fn draw_graph_labels(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
+    up: Vec3,
 ) {
-    let map = explorer.map();
-    let system = explorer.system();
+    let (Some(graph), map, system) = (explorer.graph(), explorer.map(), explorer.system()) else {
+        return;
+    };
     let routes: HashMap<&UnitId, &str> = system
         .entries()
         .iter()
         .map(|e| (&e.unit, e.label.as_str()))
         .collect();
-    let focus = explorer.focus().and_then(|f| map.tile_of(f));
-    let label_all = map.tiles.len() <= GRAPH_LABEL_ALL_LIMIT;
-    for (index, tile) in map.tiles.iter().enumerate() {
-        let lit = explorer.tile_distance(index).is_some();
-        let run = explorer.journey_lane(index).is_some();
-        let hovered = explorer.hovered_tile == Some(index);
-        if !(label_all || lit || run || hovered) {
-            continue;
-        }
-        let (Some(unit), Some(at)) = (
-            system.unit(&tile.unit),
-            explorer.tile_point(index).and_then(to_screen),
-        ) else {
+    let center = graph_view::attention(explorer);
+    let neighbors = graph_view::Neighbors::of(graph, center);
+    let stack: Vec<usize> = explorer
+        .selected()
+        .map(|s| explorer.stack(s))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|span| explorer.unit_id(span).and_then(|u| map.tile_of(u)))
+        .collect();
+
+    // Lower ranks are placed first and win any overlap.
+    let rank = |tile: usize| -> Option<(u8, std::cmp::Reverse<usize>)> {
+        let hub = std::cmp::Reverse(graph.degree(tile));
+        let tier = if center == Some(tile) {
+            0
+        } else if neighbors.contains(tile) {
+            1
+        } else if stack.contains(&tile) {
+            2
+        } else if explorer.journey_lane(tile).is_some() {
+            3
+        } else if explorer.tile_distance(tile).is_some() {
+            4
+        } else if center.is_none() {
+            5
+        } else {
+            return None;
+        };
+        Some((tier, hub))
+    };
+    let mut order: Vec<(usize, (u8, std::cmp::Reverse<usize>))> = (0..map.tiles.len())
+        .filter_map(|tile| Some((tile, rank(tile)?)))
+        .collect();
+    order.sort_by_key(|&(tile, key)| (key, tile));
+
+    let mut taken: Vec<egui::Rect> = Vec::new();
+    for (tile, (tier, _)) in order {
+        let (Some(info), Some(world)) = (map.tile(tile), explorer.tile_point(tile)) else {
             continue;
         };
+        let Some(node) = to_screen(world) else {
+            continue;
+        };
+        // Start the name just past the node's edge, however near it is.
+        let radius = graph_view::node_size(graph, tile) / 2.0;
+        let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
+        let Some(unit) = system.unit(&info.unit) else {
+            continue;
+        };
+        let hovered = explorer.hovered_tile == Some(tile);
         let text = if hovered {
-            format!("{}  — click to start here", explorer.unit_name(&tile.unit))
+            format!(
+                "{}  · click to focus, Enter to trace",
+                explorer.unit_name(&info.unit)
+            )
         } else {
             routes
-                .get(&tile.unit)
+                .get(&info.unit)
                 .map_or_else(|| unit.name.clone(), |route| (*route).to_owned())
         };
-        let color = if Some(index) == focus || hovered {
-            egui::Color32::WHITE
-        } else if lit {
-            CALLER_TEXT
-        } else if run {
-            egui::Color32::from_rgb(205, 210, 222)
-        } else {
-            MUTED
+        let color = match tier {
+            0 => egui::Color32::WHITE,
+            1 if neighbors.callers.contains(&tile) => CALLER_TEXT,
+            1 => CALLEE_TEXT,
+            2 | 3 => egui::Color32::from_rgb(225, 229, 238),
+            4 => CALLER_TEXT.gamma_multiply(0.8),
+            _ => egui::Color32::from_rgb(170, 177, 192),
         };
-        painter.text(
-            at + egui::vec2(10.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            text,
-            egui::FontId::proportional(if hovered { 13.0 } else { 11.0 }),
-            color,
+        let size = if tier == 0 { 16.0 } else { 13.0 };
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(size), color);
+        let at = node + egui::vec2(edge + 6.0, -galley.size().y / 2.0);
+        let rect = egui::Rect::from_min_size(at, galley.size()).expand2(egui::vec2(5.0, 2.0));
+        if taken.iter().any(|r| r.intersects(rect)) && tier > 0 {
+            continue;
+        }
+        taken.push(rect);
+        painter.rect_filled(
+            rect,
+            4.0,
+            egui::Color32::from_rgba_unmultiplied(10, 12, 18, 200),
         );
+        painter.galley(at, galley, color);
     }
 }
 

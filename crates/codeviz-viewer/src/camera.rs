@@ -4,7 +4,10 @@
 
 use bevy::{
     camera::{CameraOutputMode, ScalingMode, visibility::RenderLayers},
-    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
+    input::{
+        gestures::PinchGesture,
+        mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
+    },
     prelude::*,
     render::render_resource::BlendState,
 };
@@ -46,6 +49,8 @@ pub(crate) struct JourneyCamera {
     aspect: f32,
     /// The box last framed, refit when the viewport's shape changes.
     framed: Option<(Vec3, Vec3)>,
+    /// An extent being eased towards, until the viewer zooms by hand.
+    goal_extent: Option<f32>,
 }
 
 impl Default for JourneyCamera {
@@ -59,6 +64,7 @@ impl Default for JourneyCamera {
             pitch: -0.35,
             aspect: 1.0,
             framed: None,
+            goal_extent: None,
         }
     }
 }
@@ -68,12 +74,8 @@ impl JourneyCamera {
     pub(crate) fn frame(&mut self, min: Vec3, max: Vec3) {
         self.framed = Some((min, max));
         self.target = (min + max) / 2.0;
-        let size = max - min;
-        self.extent = match self.mode {
-            // Fit height or width, whichever needs more, with a margin.
-            CameraMode::Flat => ((size.y + 4.0).max((size.x + 4.0) / self.aspect)).max(8.0),
-            CameraMode::Orbit => (size.length() / 2.0 / 0.3_f32.sin()).max(12.0),
-        };
+        self.extent = self.extent_for(min, max);
+        self.goal_extent = None;
     }
 
     pub(crate) fn aspect(&self) -> f32 {
@@ -96,6 +98,35 @@ impl JourneyCamera {
         self.pitch = pitch;
     }
 
+    /// Whether a zoom started by [`Self::glide_to`] is still under way.
+    pub(crate) fn gliding(&self) -> bool {
+        self.goal_extent.is_some()
+    }
+
+    /// Eases into framing a box, and keeps it framed if the viewport changes shape.
+    pub(crate) fn glide_frame(&mut self, min: Vec3, max: Vec3) {
+        let extent = self.extent_for(min, max);
+        self.glide_to((min + max) / 2.0, extent);
+        self.framed = Some((min, max));
+    }
+
+    /// Eases the zoom to `extent` instead of jumping.
+    pub(crate) fn glide_to(&mut self, target: Vec3, extent: f32) {
+        self.target = target;
+        self.goal_extent = Some(extent);
+        self.framed = None;
+    }
+
+    /// The extent that would frame a box, without moving the camera.
+    pub(crate) fn extent_for(&self, min: Vec3, max: Vec3) -> f32 {
+        let size = max - min;
+        match self.mode {
+            // Fit height or width, whichever needs more, with a margin.
+            CameraMode::Flat => ((size.y + 4.0).max((size.x + 4.0) / self.aspect)).max(8.0),
+            CameraMode::Orbit => (size.length() / 2.0 / 0.3_f32.sin()).max(12.0),
+        }
+    }
+
     pub(crate) fn toggle(&mut self) {
         self.mode = match self.mode {
             CameraMode::Flat => CameraMode::Orbit,
@@ -109,7 +140,12 @@ const PITCH_LIMIT: f32 = 1.5;
 const FOCUS_EASING: f32 = 8.0;
 const FLAT_DISTANCE: f32 = 200.0;
 
-fn spawn_camera(mut commands: Commands, mut egui_settings: ResMut<EguiGlobalSettings>) {
+fn spawn_camera(
+    mut commands: Commands,
+    mut egui_settings: ResMut<EguiGlobalSettings>,
+    mut gizmos: ResMut<GizmoConfigStore>,
+) {
+    gizmos.config_mut::<DefaultGizmoConfigGroup>().0.line.width = 2.0;
     commands.spawn((
         Camera3d::default(),
         JourneyCamera::default(),
@@ -150,15 +186,20 @@ fn camera_input(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
+    mut pinches: MessageReader<PinchGesture>,
     mut cameras: Query<(&mut JourneyCamera, &Camera, &Transform)>,
 ) {
+    // A trackpad pinch zooms like the wheel: spread to zoom in.
+    let pinch: f32 = pinches.read().map(|p| p.0).sum();
     for (mut camera, view, transform) in &mut cameras {
         let lines = match scroll.unit {
             MouseScrollUnit::Line => scroll.delta.y,
             MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
         };
-        if lines != 0.0 {
-            camera.extent = (camera.extent * (1.0 - lines * 0.1)).clamp(2.0, 4_000.0);
+        let zoom = (1.0 - lines * 0.1) * (1.0 - pinch * 1.5);
+        if (zoom - 1.0).abs() > f32::EPSILON {
+            camera.goal_extent = None;
+            camera.extent = (camera.extent * zoom.clamp(0.5, 2.0)).clamp(2.0, 4_000.0);
         }
         let viewport_height = view
             .logical_viewport_size()
@@ -208,6 +249,12 @@ fn apply_camera(
             }
         }
         camera.focus = camera.focus.lerp(camera.target, ease);
+        if let Some(goal) = camera.goal_extent {
+            camera.extent += (goal - camera.extent) * ease;
+            if (goal - camera.extent).abs() < 0.01 {
+                camera.goal_extent = None;
+            }
+        }
         match camera.mode {
             CameraMode::Flat => {
                 *transform = Transform::from_translation(camera.focus + Vec3::Z * FLAT_DISTANCE)
