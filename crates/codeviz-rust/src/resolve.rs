@@ -172,12 +172,22 @@ impl<'a> Index<'a> {
             }
         }
 
-        // Re-exports and aliases are not modeled; match the path's tail instead.
+        // Re-exports and aliases are not modeled; match the path's tail instead. A bare
+        // name never names a method: that takes `Type::method` or a receiver.
+        let bare = segments.len() == 1;
         let matches = self
             .by_path
             .iter()
             .filter(|(path, _)| path.ends_with(&segments))
             .flat_map(|(_, ids)| ids.iter().copied())
+            .filter(|&i| {
+                !bare
+                    || self
+                        .extraction
+                        .units
+                        .get(i)
+                        .is_some_and(|u| u.owner.is_none())
+            })
             .collect();
         (matches, Certainty::Inferred)
     }
@@ -249,9 +259,13 @@ impl<'a> Index<'a> {
     /// What a call site may invoke, before closures are considered.
     fn candidates(&self, caller: &RawUnit, call: &RawCall) -> (Vec<usize>, Certainty) {
         match &call.target {
-            CallTarget::Path(segments) | CallTarget::Reference(segments) => {
-                self.resolve_path(caller, segments)
-            }
+            CallTarget::Path(segments) => self.resolve_path(caller, segments),
+            // A bare name passed as a value is far more often a variable than a
+            // function imported under another name: only an exact match counts.
+            CallTarget::Reference(segments) => match self.resolve_path(caller, segments) {
+                (_, Certainty::Inferred) if segments.len() == 1 => (Vec::new(), Certainty::Exact),
+                found => found,
+            },
             CallTarget::Method { name, receiver } => {
                 self.resolve_method(caller, name, receiver.as_ref())
             }

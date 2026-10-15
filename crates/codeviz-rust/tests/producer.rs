@@ -286,3 +286,17 @@ fn content_hash_ignores_formatting_and_comments() {
         hash("fn f() { g(); g(); } fn g() {}")
     );
 }
+
+#[test]
+fn a_variable_passed_along_is_not_a_method_of_the_same_name() {
+    let document = analyze_files(&[(
+        "main.rs",
+        "struct App; impl App { fn state(&self) -> u32 { 1 } }
+         fn show(state: u32) {}
+         fn main() { let state = 2; show(state); }",
+    )]);
+    assert_eq!(
+        calls(unit(&document, "app::main")),
+        [("show".to_owned(), vec!["rust:app::show".to_owned()])]
+    );
+}
