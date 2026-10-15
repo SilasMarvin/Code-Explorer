@@ -46,8 +46,8 @@ enum Arrange {
     Stacked,
     /// Journeys one behind another, lined up on the cursor.
     Layers,
-    /// The codebase as ground, time rising from it.
-    City,
+    /// Pulled out in front of the codebase floating as a graph of calls.
+    Graph,
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
@@ -98,7 +98,7 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .with_arrangement(match args.arrange {
             Arrange::Stacked => "stacked",
             Arrange::Layers => "layers",
-            Arrange::City => "city",
+            Arrange::Graph => "graph",
         });
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

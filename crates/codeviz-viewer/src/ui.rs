@@ -137,7 +137,7 @@ fn draw_ui(
                 explorer.rebuild();
             }
             Some(View::Layers) => explorer.set_arrangement(Arrangement::Layers),
-            Some(View::City) => explorer.set_arrangement(Arrangement::City),
+            Some(View::Graph) => explorer.set_arrangement(Arrangement::Graph),
             None => {}
         }
         fit_viewport(&mut camera, &window, central);
@@ -155,7 +155,7 @@ enum View {
     Flat,
     Tilted,
     Layers,
-    City,
+    Graph,
 }
 
 fn breadcrumb(
@@ -169,7 +169,7 @@ fn breadcrumb(
             (Arrangement::Stacked, CameraMode::Flat) => View::Flat,
             (Arrangement::Stacked, CameraMode::Orbit) => View::Tilted,
             (Arrangement::Layers, _) => View::Layers,
-            (Arrangement::City, _) => View::City,
+            (Arrangement::Graph, _) => View::Graph,
         };
         for (view, label, hint) in [
             (View::Flat, "Flat", "Journeys stacked, facing you"),
@@ -180,9 +180,9 @@ fn breadcrumb(
                 "Journeys one behind another, lined up on the cursor (V)",
             ),
             (
-                View::City,
-                "City",
-                "The codebase as ground, time rising from it (V)",
+                View::Graph,
+                "Graph",
+                "The codebase as a graph of calls, journeys pulled out in front (V)",
             ),
         ] {
             if ui
@@ -665,10 +665,7 @@ fn draw_labels(
         let active = index == explorer.active();
         let (min, max) = track.bounds();
         let title = Vec3::new(min.x - 0.9, max.y + 1.0, max.z);
-        if several
-            && explorer.arrangement() != Arrangement::City
-            && let Some(at) = to_screen(title)
-        {
+        if several && let Some(at) = to_screen(title) {
             painter.text(
                 at,
                 egui::Align2::LEFT_BOTTOM,
@@ -706,9 +703,8 @@ fn draw_track_labels(
     // Layers name everything only on the active pane; the city only what is running.
     let label_all = scene.nodes.len() <= LABEL_ALL_LIMIT
         && match explorer.arrangement() {
-            Arrangement::Stacked => true,
+            Arrangement::Stacked | Arrangement::Graph => true,
             Arrangement::Layers => active,
-            Arrangement::City => false,
         };
     let selected = track.selected().filter(|_| active);
     let hovered = explorer
@@ -736,9 +732,7 @@ fn draw_track_labels(
             text = format!("{text}  if {}", condition.arm);
         }
         // Fit the label over its own bar unless it is the one being looked at.
-        let bar_end = (!bar.upright())
-            .then(|| to_screen(bar.end() - Vec3::X * 0.2))
-            .flatten();
+        let bar_end = to_screen(bar.end() - Vec3::X * 0.2);
         if !emphasized && let Some(end) = bar_end {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -763,12 +757,7 @@ fn draw_track_labels(
         );
         if emphasized {
             for exit in &span.exits {
-                let below = if bar.upright() {
-                    Vec3::X * 0.6
-                } else {
-                    Vec3::NEG_Y * 0.6
-                };
-                let point = bar.at(exit.tick) + below;
+                let point = bar.at(exit.tick) + Vec3::NEG_Y * 0.6;
                 if let Some(at) = to_screen(point) {
                     let color = if exit.kind == ExitKind::Return {
                         OK
@@ -828,6 +817,85 @@ fn draw_map_labels(
             .ok()
             .map(|p| egui::pos2(p.x, p.y))
     };
+    if explorer.graph().is_some() {
+        draw_graph_labels(&painter, &to_screen, explorer);
+    } else {
+        draw_tile_labels(&painter, &to_screen, explorer);
+    }
+    if let Some(caption) = map_caption(explorer) {
+        painter.text(
+            area.min + egui::vec2(12.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            caption,
+            egui::FontId::proportional(14.0),
+            CALLER_TEXT,
+        );
+    }
+}
+
+/// Above this many nodes, the graph names only what is lit, run, or pointed at.
+const GRAPH_LABEL_ALL_LIMIT: usize = 80;
+
+/// Names beside graph nodes: routes for entry points, function names for the rest.
+fn draw_graph_labels(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+) {
+    let map = explorer.map();
+    let system = explorer.system();
+    let routes: HashMap<&UnitId, &str> = system
+        .entries()
+        .iter()
+        .map(|e| (&e.unit, e.label.as_str()))
+        .collect();
+    let focus = explorer.focus().and_then(|f| map.tile_of(f));
+    let label_all = map.tiles.len() <= GRAPH_LABEL_ALL_LIMIT;
+    for (index, tile) in map.tiles.iter().enumerate() {
+        let lit = explorer.tile_distance(index).is_some();
+        let run = explorer.journey_lane(index).is_some();
+        let hovered = explorer.hovered_tile == Some(index);
+        if !(label_all || lit || run || hovered) {
+            continue;
+        }
+        let (Some(unit), Some(at)) = (
+            system.unit(&tile.unit),
+            explorer.tile_point(index).and_then(to_screen),
+        ) else {
+            continue;
+        };
+        let text = if hovered {
+            format!("{}  — click to start here", explorer.unit_name(&tile.unit))
+        } else {
+            routes
+                .get(&tile.unit)
+                .map_or_else(|| unit.name.clone(), |route| (*route).to_owned())
+        };
+        let color = if Some(index) == focus || hovered {
+            egui::Color32::WHITE
+        } else if lit {
+            CALLER_TEXT
+        } else if run {
+            egui::Color32::from_rgb(205, 210, 222)
+        } else {
+            MUTED
+        };
+        painter.text(
+            at + egui::vec2(10.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::proportional(if hovered { 13.0 } else { 11.0 }),
+            color,
+        );
+    }
+}
+
+/// Group names on the map and names on its tiles, where they fit.
+fn draw_tile_labels(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+) {
     let map = explorer.map();
     let system = explorer.system();
     // Screen pixels per world unit, to skip labels that cannot fit.
@@ -911,16 +979,6 @@ fn draw_map_labels(
             short(&text, room),
             egui::FontId::proportional(11.0),
             color,
-        );
-    }
-
-    if let Some(caption) = map_caption(explorer) {
-        painter.text(
-            area.min + egui::vec2(12.0, 10.0),
-            egui::Align2::LEFT_TOP,
-            caption,
-            egui::FontId::proportional(14.0),
-            CALLER_TEXT,
         );
     }
 }

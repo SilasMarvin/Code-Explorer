@@ -13,9 +13,9 @@ pub(crate) enum Arrangement {
     /// Journeys as panes one behind another, lined up on the cursor's function, over
     /// the map laid on the floor.
     Layers,
-    /// The map is the ground and time rises from it: each span is a column over its
-    /// function's tile, each call a horizontal link at the moment it happens.
-    City,
+    /// The codebase floats as a graph of calls; the journeys are pulled out of it and
+    /// lined up in front, each bar tethered to the function it runs.
+    Graph,
 }
 
 /// One span in world space.
@@ -36,24 +36,15 @@ impl BarBox {
         self.start + self.axis * (tick as f32 - self.enter as f32)
     }
 
-    /// Whether time runs up (a column) rather than across (a bar).
-    pub(crate) fn upright(&self) -> bool {
-        self.axis.y.abs() > self.axis.x.abs()
-    }
-
     /// The far end along the time axis.
     pub(crate) fn end(&self) -> Vec3 {
         let along = self.axis.normalize_or_zero();
         self.center + along * (along.abs().dot(self.size) / 2.0)
     }
 
-    /// Where its name goes: over the left end of a bar, beside the top of a column.
+    /// Where its name goes: over the left end of the bar.
     pub(crate) fn label_anchor(&self) -> Vec3 {
-        if self.upright() {
-            self.center + Vec3::new(self.size.x / 2.0 + 0.1, self.size.y / 2.0, 0.0)
-        } else {
-            self.start + Vec3::new(0.1, self.size.y / 2.0 + 0.15, 0.0)
-        }
+        self.start + Vec3::new(0.1, self.size.y / 2.0 + 0.15, 0.0)
     }
 
     /// The size of a thin slab across the time axis, for marking an exit.
@@ -136,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn columns_and_bars_measure_time_along_their_axis() {
+    fn bars_measure_time_along_their_axis() {
         let bar = BarBox {
             center: Vec3::new(5.0, 0.0, 0.0),
             size: Vec3::new(10.0, 0.8, 0.8),
@@ -146,11 +137,5 @@ mod tests {
         };
         assert_eq!(bar.at(4), Vec3::new(5.0, 0.0, 0.0));
         assert_eq!(bar.end(), Vec3::new(10.0, 0.0, 0.0));
-        assert!(!bar.upright());
-        let column = BarBox {
-            axis: Vec3::Y,
-            ..bar
-        };
-        assert!(column.upright());
     }
 }

@@ -7,15 +7,18 @@
 //! - **Z — lane.** Spans are grouped into lanes by a [`LaneKey`], so calls that cross a
 //!   boundary (module, service, pipeline group) visibly jump between planes.
 //!
-//! [`map()`] lays out the whole codebase instead, for context around a journey.
+//! [`map()`] lays out the whole codebase instead, for context around a journey, and
+//! [`ForceGraph`] floats it in 3D as a graph of calls.
 
 use std::collections::HashMap;
 
 use codeviz_core::{Journey, SpanId, SpanTarget, System};
 use codeviz_ir::{Unit, UnitId};
 
+mod graph;
 mod map;
 
+pub use graph::{ForceConfig, ForceGraph};
 pub use map::{CodebaseMap, MapConfig, MapGroup, MapTile, map};
 
 /// What groups spans into lanes along the Z axis.

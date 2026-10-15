@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3.workspace = true
 codeviz-core.workspace = true
 codeviz-ir.workspace = true
 

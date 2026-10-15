@@ -10,7 +10,7 @@ use codeviz_core::{
     Upstream, display_name, scenarios, upstream,
 };
 use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
-use codeviz_layout::{CodebaseMap, LayoutConfig, MapConfig, Scene};
+use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Scene};
 
 use crate::geometry::{Arrangement, BarBox, MapFrame};
 
@@ -195,19 +195,12 @@ impl Track {
 const TRACK_GAP: f32 = 3.5;
 /// Space between layered journeys.
 const LAYER_GAP: f32 = 9.0;
-/// Space between journeys' columns on one city tile.
-const COLUMN_SPACING: f32 = 0.85;
-/// Height of one tick in the city.
-const CITY_TICK: f32 = 1.0;
-/// Square tiles, few to a column, so the map reads as ground.
-const CITY_MAP: MapConfig = MapConfig {
-    tile_width: 2.6,
-    tile_height: 2.6,
-    gap: 0.6,
-    header: 1.6,
-    max_rows: 4,
-    max_width: 48.0,
-};
+/// Space between the graph and the journeys pulled out in front of it.
+const PULL_DISTANCE: f32 = 10.0;
+/// Simulation steps run before the graph is first shown, so it opens nearly settled.
+const PRESETTLE_STEPS: usize = 200;
+/// Below this mean speed the graph counts as settled and stops simulating.
+const SETTLED_SPEED: f32 = 0.002;
 
 fn stacked_map(max_width: f32) -> MapConfig {
     MapConfig {
@@ -239,32 +232,6 @@ fn place_bars(track: &mut Track, tick: f32, lanes: bool) {
                 start,
                 axis: Vec3::X * tick,
                 enter,
-            })
-        })
-        .collect();
-    track.bounds = box_bounds(&track.boxes);
-}
-
-/// Columns rising from each span's tile, from when it enters to when it returns.
-fn place_columns(track: &mut Track, map: &CodebaseMap, frame: &MapFrame) {
-    let shift = track.offset;
-    track.boxes = track
-        .scene
-        .nodes
-        .iter()
-        .map(|placed| {
-            let span = track.span(placed.span)?;
-            let tile = map.tile(map.tile_of(track.unit_id(placed.span)?)?)?;
-            let ground = frame.point(tile.position) + shift;
-            let bottom = span.enter as f32 * CITY_TICK;
-            let top = (span.exit as f32 * CITY_TICK - 0.12).max(bottom + 0.3);
-            let start = Vec3::new(ground.x, bottom, ground.z);
-            Some(BarBox {
-                center: Vec3::new(ground.x, f32::midpoint(bottom, top), ground.z),
-                size: Vec3::new(0.6, top - bottom, 0.6),
-                start,
-                axis: Vec3::Y * CITY_TICK,
-                enter: span.enter,
             })
         })
         .collect();
@@ -306,6 +273,10 @@ pub(crate) struct Explorer {
     aligned_on: Option<UnitId>,
     /// Bumped when the camera should frame everything again.
     framing: u64,
+    /// The codebase as a graph, built the first time it is shown.
+    graph: Option<ForceGraph>,
+    /// Whether the graph is still moving.
+    settling: bool,
     /// Map tiles each journey runs, with the color each is drawn in there.
     journey_tiles: Vec<HashMap<usize, usize>>,
     /// What can reach the cursor's unit.
@@ -336,6 +307,8 @@ impl Explorer {
             arrangement: Arrangement::default(),
             aligned_on: None,
             framing: 0,
+            graph: None,
+            settling: false,
             journey_tiles: Vec::new(),
             upstream: None,
             upstream_tiles: HashMap::new(),
@@ -511,10 +484,46 @@ impl Explorer {
         self.framing
     }
 
-    /// Whether the codebase map is drawn: when asked for, and always as the ground of
-    /// the city.
+    /// Whether the codebase is drawn: when asked for, and always behind the journeys
+    /// in the graph.
     pub(crate) fn shows_map(&self) -> bool {
-        self.codebase || self.arrangement == Arrangement::City
+        self.codebase || self.arrangement == Arrangement::Graph
+    }
+
+    /// The codebase as a graph of calls, when the arrangement floats it in space.
+    pub(crate) fn graph(&self) -> Option<&ForceGraph> {
+        self.graph
+            .as_ref()
+            .filter(|_| self.arrangement == Arrangement::Graph)
+    }
+
+    /// Where a map tile's function sits in the world: its node in the graph, or its
+    /// tile on the map.
+    pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
+        match self.graph() {
+            Some(graph) => graph.positions.get(tile).map(|&p| Vec3::from(p)),
+            None => self
+                .map
+                .tile(tile)
+                .map(|t| self.map_frame.point(t.position)),
+        }
+    }
+
+    /// Runs the graph simulation a few steps while it is still moving. Returns whether
+    /// anything moved.
+    pub(crate) fn simulate(&mut self, steps: usize) -> bool {
+        if self.arrangement != Arrangement::Graph || !self.settling {
+            return false;
+        }
+        let Some(graph) = self.graph.as_mut() else {
+            return false;
+        };
+        let mut speed = 0.0;
+        for _ in 0..steps {
+            speed = graph.step();
+        }
+        self.settling = speed > SETTLED_SPEED;
+        true
     }
 
     /// In layers, slides the panes so the cursor's function lines up in all of them.
@@ -596,14 +605,44 @@ impl Explorer {
                     );
                 }
             }
-            Arrangement::City => {
-                self.layout_map(CITY_MAP);
-                self.map_frame = MapFrame::floor(Vec3::ZERO, self.map_tile());
-                let count = self.tracks.len();
-                for (index, track) in self.tracks.iter_mut().enumerate() {
-                    let shift = (index as f32 - (count as f32 - 1.0) / 2.0) * COLUMN_SPACING;
-                    track.offset = Vec3::X * shift;
-                    place_columns(track, &self.map, &self.map_frame);
+            Arrangement::Graph => {
+                self.layout_map(MapConfig::default());
+                if self.graph.is_none() {
+                    let mut graph =
+                        ForceGraph::new(&self.system, &self.map, ForceConfig::default());
+                    for _ in 0..PRESETTLE_STEPS {
+                        graph.step();
+                    }
+                    self.graph = Some(graph);
+                    self.settling = true;
+                }
+                // Journeys stack as usual, pulled down and forward out of the graph:
+                // centered under it and in front of its nearest node.
+                let (low, near) = self.graph.as_ref().map_or((0.0, 0.0), |g| {
+                    g.positions
+                        .iter()
+                        .fold((0.0_f32, 0.0_f32), |(low, near), p| {
+                            (low.min(p[1]), near.max(p[2]))
+                        })
+                });
+                let mut top = 0.0;
+                for track in &mut self.tracks {
+                    track.offset = Vec3::new(0.0, top, 0.0);
+                    top -= track.height() + TRACK_GAP;
+                }
+                let width = self
+                    .tracks
+                    .iter()
+                    .map(|t| t.scene.bounds.1[0] - t.scene.bounds.0[0])
+                    .fold(0.0, f32::max);
+                let shift = Vec3::new(
+                    -width / 2.0,
+                    low - PULL_DISTANCE / 2.0,
+                    near + PULL_DISTANCE,
+                );
+                for track in &mut self.tracks {
+                    track.offset += shift;
+                    place_bars(track, tick, false);
                 }
             }
         }
@@ -675,7 +714,12 @@ impl Explorer {
     /// Everything drawn, as `(min, max)`: the journeys, and the map when shown.
     pub(crate) fn bounds(&self) -> (Vec3, Vec3) {
         let (mut min, mut max) = self.journey_bounds();
-        if self.shows_map() {
+        if let Some(graph) = self.graph() {
+            for &point in &graph.positions {
+                min = min.min(Vec3::from(point));
+                max = max.max(Vec3::from(point));
+            }
+        } else if self.shows_map() {
             let (a, b) = self.map.bounds;
             for corner in [[a[0], a[1]], [b[0], b[1]], [a[0], b[1]], [b[0], a[1]]] {
                 let point = self.map_frame.point(corner);

@@ -86,13 +86,13 @@ impl Viewer {
         self
     }
 
-    /// Opens with journeys layered one behind another (`layers`) or rising from the
-    /// codebase (`city`) instead of stacked (`stacked`).
+    /// Opens with journeys layered one behind another (`layers`) or pulled out of the
+    /// codebase's graph (`graph`) instead of stacked (`stacked`).
     #[must_use]
     pub fn with_arrangement(mut self, name: &str) -> Self {
         self.arrangement = match name {
             "layers" => geometry::Arrangement::Layers,
-            "city" => geometry::Arrangement::City,
+            "graph" => geometry::Arrangement::Graph,
             _ => geometry::Arrangement::Stacked,
         };
         self
