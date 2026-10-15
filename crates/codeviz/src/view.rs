@@ -26,6 +26,9 @@ pub(crate) struct ViewArgs {
     /// Open with the cursor this many steps into the journey.
     #[arg(long, default_value_t = 0)]
     step: usize,
+    /// Also open journeys from these entries, stacked below the first.
+    #[arg(long, value_name = "ENTRY")]
+    also: Vec<String>,
     /// Open with the rest of the codebase shown around the journey.
     #[arg(long)]
     codebase: bool,
@@ -45,6 +48,11 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         Some(query) => Some(crate::journey::find_one(&system, query)?),
         None => None,
     };
+    let also = args
+        .also
+        .iter()
+        .map(|query| crate::journey::find_one(&system, query))
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let title = format!(
         "codeviz — {}",
         args.documents
@@ -64,6 +72,9 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         });
     if let Some(root) = root {
         viewer = viewer.with_root(root);
+    }
+    for root in also {
+        viewer = viewer.also(root);
     }
     if let Some(scenario) = args.scenario {
         viewer = viewer.with_scenario(scenario);

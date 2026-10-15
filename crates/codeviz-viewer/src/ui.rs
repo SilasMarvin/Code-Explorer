@@ -13,8 +13,8 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::{CameraMode, JourneyCamera},
-    explorer::{Autoplay, Confidence, Explorer, Step, is_conditional},
-    scene::lane_color,
+    explorer::{Autoplay, Confidence, Explorer, SpanRef, Step, Track, is_conditional},
+    scene::{accent, lane_color},
 };
 
 pub(crate) struct UiPlugin;
@@ -155,7 +155,8 @@ fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, mode: CameraMode, togg
             explorer.toggle_codebase();
         }
         ui.separator();
-        let Some(selected) = explorer.selected else {
+        journeys(ui, explorer);
+        let Some(selected) = explorer.selected() else {
             ui.label("Pick a unit on the left.");
             return;
         };
@@ -175,9 +176,47 @@ fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, mode: CameraMode, togg
             }
         }
         if let Some(frame) = chosen {
-            explorer.selected = Some(frame);
+            explorer.select(Some(frame));
         }
     });
+}
+
+/// One chip per open journey, in its accent: click to make it active, × to close.
+/// Shown once there is more than one.
+fn journeys(ui: &mut egui::Ui, explorer: &mut Explorer) {
+    let count = explorer.tracks().len();
+    if count < 2 {
+        return;
+    }
+    let mut activate = None;
+    let mut close = None;
+    for index in 0..count {
+        let text = egui::RichText::new(format!("■ {}", track_title(explorer, index)))
+            .color(egui_color(accent(index)));
+        if ui
+            .selectable_label(index == explorer.active(), text)
+            .on_hover_text("Make active (Tab cycles)")
+            .clicked()
+        {
+            activate = Some(index);
+        }
+        if ui
+            .small_button("×")
+            .on_hover_text("Close (X closes the active one)")
+            .clicked()
+        {
+            close = Some(index);
+        }
+    }
+    ui.separator();
+    if let Some(track) = activate
+        && let Some(span) = explorer.tracks().get(track).and_then(Track::selected)
+    {
+        explorer.select_in(SpanRef { track, span });
+    }
+    if let Some(index) = close {
+        explorer.close_track(index);
+    }
 }
 
 fn controls(ui: &mut egui::Ui, explorer: &mut Explorer, autoplay: &mut Autoplay) {
@@ -225,16 +264,18 @@ fn controls(ui: &mut egui::Ui, explorer: &mut Explorer, autoplay: &mut Autoplay)
         );
         ui.separator();
         let total = explorer.journey().map_or(0, codeviz_core::Journey::len);
-        let mut position = explorer.selected.map_or(0, SpanId::index);
+        let mut position = explorer.selected().map_or(0, SpanId::index);
         if total > 1
             && ui
                 .add(egui::Slider::new(&mut position, 0..=total - 1).text(format!("of {total}")))
                 .changed()
         {
-            explorer.selected = explorer
-                .journey()
-                .and_then(|j| j.spans().nth(position))
-                .map(|(id, _)| id);
+            explorer.select(
+                explorer
+                    .journey()
+                    .and_then(|j| j.spans().nth(position))
+                    .map(|(id, _)| id),
+            );
         }
     });
 }
@@ -327,7 +368,7 @@ fn outline(ui: &mut egui::Ui, explorer: &mut Explorer) {
     let rows: Vec<(SpanId, u32, String, bool, Option<usize>)> = journey
         .spans()
         .map(|(id, span)| {
-            let lane = explorer.scene().nodes.get(id.index()).map(|n| n.lane);
+            let lane = Some(explorer.track().color(id));
             (
                 id,
                 span.depth,
@@ -342,7 +383,7 @@ fn outline(ui: &mut egui::Ui, explorer: &mut Explorer) {
         .id_salt("outline")
         .show(ui, |ui| {
             for (id, depth, label, conditional, lane) in rows {
-                let selected = explorer.selected == Some(id);
+                let selected = explorer.selected() == Some(id);
                 ui.horizontal(|ui| {
                     ui.add_space(depth as f32 * 12.0);
                     if let Some(lane) = lane {
@@ -364,14 +405,14 @@ fn outline(ui: &mut egui::Ui, explorer: &mut Explorer) {
             }
         });
     if let Some(id) = chosen {
-        explorer.selected = Some(id);
+        explorer.select(Some(id));
     }
 }
 
 /// The caller's source around the line that made the selected call; for the root,
 /// its own definition.
 fn source(ui: &mut egui::Ui, explorer: &Explorer, sources: &mut Sources) {
-    let Some(selected) = explorer.selected else {
+    let Some(selected) = explorer.selected() else {
         return;
     };
     let (owner, location, title) = if let Some((caller, location)) = explorer.call_site(selected) {
@@ -437,7 +478,7 @@ fn source(ui: &mut egui::Ui, explorer: &Explorer, sources: &mut Sources) {
 }
 
 fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    let Some(selected) = explorer.selected else {
+    let Some(selected) = explorer.selected() else {
         return;
     };
     let Some(span) = explorer.span(selected).cloned() else {
@@ -552,7 +593,8 @@ fn fit_viewport(camera: &mut Camera, window: &Window, central: egui::Rect) {
     }
 }
 
-/// Names on bars, exit labels on the cursor, and where outcomes split off.
+/// Per journey: a title in its accent, names on bars, exit labels on the cursor, and
+/// where outcomes split off.
 fn draw_labels(
     ctx: &egui::Context,
     area: egui::Rect,
@@ -569,32 +611,72 @@ fn draw_labels(
             .ok()
             .map(|p| egui::pos2(p.x, p.y))
     };
-    let scene = explorer.scene();
+    let several = explorer.tracks().len() > 1;
+    for (index, track) in explorer.tracks().iter().enumerate() {
+        let active = index == explorer.active();
+        if several && let Some(at) = to_screen(track.offset() + Vec3::new(-0.9, 1.4, 0.0)) {
+            painter.text(
+                at,
+                egui::Align2::LEFT_BOTTOM,
+                track_title(explorer, index),
+                egui::FontId::proportional(if active { 15.0 } else { 13.0 }),
+                egui_color(accent(index)),
+            );
+        }
+        draw_track_labels(&painter, &to_screen, explorer, index, track);
+    }
+}
+
+/// The journey's entry route when it starts at one, else its root's name.
+fn track_title(explorer: &Explorer, index: usize) -> String {
+    let Some(root) = explorer.tracks().get(index).and_then(|t| t.root()) else {
+        return String::new();
+    };
+    explorer
+        .system()
+        .entries()
+        .iter()
+        .find(|e| &e.unit == root)
+        .map_or_else(|| explorer.unit_name(root), |e| e.label.clone())
+}
+
+fn draw_track_labels(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+    index: usize,
+    track: &Track,
+) {
+    let scene = track.scene();
     let tick = explorer.layout.tick_spacing;
+    let origin = track.offset();
     let label_all = scene.nodes.len() <= LABEL_ALL_LIMIT;
-    let cursor_stack = explorer
-        .selected
-        .map(|s| explorer.stack(s))
-        .unwrap_or_default();
+    let active = index == explorer.active();
+    let selected = track.selected().filter(|_| active);
+    let hovered = explorer
+        .hovered
+        .filter(|h| h.track == index)
+        .map(|h| h.span);
+    let cursor_stack = selected.map(|s| explorer.stack(s)).unwrap_or_default();
     for placed in &scene.nodes {
         let id = placed.span;
-        let Some(span) = explorer.span(id) else {
+        let Some(span) = track.span(id) else {
             continue;
         };
-        let emphasized = explorer.selected == Some(id) || explorer.hovered == Some(id);
+        let emphasized = selected == Some(id) || hovered == Some(id);
         if !(label_all || emphasized || cursor_stack.contains(&id)) {
             continue;
         }
         let [x, y, z] = placed.position;
-        let Some(anchor) = to_screen(Vec3::new(x + 0.1, y + 0.55, z)) else {
+        let Some(anchor) = to_screen(origin + Vec3::new(x + 0.1, y + 0.55, z)) else {
             continue;
         };
-        let mut text = explorer.label(id);
+        let mut text = explorer.label_in(track, id);
         if let Some(condition) = span.conditions.last() {
             text = format!("{text}  if {}", condition.arm);
         }
         // Fit the label over its own bar unless it is the one being looked at.
-        let bar_end = to_screen(Vec3::new(x + placed.length - 0.2, y, z));
+        let bar_end = to_screen(origin + Vec3::new(x + placed.length - 0.2, y, z));
         if !emphasized && let Some(end) = bar_end {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -619,7 +701,7 @@ fn draw_labels(
         );
         if emphasized {
             for exit in &span.exits {
-                let point = Vec3::new(exit.tick as f32 * tick, y - 0.6, z);
+                let point = origin + Vec3::new(exit.tick as f32 * tick, y - 0.6, z);
                 if let Some(at) = to_screen(point) {
                     let color = if exit.kind == ExitKind::Return {
                         OK
@@ -638,15 +720,15 @@ fn draw_labels(
         }
     }
     // Only for the bar under the pointer or cursor; the red dot alone marks the rest.
-    for divergence in explorer.divergences() {
-        if explorer.hovered != Some(divergence.span) && explorer.selected != Some(divergence.span) {
+    for divergence in track.divergences() {
+        if hovered != Some(divergence.span) && selected != Some(divergence.span) {
             continue;
         }
         let Some(placed) = scene.nodes.get(divergence.span.index()) else {
             continue;
         };
         let [x, y, z] = placed.position;
-        if let Some(at) = to_screen(Vec3::new(x + placed.length - 0.2, y + 1.0, z)) {
+        if let Some(at) = to_screen(origin + Vec3::new(x + placed.length - 0.2, y + 1.0, z)) {
             painter.text(
                 at,
                 egui::Align2::RIGHT_BOTTOM,

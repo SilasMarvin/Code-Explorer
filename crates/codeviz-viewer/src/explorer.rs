@@ -40,73 +40,31 @@ pub(crate) struct Divergence {
     pub(crate) label: String,
 }
 
-#[derive(Resource, Debug)]
-pub(crate) struct Explorer {
-    system: System,
+/// A span in one of the open journeys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SpanRef {
+    pub(crate) track: usize,
+    pub(crate) span: SpanId,
+}
+
+/// One open journey: where it starts, which outcome it shows, its own cursor, and
+/// where it sits in the world.
+#[derive(Debug, Default)]
+pub(crate) struct Track {
     root: Option<UnitId>,
     history: Vec<UnitId>,
     scenarios: Vec<Scenario>,
     scenario: Option<usize>,
-    pub(crate) options: JourneyOptions,
-    pub(crate) layout: LayoutConfig,
     journey: Option<Journey>,
     scene: Scene,
     divergences: Vec<Divergence>,
-    /// The span the cursor is on.
-    pub(crate) selected: Option<SpanId>,
-    pub(crate) hovered: Option<SpanId>,
-    /// Whether the rest of the codebase is drawn around the journey.
-    codebase: bool,
-    map: CodebaseMap,
-    /// Where the map's origin sits in the world: above the journey.
-    map_offset: Vec2,
-    /// Map tiles the journey runs, with the lane each is drawn in.
-    journey_tiles: HashMap<usize, usize>,
-    /// What can reach the cursor's unit.
-    upstream: Option<(UnitId, Upstream)>,
-    /// Fewest calls from each map tile to the cursor's unit.
-    upstream_tiles: HashMap<usize, u32>,
-    pub(crate) hovered_tile: Option<usize>,
-    /// Bumped whenever `journey` and `scene` are rebuilt.
-    revision: u64,
+    selected: Option<SpanId>,
+    offset: Vec3,
+    /// The color of each of the scene's lanes, shared with the other journeys.
+    colors: Vec<usize>,
 }
 
-impl Explorer {
-    pub(crate) fn new(system: System, root: Option<UnitId>, options: JourneyOptions) -> Self {
-        let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
-        let mut explorer = Self {
-            system,
-            root: None,
-            history: Vec::new(),
-            scenarios: Vec::new(),
-            scenario: None,
-            options,
-            layout: LayoutConfig::default(),
-            journey: None,
-            scene: Scene::default(),
-            divergences: Vec::new(),
-            selected: None,
-            hovered: None,
-            codebase: false,
-            map: CodebaseMap::default(),
-            map_offset: Vec2::ZERO,
-            journey_tiles: HashMap::new(),
-            upstream: None,
-            upstream_tiles: HashMap::new(),
-            hovered_tile: None,
-            revision: 0,
-        };
-        if let Some(root) = root {
-            explorer.set_root(root);
-            explorer.history.clear();
-        }
-        explorer
-    }
-
-    pub(crate) fn system(&self) -> &System {
-        &self.system
-    }
-
+impl Track {
     pub(crate) fn root(&self) -> Option<&UnitId> {
         self.root.as_ref()
     }
@@ -119,17 +77,215 @@ impl Explorer {
         &self.scene
     }
 
+    pub(crate) fn divergences(&self) -> &[Divergence] {
+        &self.divergences
+    }
+
+    pub(crate) fn selected(&self) -> Option<SpanId> {
+        self.selected
+    }
+
+    /// Where the journey's origin sits in the world.
+    pub(crate) fn offset(&self) -> Vec3 {
+        self.offset
+    }
+
+    pub(crate) fn span(&self, id: SpanId) -> Option<&Span> {
+        self.journey.as_ref()?.span(id)
+    }
+
+    /// The unit a span runs, if it resolved to exactly one.
+    pub(crate) fn unit_id(&self, id: SpanId) -> Option<&UnitId> {
+        match &self.span(id)?.target {
+            SpanTarget::Unit(unit) => Some(unit),
+            _ => None,
+        }
+    }
+
+    /// The span's bar position in world space.
+    pub(crate) fn position(&self, id: SpanId) -> Option<Vec3> {
+        let placed = self.scene.nodes.get(id.index())?;
+        Some(Vec3::from(placed.position) + self.offset)
+    }
+
+    /// The color index for a span's bar: the same module has the same color in
+    /// every journey.
+    pub(crate) fn color(&self, id: SpanId) -> usize {
+        self.scene
+            .nodes
+            .get(id.index())
+            .and_then(|placed| self.colors.get(placed.lane))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// The first span that runs `unit`.
+    fn find(&self, unit: &UnitId) -> Option<SpanId> {
+        self.journey.as_ref().and_then(|j| {
+            j.spans()
+                .find(|(_, s)| s.target == SpanTarget::Unit(unit.clone()))
+                .map(|(id, _)| id)
+        })
+    }
+
+    /// Lowest point of the journey below its origin, in world units.
+    fn height(&self) -> f32 {
+        -self.scene.bounds.0[1] + 1.0
+    }
+
+    fn reroot(&mut self, system: &System, options: &JourneyOptions, layout: &LayoutConfig) {
+        self.scenarios = self
+            .root
+            .as_ref()
+            .map(|root| scenarios(system, root, &options.zoom))
+            .unwrap_or_default();
+        self.scenario = (!self.scenarios.is_empty()).then_some(0);
+        self.rebuild(system, options, layout);
+    }
+
+    fn rebuild(&mut self, system: &System, options: &JourneyOptions, layout: &LayoutConfig) {
+        let scenario = self.scenario.and_then(|i| self.scenarios.get(i));
+        self.journey = self
+            .root
+            .as_ref()
+            .and_then(|root| Journey::unroll(system, root, scenario, options.clone()));
+        self.scene = self
+            .journey
+            .as_ref()
+            .map(|journey| codeviz_layout::layout(system, journey, layout))
+            .unwrap_or_default();
+        self.divergences = self.find_divergences();
+        self.selected = self.journey.as_ref().map(Journey::root);
+    }
+
+    /// On the happy path, where each failing outcome splits off: the deepest unit on
+    /// its chain that the happy path also runs.
+    fn find_divergences(&self) -> Vec<Divergence> {
+        let (Some(journey), Some(0)) = (&self.journey, self.scenario) else {
+            return Vec::new();
+        };
+        self.scenarios
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(index, scenario)| {
+                let span = scenario.chain.iter().rev().find_map(|site| {
+                    journey
+                        .spans()
+                        .find(|(_, s)| s.target == SpanTarget::Unit(site.unit.clone()))
+                        .map(|(id, _)| id)
+                })?;
+                Some(Divergence {
+                    span,
+                    scenario: index,
+                    kind: scenario.outcome.kind,
+                    label: scenario.outcome.label.clone(),
+                })
+            })
+            .collect()
+    }
+}
+
+/// Space between stacked journeys.
+const TRACK_GAP: f32 = 3.5;
+
+#[derive(Resource, Debug)]
+pub(crate) struct Explorer {
+    system: System,
+    pub(crate) options: JourneyOptions,
+    pub(crate) layout: LayoutConfig,
+    /// Open journeys, stacked top to bottom.
+    tracks: Vec<Track>,
+    /// The journey the cursor keys, the outline and the side panels follow.
+    active: usize,
+    pub(crate) hovered: Option<SpanRef>,
+    /// Whether the rest of the codebase is drawn around the journeys.
+    codebase: bool,
+    map: CodebaseMap,
+    /// Where the map's origin sits in the world: above the journeys.
+    map_offset: Vec2,
+    /// Map tiles each journey runs, with the color each is drawn in there.
+    journey_tiles: Vec<HashMap<usize, usize>>,
+    /// What can reach the cursor's unit.
+    upstream: Option<(UnitId, Upstream)>,
+    /// Fewest calls from each map tile to the cursor's unit.
+    upstream_tiles: HashMap<usize, u32>,
+    pub(crate) hovered_tile: Option<usize>,
+    /// Lane label to color index, in order of first appearance across journeys.
+    lane_colors: HashMap<String, usize>,
+    /// Bumped whenever a journey or the map is rebuilt.
+    revision: u64,
+}
+
+impl Explorer {
+    pub(crate) fn new(system: System, root: Option<UnitId>, options: JourneyOptions) -> Self {
+        let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
+        let mut explorer = Self {
+            system,
+            options,
+            layout: LayoutConfig::default(),
+            tracks: vec![Track::default()],
+            active: 0,
+            hovered: None,
+            codebase: false,
+            map: CodebaseMap::default(),
+            map_offset: Vec2::ZERO,
+            journey_tiles: Vec::new(),
+            upstream: None,
+            upstream_tiles: HashMap::new(),
+            hovered_tile: None,
+            lane_colors: HashMap::new(),
+            revision: 0,
+        };
+        if let Some(root) = root {
+            explorer.set_root(root);
+            explorer.track_mut().history.clear();
+        }
+        explorer
+    }
+
+    pub(crate) fn system(&self) -> &System {
+        &self.system
+    }
+
+    pub(crate) fn tracks(&self) -> &[Track] {
+        &self.tracks
+    }
+
+    pub(crate) fn active(&self) -> usize {
+        self.active
+    }
+
+    /// The active journey.
+    pub(crate) fn track(&self) -> &Track {
+        // `tracks` is never empty.
+        &self.tracks[self.active.min(self.tracks.len() - 1)]
+    }
+
+    fn track_mut(&mut self) -> &mut Track {
+        let index = self.active.min(self.tracks.len() - 1);
+        &mut self.tracks[index]
+    }
+
+    pub(crate) fn root(&self) -> Option<&UnitId> {
+        self.track().root()
+    }
+
+    pub(crate) fn journey(&self) -> Option<&Journey> {
+        self.track().journey()
+    }
+
     pub(crate) fn scenarios(&self) -> &[Scenario] {
-        &self.scenarios
+        &self.track().scenarios
     }
 
     /// The outcome shown; `None` shows every path at once.
     pub(crate) fn scenario(&self) -> Option<usize> {
-        self.scenario
+        self.track().scenario
     }
 
     pub(crate) fn divergences(&self) -> &[Divergence] {
-        &self.divergences
+        self.track().divergences()
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -137,57 +293,77 @@ impl Explorer {
     }
 
     pub(crate) fn can_go_back(&self) -> bool {
-        !self.history.is_empty()
+        !self.track().history.is_empty()
+    }
+
+    /// The span the active journey's cursor is on.
+    pub(crate) fn selected(&self) -> Option<SpanId> {
+        self.track().selected
+    }
+
+    pub(crate) fn select(&mut self, span: Option<SpanId>) {
+        self.track_mut().selected = span;
+    }
+
+    /// Makes `track` active with its cursor on `span`.
+    pub(crate) fn select_in(&mut self, at: SpanRef) {
+        if at.track < self.tracks.len() {
+            if self.active != at.track {
+                self.active = at.track;
+                self.refresh_journey_tiles();
+            }
+            self.select(Some(at.span));
+        }
     }
 
     pub(crate) fn set_root(&mut self, root: UnitId) {
-        if self.root.as_ref() == Some(&root) {
+        if self.root() == Some(&root) {
             return;
         }
-        if let Some(previous) = self.root.replace(root) {
-            self.history.push(previous);
+        let track = self.track_mut();
+        if let Some(previous) = track.root.replace(root) {
+            track.history.push(previous);
         }
         self.reroot();
     }
 
     pub(crate) fn back(&mut self) {
-        if let Some(previous) = self.history.pop() {
-            self.root = Some(previous);
+        if let Some(previous) = self.track_mut().history.pop() {
+            self.track_mut().root = Some(previous);
             self.reroot();
         }
     }
 
-    /// Recomputes outcomes for the root and opens on the happy path.
+    /// Recomputes outcomes for the active journey's root and opens on the happy path.
     pub(crate) fn reroot(&mut self) {
-        self.scenarios = self
-            .root
-            .as_ref()
-            .map(|root| scenarios(&self.system, root, &self.options.zoom))
-            .unwrap_or_default();
-        self.scenario = (!self.scenarios.is_empty()).then_some(0);
-        self.rebuild();
+        let index = self.active.min(self.tracks.len() - 1);
+        if let Some(track) = self.tracks.get_mut(index) {
+            track.reroot(&self.system, &self.options, &self.layout);
+        }
+        self.arrange();
     }
 
     pub(crate) fn set_scenario(&mut self, scenario: Option<usize>) {
-        if self.scenario != scenario {
-            self.scenario = scenario;
+        if self.scenario() != scenario {
+            self.track_mut().scenario = scenario;
             self.rebuild();
             // Land on the exit the outcome ends at.
             if scenario.is_some_and(|s| s > 0) {
-                self.selected = self.journey.as_ref().and_then(|j| {
+                let exit = self.journey().and_then(|j| {
                     j.spans()
                         .filter(|(_, s)| s.exits.iter().any(|e| e.kind != ExitKind::Return))
                         .map(|(id, _)| id)
                         .last()
                         .or_else(|| j.spans().last().map(|(id, _)| id))
                 });
+                self.select(exit);
             }
         }
     }
 
-    /// Re-roots the journey at the selected span's unit.
+    /// Re-roots the active journey at the selected span's unit.
     pub(crate) fn trace_from_selected(&mut self) {
-        if let Some(id) = self.selected.and_then(|span| self.unit_id(span)).cloned() {
+        if let Some(id) = self.focus().cloned() {
             self.set_root(id);
         }
     }
@@ -198,28 +374,94 @@ impl Explorer {
             Level::Detail => Level::Summary,
         };
         self.options.zoom.set(unit, level);
-        self.reroot();
+        for track in &mut self.tracks {
+            track.reroot(&self.system, &self.options, &self.layout);
+        }
+        self.arrange();
     }
 
+    /// Rebuilds the active journey and re-stacks everything around it.
     pub(crate) fn rebuild(&mut self) {
-        let scenario = self.scenario.and_then(|i| self.scenarios.get(i));
-        self.journey = self
-            .root
-            .as_ref()
-            .and_then(|root| Journey::unroll(&self.system, root, scenario, self.options.clone()));
+        let index = self.active.min(self.tracks.len() - 1);
+        if let Some(track) = self.tracks.get_mut(index) {
+            track.rebuild(&self.system, &self.options, &self.layout);
+        }
+        self.arrange();
+    }
 
-        self.scene = self
-            .journey
-            .as_ref()
-            .map(|journey| codeviz_layout::layout(&self.system, journey, &self.layout))
-            .unwrap_or_default();
-        self.divergences = self.find_divergences();
-        self.selected = self.journey.as_ref().map(Journey::root);
+    /// Stacks the journeys top to bottom, rests the map on the first, and asks for a
+    /// redraw.
+    fn arrange(&mut self) {
+        let mut top = 0.0;
+        for track in &mut self.tracks {
+            track.offset = Vec3::new(0.0, top, 0.0);
+            top -= track.height() + TRACK_GAP;
+            let colors = &mut self.lane_colors;
+            track.colors = track
+                .scene
+                .lanes
+                .iter()
+                .map(|lane| {
+                    let next = colors.len();
+                    *colors.entry(lane.label.clone()).or_insert(next)
+                })
+                .collect();
+        }
         self.hovered = None;
         if self.codebase {
             self.place_map();
         }
         self.revision += 1;
+    }
+
+    /// Opens another journey from `unit` below the others and makes it active. Its
+    /// cursor lands on the unit the active cursor was on, when it reaches it.
+    pub(crate) fn add_track(&mut self, unit: UnitId) {
+        let focus = self.focus().cloned();
+        let mut track = Track {
+            root: Some(unit),
+            ..Track::default()
+        };
+        track.reroot(&self.system, &self.options, &self.layout);
+        if let Some(landing) = focus.and_then(|f| track.find(&f)) {
+            track.selected = Some(landing);
+        }
+        self.tracks.push(track);
+        self.active = self.tracks.len() - 1;
+        self.arrange();
+    }
+
+    /// Opens the selected span's unit as another journey.
+    pub(crate) fn pull_out_selected(&mut self) {
+        if let Some(unit) = self.focus().cloned() {
+            self.add_track(unit);
+        }
+    }
+
+    /// Closes a journey; the last one stays open.
+    pub(crate) fn close_track(&mut self, index: usize) {
+        if self.tracks.len() > 1 && index < self.tracks.len() {
+            self.tracks.remove(index);
+            if self.active >= index && self.active > 0 {
+                self.active -= 1;
+            }
+            self.arrange();
+        }
+    }
+
+    /// Everything the journeys occupy in the world, as `(min, max)`.
+    pub(crate) fn bounds(&self) -> (Vec3, Vec3) {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for track in &self.tracks {
+            let (a, b) = track.scene.bounds;
+            min = min.min(Vec3::from(a) + track.offset);
+            max = max.max(Vec3::from(b) + track.offset);
+        }
+        if min.x > max.x {
+            return (Vec3::ZERO, Vec3::ZERO);
+        }
+        (min, max)
     }
 
     pub(crate) fn codebase(&self) -> bool {
@@ -235,23 +477,33 @@ impl Explorer {
         self.revision += 1;
     }
 
-    /// Lays the map out as wide as the journey and rests it just above it.
+    /// Lays the map out as wide as the journeys and rests it just above them.
     fn place_map(&mut self) {
-        let (min, max) = self.scene.bounds;
+        let (min, max) = self.bounds();
         let config = MapConfig {
-            max_width: (max[0] - min[0]).max(30.0),
+            max_width: (max.x - min.x).max(30.0),
             ..MapConfig::default()
         };
         self.map = codeviz_layout::map(&self.system, &config);
         self.upstream = None;
-        self.map_offset = Vec2::new(min[0], max[1] + 2.5);
+        self.map_offset = Vec2::new(min.x, max.y + 2.5);
+        self.refresh_journey_tiles();
+    }
+
+    fn refresh_journey_tiles(&mut self) {
         self.journey_tiles = self
-            .scene
-            .nodes
+            .tracks
             .iter()
-            .filter_map(|placed| {
-                let unit = self.unit_id(placed.span)?;
-                Some((self.map.tile_of(unit)?, placed.lane))
+            .map(|track| {
+                track
+                    .scene
+                    .nodes
+                    .iter()
+                    .filter_map(|placed| {
+                        let unit = track.unit_id(placed.span)?;
+                        Some((self.map.tile_of(unit)?, track.color(placed.span)))
+                    })
+                    .collect()
             })
             .collect();
     }
@@ -265,14 +517,15 @@ impl Explorer {
         (Vec2::from(position) + self.map_offset).extend(0.0)
     }
 
-    /// The lane a tile's unit is drawn in on the journey, if the journey runs it.
+    /// The color a tile's unit is drawn in on the active journey, if it runs it.
     pub(crate) fn journey_lane(&self, tile: usize) -> Option<usize> {
-        self.journey_tiles.get(&tile).copied()
+        self.journey_tiles.get(self.active)?.get(&tile).copied()
     }
 
-    /// The unit under the cursor.
+    /// The unit under the active cursor.
     pub(crate) fn focus(&self) -> Option<&UnitId> {
-        self.selected.and_then(|id| self.unit_id(id))
+        let track = self.track();
+        track.selected.and_then(|id| track.unit_id(id))
     }
 
     /// What can reach the cursor's unit, once [`Self::refresh_upstream`] has run.
@@ -306,61 +559,24 @@ impl Explorer {
         self.upstream_tiles.get(&tile).copied()
     }
 
-    /// Starts the journey at `unit`, with the cursor on the unit it was on before when
-    /// the new journey reaches it: from a caller, straight to the call that led here.
+    /// Starts the active journey at `unit`, with the cursor on the unit it was on
+    /// before when the new journey reaches it: from a caller, straight to the call
+    /// that led here.
     pub(crate) fn start_from(&mut self, unit: UnitId) {
         let focus = self.focus().cloned();
         self.set_root(unit);
-        let Some(focus) = focus else {
-            return;
-        };
-        let landing = self.journey.as_ref().and_then(|j| {
-            j.spans()
-                .find(|(_, s)| s.target == SpanTarget::Unit(focus.clone()))
-                .map(|(id, _)| id)
-        });
-        if landing.is_some() {
-            self.selected = landing;
+        if let Some(landing) = focus.and_then(|f| self.track().find(&f)) {
+            self.select(Some(landing));
         }
-    }
-
-    /// On the happy path, where each failing outcome splits off: the deepest unit on
-    /// its chain that the happy path also runs.
-    fn find_divergences(&self) -> Vec<Divergence> {
-        let (Some(journey), Some(0)) = (&self.journey, self.scenario) else {
-            return Vec::new();
-        };
-        self.scenarios
-            .iter()
-            .enumerate()
-            .skip(1)
-            .filter_map(|(index, scenario)| {
-                let span = scenario.chain.iter().rev().find_map(|site| {
-                    journey
-                        .spans()
-                        .find(|(_, s)| s.target == SpanTarget::Unit(site.unit.clone()))
-                        .map(|(id, _)| id)
-                })?;
-                Some(Divergence {
-                    span,
-                    scenario: index,
-                    kind: scenario.outcome.kind,
-                    label: scenario.outcome.label.clone(),
-                })
-            })
-            .collect()
     }
 
     pub(crate) fn span(&self, id: SpanId) -> Option<&Span> {
-        self.journey.as_ref()?.span(id)
+        self.track().span(id)
     }
 
-    /// The unit a span runs, if it resolved to exactly one.
+    /// The unit a span of the active journey runs, if it resolved to exactly one.
     pub(crate) fn unit_id(&self, id: SpanId) -> Option<&UnitId> {
-        match &self.span(id)?.target {
-            SpanTarget::Unit(unit) => Some(unit),
-            _ => None,
-        }
+        self.track().unit_id(id)
     }
 
     pub(crate) fn unit(&self, id: SpanId) -> Option<&Unit> {
@@ -368,7 +584,11 @@ impl Explorer {
     }
 
     pub(crate) fn label(&self, id: SpanId) -> String {
-        let Some(span) = self.span(id) else {
+        self.label_in(self.track(), id)
+    }
+
+    pub(crate) fn label_in(&self, track: &Track, id: SpanId) -> String {
+        let Some(span) = track.span(id) else {
             return String::new();
         };
         let name = match &span.target {
@@ -397,7 +617,7 @@ impl Explorer {
         display_name(&self.system, id)
     }
 
-    /// The call stack at a span, outermost first.
+    /// The call stack at a span of the active journey, outermost first.
     pub(crate) fn stack(&self, id: SpanId) -> Vec<SpanId> {
         let mut stack: Vec<SpanId> =
             std::iter::successors(Some(id), |s| self.span(*s).and_then(|s| s.parent)).collect();
@@ -412,10 +632,10 @@ impl Explorer {
         Some((caller, location))
     }
 
-    /// Moves the cursor. Returns the new position.
+    /// Moves the active cursor. Returns the new position.
     pub(crate) fn step(&mut self, step: Step) -> Option<SpanId> {
-        let journey = self.journey.as_ref()?;
-        let current = self.selected.unwrap_or_else(|| journey.root());
+        let journey = self.journey()?;
+        let current = self.selected().unwrap_or_else(|| journey.root());
         let span = journey.span(current)?;
         let nth = |index: usize| journey.spans().nth(index).map(|(id, _)| id);
         // The first span after `id`'s subtree, in pre-order.
@@ -435,7 +655,7 @@ impl Explorer {
             Step::Start => Some(journey.root()),
         };
         if next.is_some() {
-            self.selected = next;
+            self.select(next);
         }
         next
     }
@@ -525,7 +745,7 @@ mod tests {
     }
 
     fn at(explorer: &Explorer) -> String {
-        explorer.label(explorer.selected.unwrap())
+        explorer.label(explorer.selected().unwrap())
     }
 
     #[test]
@@ -574,6 +794,43 @@ mod tests {
         explorer.start_from(UnitId::new("x:a"));
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
         assert_eq!(at(&explorer), "c");
+    }
+
+    #[test]
+    fn pulling_out_a_journey_stacks_it_below_with_its_own_cursor() {
+        let mut explorer = explorer();
+        explorer.step(Step::Into);
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "c");
+
+        explorer.add_track(UnitId::new("x:a"));
+        assert_eq!(explorer.tracks().len(), 2);
+        assert_eq!(explorer.active(), 1);
+        assert_eq!(at(&explorer), "c", "lands on the unit the cursor was on");
+        let [first, second] = explorer.tracks() else {
+            panic!("two journeys");
+        };
+        assert!(second.offset().y < first.offset().y, "stacked below");
+        assert_eq!(
+            first.color(first.find(&UnitId::new("x:c")).unwrap()),
+            second.color(second.find(&UnitId::new("x:c")).unwrap()),
+            "one module, one color, in every journey"
+        );
+
+        explorer.step(Step::Back);
+        assert_eq!(at(&explorer), "a");
+        let first_cursor = explorer.tracks()[0].selected();
+        assert_eq!(
+            first_cursor.map(|s| explorer.label_in(&explorer.tracks()[0], s)),
+            Some("c".to_owned()),
+            "each journey keeps its own cursor"
+        );
+
+        explorer.close_track(1);
+        assert_eq!(explorer.tracks().len(), 1);
+        assert_eq!(at(&explorer), "c");
+        explorer.close_track(0);
+        assert_eq!(explorer.tracks().len(), 1, "the last journey stays");
     }
 
     #[test]

@@ -35,6 +35,7 @@ pub struct Viewer {
     scenario: Option<usize>,
     step: usize,
     codebase: bool,
+    also: Vec<UnitId>,
 }
 
 impl Viewer {
@@ -49,6 +50,7 @@ impl Viewer {
             scenario: None,
             step: 0,
             codebase: false,
+            also: Vec::new(),
         }
     }
 
@@ -70,6 +72,14 @@ impl Viewer {
     #[must_use]
     pub fn with_step(mut self, step: usize) -> Self {
         self.step = step;
+        self
+    }
+
+    /// Opens another journey from `root` below the first, with its cursor on the
+    /// first journey's cursor unit when it reaches it.
+    #[must_use]
+    pub fn also(mut self, root: UnitId) -> Self {
+        self.also.push(root);
         self
     }
 
@@ -111,10 +121,13 @@ impl Viewer {
             explorer.set_scenario(self.scenario);
         }
         if self.step > 0 {
-            explorer.selected = explorer.journey().map(codeviz_core::Journey::root);
+            explorer.select(explorer.journey().map(codeviz_core::Journey::root));
             for _ in 0..self.step {
                 explorer.step(explorer::Step::Into);
             }
+        }
+        for root in self.also.drain(..) {
+            explorer.add_track(root);
         }
         if self.codebase {
             explorer.toggle_codebase();
