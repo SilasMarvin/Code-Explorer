@@ -1,0 +1,20 @@
+{
+  "schema": "codeviz/0.1",
+  "producer": { "name": "agent", "version": "1" },
+  "links": [
+    { "kind": "same_as", "from": "arch:orders-service", "to": "rust:axum_server",
+      "note": "arch doc names demo/axum-server; attributes language=rust, framework=axum" },
+    { "kind": "same_as", "from": "arch:users-service", "to": "python:shop",
+      "note": "by assignment for this exercise; python:shop also serves order routes that the architecture assigns to orders-service, those are left unlinked" },
+
+    { "kind": "refines", "from": "arch:orders-service/post-users-id-orders", "to": "rust:axum_server::handlers::place_order",
+      "note": "arch doc names this handler. The arch body (users-service HTTP, Redis, Postgres, Kafka) is target design; the code does an in-process find_user and an in-memory insert, so zooming in drops those hops" },
+    { "kind": "refines", "from": "arch:orders-service/post-users", "to": "rust:axum_server::handlers::create_user" },
+    { "kind": "refines", "from": "arch:orders-service/get-users-id", "to": "rust:axum_server::handlers::get_user" },
+    { "kind": "refines", "from": "arch:orders-service/get-health", "to": "rust:axum_server::handlers::health",
+      "note": "kubelet probe; arch endpoint has no body, so refines rather than same_as only for symmetry with the other endpoints" },
+
+    { "kind": "refines", "from": "arch:users-service/get-users-id", "to": "python:shop.routes.users.get_user",
+      "note": "route is GET /users/{user_id}; arch calls it /users/{id}. Arch body 'SELECT users' maps to Store.user (in-memory)" }
+  ]
+}

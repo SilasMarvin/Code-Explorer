@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, reason = "test helpers fail loudly")]
 
-use codeviz_core::{Journey, JourneyOptions, SpanTarget, System, scenarios};
+use codeviz_core::{Journey, JourneyOptions, SpanTarget, System, Zoom, scenarios};
 use codeviz_ir::{Document, ExitKind, UnitId};
 
 /// `handler → place → (find ?, check ?, quote ?) → save`, where `find` fails through an
@@ -65,7 +65,7 @@ fn names(system: &System, journey: &Journey) -> Vec<String> {
 #[test]
 fn scenarios_are_distinct_exits_with_their_chains() {
     let system = system(ORDERS);
-    let found = scenarios(&system, &UnitId::new("t:handler"));
+    let found = scenarios(&system, &UnitId::new("t:handler"), &Zoom::default());
     let summary: Vec<(ExitKind, &str, usize)> = found
         .iter()
         .map(|s| (s.outcome.kind, s.outcome.label.as_str(), s.chain.len()))
@@ -85,7 +85,7 @@ fn scenarios_are_distinct_exits_with_their_chains() {
 fn scenario_journeys_stop_at_the_exit() {
     let system = system(ORDERS);
     let entry = UnitId::new("t:handler");
-    let found = scenarios(&system, &entry);
+    let found = scenarios(&system, &entry, &Zoom::default());
     let unroll = |index: usize| {
         Journey::unroll(&system, &entry, found.get(index), JourneyOptions::default()).unwrap()
     };

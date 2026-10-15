@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 
-use codeviz_ir::{Document, Entry, Unit, UnitId};
+use codeviz_ir::{Certainty, Document, Entry, LinkKind, Unit, UnitId};
 
 /// One or more documents merged by unit id. Later documents override earlier ones.
+///
+/// Links from every document are applied on load: `refines` links become zoom levels
+/// and `same_as` links continue containment across sources.
 #[derive(Debug, Clone, Default)]
 pub struct System {
     units: Vec<Unit>,
@@ -10,6 +13,8 @@ pub struct System {
     entries: Vec<Entry>,
     callers: HashMap<UnitId, Vec<UnitId>>,
     children: HashMap<UnitId, Vec<UnitId>>,
+    refinements: HashMap<UnitId, Vec<(UnitId, Certainty)>>,
+    equivalents: HashMap<UnitId, Vec<UnitId>>,
 }
 
 impl System {
@@ -30,9 +35,42 @@ impl System {
                 }
             }
             system.entries.extend(document.entries);
+            for link in document.links {
+                match link.kind {
+                    LinkKind::Refines => system.add_refinement(link.from, link.to, link.certainty),
+                    LinkKind::SameAs => {
+                        system
+                            .equivalents
+                            .entry(link.from.clone())
+                            .or_default()
+                            .push(link.to.clone());
+                        system
+                            .equivalents
+                            .entry(link.to)
+                            .or_default()
+                            .push(link.from);
+                    }
+                    LinkKind::Unknown => {}
+                }
+            }
+        }
+        let inline: Vec<(UnitId, UnitId)> = system
+            .units
+            .iter()
+            .flat_map(|u| u.refines.iter().map(|to| (u.id.clone(), to.clone())))
+            .collect();
+        for (from, to) in inline {
+            system.add_refinement(from, to, Certainty::Declared);
         }
         system.index();
         system
+    }
+
+    fn add_refinement(&mut self, from: UnitId, to: UnitId, certainty: Certainty) {
+        let refined = self.refinements.entry(from).or_default();
+        if !refined.iter().any(|(id, _)| id == &to) {
+            refined.push((to, certainty));
+        }
     }
 
     fn index(&mut self) {
@@ -80,12 +118,45 @@ impl System {
         self.children.get(id).map_or(&[], Vec::as_slice)
     }
 
-    /// Ancestors of `id`, nearest first.
-    pub fn ancestors<'a>(&'a self, id: &UnitId) -> impl Iterator<Item = &'a Unit> + 'a {
-        let start = self.unit(id).and_then(|u| u.parent.as_ref());
-        std::iter::successors(start.and_then(|p| self.unit(p)), |unit| {
-            unit.parent.as_ref().and_then(|p| self.unit(p))
-        })
+    /// Finer units `id` summarizes, in order, from `refines` links.
+    #[must_use]
+    pub fn refinements(&self, id: &UnitId) -> &[(UnitId, Certainty)] {
+        self.refinements.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Units declared `same_as` `id`.
+    #[must_use]
+    pub fn equivalents(&self, id: &UnitId) -> &[UnitId] {
+        self.equivalents.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Ancestors of `id`, nearest first. Where a unit has no parent but is `same_as` a
+    /// loaded unit, the chain continues through that unit and its parents.
+    #[must_use]
+    pub fn ancestors(&self, id: &UnitId) -> Vec<&Unit> {
+        let mut chain = Vec::new();
+        let mut seen = vec![id];
+        let mut current = id;
+        loop {
+            let next = self
+                .unit(current)
+                .and_then(|u| u.parent.as_ref())
+                .or_else(|| {
+                    self.equivalents(current)
+                        .iter()
+                        .find(|e| self.unit(e).is_some() && !seen.contains(e))
+                });
+            let Some(next_id) = next.filter(|n| !seen.contains(n)) else {
+                break;
+            };
+            let Some(unit) = self.unit(next_id) else {
+                break;
+            };
+            seen.push(next_id);
+            chain.push(unit);
+            current = next_id;
+        }
+        chain
     }
 
     /// Finds units whose id ends with `query`, or whose entry label equals it.

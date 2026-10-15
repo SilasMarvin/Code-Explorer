@@ -30,6 +30,7 @@ pub enum Rule {
     UnreachableStep,
     EntryNotInvocable,
     PropagatingHandoff,
+    UnknownLinkEndpoint,
 }
 
 impl Rule {
@@ -51,6 +52,7 @@ impl Rule {
             Self::UnreachableStep => "W003",
             Self::EntryNotInvocable => "W004",
             Self::PropagatingHandoff => "W005",
+            Self::UnknownLinkEndpoint => "W006",
         }
     }
 
@@ -132,6 +134,29 @@ pub fn validate(document: &Document) -> Vec<Diagnostic> {
                 out.push_entry(Rule::EntryNotInvocable, entry, "is not invocable");
             }
             Some(_) => {}
+        }
+    }
+
+    // A link endpoint in a scheme this document defines should exist here.
+    let schemes: HashSet<&str> = document
+        .units
+        .iter()
+        .filter_map(|u| u.id.scheme())
+        .collect();
+    let refines = document
+        .units
+        .iter()
+        .flat_map(|u| u.refines.iter().map(move |to| (&u.id, to)));
+    let links = document.links.iter().map(|l| (&l.from, &l.to));
+    for (from, to) in links.chain(refines) {
+        for end in [from, to] {
+            if end.scheme().is_some_and(|s| schemes.contains(s)) && !ids.contains_key(end) {
+                out.0.push(Diagnostic {
+                    rule: Rule::UnknownLinkEndpoint,
+                    unit: None,
+                    message: format!("link `{from}` → `{to}` names unknown `{end}`"),
+                });
+            }
         }
     }
 

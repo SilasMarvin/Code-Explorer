@@ -25,6 +25,9 @@ pub struct Document {
     pub units: Vec<Unit>,
     #[serde(default)]
     pub entries: Vec<Entry>,
+    /// Correspondences between units, usually across documents. Experimental.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<Link>,
 }
 
 impl Document {
@@ -37,6 +40,7 @@ impl Document {
             revision: None,
             units: Vec::new(),
             entries: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -73,6 +77,8 @@ impl Document {
         self.units.sort_by(|a, b| a.id.cmp(&b.id));
         self.entries
             .sort_by(|a, b| (&a.unit, &a.label).cmp(&(&b.unit, &b.label)));
+        self.links
+            .sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
     }
 
     #[must_use]
@@ -186,6 +192,9 @@ pub struct Unit {
     pub content_hash: Option<ContentHash>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<UnitId>,
+    /// Finer-grained units this one summarizes. Shorthand for `refines` links. Experimental.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refines: Vec<UnitId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -211,6 +220,7 @@ impl Unit {
             location: None,
             content_hash: None,
             aliases: Vec::new(),
+            refines: Vec::new(),
             doc: None,
             attributes: BTreeMap::new(),
             calls: Vec::new(),
@@ -523,4 +533,31 @@ mod tests {
         assert_eq!(id.scheme(), Some("python"));
         assert_eq!(id.path(), Some("shop.app.main"));
     }
+}
+
+/// A correspondence between two units. Experimental.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Link {
+    pub kind: LinkKind,
+    pub from: UnitId,
+    pub to: UnitId,
+    #[serde(default = "declared")]
+    pub certainty: Certainty,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkKind {
+    /// `from` and `to` are the same thing described by two sources.
+    SameAs,
+    /// `from` summarizes the behavior `to` implements in more detail.
+    Refines,
+    #[serde(other)]
+    Unknown,
+}
+
+fn declared() -> Certainty {
+    Certainty::Declared
 }

@@ -2,7 +2,7 @@
 
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use codeviz_core::{SpanId, SpanTarget};
+use codeviz_core::{Level, SpanId, SpanTarget};
 use codeviz_ir::{ExitKind, Role, UnitId};
 use codeviz_layout::LaneKey;
 
@@ -253,6 +253,21 @@ fn journey_settings(ui: &mut egui::Ui, explorer: &mut Explorer) {
     changed |= ui
         .add(egui::Slider::new(&mut explorer.options.max_depth, 1..=64).text("max depth"))
         .changed();
+    let mut detail = explorer.options.zoom.default == Level::Detail;
+    if ui
+        .checkbox(&mut detail, "Zoom into everything")
+        .on_hover_text("Show the units every summary refines")
+        .changed()
+    {
+        explorer.set_default_zoom(if detail {
+            Level::Detail
+        } else {
+            Level::Summary
+        });
+    }
+    if !explorer.collapsed().is_empty() && ui.button("Expand all containers").clicked() {
+        explorer.expand_all();
+    }
     egui::ComboBox::from_label("Z lanes")
         .selected_text(explorer.layout.lane_key.label())
         .show_ui(ui, |ui| {
@@ -371,6 +386,8 @@ fn inspector(ui: &mut egui::Ui, explorer: &mut Explorer, playback: &mut Playback
     }
     span_context(ui, explorer, &span);
 
+    zoom_controls(ui, explorer, &span);
+
     ui.horizontal(|ui| {
         let can_reroot = explorer.unit_id(selected).is_some() && span.parent.is_some();
         if ui
@@ -479,6 +496,56 @@ fn span_context(ui: &mut egui::Ui, explorer: &Explorer, span: &codeviz_core::Spa
         for id in ids {
             ui.label(egui::RichText::new(id.as_str()).monospace());
         }
+    }
+}
+
+/// Refinement zoom for this span's unit, and collapse for each of its containers.
+fn zoom_controls(ui: &mut egui::Ui, explorer: &mut Explorer, span: &codeviz_core::Span) {
+    let SpanTarget::Unit(unit) = &span.target else {
+        return;
+    };
+    if let Some(level) = span.zoom {
+        let label = match level {
+            Level::Summary => "Zoom in (show implementation)",
+            Level::Detail => "Zoom out (show summary)",
+        };
+        if ui.button(label).clicked() {
+            explorer.toggle_zoom(unit.clone());
+            return;
+        }
+    }
+    let containers: Vec<(UnitId, String, bool)> = explorer
+        .system()
+        .ancestors(unit)
+        .iter()
+        .map(|c| {
+            (
+                c.id.clone(),
+                c.name.clone(),
+                explorer.collapsed().contains(&c.id),
+            )
+        })
+        .chain(
+            explorer
+                .collapsed()
+                .contains(unit)
+                .then(|| (unit.clone(), explorer.unit_name(unit), true)),
+        )
+        .collect();
+    if containers.is_empty() {
+        return;
+    }
+    ui.label("Collapse into container:");
+    let mut chosen = None;
+    ui.horizontal_wrapped(|ui| {
+        for (id, name, collapsed) in &containers {
+            if ui.selectable_label(*collapsed, name).clicked() {
+                chosen = Some(id.clone());
+            }
+        }
+    });
+    if let Some(id) = chosen {
+        explorer.toggle_collapse(id);
     }
 }
 

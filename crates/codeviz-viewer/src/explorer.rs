@@ -2,8 +2,11 @@
 //! journey and its layout, selection, and playback.
 
 use bevy::prelude::*;
+use std::collections::HashSet;
+
 use codeviz_core::{
-    Journey, JourneyOptions, Scenario, Span, SpanId, SpanTarget, StopReason, System, scenarios,
+    Journey, JourneyOptions, Level, Scenario, Span, SpanId, SpanTarget, StopReason, System,
+    scenarios,
 };
 use codeviz_ir::{Certainty, Mode, Unit, UnitId};
 use codeviz_layout::{LayoutConfig, Scene};
@@ -90,6 +93,8 @@ pub(crate) struct Explorer {
     scenario: Option<usize>,
     pub(crate) options: JourneyOptions,
     pub(crate) layout: LayoutConfig,
+    /// Containers whose spans are merged into one.
+    collapsed: HashSet<UnitId>,
     journey: Option<Journey>,
     scene: Scene,
     pub(crate) selected: Option<SpanId>,
@@ -109,6 +114,7 @@ impl Explorer {
             scenario: None,
             options,
             layout: LayoutConfig::default(),
+            collapsed: HashSet::new(),
             journey: None,
             scene: Scene::default(),
             selected: None,
@@ -176,11 +182,12 @@ impl Explorer {
         }
     }
 
-    fn reroot(&mut self) {
+    /// Recomputes scenarios, which depend on the root and the zoom levels.
+    pub(crate) fn reroot(&mut self) {
         self.scenarios = self
             .root
             .as_ref()
-            .map(|root| scenarios(&self.system, root))
+            .map(|root| scenarios(&self.system, root, &self.options.zoom))
             .unwrap_or_default();
         self.scenario = None;
         self.rebuild();
@@ -201,12 +208,51 @@ impl Explorer {
         }
     }
 
+    /// Switches a refinable unit between its summary and the units it refines.
+    pub(crate) fn toggle_zoom(&mut self, unit: UnitId) {
+        let level = match self.options.zoom.level(&unit) {
+            Level::Summary => Level::Detail,
+            Level::Detail => Level::Summary,
+        };
+        self.options.zoom.set(unit, level);
+        self.reroot();
+    }
+
+    pub(crate) fn set_default_zoom(&mut self, level: Level) {
+        self.options.zoom.default = level;
+        self.options.zoom.overrides.clear();
+        self.reroot();
+    }
+
+    pub(crate) fn collapsed(&self) -> &HashSet<UnitId> {
+        &self.collapsed
+    }
+
+    /// Merges or un-merges every span inside `container`.
+    pub(crate) fn toggle_collapse(&mut self, container: UnitId) {
+        if !self.collapsed.remove(&container) {
+            self.collapsed.insert(container);
+        }
+        self.rebuild();
+    }
+
+    pub(crate) fn expand_all(&mut self) {
+        self.collapsed.clear();
+        self.rebuild();
+    }
+
     pub(crate) fn rebuild(&mut self) {
         let scenario = self.scenario.and_then(|i| self.scenarios.get(i));
         self.journey = self
             .root
             .as_ref()
-            .and_then(|root| Journey::unroll(&self.system, root, scenario, self.options));
+            .and_then(|root| Journey::unroll(&self.system, root, scenario, self.options.clone()));
+        if !self.collapsed.is_empty() {
+            self.journey = self
+                .journey
+                .take()
+                .map(|journey| journey.collapse(&self.system, &self.collapsed));
+        }
         self.scene = self
             .journey
             .as_ref()
@@ -245,6 +291,11 @@ impl Explorer {
                 ids.len()
             ),
             SpanTarget::Unresolved(text) => text.clone(),
+        };
+        let name = if span.merged > 1 {
+            format!("{name} ({} merged)", span.merged)
+        } else {
+            name
         };
         match span.stopped {
             Some(StopReason::Recursion) => format!("{name} ↻"),

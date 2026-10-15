@@ -192,6 +192,40 @@ Entries are where execution starts.
 `consumer`). `chain` lists wrappers that run around the unit, outermost first
 (middleware, decorators), when the producer cannot express them as calls.
 
+## Links (experimental)
+
+Producers describe only their own world. **Links** record how units from different
+sources correspond. A document may carry links next to its units, or consist of nothing
+but links (a *links document*), so that neither side has to own the mapping.
+
+```jsonc
+"links": [
+  { "kind": "refines", "from": "arch:orders-service/place-order",
+    "to": "rust:shop::handlers::place_order", "certainty": "declared",
+    "note": "the endpoint is implemented by this handler" },
+  { "kind": "same_as", "from": "arch:orders-service", "to": "rust:shop" }
+]
+```
+
+| Kind | Meaning |
+| --- | --- |
+| `refines` | `from` summarizes behavior that `to` implements in more detail. `from`'s own body is the summary; `to` is the detail. A unit may refine several units (they run in order). Zooming into `from` shows `to` in its place; zooming out shows `from`'s body. |
+| `same_as` | `from` and `to` are one thing described by two sources. Containment continues across it: if a crate is `same_as` a service, the crate's units sit inside the service's parents too. |
+
+`certainty` defaults to `declared`; a linker that matched by heuristics writes `inferred`.
+
+A unit may also list `refines: [UnitId]` inline. It means exactly the same as `refines`
+links from that unit.
+
+Rules of thumb:
+
+- Link the **finest pair that is truly equivalent**. An API gateway route that
+  authenticates and then proxies to a service does not refine the service's handler;
+  the service's endpoint does.
+- A summary should not also *call* the units it refines. That double-counts the work.
+- Links may point into documents that are not loaded. They take effect when both ends
+  are present.
+
 ## Locations
 
 `{ "uri": "…", "range": { "start_line", "start_col", "end_line", "end_col" } }`.
@@ -227,6 +261,7 @@ Warnings:
 | `W003` | Steps follow an `exit` in the same block (unreachable). |
 | `W004` | An entry's unit is not `invocable`. |
 | `W005` | A `register` or `spawn` invocation sets `propagates`. |
+| `W006` | A link endpoint in a scheme this document defines does not exist here. |
 
 ## Run documents (specified, not yet implemented)
 

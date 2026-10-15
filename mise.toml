@@ -25,3 +25,7 @@ run = "cargo run -p codeviz -- view demo/out/axum-server.json --entry 'POST /use
 [tasks.demo-merged]
 description = "Explore the architecture and Rust code as one system"
 run = "cargo run -p codeviz -- view demo/architecture/orders-platform.json demo/out/axum-server.json --entry 'POST /users/{id}/orders'"
+
+[tasks.demo-zoom]
+description = "Architecture + Rust + Python joined by the links document; zoom in from the viewer"
+run = "cargo run -p codeviz -- view demo/architecture/orders-platform.json demo/out/axum-server.json demo/out/python-service.json demo/links/orders-platform.links.json --entry arch:api-gateway/post-users-id-orders"

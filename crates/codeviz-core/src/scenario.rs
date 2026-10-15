@@ -8,7 +8,7 @@ use std::{borrow::Cow, collections::HashMap, rc::Rc};
 
 use codeviz_ir::{ExitKind, Mode, Step, Unit, UnitId};
 
-use crate::System;
+use crate::{Level, System, Zoom};
 
 /// Bound on escapes tracked per unit, to keep pathological graphs tractable.
 const MAX_ESCAPES: usize = 64;
@@ -20,6 +20,8 @@ pub enum Seg {
     Arm(usize),
     LoopBody,
     Node(usize),
+    /// The n-th unit a summary refines, when zoomed in.
+    Refinement(usize),
 }
 
 pub type StepPath = Vec<Seg>;
@@ -68,9 +70,10 @@ pub(crate) fn body(unit: &Unit) -> Cow<'_, [Step]> {
 
 /// Lists how `entry` can end: normal completion first, then each distinct escape.
 #[must_use]
-pub fn scenarios(system: &System, entry: &UnitId) -> Vec<Scenario> {
+pub fn scenarios(system: &System, entry: &UnitId, zoom: &Zoom) -> Vec<Scenario> {
     let mut finder = Finder {
         system,
+        zoom,
         memo: HashMap::new(),
         in_progress: Vec::new(),
     };
@@ -96,6 +99,7 @@ struct Escape {
 
 struct Finder<'s> {
     system: &'s System,
+    zoom: &'s Zoom,
     memo: HashMap<UnitId, Rc<Vec<Escape>>>,
     in_progress: Vec<UnitId>,
 }
@@ -113,7 +117,23 @@ impl Finder<'_> {
         }
         self.in_progress.push(id.clone());
         let mut out = Vec::new();
-        self.walk(unit, &body(unit), &mut Vec::new(), &mut out);
+        let refined = refined(self.system, self.zoom, id);
+        if refined.is_empty() {
+            self.walk(unit, &body(unit), &mut Vec::new(), &mut out);
+        }
+        for (index, target) in refined.iter().enumerate() {
+            for escape in self.escapes(target).iter() {
+                let mut chain = vec![Site {
+                    unit: id.clone(),
+                    path: vec![Seg::Refinement(index)],
+                }];
+                chain.extend(escape.chain.iter().cloned());
+                out.push(Escape {
+                    outcome: escape.outcome.clone(),
+                    chain,
+                });
+            }
+        }
         self.in_progress.pop();
 
         let mut unique = Vec::new();
@@ -199,4 +219,18 @@ impl Finder<'_> {
             path.pop();
         }
     }
+}
+
+/// The loaded units `id` refines, when it is zoomed in; empty otherwise.
+pub(crate) fn refined(system: &System, zoom: &Zoom, id: &UnitId) -> Vec<UnitId> {
+    if zoom.level(id) != Level::Detail {
+        return Vec::new();
+    }
+    system
+        .refinements(id)
+        .iter()
+        .map(|(target, _)| target)
+        .filter(|target| system.unit(target).is_some())
+        .cloned()
+        .collect()
 }

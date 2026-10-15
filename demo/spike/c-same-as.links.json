@@ -1,0 +1,21 @@
+{
+  "schema": "codeviz/0.1",
+  "producer": {
+    "name": "spike-containment",
+    "version": "1"
+  },
+  "units": [],
+  "entries": [],
+  "links": [
+    {
+      "kind": "same_as",
+      "from": "arch:orders-service",
+      "to": "rust:axum_server"
+    },
+    {
+      "kind": "same_as",
+      "from": "arch:users-service",
+      "to": "python:shop"
+    }
+  ]
+}

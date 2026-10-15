@@ -10,7 +10,8 @@ mod validate;
 
 pub use document::{
     Arm, CallKey, Certainty, ContentHash, DagNode, Dispatch, Document, Entry, ExitKind, Invocation,
-    Location, Mode, Producer, Range, Revision, Role, SCHEMA, Scalar, Step, Target, Unit, UnitId,
+    Link, LinkKind, Location, Mode, Producer, Range, Revision, Role, SCHEMA, Scalar, Step, Target,
+    Unit, UnitId,
 };
 pub use validate::{Diagnostic, Rule, Severity, validate};
 

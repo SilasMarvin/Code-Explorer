@@ -17,6 +17,9 @@ pub(crate) struct ViewArgs {
     /// Include calls nothing resolved.
     #[arg(long)]
     unresolved: bool,
+    /// Start with summaries, or the units they refine.
+    #[arg(long, value_enum, default_value_t = crate::journey::ZoomArg::Summary)]
+    zoom: crate::journey::ZoomArg,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -30,11 +33,7 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .collect::<anyhow::Result<Vec<_>>>()?;
     let system = System::new(documents);
     let root = match &args.entry {
-        Some(query) => match system.find(query).as_slice() {
-            [unit] => Some(unit.id.clone()),
-            [] => bail!("nothing matches `{query}`"),
-            _ => bail!("`{query}` is ambiguous; run `codeviz journey` to list candidates"),
-        },
+        Some(query) => Some(crate::journey::find_one(&system, query)?),
         None => None,
     };
     let title = format!(
@@ -51,6 +50,7 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .with_title(title)
         .with_options(JourneyOptions {
             include_unresolved: args.unresolved,
+            zoom: args.zoom.into(),
             ..JourneyOptions::default()
         });
     if let Some(root) = root {

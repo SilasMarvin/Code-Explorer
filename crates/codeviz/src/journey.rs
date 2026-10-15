@@ -3,7 +3,9 @@
 use std::{fmt::Write as _, io::Write as _, path::PathBuf};
 
 use anyhow::{Context, bail};
-use codeviz_core::{Journey, JourneyOptions, Scenario, SpanTarget, StopReason, System, scenarios};
+use codeviz_core::{
+    Journey, JourneyOptions, Level, Scenario, SpanTarget, StopReason, System, Zoom, scenarios,
+};
 use codeviz_ir::{Certainty, ExitKind, Mode, UnitId};
 
 #[derive(Debug, clap::Args)]
@@ -23,6 +25,30 @@ pub(crate) struct JourneyArgs {
     /// Expand registered handoffs (routes, callbacks, subscriptions) inline.
     #[arg(long)]
     follow: bool,
+    /// Show summaries, or the units they refine.
+    #[arg(long, value_enum, default_value_t = ZoomArg::Summary)]
+    zoom: ZoomArg,
+    /// Merge every span inside this container (repeatable; a unit id or id suffix).
+    #[arg(long, value_name = "UNIT")]
+    collapse: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ZoomArg {
+    Summary,
+    Detail,
+}
+
+impl From<ZoomArg> for Zoom {
+    fn from(value: ZoomArg) -> Self {
+        Self {
+            default: match value {
+                ZoomArg::Summary => Level::Summary,
+                ZoomArg::Detail => Level::Detail,
+            },
+            ..Self::default()
+        }
+    }
 }
 
 pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
@@ -40,19 +66,9 @@ pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
         }
         return print(&out);
     };
-    let entry = match system.find(query).as_slice() {
-        [unit] => unit.id.clone(),
-        [] => bail!("nothing matches `{query}`"),
-        many => bail!(
-            "`{query}` is ambiguous:\n{}",
-            many.iter()
-                .map(|u| format!("  {}", u.id))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-    };
-
-    let scenarios = scenarios(&system, &entry);
+    let entry = find_one(&system, query)?;
+    let zoom = Zoom::from(args.zoom);
+    let scenarios = scenarios(&system, &entry, &zoom);
     let _ = writeln!(out, "scenarios for {entry}:");
     for (index, scenario) in scenarios.iter().enumerate() {
         let _ = writeln!(out, "  [{index}] {}", describe(&system, scenario));
@@ -64,10 +80,19 @@ pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
     let options = JourneyOptions {
         include_unresolved: args.unresolved,
         follow_registrations: args.follow,
+        zoom,
         ..JourneyOptions::default()
     };
-    let journey =
+    let mut journey =
         Journey::unroll(&system, &entry, scenario, options).context("entry not loaded")?;
+    if !args.collapse.is_empty() {
+        let containers = args
+            .collapse
+            .iter()
+            .map(|query| find_one(&system, query))
+            .collect::<anyhow::Result<_>>()?;
+        journey = journey.collapse(&system, &containers);
+    }
     let _ = writeln!(
         out,
         "\njourney{}: {} spans, {} ticks, depth {}",
@@ -80,6 +105,20 @@ pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
     );
     render(&system, &journey, &mut out);
     print(&out)
+}
+
+pub(crate) fn find_one(system: &System, query: &str) -> anyhow::Result<UnitId> {
+    match system.find(query).as_slice() {
+        [unit] => Ok(unit.id.clone()),
+        [] => bail!("nothing matches `{query}`"),
+        many => bail!(
+            "`{query}` is ambiguous:\n{}",
+            many.iter()
+                .map(|u| format!("  {}", u.id))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
 }
 
 fn describe(system: &System, scenario: &Scenario) -> String {
@@ -128,6 +167,17 @@ fn render(system: &System, journey: &Journey, out: &mut String) {
         }
         if span.propagates {
             tags.push("?".to_owned());
+        }
+        if span.refinement {
+            tags.push("detail".to_owned());
+        }
+        match span.zoom {
+            Some(Level::Summary) => tags.push("zoomable".to_owned()),
+            Some(Level::Detail) => tags.push("zoomed in".to_owned()),
+            None => {}
+        }
+        if span.merged > 1 {
+            tags.push(format!("{} merged", span.merged));
         }
         if span.repeats {
             tags.push("loop".to_owned());

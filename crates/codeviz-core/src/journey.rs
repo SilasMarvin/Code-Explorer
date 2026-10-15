@@ -8,12 +8,12 @@ use codeviz_ir::{
 };
 
 use crate::{
-    Scenario, System,
-    scenario::{Seg, Site, StepPath, body},
+    Level, Scenario, System, Zoom,
+    scenario::{Seg, Site, StepPath, body, refined},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SpanId(usize);
+pub struct SpanId(pub(crate) usize);
 
 impl SpanId {
     #[must_use]
@@ -79,15 +79,23 @@ pub struct Span {
     /// Exits inside this unit's own body.
     pub exits: Vec<ExitMarker>,
     pub stopped: Option<StopReason>,
+    /// This span is the detail of its parent (a `refines` link), not a call.
+    pub refinement: bool,
+    /// The level shown, when the unit has loaded refinements to zoom between.
+    pub zoom: Option<Level>,
+    /// Spans merged into this one by [`Journey::collapse`]; 0 if not collapsed.
+    pub merged: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JourneyOptions {
     pub max_depth: u32,
     /// Show calls nothing resolved (std, dependencies).
     pub include_unresolved: bool,
     /// Expand `register` handoffs as if invoked immediately.
     pub follow_registrations: bool,
+    /// Summary or detail for units with `refines` links.
+    pub zoom: Zoom,
 }
 
 impl Default for JourneyOptions {
@@ -96,6 +104,7 @@ impl Default for JourneyOptions {
             max_depth: 32,
             include_unresolved: false,
             follow_registrations: false,
+            zoom: Zoom::default(),
         }
     }
 }
@@ -154,6 +163,10 @@ impl Journey {
         Some(Self {
             spans: builder.spans,
         })
+    }
+
+    pub(crate) fn from_spans(spans: Vec<Span>) -> Self {
+        Self { spans }
     }
 
     #[must_use]
@@ -260,6 +273,9 @@ impl Builder<'_> {
             exit: enter,
             exits: Vec::new(),
             stopped,
+            refinement: false,
+            zoom: None,
+            merged: 0,
         });
         if let Some(parent) = parent.and_then(|p| self.spans.get_mut(p.0)) {
             parent.children.push(id);
@@ -272,21 +288,72 @@ impl Builder<'_> {
                 Filter::Escape(_) => Filter::Completes,
                 other => other,
             };
-            let steps = body(unit);
-            self.block(
-                unit,
-                id,
-                &steps,
-                &mut Vec::new(),
-                &Context::default(),
-                filter,
-            );
+            let detail = refined(self.system, &self.options.zoom, &unit.id);
+            let refinable = self
+                .system
+                .refinements(&unit.id)
+                .iter()
+                .any(|(target, _)| self.system.unit(target).is_some());
+            if let Some(span) = self.spans.get_mut(id.0).filter(|_| refinable) {
+                span.zoom = Some(if detail.is_empty() {
+                    Level::Summary
+                } else {
+                    Level::Detail
+                });
+            }
+            if detail.is_empty() {
+                let steps = body(unit);
+                let cx = Context::default();
+                self.block(unit, id, &steps, &mut Vec::new(), &cx, filter);
+            } else {
+                self.refine(unit, id, &detail, filter);
+            }
             self.stack.pop();
         }
         if let Some(span) = self.spans.get_mut(id.0) {
             span.exit = self.clock.max(enter + 1);
         }
         id
+    }
+
+    /// Shows the units `unit` refines in its place, in order.
+    fn refine(&mut self, unit: &Unit, span: SpanId, detail: &[UnitId], filter: Filter<'_>) {
+        // On a scenario, the chain names which refinement the exit comes from.
+        let through = match filter {
+            Filter::Escape([site, ..]) => match site.path.as_slice() {
+                [Seg::Refinement(index)] => Some(*index),
+                _ => None,
+            },
+            _ => None,
+        };
+        for (index, target) in detail.iter().enumerate() {
+            let child_filter = match (through, filter) {
+                (Some(through), _) if index > through => break,
+                (Some(through), Filter::Escape([_, rest @ ..])) if index == through => {
+                    Filter::Escape(rest)
+                }
+                (Some(_), _) => Filter::Completes,
+                (None, other) => other,
+            };
+            let target_span = SpanTarget::Unit(target.clone());
+            let child = self.invoke(
+                target_span,
+                Some(span),
+                None,
+                &Context::default(),
+                child_filter,
+            );
+            let certainty = self
+                .system
+                .refinements(&unit.id)
+                .iter()
+                .find(|(t, _)| t == target)
+                .map(|(_, c)| *c);
+            if let Some(child) = self.spans.get_mut(child.0) {
+                child.refinement = true;
+                child.certainty = certainty;
+            }
+        }
     }
 
     fn block(
