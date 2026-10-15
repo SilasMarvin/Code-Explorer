@@ -1,0 +1,3479 @@
+{
+  "schema": "codeviz/0.1",
+  "producer": {
+    "name": "codeviz-python",
+    "version": "0.1.0"
+  },
+  "units": [
+    {
+      "id": "python:shop",
+      "name": "shop",
+      "kind": "package",
+      "role": "group",
+      "location": {
+        "uri": "shop/__init__.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+      },
+      "doc": "A small order service used to exercise the codeviz Python frontend."
+    },
+    {
+      "id": "python:shop.audit",
+      "name": "shop.audit",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop",
+      "location": {
+        "uri": "shop/audit.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "4a612dba9630bf93af297a9025c6c8e351735fe88fd25ba89eb441cf0407080f"
+      },
+      "doc": "Audit logging around handlers."
+    },
+    {
+      "id": "python:shop.audit.<module>",
+      "name": "<module>",
+      "kind": "module_body",
+      "role": "invocable",
+      "parent": "python:shop.audit",
+      "location": {
+        "uri": "shop/audit.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "4a612dba9630bf93af297a9025c6c8e351735fe88fd25ba89eb441cf0407080f"
+      },
+      "calls": [
+        {
+          "key": "logging.getLogger#0",
+          "text": "logging.getLogger",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/audit.py",
+            "range": {
+              "start_line": 6,
+              "start_col": 7,
+              "end_line": 6,
+              "end_col": 34
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.audit.audited",
+      "name": "audited",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.audit",
+      "location": {
+        "uri": "shop/audit.py",
+        "range": {
+          "start_line": 9,
+          "start_col": 1,
+          "end_line": 26,
+          "end_col": 20
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "ef55f6d3fd1a041ece99bc84a94b89422b2e191bd4667d8b7e7a3672f70daa66"
+      },
+      "doc": "Logs the start and end of every call to the decorated coroutine."
+    },
+    {
+      "id": "python:shop.audit.audited.<locals>.decorate",
+      "name": "decorate",
+      "kind": "closure",
+      "role": "invocable",
+      "parent": "python:shop.audit.audited",
+      "location": {
+        "uri": "shop/audit.py",
+        "range": {
+          "start_line": 12,
+          "start_col": 5,
+          "end_line": 24,
+          "end_col": 23
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "d2655633cf21eb4f0af44faaee85063f3b51104af482b7c38c48b07122dc5191"
+      },
+      "calls": [
+        {
+          "key": "functools.wraps#0",
+          "text": "functools.wraps",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/audit.py",
+            "range": {
+              "start_line": 13,
+              "start_col": 10,
+              "end_line": 13,
+              "end_col": 34
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.audit.audited.<locals>.decorate.<locals>.wrapper",
+      "name": "wrapper",
+      "kind": "closure",
+      "role": "invocable",
+      "parent": "python:shop.audit.audited.<locals>.decorate",
+      "location": {
+        "uri": "shop/audit.py",
+        "range": {
+          "start_line": 14,
+          "start_col": 9,
+          "end_line": 22,
+          "end_col": 43
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "132fe452c4dff575831455ed7c1d739d1b848a8fbbeae276315235a2f642c1a4"
+      },
+      "attributes": {
+        "decorators": "functools.wraps",
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "log.info#0",
+          "text": "log.info",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/audit.py",
+            "range": {
+              "start_line": 15,
+              "start_col": 13,
+              "end_line": 15,
+              "end_col": 41
+            }
+          }
+        },
+        {
+          "key": "handler#0",
+          "text": "handler",
+          "targets": [],
+          "location": {
+            "uri": "shop/audit.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 30,
+              "end_line": 17,
+              "end_col": 54
+            }
+          }
+        },
+        {
+          "key": "log.exception#0",
+          "text": "log.exception",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/audit.py",
+            "range": {
+              "start_line": 19,
+              "start_col": 17,
+              "end_line": 19,
+              "end_col": 51
+            }
+          }
+        },
+        {
+          "key": "log.info#1",
+          "text": "log.info",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/audit.py",
+            "range": {
+              "start_line": 22,
+              "start_col": 17,
+              "end_line": 22,
+              "end_col": 43
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "log.info#0"
+        },
+        {
+          "step": "call",
+          "call": "handler#0"
+        },
+        {
+          "step": "call",
+          "call": "log.info#1"
+        },
+        {
+          "step": "branch",
+          "arms": [
+            {
+              "label": "ok",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "return"
+                }
+              ]
+            },
+            {
+              "label": "except Exception",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "log.exception#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "re-raise"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.errors",
+      "name": "shop.errors",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop",
+      "location": {
+        "uri": "shop/errors.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "969f35eb9ed243c5b69dd44f1a97e02cee1ba9316ca10b517ba28fd97952f706"
+      },
+      "doc": "Errors the service maps to HTTP responses."
+    },
+    {
+      "id": "python:shop.errors.AppError",
+      "name": "AppError",
+      "kind": "class",
+      "role": "group",
+      "parent": "python:shop.errors",
+      "location": {
+        "uri": "shop/errors.py",
+        "range": {
+          "start_line": 4,
+          "start_col": 1,
+          "end_line": 10,
+          "end_col": 59
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "1f6aedeef8d4c0d541a2ecdf8c697f4453b3065b694df4a0e8b9ce8fb9b07c35"
+      },
+      "doc": "Base class for errors with an HTTP status."
+    },
+    {
+      "id": "python:shop.errors.AppError.to_response",
+      "name": "to_response",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.errors.AppError",
+      "location": {
+        "uri": "shop/errors.py",
+        "range": {
+          "start_line": 9,
+          "start_col": 5,
+          "end_line": 10,
+          "end_col": 59
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "e4e08d64c1861180d3a254df263bbd8a81d572db5e638af43f8f51360d2fcc2c"
+      },
+      "calls": [
+        {
+          "key": "str#0",
+          "text": "str",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/errors.py",
+            "range": {
+              "start_line": 10,
+              "start_col": 49,
+              "end_line": 10,
+              "end_col": 58
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.errors.Invalid",
+      "name": "Invalid",
+      "kind": "class",
+      "role": "group",
+      "parent": "python:shop.errors",
+      "location": {
+        "uri": "shop/errors.py",
+        "range": {
+          "start_line": 20,
+          "start_col": 1,
+          "end_line": 21,
+          "end_col": 17
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "821180e6b9192761c3f312344c8984fe9cbe22057cbddefa245f760366e4a688"
+      }
+    },
+    {
+      "id": "python:shop.errors.NotFound",
+      "name": "NotFound",
+      "kind": "class",
+      "role": "group",
+      "parent": "python:shop.errors",
+      "location": {
+        "uri": "shop/errors.py",
+        "range": {
+          "start_line": 13,
+          "start_col": 1,
+          "end_line": 17,
+          "end_col": 46
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "2895659cc9a5007657e75b6f2d0591ddfb952ffeff6f5801ce28f648d1062e1e"
+      }
+    },
+    {
+      "id": "python:shop.errors.NotFound.__init__",
+      "name": "__init__",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.errors.NotFound",
+      "location": {
+        "uri": "shop/errors.py",
+        "range": {
+          "start_line": 16,
+          "start_col": 5,
+          "end_line": 17,
+          "end_col": 46
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "5025826c257b9fcedead2a31245d1865720c1c2b6114e96f8e41278be1e649fb"
+      },
+      "calls": [
+        {
+          "key": "super().__init__#0",
+          "text": "super().__init__",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/errors.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 9,
+              "end_line": 17,
+              "end_col": 46
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.main",
+      "name": "shop.main",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop",
+      "location": {
+        "uri": "shop/main.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "801e553785ddddceb5a0dec2f605a75ea3d908e8dcc5b8ba2210711085804fc9"
+      },
+      "doc": "Application wiring: routers, lifecycle hooks and the dev server."
+    },
+    {
+      "id": "python:shop.main.<module>",
+      "name": "<module>",
+      "kind": "module_body",
+      "role": "invocable",
+      "parent": "python:shop.main",
+      "location": {
+        "uri": "shop/main.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "801e553785ddddceb5a0dec2f605a75ea3d908e8dcc5b8ba2210711085804fc9"
+      },
+      "calls": [
+        {
+          "key": ".routes.orders#0",
+          "text": ".routes.orders",
+          "targets": [
+            {
+              "unit": "python:shop.routes.orders.<module>",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 7,
+              "start_col": 1,
+              "end_line": 7,
+              "end_col": 34
+            }
+          }
+        },
+        {
+          "key": ".routes.users#0",
+          "text": ".routes.users",
+          "targets": [
+            {
+              "unit": "python:shop.routes.users.<module>",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 7,
+              "start_col": 1,
+              "end_line": 7,
+              "end_col": 34
+            }
+          }
+        },
+        {
+          "key": "FastAPI#0",
+          "text": "FastAPI",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 10,
+              "start_col": 7,
+              "end_line": 10,
+              "end_col": 28
+            }
+          }
+        },
+        {
+          "key": "app.include_router#0",
+          "text": "app.include_router",
+          "targets": [
+            {
+              "unit": "python:shop.routes.users.router",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "via": "python:shop.main.app",
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 11,
+              "start_col": 1,
+              "end_line": 11,
+              "end_col": 33
+            }
+          }
+        },
+        {
+          "key": "app.include_router#1",
+          "text": "app.include_router",
+          "targets": [
+            {
+              "unit": "python:shop.routes.orders.router",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "via": "python:shop.main.app",
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 12,
+              "start_col": 1,
+              "end_line": 12,
+              "end_col": 34
+            }
+          }
+        },
+        {
+          "key": "app.add_event_handler#0",
+          "text": "app.add_event_handler",
+          "targets": [
+            {
+              "unit": "python:shop.store.init_db",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "via": "python:shop.main.app",
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 13,
+              "start_col": 1,
+              "end_line": 13,
+              "end_col": 42
+            }
+          }
+        },
+        {
+          "key": "configure_logging#0",
+          "text": "configure_logging",
+          "targets": [
+            {
+              "unit": "python:shop.main.configure_logging",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 26,
+              "start_col": 5,
+              "end_line": 26,
+              "end_col": 40
+            }
+          }
+        },
+        {
+          "key": "uvicorn.run#0",
+          "text": "uvicorn.run",
+          "targets": [
+            {
+              "unit": "python:shop.main.app",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 27,
+              "start_col": 5,
+              "end_line": 27,
+              "end_col": 50
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".routes.orders#0"
+        },
+        {
+          "step": "call",
+          "call": ".routes.users#0"
+        },
+        {
+          "step": "call",
+          "call": "FastAPI#0"
+        },
+        {
+          "step": "call",
+          "call": "app.include_router#0"
+        },
+        {
+          "step": "call",
+          "call": "app.include_router#1"
+        },
+        {
+          "step": "call",
+          "call": "app.add_event_handler#0"
+        },
+        {
+          "step": "branch",
+          "guard": "__name__ == \"__main__\"",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "configure_logging#0"
+                },
+                {
+                  "step": "call",
+                  "call": "uvicorn.run#0"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.main.app",
+      "name": "app",
+      "kind": "object",
+      "role": "channel",
+      "parent": "python:shop.main",
+      "location": {
+        "uri": "shop/main.py",
+        "range": {
+          "start_line": 10,
+          "start_col": 1,
+          "end_line": 10,
+          "end_col": 28
+        }
+      },
+      "attributes": {
+        "type": "FastAPI"
+      }
+    },
+    {
+      "id": "python:shop.main.configure_logging",
+      "name": "configure_logging",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.main",
+      "location": {
+        "uri": "shop/main.py",
+        "range": {
+          "start_line": 16,
+          "start_col": 1,
+          "end_line": 18,
+          "end_col": 37
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "35b82d4441131e7554237c796fcea5e97b95c2b721f7e821a2f83a9fe42b7005"
+      },
+      "calls": [
+        {
+          "key": "logging.basicConfig#0",
+          "text": "logging.basicConfig",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/main.py",
+            "range": {
+              "start_line": 18,
+              "start_col": 5,
+              "end_line": 18,
+              "end_col": 37
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.routes",
+      "name": "shop.routes",
+      "kind": "package",
+      "role": "group",
+      "parent": "python:shop",
+      "location": {
+        "uri": "shop/routes/__init__.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+      },
+      "doc": "HTTP routes."
+    },
+    {
+      "id": "python:shop.routes.orders",
+      "name": "shop.routes.orders",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop.routes",
+      "location": {
+        "uri": "shop/routes/orders.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "9fb41edfa3adbbb251116373f23137c7655ea97f556a2a552ff89511785c8652"
+      }
+    },
+    {
+      "id": "python:shop.routes.orders.<module>",
+      "name": "<module>",
+      "kind": "module_body",
+      "role": "invocable",
+      "parent": "python:shop.routes.orders",
+      "location": {
+        "uri": "shop/routes/orders.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "9fb41edfa3adbbb251116373f23137c7655ea97f556a2a552ff89511785c8652"
+      },
+      "calls": [
+        {
+          "key": "shop.services.orders#0",
+          "text": "shop.services.orders",
+          "targets": [
+            {
+              "unit": "python:shop.services.orders.<module>",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 3,
+              "start_col": 1,
+              "end_line": 3,
+              "end_col": 45
+            }
+          }
+        },
+        {
+          "key": "shop.audit#0",
+          "text": "shop.audit",
+          "targets": [
+            {
+              "unit": "python:shop.audit.<module>",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 4,
+              "start_col": 1,
+              "end_line": 4,
+              "end_col": 31
+            }
+          }
+        },
+        {
+          "key": "APIRouter#0",
+          "text": "APIRouter",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 8,
+              "start_col": 10,
+              "end_line": 8,
+              "end_col": 21
+            }
+          }
+        },
+        {
+          "key": "router.post#0",
+          "text": "router.post",
+          "targets": [
+            {
+              "unit": "python:shop.routes.orders.place_order",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "via": "python:shop.routes.orders.router",
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 11,
+              "start_col": 2,
+              "end_line": 11,
+              "end_col": 40
+            }
+          }
+        },
+        {
+          "key": "audited#0",
+          "text": "audited",
+          "targets": [
+            {
+              "unit": "python:shop.audit.audited",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 12,
+              "start_col": 2,
+              "end_line": 12,
+              "end_col": 24
+            }
+          }
+        },
+        {
+          "key": "router.post#1",
+          "text": "router.post",
+          "targets": [
+            {
+              "unit": "python:shop.routes.orders.place_orders",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "via": "python:shop.routes.orders.router",
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 20,
+              "start_col": 2,
+              "end_line": 20,
+              "end_col": 45
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.routes.orders.place_order",
+      "name": "place_order",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.routes.orders",
+      "location": {
+        "uri": "shop/routes/orders.py",
+        "range": {
+          "start_line": 13,
+          "start_col": 1,
+          "end_line": 17,
+          "end_col": 35
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "f747b1908faf051912cac802def3511c85da223b294c30d90ca56f1e95db2205"
+      },
+      "attributes": {
+        "decorators": "router.post, audited",
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "order_service.place#0",
+          "text": "order_service.place",
+          "targets": [
+            {
+              "unit": "python:shop.services.orders.place",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 15,
+              "start_col": 22,
+              "end_line": 15,
+              "end_col": 94
+            }
+          }
+        },
+        {
+          "key": "get_store#0",
+          "text": "get_store",
+          "targets": [
+            {
+              "unit": "python:shop.store.get_store",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 15,
+              "start_col": 42,
+              "end_line": 15,
+              "end_col": 53
+            }
+          }
+        },
+        {
+          "key": "error.to_response#0",
+          "text": "error.to_response",
+          "targets": [
+            {
+              "unit": "python:shop.errors.AppError.to_response",
+              "certainty": "inferred"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 16,
+              "end_line": 17,
+              "end_col": 35
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "get_store#0"
+        },
+        {
+          "step": "call",
+          "call": "order_service.place#0"
+        },
+        {
+          "step": "branch",
+          "arms": [
+            {
+              "label": "ok",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "return"
+                }
+              ]
+            },
+            {
+              "label": "except AppError as error",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "error.to_response#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "return"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.routes.orders.place_orders",
+      "name": "place_orders",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.routes.orders",
+      "location": {
+        "uri": "shop/routes/orders.py",
+        "range": {
+          "start_line": 21,
+          "start_col": 1,
+          "end_line": 23,
+          "end_col": 103
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "02b83390b00bf1d243f232c3566b4186fa536cc6ca7a265bf9f8de59b32dada2"
+      },
+      "attributes": {
+        "decorators": "router.post",
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "get_store#0",
+          "text": "get_store",
+          "targets": [
+            {
+              "unit": "python:shop.store.get_store",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 22,
+              "start_col": 13,
+              "end_line": 22,
+              "end_col": 24
+            }
+          }
+        },
+        {
+          "key": "order_service.place#0",
+          "text": "order_service.place",
+          "targets": [
+            {
+              "unit": "python:shop.services.orders.place",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/orders.py",
+            "range": {
+              "start_line": 23,
+              "start_col": 19,
+              "end_line": 23,
+              "end_col": 85
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "get_store#0"
+        },
+        {
+          "step": "loop",
+          "label": "for line in body",
+          "body": [
+            {
+              "step": "call",
+              "call": "order_service.place#0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.routes.orders.router",
+      "name": "router",
+      "kind": "object",
+      "role": "channel",
+      "parent": "python:shop.routes.orders",
+      "location": {
+        "uri": "shop/routes/orders.py",
+        "range": {
+          "start_line": 8,
+          "start_col": 1,
+          "end_line": 8,
+          "end_col": 21
+        }
+      },
+      "attributes": {
+        "type": "APIRouter"
+      }
+    },
+    {
+      "id": "python:shop.routes.users",
+      "name": "shop.routes.users",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop.routes",
+      "location": {
+        "uri": "shop/routes/users.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "e45e5b6f8d08ad7adb41dc0d1ca84ae09c0357a697446fee5fa0b355c8184ec2"
+      }
+    },
+    {
+      "id": "python:shop.routes.users.<module>",
+      "name": "<module>",
+      "kind": "module_body",
+      "role": "invocable",
+      "parent": "python:shop.routes.users",
+      "location": {
+        "uri": "shop/routes/users.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "e45e5b6f8d08ad7adb41dc0d1ca84ae09c0357a697446fee5fa0b355c8184ec2"
+      },
+      "calls": [
+        {
+          "key": "..audit#0",
+          "text": "..audit",
+          "targets": [
+            {
+              "unit": "python:shop.audit.<module>",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 3,
+              "start_col": 1,
+              "end_line": 3,
+              "end_col": 28
+            }
+          }
+        },
+        {
+          "key": "APIRouter#0",
+          "text": "APIRouter",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 7,
+              "start_col": 10,
+              "end_line": 7,
+              "end_col": 21
+            }
+          }
+        },
+        {
+          "key": "router.get#0",
+          "text": "router.get",
+          "targets": [
+            {
+              "unit": "python:shop.routes.users.health",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "via": "python:shop.routes.users.router",
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 10,
+              "start_col": 2,
+              "end_line": 10,
+              "end_col": 23
+            }
+          }
+        },
+        {
+          "key": "router.get#1",
+          "text": "router.get",
+          "targets": [
+            {
+              "unit": "python:shop.routes.users.get_user",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "via": "python:shop.routes.users.router",
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 15,
+              "start_col": 2,
+              "end_line": 15,
+              "end_col": 32
+            }
+          }
+        },
+        {
+          "key": "router.post#0",
+          "text": "router.post",
+          "targets": [
+            {
+              "unit": "python:shop.routes.users.create_user",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "via": "python:shop.routes.users.router",
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 20,
+              "start_col": 2,
+              "end_line": 20,
+              "end_col": 23
+            }
+          }
+        },
+        {
+          "key": "audited#0",
+          "text": "audited",
+          "targets": [
+            {
+              "unit": "python:shop.audit.audited",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 21,
+              "start_col": 2,
+              "end_line": 21,
+              "end_col": 24
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.routes.users.create_user",
+      "name": "create_user",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.routes.users",
+      "location": {
+        "uri": "shop/routes/users.py",
+        "range": {
+          "start_line": 22,
+          "start_col": 1,
+          "end_line": 23,
+          "end_col": 81
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "935ded155f0736b24d3c0d559935d0c30bbb48f91625942b4a92c92e7cc7faa1"
+      },
+      "attributes": {
+        "decorators": "router.post, audited",
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "user_service.register#0",
+          "text": "user_service.register",
+          "targets": [
+            {
+              "unit": "python:shop.services.users.register",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 23,
+              "start_col": 18,
+              "end_line": 23,
+              "end_col": 81
+            }
+          }
+        },
+        {
+          "key": "get_store#0",
+          "text": "get_store",
+          "targets": [
+            {
+              "unit": "python:shop.store.get_store",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 23,
+              "start_col": 40,
+              "end_line": 23,
+              "end_col": 51
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "get_store#0"
+        },
+        {
+          "step": "call",
+          "call": "user_service.register#0"
+        }
+      ]
+    },
+    {
+      "id": "python:shop.routes.users.get_user",
+      "name": "get_user",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.routes.users",
+      "location": {
+        "uri": "shop/routes/users.py",
+        "range": {
+          "start_line": 16,
+          "start_col": 1,
+          "end_line": 17,
+          "end_col": 62
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "969a8ffffda06051a0fd32125f63a3e011920f82eb4f975541e8b33bfaff1410"
+      },
+      "attributes": {
+        "decorators": "router.get",
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "user_service.find_user#0",
+          "text": "user_service.find_user",
+          "targets": [
+            {
+              "unit": "python:shop.services.users.find_user",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 18,
+              "end_line": 17,
+              "end_col": 62
+            }
+          }
+        },
+        {
+          "key": "get_store#0",
+          "text": "get_store",
+          "targets": [
+            {
+              "unit": "python:shop.store.get_store",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/routes/users.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 41,
+              "end_line": 17,
+              "end_col": 52
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "get_store#0"
+        },
+        {
+          "step": "call",
+          "call": "user_service.find_user#0"
+        }
+      ]
+    },
+    {
+      "id": "python:shop.routes.users.health",
+      "name": "health",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.routes.users",
+      "location": {
+        "uri": "shop/routes/users.py",
+        "range": {
+          "start_line": 11,
+          "start_col": 1,
+          "end_line": 12,
+          "end_col": 16
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "5dd676d3f0c5e75b805006e118483cc86add16c77486fce05fbf02532cd7ad0b"
+      },
+      "attributes": {
+        "decorators": "router.get",
+        "is_async": true
+      }
+    },
+    {
+      "id": "python:shop.routes.users.router",
+      "name": "router",
+      "kind": "object",
+      "role": "channel",
+      "parent": "python:shop.routes.users",
+      "location": {
+        "uri": "shop/routes/users.py",
+        "range": {
+          "start_line": 7,
+          "start_col": 1,
+          "end_line": 7,
+          "end_col": 21
+        }
+      },
+      "attributes": {
+        "type": "APIRouter"
+      }
+    },
+    {
+      "id": "python:shop.services",
+      "name": "shop.services",
+      "kind": "package",
+      "role": "group",
+      "parent": "python:shop",
+      "location": {
+        "uri": "shop/services/__init__.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+      },
+      "doc": "Business logic, independent of HTTP."
+    },
+    {
+      "id": "python:shop.services.orders",
+      "name": "shop.services.orders",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop.services",
+      "location": {
+        "uri": "shop/services/orders.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "3d592c94cba4bdcd1fce5e1bdb292a88b1c63842b6141e0fab0fa34de581ce53"
+      }
+    },
+    {
+      "id": "python:shop.services.orders.<module>",
+      "name": "<module>",
+      "kind": "module_body",
+      "role": "invocable",
+      "parent": "python:shop.services.orders",
+      "location": {
+        "uri": "shop/services/orders.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "3d592c94cba4bdcd1fce5e1bdb292a88b1c63842b6141e0fab0fa34de581ce53"
+      },
+      "calls": [
+        {
+          "key": "logging.getLogger#0",
+          "text": "logging.getLogger",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 7,
+              "start_col": 7,
+              "end_line": 7,
+              "end_col": 34
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.orders.notify",
+      "name": "notify",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.services.orders",
+      "location": {
+        "uri": "shop/services/orders.py",
+        "range": {
+          "start_line": 21,
+          "start_col": 1,
+          "end_line": 33,
+          "end_col": 65
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "a5681bcd1ea19cec3f7b3bfaca7f6bc270853257e54251f123b479d09215fc67"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "send#0",
+          "text": "send",
+          "targets": [
+            {
+              "unit": "python:shop.services.orders.send",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 29,
+              "start_col": 19,
+              "end_line": 29,
+              "end_col": 35
+            }
+          }
+        },
+        {
+          "key": "describe#0",
+          "text": "describe",
+          "targets": [
+            {
+              "unit": "python:shop.services.orders.notify.<locals>.describe",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 29,
+              "start_col": 24,
+              "end_line": 29,
+              "end_col": 34
+            }
+          }
+        },
+        {
+          "key": "asyncio.sleep#0",
+          "text": "asyncio.sleep",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 32,
+              "start_col": 19,
+              "end_line": 32,
+              "end_col": 42
+            }
+          }
+        },
+        {
+          "key": "log.warning#0",
+          "text": "log.warning",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 33,
+              "start_col": 5,
+              "end_line": 33,
+              "end_col": 65
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "loop",
+          "label": "while attempts < 3",
+          "body": [
+            {
+              "step": "call",
+              "call": "describe#0"
+            },
+            {
+              "step": "call",
+              "call": "send#0"
+            },
+            {
+              "step": "branch",
+              "arms": [
+                {
+                  "label": "ok",
+                  "body": [
+                    {
+                      "step": "exit",
+                      "kind": "return"
+                    }
+                  ]
+                },
+                {
+                  "label": "except ConnectionError",
+                  "body": [
+                    {
+                      "step": "call",
+                      "call": "asyncio.sleep#0"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "step": "call",
+          "call": "log.warning#0"
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.orders.notify.<locals>.describe",
+      "name": "describe",
+      "kind": "closure",
+      "role": "invocable",
+      "parent": "python:shop.services.orders.notify",
+      "location": {
+        "uri": "shop/services/orders.py",
+        "range": {
+          "start_line": 22,
+          "start_col": 5,
+          "end_line": 23,
+          "end_col": 76
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "a752c4cca298528abe8b58e5c6c69e6f4581fa08fc54278b312ec2175de8d9f5"
+      }
+    },
+    {
+      "id": "python:shop.services.orders.place",
+      "name": "place",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.services.orders",
+      "location": {
+        "uri": "shop/services/orders.py",
+        "range": {
+          "start_line": 10,
+          "start_col": 1,
+          "end_line": 18,
+          "end_col": 17
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "17f36fd80bc285b71f667d66891bc9aaf0d5db5cd7d9b0f2d7145b3351bdb6aa"
+      },
+      "doc": "Places an order for a user.",
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "users.find_user#0",
+          "text": "users.find_user",
+          "targets": [
+            {
+              "unit": "python:shop.services.users.find_user",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 12,
+              "start_col": 18,
+              "end_line": 12,
+              "end_col": 49
+            }
+          }
+        },
+        {
+          "key": "check_quantity#0",
+          "text": "check_quantity",
+          "targets": [
+            {
+              "unit": "python:shop.services.validation.check_quantity",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 13,
+              "start_col": 16,
+              "end_line": 13,
+              "end_col": 40
+            }
+          }
+        },
+        {
+          "key": "pricing.quote#0",
+          "text": "pricing.quote",
+          "targets": [
+            {
+              "unit": "python:shop.services.pricing.quote",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 14,
+              "start_col": 19,
+              "end_line": 14,
+              "end_col": 47
+            }
+          }
+        },
+        {
+          "key": "store.insert_order#0",
+          "text": "store.insert_order",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store.insert_order",
+              "certainty": "inferred"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 15,
+              "start_col": 19,
+              "end_line": 15,
+              "end_col": 77
+            }
+          }
+        },
+        {
+          "key": "asyncio.create_task#0",
+          "text": "asyncio.create_task",
+          "targets": [
+            {
+              "unit": "python:shop.services.orders.notify",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "spawn",
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 16,
+              "start_col": 5,
+              "end_line": 16,
+              "end_col": 39
+            }
+          }
+        },
+        {
+          "key": "log.info#0",
+          "text": "log.info",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 5,
+              "end_line": 17,
+              "end_col": 69
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.orders.send",
+      "name": "send",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.services.orders",
+      "location": {
+        "uri": "shop/services/orders.py",
+        "range": {
+          "start_line": 36,
+          "start_col": 1,
+          "end_line": 38,
+          "end_col": 38
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "ffe681ecbf2d6edda5009d89c32bd3084ba4078df9dae3cdf895a3ab2f020ade"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "message.split#0",
+          "text": "message.split",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 37,
+              "start_col": 18,
+              "end_line": 37,
+              "end_col": 37
+            }
+          }
+        },
+        {
+          "key": "log.info#0",
+          "text": "log.info",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/orders.py",
+            "range": {
+              "start_line": 38,
+              "start_col": 9,
+              "end_line": 38,
+              "end_col": 38
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "message.split#0"
+        },
+        {
+          "step": "loop",
+          "label": "for chunk in message.split(\"\\n\")",
+          "body": [
+            {
+              "step": "call",
+              "call": "log.info#0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.pricing",
+      "name": "shop.services.pricing",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop.services",
+      "location": {
+        "uri": "shop/services/pricing.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "a05a51e62954073c4db7a26bc1c26dec8acdc4cb6351e8bddd16ca0165855151"
+      }
+    },
+    {
+      "id": "python:shop.services.pricing.apply_discount",
+      "name": "apply_discount",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.pricing",
+      "location": {
+        "uri": "shop/services/pricing.py",
+        "range": {
+          "start_line": 20,
+          "start_col": 1,
+          "end_line": 26,
+          "end_col": 24
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "01c462117d444c425edb649acc7730a07b87f9d6764132f9ce3b56db5ed9bed4"
+      },
+      "calls": [
+        {
+          "key": "bulk_discount#0",
+          "text": "bulk_discount",
+          "targets": [
+            {
+              "unit": "python:shop.services.pricing.bulk_discount",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/pricing.py",
+            "range": {
+              "start_line": 22,
+              "start_col": 27,
+              "end_line": 22,
+              "end_col": 50
+            }
+          }
+        },
+        {
+          "key": "bulk_discount#1",
+          "text": "bulk_discount",
+          "targets": [
+            {
+              "unit": "python:shop.services.pricing.bulk_discount",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/pricing.py",
+            "range": {
+              "start_line": 24,
+              "start_col": 27,
+              "end_line": 24,
+              "end_col": 50
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "branch",
+          "guard": "quantity >= BULK_THRESHOLD * 10",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "bulk_discount#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "return"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": [
+                {
+                  "step": "branch",
+                  "guard": "quantity >= BULK_THRESHOLD",
+                  "arms": [
+                    {
+                      "label": "yes",
+                      "body": [
+                        {
+                          "step": "call",
+                          "call": "bulk_discount#1"
+                        },
+                        {
+                          "step": "exit",
+                          "kind": "return"
+                        }
+                      ]
+                    },
+                    {
+                      "label": "no",
+                      "body": [
+                        {
+                          "step": "exit",
+                          "kind": "return"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.pricing.bulk_discount",
+      "name": "bulk_discount",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.pricing",
+      "location": {
+        "uri": "shop/services/pricing.py",
+        "range": {
+          "start_line": 29,
+          "start_col": 1,
+          "end_line": 30,
+          "end_col": 26
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "04d1848d2dfc383571d79b98e52df5dec8d9e9c0073e18b41bbdde9d100f0598"
+      }
+    },
+    {
+      "id": "python:shop.services.pricing.quote",
+      "name": "quote",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.pricing",
+      "location": {
+        "uri": "shop/services/pricing.py",
+        "range": {
+          "start_line": 7,
+          "start_col": 1,
+          "end_line": 9,
+          "end_col": 46
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "6f39258312bfbf6433c0c554c1518bde08c08c4a884307c4b01b427393f9360e"
+      },
+      "calls": [
+        {
+          "key": "unit_price#0",
+          "text": "unit_price",
+          "targets": [
+            {
+              "unit": "python:shop.services.pricing.unit_price",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/pricing.py",
+            "range": {
+              "start_line": 8,
+              "start_col": 16,
+              "end_line": 8,
+              "end_col": 31
+            }
+          }
+        },
+        {
+          "key": "apply_discount#0",
+          "text": "apply_discount",
+          "targets": [
+            {
+              "unit": "python:shop.services.pricing.apply_discount",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/pricing.py",
+            "range": {
+              "start_line": 9,
+              "start_col": 12,
+              "end_line": 9,
+              "end_col": 46
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.pricing.quote_all",
+      "name": "quote_all",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.pricing",
+      "location": {
+        "uri": "shop/services/pricing.py",
+        "range": {
+          "start_line": 33,
+          "start_col": 1,
+          "end_line": 36,
+          "end_col": 34
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "d5e4029f513544f5671203987d145be61807013d9f95abd4141122f46044fd41"
+      },
+      "calls": [
+        {
+          "key": "quote#0",
+          "text": "quote",
+          "targets": [
+            {
+              "unit": "python:shop.services.pricing.quote",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/pricing.py",
+            "range": {
+              "start_line": 34,
+              "start_col": 15,
+              "end_line": 34,
+              "end_col": 35
+            }
+          }
+        },
+        {
+          "key": "sorted#0",
+          "text": "sorted",
+          "targets": [
+            {
+              "unit": "python:shop.services.pricing.quote_all.<locals>.<lambda#0>",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "shop/services/pricing.py",
+            "range": {
+              "start_line": 35,
+              "start_col": 22,
+              "end_line": 35,
+              "end_col": 73
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "loop",
+          "label": "for sku, quantity in lines",
+          "body": [
+            {
+              "step": "call",
+              "call": "quote#0"
+            }
+          ]
+        },
+        {
+          "step": "call",
+          "call": "sorted#0"
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.pricing.quote_all.<locals>.<lambda#0>",
+      "name": "<lambda#0>",
+      "kind": "closure",
+      "role": "invocable",
+      "parent": "python:shop.services.pricing.quote_all",
+      "location": {
+        "uri": "shop/services/pricing.py",
+        "range": {
+          "start_line": 35,
+          "start_col": 40,
+          "end_line": 35,
+          "end_col": 72
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "0fc30c4f144d88aaa6a4d6736581d3acf052ca6cd7746e1564d05ccfc05c23ad"
+      },
+      "attributes": {
+        "lambda": true
+      },
+      "calls": [
+        {
+          "key": "unit_price#0",
+          "text": "unit_price",
+          "targets": [
+            {
+              "unit": "python:shop.services.pricing.unit_price",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/pricing.py",
+            "range": {
+              "start_line": 35,
+              "start_col": 53,
+              "end_line": 35,
+              "end_col": 72
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.pricing.unit_price",
+      "name": "unit_price",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.pricing",
+      "location": {
+        "uri": "shop/services/pricing.py",
+        "range": {
+          "start_line": 12,
+          "start_col": 1,
+          "end_line": 17,
+          "end_col": 48
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "08585325fa2580651608046474b6022fbcfb1dfd41cb12b08b04a70dc39c70ca"
+      },
+      "calls": [
+        {
+          "key": "Invalid#0",
+          "text": "Invalid",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/pricing.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 19,
+              "end_line": 17,
+              "end_col": 48
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "branch",
+          "guard": "match sku",
+          "arms": [
+            {
+              "label": "case \"widget\" | \"gadget\"",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "return"
+                }
+              ]
+            },
+            {
+              "label": "case _",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "Invalid#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Invalid"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.users",
+      "name": "shop.services.users",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop.services",
+      "location": {
+        "uri": "shop/services/users.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "10eeb229a41976efde05d9e76bd408860eee10d371abdc56c603c2049df42ea3"
+      }
+    },
+    {
+      "id": "python:shop.services.users.find_user",
+      "name": "find_user",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.services.users",
+      "location": {
+        "uri": "shop/services/users.py",
+        "range": {
+          "start_line": 5,
+          "start_col": 1,
+          "end_line": 9,
+          "end_col": 16
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "2a5ae01d3f5fa8ef1fa9ffede1dade9b30444b0cd388a2aae79413aab5877c2f"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "store.user#0",
+          "text": "store.user",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store.user",
+              "certainty": "inferred"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/users.py",
+            "range": {
+              "start_line": 6,
+              "start_col": 18,
+              "end_line": 6,
+              "end_col": 37
+            }
+          }
+        },
+        {
+          "key": "NotFound#0",
+          "text": "NotFound",
+          "targets": [
+            {
+              "unit": "python:shop.errors.NotFound.__init__",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/users.py",
+            "range": {
+              "start_line": 8,
+              "start_col": 15,
+              "end_line": 8,
+              "end_col": 31
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "store.user#0"
+        },
+        {
+          "step": "branch",
+          "guard": "user is None",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "NotFound#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "NotFound"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.users.register",
+      "name": "register",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.services.users",
+      "location": {
+        "uri": "shop/services/users.py",
+        "range": {
+          "start_line": 12,
+          "start_col": 1,
+          "end_line": 17,
+          "end_col": 48
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "918e2e923b3142fd7bcf4f27725ad08dda2469d402a384a28cfa8998a8804dca"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "validation.normalize_name#0",
+          "text": "validation.normalize_name",
+          "targets": [
+            {
+              "unit": "python:shop.services.validation.normalize_name",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/users.py",
+            "range": {
+              "start_line": 13,
+              "start_col": 12,
+              "end_line": 13,
+              "end_col": 47
+            }
+          }
+        },
+        {
+          "key": "validation.normalize_email#0",
+          "text": "validation.normalize_email",
+          "targets": [
+            {
+              "unit": "python:shop.services.validation.normalize_email",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/users.py",
+            "range": {
+              "start_line": 14,
+              "start_col": 13,
+              "end_line": 14,
+              "end_col": 50
+            }
+          }
+        },
+        {
+          "key": "store.email_taken#0",
+          "text": "store.email_taken",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store.email_taken",
+              "certainty": "inferred"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/users.py",
+            "range": {
+              "start_line": 15,
+              "start_col": 14,
+              "end_line": 15,
+              "end_col": 38
+            }
+          }
+        },
+        {
+          "key": "Invalid#0",
+          "text": "Invalid",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/users.py",
+            "range": {
+              "start_line": 16,
+              "start_col": 15,
+              "end_line": 16,
+              "end_col": 56
+            }
+          }
+        },
+        {
+          "key": "store.insert_user#0",
+          "text": "store.insert_user",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store.insert_user",
+              "certainty": "inferred"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/users.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 18,
+              "end_line": 17,
+              "end_col": 48
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "validation.normalize_name#0"
+        },
+        {
+          "step": "call",
+          "call": "validation.normalize_email#0"
+        },
+        {
+          "step": "call",
+          "call": "store.email_taken#0"
+        },
+        {
+          "step": "branch",
+          "guard": "await store.email_taken(email)",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "Invalid#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Invalid"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": []
+            }
+          ]
+        },
+        {
+          "step": "call",
+          "call": "store.insert_user#0"
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.validation",
+      "name": "shop.services.validation",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop.services",
+      "location": {
+        "uri": "shop/services/validation.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "1481587232a05aeed826f3bf9f1654ab24cbe448c22da1b6ddacd963c33c2add"
+      }
+    },
+    {
+      "id": "python:shop.services.validation.check_quantity",
+      "name": "check_quantity",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.validation",
+      "location": {
+        "uri": "shop/services/validation.py",
+        "range": {
+          "start_line": 20,
+          "start_col": 1,
+          "end_line": 23,
+          "end_col": 20
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "d125c63af05d1a19e907c76553c2d52fb8a3fc4e070949a10f7788f33123831f"
+      },
+      "calls": [
+        {
+          "key": "Invalid#0",
+          "text": "Invalid",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 22,
+              "start_col": 15,
+              "end_line": 22,
+              "end_col": 72
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "branch",
+          "guard": "quantity == 0 or quantity > MAX_QUANTITY",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "Invalid#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Invalid"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.validation.looks_like_email",
+      "name": "looks_like_email",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.validation",
+      "location": {
+        "uri": "shop/services/validation.py",
+        "range": {
+          "start_line": 26,
+          "start_col": 1,
+          "end_line": 28,
+          "end_col": 41
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "55b31d225bb91a95d4da451ee5f1b4f3660a6a0421d11f238ca4829580a5cdd2"
+      },
+      "calls": [
+        {
+          "key": "candidate.partition#0",
+          "text": "candidate.partition",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 27,
+              "start_col": 24,
+              "end_line": 27,
+              "end_col": 48
+            }
+          }
+        },
+        {
+          "key": "bool#0",
+          "text": "bool",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 28,
+              "start_col": 12,
+              "end_line": 28,
+              "end_col": 23
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.validation.normalize_email",
+      "name": "normalize_email",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.validation",
+      "location": {
+        "uri": "shop/services/validation.py",
+        "range": {
+          "start_line": 13,
+          "start_col": 1,
+          "end_line": 17,
+          "end_col": 17
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "cbf23a52ad389e9c45af451f94242ede09b35ce9c118ee6f9a9ffb9543416857"
+      },
+      "calls": [
+        {
+          "key": "raw.strip#0",
+          "text": "raw.strip",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 14,
+              "start_col": 13,
+              "end_line": 14,
+              "end_col": 24
+            }
+          }
+        },
+        {
+          "key": "raw.strip().lower#0",
+          "text": "raw.strip().lower",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 14,
+              "start_col": 13,
+              "end_line": 14,
+              "end_col": 32
+            }
+          }
+        },
+        {
+          "key": "looks_like_email#0",
+          "text": "looks_like_email",
+          "targets": [
+            {
+              "unit": "python:shop.services.validation.looks_like_email",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 15,
+              "start_col": 12,
+              "end_line": 15,
+              "end_col": 35
+            }
+          }
+        },
+        {
+          "key": "Invalid#0",
+          "text": "Invalid",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 16,
+              "start_col": 15,
+              "end_line": 16,
+              "end_col": 58
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "raw.strip#0"
+        },
+        {
+          "step": "call",
+          "call": "raw.strip().lower#0"
+        },
+        {
+          "step": "call",
+          "call": "looks_like_email#0"
+        },
+        {
+          "step": "branch",
+          "guard": "not looks_like_email(email)",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "Invalid#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Invalid"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.services.validation.normalize_name",
+      "name": "normalize_name",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.services.validation",
+      "location": {
+        "uri": "shop/services/validation.py",
+        "range": {
+          "start_line": 6,
+          "start_col": 1,
+          "end_line": 10,
+          "end_col": 16
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "56f295eb2627652b14334c73c6f3ace720037d66881e6eb6682864d92e318dce"
+      },
+      "calls": [
+        {
+          "key": "raw.strip#0",
+          "text": "raw.strip",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 7,
+              "start_col": 12,
+              "end_line": 7,
+              "end_col": 23
+            }
+          }
+        },
+        {
+          "key": "Invalid#0",
+          "text": "Invalid",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/services/validation.py",
+            "range": {
+              "start_line": 9,
+              "start_col": 15,
+              "end_line": 9,
+              "end_col": 48
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "raw.strip#0"
+        },
+        {
+          "step": "branch",
+          "guard": "not name",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "Invalid#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Invalid"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store",
+      "name": "shop.store",
+      "kind": "module",
+      "role": "group",
+      "parent": "python:shop",
+      "location": {
+        "uri": "shop/store.py"
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "ba8de4faf32a316cc69c2e42559844b72263ecf682e1d5ca26966570e1874387"
+      },
+      "doc": "In-memory persistence."
+    },
+    {
+      "id": "python:shop.store.Store",
+      "name": "Store",
+      "kind": "class",
+      "role": "group",
+      "parent": "python:shop.store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 6,
+          "start_col": 1,
+          "end_line": 46,
+          "end_col": 31
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "6db64e0f71d3d49f5bb9b47431ebb615d417c1b25b9172c433004dc91d379b29"
+      },
+      "doc": "Users and orders, keyed by id."
+    },
+    {
+      "id": "python:shop.store.Store.__init__",
+      "name": "__init__",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.store.Store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 9,
+          "start_col": 5,
+          "end_line": 12,
+          "end_col": 39
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "ba5a16282b6c1073f5d0e2e10fa2560004265cf869b928753456a8884397d948"
+      },
+      "calls": [
+        {
+          "key": "itertools.count#0",
+          "text": "itertools.count",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 12,
+              "start_col": 21,
+              "end_line": 12,
+              "end_col": 39
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.Store._next_id",
+      "name": "_next_id",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.store.Store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 45,
+          "start_col": 5,
+          "end_line": 46,
+          "end_col": 31
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "48bf9f73eacedf99e562ca590732a8e24ccaaac1a7d09a17075f1fac4bc215c5"
+      },
+      "attributes": {
+        "visibility": "private"
+      },
+      "calls": [
+        {
+          "key": "next#0",
+          "text": "next",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 46,
+              "start_col": 16,
+              "end_line": 46,
+              "end_col": 31
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.Store._put_user",
+      "name": "_put_user",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.store.Store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 40,
+          "start_col": 5,
+          "end_line": 43,
+          "end_col": 20
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "216b72d12b5e96b0fdba66cbaf5cb4c99a5b1817515dbff930558503183eedf5"
+      },
+      "attributes": {
+        "visibility": "private"
+      },
+      "calls": [
+        {
+          "key": "self._next_id#0",
+          "text": "self._next_id",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store._next_id",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 41,
+              "start_col": 23,
+              "end_line": 41,
+              "end_col": 38
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.Store.email_taken",
+      "name": "email_taken",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.store.Store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 23,
+          "start_col": 5,
+          "end_line": 24,
+          "end_col": 76
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "cc1566e8f28f4342c7a5bf2193a76d5ddcfbab04562ee851097b81538e94d974"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "any#0",
+          "text": "any",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 24,
+              "start_col": 16,
+              "end_line": 24,
+              "end_col": 76
+            }
+          }
+        },
+        {
+          "key": "self._users.values#0",
+          "text": "self._users.values",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 24,
+              "start_col": 55,
+              "end_line": 24,
+              "end_col": 75
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "self._users.values#0"
+        },
+        {
+          "step": "call",
+          "call": "any#0"
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.Store.insert_order",
+      "name": "insert_order",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.store.Store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 29,
+          "start_col": 5,
+          "end_line": 38,
+          "end_col": 21
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "c21059b268b0327d6329b3b903b7155d7305fae51054529d96903be4fdc239b8"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "self._next_id#0",
+          "text": "self._next_id",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store._next_id",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 31,
+              "start_col": 19,
+              "end_line": 31,
+              "end_col": 34
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.Store.insert_user",
+      "name": "insert_user",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.store.Store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 26,
+          "start_col": 5,
+          "end_line": 27,
+          "end_col": 43
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "65e62ff99f8912c8261245a2d6d013c86e7f2d728243fef2bbee668fe8983b7a"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "self._put_user#0",
+          "text": "self._put_user",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store._put_user",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 27,
+              "start_col": 16,
+              "end_line": 27,
+              "end_col": 43
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.Store.seeded",
+      "name": "seeded",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.store.Store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 15,
+          "start_col": 5,
+          "end_line": 18,
+          "end_col": 21
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "64e9c61d21aced32c8b8df5c74b7eb758c9dc21e52696508c8cc9039c617941d"
+      },
+      "attributes": {
+        "binding": "classmethod",
+        "decorators": "classmethod"
+      },
+      "calls": [
+        {
+          "key": "cls#0",
+          "text": "cls",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store.__init__",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 16,
+              "start_col": 17,
+              "end_line": 16,
+              "end_col": 22
+            }
+          }
+        },
+        {
+          "key": "store._put_user#0",
+          "text": "store._put_user",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store._put_user",
+              "certainty": "inferred"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 17,
+              "start_col": 9,
+              "end_line": 17,
+              "end_col": 50
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.Store.user",
+      "name": "user",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "python:shop.store.Store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 20,
+          "start_col": 5,
+          "end_line": 21,
+          "end_col": 40
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "92f0de140afff71a74713dda498b94282b38de393e45041f8efbeda2ffc92784"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "self._users.get#0",
+          "text": "self._users.get",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 21,
+              "start_col": 16,
+              "end_line": 21,
+              "end_col": 40
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.get_store",
+      "name": "get_store",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "python:shop.store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 52,
+          "start_col": 1,
+          "end_line": 55,
+          "end_col": 18
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "1ce5b22b22d6f71c34b04f92d38ccffffd7eebc3161bd3b94e6c5d0e9f1d195a"
+      },
+      "calls": [
+        {
+          "key": "RuntimeError#0",
+          "text": "RuntimeError",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 54,
+              "start_col": 15,
+              "end_line": 54,
+              "end_col": 52
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "branch",
+          "guard": "_store is None",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "RuntimeError#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "RuntimeError"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "python:shop.store.init_db",
+      "name": "init_db",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "python:shop.store",
+      "location": {
+        "uri": "shop/store.py",
+        "range": {
+          "start_line": 58,
+          "start_col": 1,
+          "end_line": 60,
+          "end_col": 59
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "f5f79240967f6227ee4d6bc76e99923b58596baed9c6a33e6f6c87b84713841c"
+      },
+      "attributes": {
+        "is_async": true
+      },
+      "calls": [
+        {
+          "key": "Store.seeded#0",
+          "text": "Store.seeded",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store.seeded",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 60,
+              "start_col": 14,
+              "end_line": 60,
+              "end_col": 28
+            }
+          }
+        },
+        {
+          "key": "Store#0",
+          "text": "Store",
+          "targets": [
+            {
+              "unit": "python:shop.store.Store.__init__",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "shop/store.py",
+            "range": {
+              "start_line": 60,
+              "start_col": 52,
+              "end_line": 60,
+              "end_col": 59
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "branch",
+          "guard": "_store is None",
+          "arms": [
+            {
+              "label": "yes",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "Store.seeded#0"
+                }
+              ]
+            },
+            {
+              "label": "no",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "Store#0"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "entries": [
+    {
+      "unit": "python:shop.main.<module>",
+      "label": "python -m shop.main",
+      "kind": "main"
+    },
+    {
+      "unit": "python:shop.routes.orders.place_order",
+      "label": "POST /users/{user_id}/orders",
+      "kind": "http",
+      "chain": [
+        "python:shop.audit.audited.<locals>.decorate.<locals>.wrapper"
+      ]
+    },
+    {
+      "unit": "python:shop.routes.orders.place_orders",
+      "label": "POST /users/{user_id}/orders/bulk",
+      "kind": "http"
+    },
+    {
+      "unit": "python:shop.routes.users.create_user",
+      "label": "POST /users",
+      "kind": "http",
+      "chain": [
+        "python:shop.audit.audited.<locals>.decorate.<locals>.wrapper"
+      ]
+    },
+    {
+      "unit": "python:shop.routes.users.get_user",
+      "label": "GET /users/{user_id}",
+      "kind": "http"
+    },
+    {
+      "unit": "python:shop.routes.users.health",
+      "label": "GET /health",
+      "kind": "http"
+    },
+    {
+      "unit": "python:shop.store.init_db",
+      "label": "startup",
+      "kind": "lifecycle"
+    }
+  ]
+}

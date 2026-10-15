@@ -1,8 +1,9 @@
-//! egui panels: function picker, trace settings, playback, inspector, and node labels.
+//! egui panels: entry picker, journey settings, scenarios, playback, inspector, and labels.
 
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use codeviz_graph::{Function, FunctionId, TraceNodeId};
+use codeviz_core::{SpanId, SpanTarget};
+use codeviz_ir::{ExitKind, Role, UnitId};
 use codeviz_layout::LaneKey;
 
 use crate::{
@@ -22,14 +23,14 @@ impl Plugin for UiPlugin {
 #[derive(Resource, Debug)]
 struct PickerState {
     query: String,
-    entry_points_only: bool,
+    entries_only: bool,
 }
 
 impl Default for PickerState {
     fn default() -> Self {
         Self {
             query: String::new(),
-            entry_points_only: true,
+            entries_only: true,
         }
     }
 }
@@ -53,11 +54,11 @@ fn draw_ui(
             .layer_id(egui::LayerId::background())
             .max_rect(ctx.viewport_rect()),
     );
-    let left = egui::Panel::left("functions")
+    let left = egui::Panel::left("entries")
         .resizable(true)
         .default_size(300.0)
         .show(&mut root_ui, |ui| {
-            function_picker(ui, &mut explorer, &mut picker);
+            entry_picker(ui, &mut explorer, &mut picker);
         })
         .response
         .rect
@@ -67,7 +68,9 @@ fn draw_ui(
         .default_size(340.0)
         .show(&mut root_ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                trace_settings(ui, &mut explorer);
+                journey_settings(ui, &mut explorer);
+                ui.separator();
+                scenario_picker(ui, &mut explorer);
                 ui.separator();
                 playback_controls(ui, &explorer, &mut playback);
                 ui.separator();
@@ -142,8 +145,8 @@ fn draw_labels(
     let scene = explorer.scene();
     let label_all = scene.nodes.len() <= LABEL_ALL_LIMIT;
     for placed in &scene.nodes {
-        let id = placed.trace_node;
-        let Some(node) = explorer.node(id) else {
+        let id = placed.span;
+        let Some(node) = explorer.span(id) else {
             continue;
         };
         let emphasized = explorer.selected == Some(id) || explorer.hovered == Some(id);
@@ -183,38 +186,47 @@ fn draw_labels(
     }
 }
 
-fn function_picker(ui: &mut egui::Ui, explorer: &mut Explorer, picker: &mut PickerState) {
-    ui.heading("Functions");
+fn entry_picker(ui: &mut egui::Ui, explorer: &mut Explorer, picker: &mut PickerState) {
+    ui.heading("Entries");
     ui.add(egui::TextEdit::singleline(&mut picker.query).hint_text("filter…"));
-    ui.checkbox(&mut picker.entry_points_only, "Entry points only")
-        .on_hover_text("Functions nothing in the analyzed source calls");
+    ui.checkbox(&mut picker.entries_only, "Entry points only")
+        .on_hover_text("Where execution starts: routes, main, triggers, consumers");
     ui.separator();
 
-    let graph = explorer.graph();
+    let system = explorer.system();
     let query = picker.query.to_lowercase();
-    let mut matches: Vec<(FunctionId, &Function, String)> = graph
-        .functions()
-        .filter(|(id, _)| !picker.entry_points_only || graph.callers(*id).is_empty())
-        .map(|(id, function)| (id, function, function.qualified_name()))
-        .filter(|(_, _, name)| name.to_lowercase().contains(&query))
-        .collect();
-    matches.sort_by(|a, b| a.2.cmp(&b.2));
+    let mut rows: Vec<(UnitId, String, String)> = if picker.entries_only {
+        system
+            .entries()
+            .iter()
+            .map(|e| {
+                (
+                    e.unit.clone(),
+                    e.label.clone(),
+                    format!("{} · {}", e.kind, e.unit),
+                )
+            })
+            .collect()
+    } else {
+        system
+            .units()
+            .filter(|u| u.role == Role::Invocable)
+            .map(|u| (u.id.clone(), explorer.unit_name(&u.id), u.id.to_string()))
+            .collect()
+    };
+    rows.retain(|(_, title, detail)| {
+        title.to_lowercase().contains(&query) || detail.to_lowercase().contains(&query)
+    });
+    rows.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
 
     let mut chosen = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for (id, function, _) in &matches {
-            let selected = explorer.root() == Some(*id);
-            let response = ui
-                .selectable_label(selected, function.short_name())
-                .on_hover_text(format!(
-                    "{}\n{}",
-                    function.qualified_name(),
-                    function.location
-                ));
-            ui.label(egui::RichText::new(function.module_path()).small().weak());
-            if response.clicked() {
-                chosen = Some(*id);
+        for (id, title, detail) in &rows {
+            let selected = explorer.root() == Some(id);
+            if ui.selectable_label(selected, title).clicked() {
+                chosen = Some(id.clone());
             }
+            ui.label(egui::RichText::new(detail).small().weak());
         }
     });
     if let Some(id) = chosen {
@@ -222,17 +234,24 @@ fn function_picker(ui: &mut egui::Ui, explorer: &mut Explorer, picker: &mut Pick
     }
 }
 
-fn trace_settings(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    ui.heading("Trace");
+fn journey_settings(ui: &mut egui::Ui, explorer: &mut Explorer) {
+    ui.heading("Journey");
     let mut changed = false;
     changed |= ui
         .checkbox(
-            &mut explorer.trace_options.include_external,
-            "Show external calls",
+            &mut explorer.options.include_unresolved,
+            "Show unresolved calls",
         )
         .changed();
     changed |= ui
-        .add(egui::Slider::new(&mut explorer.trace_options.max_depth, 1..=64).text("max depth"))
+        .checkbox(
+            &mut explorer.options.follow_registrations,
+            "Follow handoffs",
+        )
+        .on_hover_text("Expand registered routes, callbacks and subscriptions inline")
+        .changed();
+    changed |= ui
+        .add(egui::Slider::new(&mut explorer.options.max_depth, 1..=64).text("max depth"))
         .changed();
     egui::ComboBox::from_label("Z lanes")
         .selected_text(explorer.layout.lane_key.label())
@@ -246,13 +265,52 @@ fn trace_settings(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if changed {
         explorer.rebuild();
     }
-    if let Some(trace) = explorer.trace() {
+    if let Some(journey) = explorer.journey() {
         ui.label(format!(
-            "{} invocations · depth {} · {} lanes",
-            trace.len(),
-            trace.max_depth(),
+            "{} spans · {} ticks · depth {} · {} lanes",
+            journey.len(),
+            journey.duration(),
+            journey.max_depth(),
             explorer.scene().lanes.len()
         ));
+    }
+}
+
+fn scenario_picker(ui: &mut egui::Ui, explorer: &mut Explorer) {
+    ui.heading("Scenarios");
+    let mut chosen = None;
+    let current = explorer.scenario();
+    if ui
+        .selectable_label(current.is_none(), "All paths")
+        .clicked()
+    {
+        chosen = Some(None);
+    }
+    for (index, scenario) in explorer.scenarios().iter().enumerate() {
+        let (mark, color) = match scenario.outcome.kind {
+            ExitKind::Return => ("✔", egui::Color32::from_rgb(120, 210, 140)),
+            ExitKind::Panic => ("‼", egui::Color32::from_rgb(240, 90, 90)),
+            ExitKind::Error | ExitKind::Unknown => ("✗", egui::Color32::from_rgb(240, 120, 110)),
+        };
+        let text = egui::RichText::new(format!("{mark} {}", scenario.outcome.label)).color(color);
+        let response = ui.selectable_label(current == Some(index), text);
+        let via: Vec<String> = scenario
+            .chain
+            .iter()
+            .skip(1)
+            .map(|site| explorer.unit_name(&site.unit))
+            .collect();
+        let response = if via.is_empty() {
+            response
+        } else {
+            response.on_hover_text(format!("via {}", via.join(" → ")))
+        };
+        if response.clicked() {
+            chosen = Some(Some(index));
+        }
+    }
+    if let Some(scenario) = chosen {
+        explorer.set_scenario(scenario);
     }
 }
 
@@ -297,46 +355,26 @@ fn inspector(ui: &mut egui::Ui, explorer: &mut Explorer, playback: &mut Playback
         ui.label("Click a node.");
         return;
     };
-    let Some(node) = explorer.node(selected).cloned() else {
+    let Some(span) = explorer.span(selected).cloned() else {
         return;
     };
 
+    let kind = NodeKind::of(&span);
     ui.label(
         egui::RichText::new(explorer.label(selected))
             .strong()
             .size(16.0),
     );
-    ui.label(
-        egui::RichText::new(NodeKind::of(&node).label())
-            .color(egui_color(NodeKind::of(&node).color())),
-    );
-    if let Some(function) = explorer.function(selected) {
-        ui.label(egui::RichText::new(function.qualified_name()).small());
-        ui.label(egui::RichText::new(&function.signature).monospace());
-        ui.label(format!("defined at {}", function.location));
+    ui.label(egui::RichText::new(kind.label()).color(egui_color(kind.color())));
+    if let Some(unit) = explorer.unit(selected) {
+        unit_details(ui, unit);
     }
-    if let Some(site) = &node.call_site {
-        ui.label(format!("called from {site}"));
-    }
-    ui.label(format!(
-        "ticks {}..{} · depth {}",
-        node.enter, node.exit, node.depth
-    ));
-    if let codeviz_graph::TraceTarget::Ambiguous(ids) = &node.target {
-        ui.label("Candidates:");
-        for id in ids {
-            if let Some(function) = explorer.graph().function(*id) {
-                ui.label(egui::RichText::new(function.qualified_name()).monospace());
-            }
-        }
-    }
+    span_context(ui, explorer, &span);
 
     ui.horizontal(|ui| {
+        let can_reroot = explorer.unit_id(selected).is_some() && span.parent.is_some();
         if ui
-            .add_enabled(
-                explorer.function_id(selected).is_some() && node.parent.is_some(),
-                egui::Button::new("Trace from here"),
-            )
+            .add_enabled(can_reroot, egui::Button::new("Trace from here"))
             .clicked()
         {
             explorer.trace_from_selected();
@@ -349,29 +387,28 @@ fn inspector(ui: &mut egui::Ui, explorer: &mut Explorer, playback: &mut Playback
         }
     });
 
-    if !node.children.is_empty() {
+    if !span.children.is_empty() {
         ui.label("Calls, in order:");
-        let mut chosen: Option<TraceNodeId> = None;
-        for child in &node.children {
+        let mut chosen: Option<SpanId> = None;
+        for child in &span.children {
             if ui.link(explorer.label(*child)).clicked() {
                 chosen = Some(*child);
             }
         }
         if let Some(child) = chosen {
             explorer.selected = Some(child);
-            if let Some(child_node) = explorer.node(child) {
-                playback.tick = playback.tick.max(child_node.enter as f32);
+            if let Some(child_span) = explorer.span(child) {
+                playback.tick = playback.tick.max(child_span.enter as f32);
             }
         }
     }
 
-    if let Some(function_id) = explorer.function_id(selected) {
+    if let Some(unit) = explorer.unit_id(selected) {
         let callers: Vec<String> = explorer
-            .graph()
-            .callers(function_id)
+            .system()
+            .callers(unit)
             .iter()
-            .filter_map(|id| explorer.graph().function(*id))
-            .map(Function::qualified_name)
+            .map(|id| explorer.unit_name(id))
             .collect();
         if !callers.is_empty() {
             ui.collapsing(format!("Called by ({})", callers.len()), |ui| {
@@ -379,6 +416,68 @@ fn inspector(ui: &mut egui::Ui, explorer: &mut Explorer, playback: &mut Playback
                     ui.label(egui::RichText::new(caller).monospace().small());
                 }
             });
+        }
+    }
+}
+
+fn unit_details(ui: &mut egui::Ui, unit: &codeviz_ir::Unit) {
+    ui.label(egui::RichText::new(unit.id.as_str()).small());
+    ui.label(format!("{} · {:?}", unit.kind, unit.role).to_lowercase());
+    if let Some(doc) = &unit.doc {
+        ui.label(egui::RichText::new(doc).italics());
+    }
+    for (key, value) in &unit.attributes {
+        if key == "signature" {
+            ui.label(egui::RichText::new(value.to_string()).monospace());
+        } else {
+            ui.label(format!("{key}: {value}"));
+        }
+    }
+    if let Some(location) = &unit.location {
+        ui.label(format!("defined at {location}"));
+    }
+}
+
+fn span_context(ui: &mut egui::Ui, explorer: &Explorer, span: &codeviz_core::Span) {
+    if let Some((caller, key)) = &span.call {
+        let site = explorer
+            .system()
+            .unit(caller)
+            .and_then(|u| u.call(key))
+            .and_then(|call| call.location.as_ref());
+        match site {
+            Some(location) => ui.label(format!("called as `{key}` at {location}")),
+            None => ui.label(format!("called as `{key}`")),
+        };
+    }
+    for condition in &span.conditions {
+        ui.label(format!(
+            "when {} ⇒ {}",
+            condition.guard.as_deref().unwrap_or("?"),
+            condition.arm
+        ));
+    }
+    if span.repeats {
+        ui.label("inside a loop");
+    }
+    for exit in &span.exits {
+        ui.label(
+            egui::RichText::new(format!(
+                "{:?}: {}",
+                exit.kind,
+                exit.label.as_deref().unwrap_or("")
+            ))
+            .color(egui::Color32::from_rgb(240, 120, 110)),
+        );
+    }
+    ui.label(format!(
+        "ticks {}..{} · depth {}",
+        span.enter, span.exit, span.depth
+    ));
+    if let SpanTarget::Ambiguous(ids) = &span.target {
+        ui.label("Candidates:");
+        for id in ids {
+            ui.label(egui::RichText::new(id.as_str()).monospace());
         }
     }
 }

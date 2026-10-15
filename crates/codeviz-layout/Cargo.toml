@@ -8,7 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-codeviz-graph.workspace = true
+codeviz-core.workspace = true
+codeviz-ir.workspace = true
 
 [lints]
 workspace = true

@@ -3,46 +3,47 @@
 Explore a Rust codebase's call flow in 3D. Point it at a directory, pick a function
 (an Axum handler, say), and follow everything it calls.
 
-![place_order traced through the demo Axum server](docs/place_order.png)
-
 ```sh
 mise install
-mise run demo                       # opens the viewer on demo/axum-server
-cargo run -p codeviz -- <dir> --list
-cargo run -p codeviz -- <dir> --entry users::register --print-trace
-cargo run -p codeviz -- <dir> --entry users::register --screenshot out.png
+mise run demo-docs                   # regenerate the demo IR documents
+mise run demo                        # 3D view of the Rust demo
+mise run demo-merged                 # architecture + Rust code as one system
+
+codeviz analyze <dir> -o app.json    # Rust or Python source → IR
+codeviz import pipeline.yml -o ci.json
+codeviz validate app.json
+codeviz journey app.json             # list entries
+codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
+codeviz view app.json other.json     # merged 3D view
 ```
 
 Controls: left-drag orbit, right-drag pan, scroll zoom. `←`/`→` step through calls in
 time, `↑` jumps to the caller, `↓` to the first callee, `F` focuses the selection,
-`Space` plays the trace, `Enter` re-roots on the selection, `Backspace` goes back.
+`Space` plays the journey, `Enter` re-roots on the selection, `Backspace` goes back.
 
-## The picture
+## The model
 
-Each node is one invocation in a static trace unrolled from the chosen root.
-
-- **X — time.** A logical clock that ticks once per call, depth-first in evaluation
-  order. A caller's lifeline spans every call it makes, transitively.
-- **Y — stack depth.** Callees hang below their callers.
-- **Z — lanes.** Module by default; switchable to file, impl type, or flat. Calls that
-  cross a layer boundary jump between planes.
-
-Colors distinguish exact resolution, name-based inference (method calls on receivers
-of unknown type), ambiguous matches, external calls, and truncated recursion.
+Producers write an [IR document](docs/ir.md): units (things that run), their
+containment, invocations between them, and optional control flow. Core unrolls an entry
+point into a **journey** and lists its **scenarios**, the distinct ways it can end. The
+viewer lays a journey out with X as time, Y as depth, and Z as lanes (containers by
+default). [docs/ir-findings.md](docs/ir-findings.md) records how v0.1 held up against
+Rust, Python, a Buildkite pipeline and a hand-written architecture.
 
 ## Workspace
 
 | Crate | Role |
 | --- | --- |
-| `codeviz-graph` | Language-agnostic call graph model and trace expansion. No I/O. |
-| `codeviz-rust` | Rust frontend: package discovery, tree-sitter extraction, name resolution. |
-| `codeviz-layout` | Maps a trace onto 3D coordinates. Renderer-agnostic. |
+| `codeviz-ir` | The IR types, JSON (de)serialization, schema and validation. |
+| `codeviz-core` | Merges documents; unrolls journeys; enumerates scenarios. |
+| `codeviz-rust` | Rust producer (tree-sitter). |
+| `codeviz-python` | Python producer (tree-sitter). |
+| `codeviz-buildkite` | Buildkite pipeline importer. |
+| `codeviz-layout` | Maps a journey onto 3D coordinates. Renderer-agnostic. |
 | `codeviz-viewer` | Bevy + egui viewer. |
-| `codeviz` | CLI binary. |
-| `demo/axum-server` | Layered Axum service used as a fixture. |
+| `codeviz` | CLI. |
 
-Dependencies point one way: frontends and the layout depend on `codeviz-graph`; the
-viewer depends on graph and layout; only the CLI knows about the Rust frontend.
+Producers depend only on `codeviz-ir`. Core, layout and the viewer never see a producer.
 
 ## Limits of syntactic resolution
 

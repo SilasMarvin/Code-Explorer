@@ -1,8 +1,8 @@
-//! Interactive 3D viewer for codeviz call traces, built on Bevy.
+//! Interactive 3D viewer for codeviz journeys, built on Bevy.
 //!
-//! The viewer owns a [`CallGraph`] and renders the [`Trace`](codeviz_graph::Trace) from
-//! one root function at a time, laid out by [`codeviz_layout`]: time runs along X, stack
-//! depth down Y, and lanes (modules by default) along Z.
+//! The viewer owns a [`System`] and renders the [`Journey`](codeviz_core::Journey) from
+//! one entry at a time, laid out by [`codeviz_layout`]: time runs along X, depth down Y,
+//! and lanes (containers by default) along Z.
 
 #![expect(
     clippy::needless_pass_by_value,
@@ -19,43 +19,44 @@ use std::path::PathBuf;
 
 use bevy::{prelude::*, window::WindowPlugin};
 use bevy_egui::EguiPlugin;
-use codeviz_graph::{CallGraph, FunctionId, TraceOptions};
+use codeviz_core::{JourneyOptions, System};
+use codeviz_ir::UnitId;
 
 use crate::explorer::{Explorer, Playback};
 
 /// Configures and launches the viewer window.
 #[derive(Debug)]
 pub struct Viewer {
-    graph: CallGraph,
-    root: Option<FunctionId>,
-    trace_options: TraceOptions,
+    system: System,
+    root: Option<UnitId>,
+    options: JourneyOptions,
     title: String,
     screenshot: Option<PathBuf>,
 }
 
 impl Viewer {
     #[must_use]
-    pub fn new(graph: CallGraph) -> Self {
+    pub fn new(system: System) -> Self {
         Self {
-            graph,
+            system,
             root: None,
-            trace_options: TraceOptions::default(),
+            options: JourneyOptions::default(),
             title: "codeviz".to_owned(),
             screenshot: None,
         }
     }
 
-    /// The function to trace from on startup. Without one, pick it in the UI.
+    /// The unit to start from. Without one, the first entry is used.
     #[must_use]
-    pub fn with_root(mut self, root: FunctionId) -> Self {
+    pub fn with_root(mut self, root: UnitId) -> Self {
         self.root = Some(root);
         self
     }
 
-    /// Initial trace options; adjustable in the UI.
+    /// Initial journey options; adjustable in the UI.
     #[must_use]
-    pub fn with_trace_options(mut self, options: TraceOptions) -> Self {
-        self.trace_options = options;
+    pub fn with_options(mut self, options: JourneyOptions) -> Self {
+        self.options = options;
         self
     }
 
@@ -93,7 +94,7 @@ impl Viewer {
             ui::UiPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
-        .insert_resource(Explorer::new(self.graph, self.root, self.trace_options))
+        .insert_resource(Explorer::new(self.system, self.root, self.options))
         .init_resource::<Playback>();
         if let Some(path) = self.screenshot {
             app.add_plugins(capture::CapturePlugin(path));

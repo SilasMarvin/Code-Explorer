@@ -1,0 +1,2578 @@
+{
+  "schema": "codeviz/0.1",
+  "producer": {
+    "name": "codeviz-rust",
+    "version": "0.1.0"
+  },
+  "root": "file:///Users/silas/Projects/code-explorer/demo/axum-server",
+  "units": [
+    {
+      "id": "rust:axum_server",
+      "name": "axum_server",
+      "kind": "crate",
+      "role": "group"
+    },
+    {
+      "id": "rust:axum_server::error",
+      "name": "error",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server"
+    },
+    {
+      "id": "rust:axum_server::error::AppError",
+      "name": "AppError",
+      "kind": "enum",
+      "role": "group",
+      "parent": "rust:axum_server::error"
+    },
+    {
+      "id": "rust:axum_server::error::AppError::message",
+      "name": "message",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::error::AppError",
+      "location": {
+        "uri": "src/error.rs",
+        "range": {
+          "start_line": 27,
+          "start_col": 5,
+          "end_line": 32,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "404a743abe5c403d49a1ead255bbbe3fd0ad39b7ebe38d39bee9198f601fa75d"
+      },
+      "attributes": {
+        "signature": "fn message(&self) -> String"
+      },
+      "calls": [
+        {
+          "key": ".clone#0",
+          "text": ".clone",
+          "targets": [],
+          "location": {
+            "uri": "src/error.rs",
+            "range": {
+              "start_line": 30,
+              "start_col": 38,
+              "end_line": 30,
+              "end_col": 52
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "branch",
+          "guard": "match self",
+          "arms": [
+            {
+              "label": "Self::NotFound(what)",
+              "body": []
+            },
+            {
+              "label": "Self::Invalid(reason)",
+              "body": [
+                {
+                  "step": "call",
+                  "call": ".clone#0"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::error::AppError::status",
+      "name": "status",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::error::AppError",
+      "location": {
+        "uri": "src/error.rs",
+        "range": {
+          "start_line": 20,
+          "start_col": 5,
+          "end_line": 25,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "662f961f69760a644c95d133e94f05482c7e90ff504a81fbfa207019a3195153"
+      },
+      "attributes": {
+        "signature": "fn status(&self) -> StatusCode"
+      },
+      "body": [
+        {
+          "step": "branch",
+          "guard": "match self",
+          "arms": [
+            {
+              "label": "Self::NotFound(_)",
+              "body": []
+            },
+            {
+              "label": "Self::Invalid(_)",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::error::AppError::{impl#IntoResponse}::into_response",
+      "name": "into_response",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::error::AppError",
+      "location": {
+        "uri": "src/error.rs",
+        "range": {
+          "start_line": 36,
+          "start_col": 5,
+          "end_line": 41,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "74eadfbb1ba6078e48fecc1cd9782d4124948c7fd50f7a26940deadcd0eb0290"
+      },
+      "attributes": {
+        "signature": "fn into_response(self) -> Response",
+        "trait": "IntoResponse"
+      },
+      "calls": [
+        {
+          "key": ".message#0",
+          "text": ".message",
+          "targets": [
+            {
+              "unit": "rust:axum_server::error::AppError::message",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/error.rs",
+            "range": {
+              "start_line": 38,
+              "start_col": 20,
+              "end_line": 38,
+              "end_col": 34
+            }
+          }
+        },
+        {
+          "key": ".status#0",
+          "text": ".status",
+          "targets": [
+            {
+              "unit": "rust:axum_server::error::AppError::status",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/error.rs",
+            "range": {
+              "start_line": 40,
+              "start_col": 10,
+              "end_line": 40,
+              "end_col": 23
+            }
+          }
+        },
+        {
+          "key": ".into_response#0",
+          "text": ".into_response",
+          "targets": [],
+          "location": {
+            "uri": "src/error.rs",
+            "range": {
+              "start_line": 40,
+              "start_col": 9,
+              "end_line": 40,
+              "end_col": 52
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".message#0"
+        },
+        {
+          "step": "call",
+          "call": ".status#0"
+        },
+        {
+          "step": "call",
+          "call": ".into_response#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::error::ErrorBody",
+      "name": "ErrorBody",
+      "kind": "struct",
+      "role": "group",
+      "parent": "rust:axum_server::error"
+    },
+    {
+      "id": "rust:axum_server::handlers",
+      "name": "handlers",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server"
+    },
+    {
+      "id": "rust:axum_server::handlers::create_user",
+      "name": "create_user",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::handlers",
+      "location": {
+        "uri": "src/handlers.rs",
+        "range": {
+          "start_line": 25,
+          "start_col": 1,
+          "end_line": 31,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "9dd356e55593997751cbfc2b71bc11def9ece13b67bd851e8c2ab72d1e271eb7"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn create_user( State(store): State<Store>, Json(input): Json<NewUser>, ) -> Result<Json<User>, AppError>"
+      },
+      "calls": [
+        {
+          "key": "users::register#0",
+          "text": "users::register",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::users::register",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/handlers.rs",
+            "range": {
+              "start_line": 29,
+              "start_col": 16,
+              "end_line": 29,
+              "end_col": 46
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "users::register#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::handlers::get_user",
+      "name": "get_user",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::handlers",
+      "location": {
+        "uri": "src/handlers.rs",
+        "range": {
+          "start_line": 17,
+          "start_col": 1,
+          "end_line": 23,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "688a0e8b06bdfa27a3b91a2e743e424b710d665c3e9273cc9717d7e20b238ec4"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn get_user( State(store): State<Store>, Path(id): Path<UserId>, ) -> Result<Json<User>, AppError>"
+      },
+      "calls": [
+        {
+          "key": "users::find_user#0",
+          "text": "users::find_user",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::users::find_user",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/handlers.rs",
+            "range": {
+              "start_line": 21,
+              "start_col": 16,
+              "end_line": 21,
+              "end_col": 44
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "users::find_user#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::handlers::health",
+      "name": "health",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::handlers",
+      "location": {
+        "uri": "src/handlers.rs",
+        "range": {
+          "start_line": 13,
+          "start_col": 1,
+          "end_line": 15,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "ccb160ce1bcab56e44c121236e1904a1f2563895fc4a2eef5b9fe85f6a9a3b00"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn health() -> &'static str"
+      },
+      "body": []
+    },
+    {
+      "id": "rust:axum_server::handlers::place_order",
+      "name": "place_order",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::handlers",
+      "location": {
+        "uri": "src/handlers.rs",
+        "range": {
+          "start_line": 33,
+          "start_col": 1,
+          "end_line": 40,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "ab0697310988c8821a27b97f2f21b591fb93070ca95c62ba8a9bf56f6b0b957c"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn place_order( State(store): State<Store>, Path(user_id): Path<UserId>, Json(input): Json<NewOrder>, ) -> Result<Json<Order>, AppError>"
+      },
+      "calls": [
+        {
+          "key": "orders::place#0",
+          "text": "orders::place",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::orders::place",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/handlers.rs",
+            "range": {
+              "start_line": 38,
+              "start_col": 17,
+              "end_line": 38,
+              "end_col": 54
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "orders::place#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::main",
+      "name": "main",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server",
+      "location": {
+        "uri": "src/main.rs",
+        "range": {
+          "start_line": 15,
+          "start_col": 1,
+          "end_line": 23,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "28f2de12d773cdf9d612c22912412e232537305e459bb972ff05fa255e4527bc"
+      },
+      "attributes": {
+        "signature": "async fn main() -> std::io::Result<()>"
+      },
+      "calls": [
+        {
+          "key": "tracing_subscriber::fmt::init#0",
+          "text": "tracing_subscriber::fmt::init",
+          "targets": [],
+          "location": {
+            "uri": "src/main.rs",
+            "range": {
+              "start_line": 16,
+              "start_col": 5,
+              "end_line": 16,
+              "end_col": 36
+            }
+          }
+        },
+        {
+          "key": "Store::seeded#0",
+          "text": "Store::seeded",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::seeded",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/main.rs",
+            "range": {
+              "start_line": 18,
+              "start_col": 30,
+              "end_line": 18,
+              "end_col": 45
+            }
+          }
+        },
+        {
+          "key": "routes::router#0",
+          "text": "routes::router",
+          "targets": [
+            {
+              "unit": "rust:axum_server::routes::router",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/main.rs",
+            "range": {
+              "start_line": 18,
+              "start_col": 15,
+              "end_line": 18,
+              "end_col": 46
+            }
+          }
+        },
+        {
+          "key": "SocketAddr::from#0",
+          "text": "SocketAddr::from",
+          "targets": [],
+          "location": {
+            "uri": "src/main.rs",
+            "range": {
+              "start_line": 19,
+              "start_col": 16,
+              "end_line": 19,
+              "end_col": 56
+            }
+          }
+        },
+        {
+          "key": "tokio::net::TcpListener::bind#0",
+          "text": "tokio::net::TcpListener::bind",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "src/main.rs",
+            "range": {
+              "start_line": 20,
+              "start_col": 20,
+              "end_line": 20,
+              "end_col": 55
+            }
+          }
+        },
+        {
+          "key": "axum::serve#0",
+          "text": "axum::serve",
+          "targets": [],
+          "location": {
+            "uri": "src/main.rs",
+            "range": {
+              "start_line": 22,
+              "start_col": 5,
+              "end_line": 22,
+              "end_col": 31
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "tracing_subscriber::fmt::init#0"
+        },
+        {
+          "step": "call",
+          "call": "Store::seeded#0"
+        },
+        {
+          "step": "call",
+          "call": "routes::router#0"
+        },
+        {
+          "step": "call",
+          "call": "SocketAddr::from#0"
+        },
+        {
+          "step": "call",
+          "call": "tokio::net::TcpListener::bind#0"
+        },
+        {
+          "step": "call",
+          "call": "axum::serve#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::models",
+      "name": "models",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server"
+    },
+    {
+      "id": "rust:axum_server::models::NewOrder",
+      "name": "NewOrder",
+      "kind": "struct",
+      "role": "group",
+      "parent": "rust:axum_server::models"
+    },
+    {
+      "id": "rust:axum_server::models::NewUser",
+      "name": "NewUser",
+      "kind": "struct",
+      "role": "group",
+      "parent": "rust:axum_server::models"
+    },
+    {
+      "id": "rust:axum_server::models::Order",
+      "name": "Order",
+      "kind": "struct",
+      "role": "group",
+      "parent": "rust:axum_server::models"
+    },
+    {
+      "id": "rust:axum_server::models::User",
+      "name": "User",
+      "kind": "struct",
+      "role": "group",
+      "parent": "rust:axum_server::models"
+    },
+    {
+      "id": "rust:axum_server::routes",
+      "name": "routes",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server"
+    },
+    {
+      "id": "rust:axum_server::routes::router",
+      "name": "router",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::routes",
+      "location": {
+        "uri": "src/routes.rs",
+        "range": {
+          "start_line": 8,
+          "start_col": 1,
+          "end_line": 15,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "d5138a0a63d4a5c0921a11facc1128617f899f37cd856fed201b31645bbf70bb"
+      },
+      "attributes": {
+        "signature": "pub(crate) fn router(store: Store) -> Router"
+      },
+      "calls": [
+        {
+          "key": "Router::new#0",
+          "text": "Router::new",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 9,
+              "start_col": 5,
+              "end_line": 9,
+              "end_col": 18
+            }
+          }
+        },
+        {
+          "key": "get#0",
+          "text": "get",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 10,
+              "start_col": 27,
+              "end_line": 10,
+              "end_col": 48
+            }
+          }
+        },
+        {
+          "key": "handlers::health#0",
+          "text": "handlers::health",
+          "targets": [
+            {
+              "unit": "rust:axum_server::handlers::health",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 10,
+              "start_col": 31,
+              "end_line": 10,
+              "end_col": 47
+            }
+          }
+        },
+        {
+          "key": ".route#0",
+          "text": ".route",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 9,
+              "start_col": 5,
+              "end_line": 10,
+              "end_col": 49
+            }
+          }
+        },
+        {
+          "key": "post#0",
+          "text": "post",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 11,
+              "start_col": 26,
+              "end_line": 11,
+              "end_col": 53
+            }
+          }
+        },
+        {
+          "key": "handlers::create_user#0",
+          "text": "handlers::create_user",
+          "targets": [
+            {
+              "unit": "rust:axum_server::handlers::create_user",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 11,
+              "start_col": 31,
+              "end_line": 11,
+              "end_col": 52
+            }
+          }
+        },
+        {
+          "key": ".route#1",
+          "text": ".route",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 9,
+              "start_col": 5,
+              "end_line": 11,
+              "end_col": 54
+            }
+          }
+        },
+        {
+          "key": "get#1",
+          "text": "get",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 12,
+              "start_col": 31,
+              "end_line": 12,
+              "end_col": 54
+            }
+          }
+        },
+        {
+          "key": "handlers::get_user#0",
+          "text": "handlers::get_user",
+          "targets": [
+            {
+              "unit": "rust:axum_server::handlers::get_user",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 12,
+              "start_col": 35,
+              "end_line": 12,
+              "end_col": 53
+            }
+          }
+        },
+        {
+          "key": ".route#2",
+          "text": ".route",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 9,
+              "start_col": 5,
+              "end_line": 12,
+              "end_col": 55
+            }
+          }
+        },
+        {
+          "key": "post#1",
+          "text": "post",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 13,
+              "start_col": 38,
+              "end_line": 13,
+              "end_col": 65
+            }
+          }
+        },
+        {
+          "key": "handlers::place_order#0",
+          "text": "handlers::place_order",
+          "targets": [
+            {
+              "unit": "rust:axum_server::handlers::place_order",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 13,
+              "start_col": 43,
+              "end_line": 13,
+              "end_col": 64
+            }
+          }
+        },
+        {
+          "key": ".route#3",
+          "text": ".route",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 9,
+              "start_col": 5,
+              "end_line": 13,
+              "end_col": 66
+            }
+          }
+        },
+        {
+          "key": ".with_state#0",
+          "text": ".with_state",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 9,
+              "start_col": 5,
+              "end_line": 14,
+              "end_col": 27
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "Router::new#0"
+        },
+        {
+          "step": "call",
+          "call": "get#0"
+        },
+        {
+          "step": "call",
+          "call": "handlers::health#0"
+        },
+        {
+          "step": "call",
+          "call": ".route#0"
+        },
+        {
+          "step": "call",
+          "call": "post#0"
+        },
+        {
+          "step": "call",
+          "call": "handlers::create_user#0"
+        },
+        {
+          "step": "call",
+          "call": ".route#1"
+        },
+        {
+          "step": "call",
+          "call": "get#1"
+        },
+        {
+          "step": "call",
+          "call": "handlers::get_user#0"
+        },
+        {
+          "step": "call",
+          "call": ".route#2"
+        },
+        {
+          "step": "call",
+          "call": "post#1"
+        },
+        {
+          "step": "call",
+          "call": "handlers::place_order#0"
+        },
+        {
+          "step": "call",
+          "call": ".route#3"
+        },
+        {
+          "step": "call",
+          "call": ".with_state#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services",
+      "name": "services",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server"
+    },
+    {
+      "id": "rust:axum_server::services::orders",
+      "name": "orders",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server::services"
+    },
+    {
+      "id": "rust:axum_server::services::orders::place",
+      "name": "place",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::orders",
+      "location": {
+        "uri": "src/services/orders.rs",
+        "range": {
+          "start_line": 9,
+          "start_col": 1,
+          "end_line": 27,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "ec5d9ca4da70d861e36021bd8d6b5303bdef755151af7e759111973ae3f6e33c"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn place( store: &Store, user_id: UserId, input: NewOrder, ) -> Result<Order, AppError>"
+      },
+      "calls": [
+        {
+          "key": "users::find_user#0",
+          "text": "users::find_user",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::users::find_user",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/services/orders.rs",
+            "range": {
+              "start_line": 14,
+              "start_col": 16,
+              "end_line": 14,
+              "end_col": 48
+            }
+          }
+        },
+        {
+          "key": "validation::check_quantity#0",
+          "text": "validation::check_quantity",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::validation::check_quantity",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/services/orders.rs",
+            "range": {
+              "start_line": 15,
+              "start_col": 20,
+              "end_line": 15,
+              "end_col": 62
+            }
+          }
+        },
+        {
+          "key": "pricing::quote#0",
+          "text": "pricing::quote",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::pricing::quote",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/services/orders.rs",
+            "range": {
+              "start_line": 16,
+              "start_col": 23,
+              "end_line": 16,
+              "end_col": 59
+            }
+          }
+        },
+        {
+          "key": ".insert_order#0",
+          "text": ".insert_order",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::insert_order",
+              "certainty": "inferred"
+            }
+          ],
+          "location": {
+            "uri": "src/services/orders.rs",
+            "range": {
+              "start_line": 17,
+              "start_col": 17,
+              "end_line": 18,
+              "end_col": 65
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "users::find_user#0"
+        },
+        {
+          "step": "call",
+          "call": "validation::check_quantity#0"
+        },
+        {
+          "step": "call",
+          "call": "pricing::quote#0"
+        },
+        {
+          "step": "call",
+          "call": ".insert_order#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::pricing",
+      "name": "pricing",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server::services"
+    },
+    {
+      "id": "rust:axum_server::services::pricing::apply_discount",
+      "name": "apply_discount",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::pricing",
+      "location": {
+        "uri": "src/services/pricing.rs",
+        "range": {
+          "start_line": 19,
+          "start_col": 1,
+          "end_line": 25,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "e1b1a6e11a8678ff4f4cafaa6d8c4ace53fb20cc03eb485d845887e046b7115e"
+      },
+      "attributes": {
+        "signature": "fn apply_discount(subtotal: u64, quantity: u32) -> u64"
+      },
+      "calls": [
+        {
+          "key": "bulk_discount#0",
+          "text": "bulk_discount",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::pricing::bulk_discount",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/services/pricing.rs",
+            "range": {
+              "start_line": 21,
+              "start_col": 20,
+              "end_line": 21,
+              "end_col": 43
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "branch",
+          "guard": "quantity >= BULK_THRESHOLD",
+          "arms": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "step": "call",
+                  "call": "bulk_discount#0"
+                }
+              ]
+            },
+            {
+              "label": "else",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::pricing::bulk_discount",
+      "name": "bulk_discount",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::pricing",
+      "location": {
+        "uri": "src/services/pricing.rs",
+        "range": {
+          "start_line": 27,
+          "start_col": 1,
+          "end_line": 29,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "27e82474e6db420c96dfe65d7af1d6d5c528f32f3442a80ab488fc5ae18e7980"
+      },
+      "attributes": {
+        "signature": "fn bulk_discount(subtotal: u64) -> u64"
+      },
+      "body": []
+    },
+    {
+      "id": "rust:axum_server::services::pricing::quote",
+      "name": "quote",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::pricing",
+      "location": {
+        "uri": "src/services/pricing.rs",
+        "range": {
+          "start_line": 5,
+          "start_col": 1,
+          "end_line": 9,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "f6ce36e504187f85e5c7811552ac26ea944930fc30ab3771c1d781714c998c7d"
+      },
+      "attributes": {
+        "signature": "pub(crate) fn quote(sku: &str, quantity: u32) -> Result<u64, AppError>"
+      },
+      "calls": [
+        {
+          "key": "unit_price#0",
+          "text": "unit_price",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::pricing::unit_price",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/services/pricing.rs",
+            "range": {
+              "start_line": 6,
+              "start_col": 16,
+              "end_line": 6,
+              "end_col": 31
+            }
+          }
+        },
+        {
+          "key": "u64::from#0",
+          "text": "u64::from",
+          "targets": [],
+          "location": {
+            "uri": "src/services/pricing.rs",
+            "range": {
+              "start_line": 7,
+              "start_col": 27,
+              "end_line": 7,
+              "end_col": 46
+            }
+          }
+        },
+        {
+          "key": "apply_discount#0",
+          "text": "apply_discount",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::pricing::apply_discount",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/services/pricing.rs",
+            "range": {
+              "start_line": 8,
+              "start_col": 8,
+              "end_line": 8,
+              "end_col": 42
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "unit_price#0"
+        },
+        {
+          "step": "call",
+          "call": "u64::from#0"
+        },
+        {
+          "step": "call",
+          "call": "apply_discount#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::pricing::unit_price",
+      "name": "unit_price",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::pricing",
+      "location": {
+        "uri": "src/services/pricing.rs",
+        "range": {
+          "start_line": 11,
+          "start_col": 1,
+          "end_line": 17,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "2d752f69abcfc079d9ae5a876dd6ca4b8cef7f1475a1ad88dbcc7198ded62b81"
+      },
+      "attributes": {
+        "signature": "fn unit_price(sku: &str) -> Result<u64, AppError>"
+      },
+      "body": [
+        {
+          "step": "branch",
+          "guard": "match sku",
+          "arms": [
+            {
+              "label": "\"widget\"",
+              "body": []
+            },
+            {
+              "label": "\"gadget\"",
+              "body": []
+            },
+            {
+              "label": "other",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Err(AppError::Invalid(format!(\"unknown sku {other}\")))"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::users",
+      "name": "users",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server::services"
+    },
+    {
+      "id": "rust:axum_server::services::users::find_user",
+      "name": "find_user",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::users",
+      "location": {
+        "uri": "src/services/users.rs",
+        "range": {
+          "start_line": 9,
+          "start_col": 1,
+          "end_line": 11,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "142a7735a1b19663cf57a5110e155dfbbd3a91697e4650e3b17141e251176f37"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn find_user(store: &Store, id: UserId) -> Result<User, AppError>"
+      },
+      "calls": [
+        {
+          "key": ".user#0",
+          "text": ".user",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::user",
+              "certainty": "inferred"
+            }
+          ],
+          "location": {
+            "uri": "src/services/users.rs",
+            "range": {
+              "start_line": 10,
+              "start_col": 5,
+              "end_line": 10,
+              "end_col": 19
+            }
+          }
+        },
+        {
+          "key": ".ok_or#0",
+          "text": ".ok_or",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "src/services/users.rs",
+            "range": {
+              "start_line": 10,
+              "start_col": 5,
+              "end_line": 10,
+              "end_col": 59
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".user#0"
+        },
+        {
+          "step": "call",
+          "call": ".ok_or#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::users::register",
+      "name": "register",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::users",
+      "location": {
+        "uri": "src/services/users.rs",
+        "range": {
+          "start_line": 13,
+          "start_col": 1,
+          "end_line": 22,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "00871f4ab3a380597dfc9bcfb0d99d11de08dd572e01f5253f6048fa95febfaf"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn register(store: &Store, input: NewUser) -> Result<User, AppError>"
+      },
+      "calls": [
+        {
+          "key": "validation::normalize_name#0",
+          "text": "validation::normalize_name",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::validation::normalize_name",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/services/users.rs",
+            "range": {
+              "start_line": 14,
+              "start_col": 16,
+              "end_line": 14,
+              "end_col": 55
+            }
+          }
+        },
+        {
+          "key": "validation::normalize_email#0",
+          "text": "validation::normalize_email",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::validation::normalize_email",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/services/users.rs",
+            "range": {
+              "start_line": 15,
+              "start_col": 17,
+              "end_line": 15,
+              "end_col": 58
+            }
+          }
+        },
+        {
+          "key": ".email_taken#0",
+          "text": ".email_taken",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::email_taken",
+              "certainty": "inferred"
+            }
+          ],
+          "location": {
+            "uri": "src/services/users.rs",
+            "range": {
+              "start_line": 16,
+              "start_col": 8,
+              "end_line": 16,
+              "end_col": 33
+            }
+          }
+        },
+        {
+          "key": ".insert_user#0",
+          "text": ".insert_user",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::insert_user",
+              "certainty": "inferred"
+            }
+          ],
+          "location": {
+            "uri": "src/services/users.rs",
+            "range": {
+              "start_line": 19,
+              "start_col": 16,
+              "end_line": 19,
+              "end_col": 46
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": "validation::normalize_name#0"
+        },
+        {
+          "step": "call",
+          "call": "validation::normalize_email#0"
+        },
+        {
+          "step": "call",
+          "call": ".email_taken#0"
+        },
+        {
+          "step": "branch",
+          "guard": "store.email_taken(&email).await",
+          "arms": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Err(AppError::Invalid(format!(\"{email} is already registered\")))"
+                }
+              ]
+            },
+            {
+              "label": "else",
+              "body": []
+            }
+          ]
+        },
+        {
+          "step": "call",
+          "call": ".insert_user#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::validation",
+      "name": "validation",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server::services"
+    },
+    {
+      "id": "rust:axum_server::services::validation::check_quantity",
+      "name": "check_quantity",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::validation",
+      "location": {
+        "uri": "src/services/validation.rs",
+        "range": {
+          "start_line": 23,
+          "start_col": 1,
+          "end_line": 30,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "de5c7e1626a0c0a85515a7a9fa958e58bca172d531c3a168da8182bb8d89b9b8"
+      },
+      "attributes": {
+        "signature": "pub(crate) fn check_quantity(quantity: u32) -> Result<u32, AppError>"
+      },
+      "body": [
+        {
+          "step": "branch",
+          "guard": "quantity == 0 || quantity > MAX_QUANTITY",
+          "arms": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Err(AppError::Invalid(format!( \"quantity must be between 1 and {MAX_QUANTITY}\" )…"
+                }
+              ]
+            },
+            {
+              "label": "else",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::validation::looks_like_email",
+      "name": "looks_like_email",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::validation",
+      "location": {
+        "uri": "src/services/validation.rs",
+        "range": {
+          "start_line": 32,
+          "start_col": 1,
+          "end_line": 36,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "099f7f424bc26bedca8ebf944f4f823fd5451b465b49336ad7115b998097b3f5"
+      },
+      "attributes": {
+        "signature": "fn looks_like_email(candidate: &str) -> bool"
+      },
+      "calls": [
+        {
+          "key": ".split_once#0",
+          "text": ".split_once",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 33,
+              "start_col": 5,
+              "end_line": 34,
+              "end_col": 25
+            }
+          }
+        },
+        {
+          "key": ".is_some_and#0",
+          "text": ".is_some_and",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 33,
+              "start_col": 5,
+              "end_line": 35,
+              "end_col": 82
+            }
+          }
+        },
+        {
+          "key": "{closure#0}#0",
+          "text": "{closure#0}",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::validation::looks_like_email::{closure#0}",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 35,
+              "start_col": 22,
+              "end_line": 35,
+              "end_col": 81
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".split_once#0"
+        },
+        {
+          "step": "call",
+          "call": ".is_some_and#0"
+        },
+        {
+          "step": "call",
+          "call": "{closure#0}#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::validation::looks_like_email::{closure#0}",
+      "name": "{closure#0}",
+      "kind": "closure",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::validation::looks_like_email",
+      "location": {
+        "uri": "src/services/validation.rs",
+        "range": {
+          "start_line": 35,
+          "start_col": 22,
+          "end_line": 35,
+          "end_col": 81
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "dec6c3a77c1911de694d0cdb4e03db6c666b3ea022c50b0920f9bc245fb14d46"
+      },
+      "calls": [
+        {
+          "key": ".is_empty#0",
+          "text": ".is_empty",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 35,
+              "start_col": 41,
+              "end_line": 35,
+              "end_col": 57
+            }
+          }
+        },
+        {
+          "key": ".contains#0",
+          "text": ".contains",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 35,
+              "start_col": 61,
+              "end_line": 35,
+              "end_col": 81
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".is_empty#0"
+        },
+        {
+          "step": "call",
+          "call": ".contains#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::validation::normalize_email",
+      "name": "normalize_email",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::validation",
+      "location": {
+        "uri": "src/services/validation.rs",
+        "range": {
+          "start_line": 13,
+          "start_col": 1,
+          "end_line": 21,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "5d46477bee7f0fe2bf1b268057115687071ad57b07b10d13df4f7fefc929b56c"
+      },
+      "attributes": {
+        "signature": "pub(crate) fn normalize_email(raw: &str) -> Result<String, AppError>"
+      },
+      "calls": [
+        {
+          "key": ".trim#0",
+          "text": ".trim",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 14,
+              "start_col": 17,
+              "end_line": 14,
+              "end_col": 27
+            }
+          }
+        },
+        {
+          "key": ".to_lowercase#0",
+          "text": ".to_lowercase",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 14,
+              "start_col": 17,
+              "end_line": 14,
+              "end_col": 42
+            }
+          }
+        },
+        {
+          "key": "looks_like_email#0",
+          "text": "looks_like_email",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::validation::looks_like_email",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 15,
+              "start_col": 9,
+              "end_line": 15,
+              "end_col": 33
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".trim#0"
+        },
+        {
+          "step": "call",
+          "call": ".to_lowercase#0"
+        },
+        {
+          "step": "call",
+          "call": "looks_like_email#0"
+        },
+        {
+          "step": "branch",
+          "guard": "!looks_like_email(&email)",
+          "arms": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Err(AppError::Invalid(format!( \"{email} is not an email address\" )))"
+                }
+              ]
+            },
+            {
+              "label": "else",
+              "body": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::services::validation::normalize_name",
+      "name": "normalize_name",
+      "kind": "fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::services::validation",
+      "location": {
+        "uri": "src/services/validation.rs",
+        "range": {
+          "start_line": 5,
+          "start_col": 1,
+          "end_line": 11,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "a87c3123008acd8419f1a081adf01a9e973e85f7d19d7fcbc44e8322e71dee2b"
+      },
+      "attributes": {
+        "signature": "pub(crate) fn normalize_name(raw: &str) -> Result<String, AppError>"
+      },
+      "calls": [
+        {
+          "key": ".trim#0",
+          "text": ".trim",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 6,
+              "start_col": 16,
+              "end_line": 6,
+              "end_col": 26
+            }
+          }
+        },
+        {
+          "key": ".is_empty#0",
+          "text": ".is_empty",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 7,
+              "start_col": 8,
+              "end_line": 7,
+              "end_col": 23
+            }
+          }
+        },
+        {
+          "key": ".into#0",
+          "text": ".into",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 8,
+              "start_col": 38,
+              "end_line": 8,
+              "end_col": 69
+            }
+          }
+        },
+        {
+          "key": ".to_owned#0",
+          "text": ".to_owned",
+          "targets": [],
+          "location": {
+            "uri": "src/services/validation.rs",
+            "range": {
+              "start_line": 10,
+              "start_col": 8,
+              "end_line": 10,
+              "end_col": 23
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".trim#0"
+        },
+        {
+          "step": "call",
+          "call": ".is_empty#0"
+        },
+        {
+          "step": "branch",
+          "guard": "name.is_empty()",
+          "arms": [
+            {
+              "label": "then",
+              "body": [
+                {
+                  "step": "call",
+                  "call": ".into#0"
+                },
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "Err(AppError::Invalid(\"name must not be empty\".into()))"
+                }
+              ]
+            },
+            {
+              "label": "else",
+              "body": []
+            }
+          ]
+        },
+        {
+          "step": "call",
+          "call": ".to_owned#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::store",
+      "name": "store",
+      "kind": "module",
+      "role": "group",
+      "parent": "rust:axum_server"
+    },
+    {
+      "id": "rust:axum_server::store::Inner",
+      "name": "Inner",
+      "kind": "struct",
+      "role": "group",
+      "parent": "rust:axum_server::store"
+    },
+    {
+      "id": "rust:axum_server::store::Store",
+      "name": "Store",
+      "kind": "struct",
+      "role": "group",
+      "parent": "rust:axum_server::store"
+    },
+    {
+      "id": "rust:axum_server::store::Store::email_taken",
+      "name": "email_taken",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::store::Store",
+      "location": {
+        "uri": "src/store.rs",
+        "range": {
+          "start_line": 45,
+          "start_col": 5,
+          "end_line": 52,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "d07d263480ea1d6a87960db908a50e4358b7a5ea8e2e6c6c3db0fd45e1f71562"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn email_taken(&self, email: &str) -> bool"
+      },
+      "calls": [
+        {
+          "key": ".read#0",
+          "text": ".read",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 46,
+              "start_col": 9,
+              "end_line": 48,
+              "end_col": 20
+            }
+          }
+        },
+        {
+          "key": ".values#0",
+          "text": ".values",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 46,
+              "start_col": 9,
+              "end_line": 50,
+              "end_col": 22
+            }
+          }
+        },
+        {
+          "key": ".any#0",
+          "text": ".any",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 46,
+              "start_col": 9,
+              "end_line": 51,
+              "end_col": 45
+            }
+          }
+        },
+        {
+          "key": "{closure#0}#0",
+          "text": "{closure#0}",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::email_taken::{closure#0}",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 51,
+              "start_col": 18,
+              "end_line": 51,
+              "end_col": 44
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".read#0"
+        },
+        {
+          "step": "call",
+          "call": ".values#0"
+        },
+        {
+          "step": "call",
+          "call": ".any#0"
+        },
+        {
+          "step": "call",
+          "call": "{closure#0}#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::store::Store::email_taken::{closure#0}",
+      "name": "{closure#0}",
+      "kind": "closure",
+      "role": "invocable",
+      "parent": "rust:axum_server::store::Store::email_taken",
+      "location": {
+        "uri": "src/store.rs",
+        "range": {
+          "start_line": 51,
+          "start_col": 18,
+          "end_line": 51,
+          "end_col": 44
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "55995d2ce8872ecd3c497ac9bbbc217908373aa666881bedf68d8039b80f13fc"
+      },
+      "body": []
+    },
+    {
+      "id": "rust:axum_server::store::Store::insert_order",
+      "name": "insert_order",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::store::Store",
+      "location": {
+        "uri": "src/store.rs",
+        "range": {
+          "start_line": 64,
+          "start_col": 5,
+          "end_line": 84,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "6d450b6b0356db70308d8074d40a5d12cebaef2c6d76fac17be1916dee452eb3"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn insert_order( &self, user_id: UserId, sku: String, quantity: u32, total_cents: u64, ) -> Order"
+      },
+      "calls": [
+        {
+          "key": ".next_id#0",
+          "text": ".next_id",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::next_id",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 72,
+              "start_col": 17,
+              "end_line": 72,
+              "end_col": 31
+            }
+          }
+        },
+        {
+          "key": ".write#0",
+          "text": ".write",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 78,
+              "start_col": 9,
+              "end_line": 80,
+              "end_col": 21
+            }
+          }
+        },
+        {
+          "key": ".clone#0",
+          "text": ".clone",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 82,
+              "start_col": 31,
+              "end_line": 82,
+              "end_col": 44
+            }
+          }
+        },
+        {
+          "key": ".insert#0",
+          "text": ".insert",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 78,
+              "start_col": 9,
+              "end_line": 82,
+              "end_col": 45
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".next_id#0"
+        },
+        {
+          "step": "call",
+          "call": ".write#0"
+        },
+        {
+          "step": "call",
+          "call": ".clone#0"
+        },
+        {
+          "step": "call",
+          "call": ".insert#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::store::Store::insert_user",
+      "name": "insert_user",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::store::Store",
+      "location": {
+        "uri": "src/store.rs",
+        "range": {
+          "start_line": 54,
+          "start_col": 5,
+          "end_line": 62,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "026873d0dfdaed169ae0b7ba50c8fc9ad2ee04ecd14666cfef9a535f4bef870b"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn insert_user(&self, name: String, email: String) -> User"
+      },
+      "calls": [
+        {
+          "key": ".next_id#0",
+          "text": ".next_id",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::next_id",
+              "certainty": "exact"
+            }
+          ],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 56,
+              "start_col": 17,
+              "end_line": 56,
+              "end_col": 31
+            }
+          }
+        },
+        {
+          "key": ".write#0",
+          "text": ".write",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 60,
+              "start_col": 9,
+              "end_line": 60,
+              "end_col": 33
+            }
+          }
+        },
+        {
+          "key": ".clone#0",
+          "text": ".clone",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 60,
+              "start_col": 56,
+              "end_line": 60,
+              "end_col": 68
+            }
+          }
+        },
+        {
+          "key": ".insert#0",
+          "text": ".insert",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 60,
+              "start_col": 9,
+              "end_line": 60,
+              "end_col": 69
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".next_id#0"
+        },
+        {
+          "step": "call",
+          "call": ".write#0"
+        },
+        {
+          "step": "call",
+          "call": ".clone#0"
+        },
+        {
+          "step": "call",
+          "call": ".insert#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::store::Store::next_id",
+      "name": "next_id",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::store::Store",
+      "location": {
+        "uri": "src/store.rs",
+        "range": {
+          "start_line": 86,
+          "start_col": 5,
+          "end_line": 88,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "26ba280158cc054c2946854d2906f7acf3d12e57eaf5170f85f1b7b049d2d078"
+      },
+      "attributes": {
+        "signature": "fn next_id(&self) -> u64"
+      },
+      "calls": [
+        {
+          "key": ".fetch_add#0",
+          "text": ".fetch_add",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 87,
+              "start_col": 9,
+              "end_line": 87,
+              "end_col": 59
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".fetch_add#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::store::Store::seeded",
+      "name": "seeded",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::store::Store",
+      "location": {
+        "uri": "src/store.rs",
+        "range": {
+          "start_line": 25,
+          "start_col": 5,
+          "end_line": 39,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "291c5fa2b2e4580c2680785f85244ffd0d288ac31a06c7a42f16078f8df3866a"
+      },
+      "attributes": {
+        "signature": "pub(crate) fn seeded() -> Self"
+      },
+      "calls": [
+        {
+          "key": ".into#0",
+          "text": ".into",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 28,
+              "start_col": 19,
+              "end_line": 28,
+              "end_col": 31
+            }
+          }
+        },
+        {
+          "key": ".into#1",
+          "text": ".into",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 29,
+              "start_col": 20,
+              "end_line": 29,
+              "end_col": 44
+            }
+          }
+        },
+        {
+          "key": "HashMap::from#0",
+          "text": "HashMap::from",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 32,
+              "start_col": 32,
+              "end_line": 32,
+              "end_col": 62
+            }
+          }
+        },
+        {
+          "key": "RwLock::new#0",
+          "text": "RwLock::new",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 32,
+              "start_col": 20,
+              "end_line": 32,
+              "end_col": 63
+            }
+          }
+        },
+        {
+          "key": "RwLock::default#0",
+          "text": "RwLock::default",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 33,
+              "start_col": 21,
+              "end_line": 33,
+              "end_col": 38
+            }
+          }
+        },
+        {
+          "key": "AtomicU64::new#0",
+          "text": "AtomicU64::new",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 34,
+              "start_col": 22,
+              "end_line": 34,
+              "end_col": 39
+            }
+          }
+        },
+        {
+          "key": "Arc::new#0",
+          "text": "Arc::new",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 37,
+              "start_col": 20,
+              "end_line": 37,
+              "end_col": 35
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".into#0"
+        },
+        {
+          "step": "call",
+          "call": ".into#1"
+        },
+        {
+          "step": "call",
+          "call": "HashMap::from#0"
+        },
+        {
+          "step": "call",
+          "call": "RwLock::new#0"
+        },
+        {
+          "step": "call",
+          "call": "RwLock::default#0"
+        },
+        {
+          "step": "call",
+          "call": "AtomicU64::new#0"
+        },
+        {
+          "step": "call",
+          "call": "Arc::new#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::store::Store::user",
+      "name": "user",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::store::Store",
+      "location": {
+        "uri": "src/store.rs",
+        "range": {
+          "start_line": 41,
+          "start_col": 5,
+          "end_line": 43,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "d1182ea83578ad6d6c6d0386860aa3fa8eca5dad4de9fa8f084db7cc8cdf5d89"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn user(&self, id: UserId) -> Option<User>"
+      },
+      "calls": [
+        {
+          "key": ".read#0",
+          "text": ".read",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 42,
+              "start_col": 9,
+              "end_line": 42,
+              "end_col": 32
+            }
+          }
+        },
+        {
+          "key": ".get#0",
+          "text": ".get",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 42,
+              "start_col": 9,
+              "end_line": 42,
+              "end_col": 47
+            }
+          }
+        },
+        {
+          "key": ".cloned#0",
+          "text": ".cloned",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 42,
+              "start_col": 9,
+              "end_line": 42,
+              "end_col": 56
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".read#0"
+        },
+        {
+          "step": "call",
+          "call": ".get#0"
+        },
+        {
+          "step": "call",
+          "call": ".cloned#0"
+        }
+      ]
+    }
+  ],
+  "entries": [
+    {
+      "unit": "rust:axum_server::handlers::create_user",
+      "label": "POST /users",
+      "kind": "http"
+    },
+    {
+      "unit": "rust:axum_server::handlers::get_user",
+      "label": "GET /users/{id}",
+      "kind": "http"
+    },
+    {
+      "unit": "rust:axum_server::handlers::health",
+      "label": "GET /health",
+      "kind": "http"
+    },
+    {
+      "unit": "rust:axum_server::handlers::place_order",
+      "label": "POST /users/{id}/orders",
+      "kind": "http"
+    },
+    {
+      "unit": "rust:axum_server::main",
+      "label": "axum_server main",
+      "kind": "main"
+    }
+  ]
+}

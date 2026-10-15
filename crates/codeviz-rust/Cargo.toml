@@ -8,7 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-codeviz-graph.workspace = true
+codeviz-ir.workspace = true
+blake3.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true

@@ -2,7 +2,8 @@
 
 use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
-use codeviz_graph::TraceNodeId;
+use codeviz_core::SpanId;
+use codeviz_ir::ExitKind;
 
 use crate::{
     camera::OrbitCamera,
@@ -29,7 +30,7 @@ impl Plugin for ScenePlugin {
 
 /// An entity representing one invocation in the current trace.
 #[derive(Component, Debug)]
-struct Invocation(TraceNodeId);
+struct Invocation(SpanId);
 
 #[derive(Resource)]
 struct Assets3d {
@@ -102,18 +103,18 @@ fn rebuild_scene(
     }
     let scene = explorer.scene();
     for placed in &scene.nodes {
-        let Some(node) = explorer.node(placed.trace_node) else {
+        let Some(node) = explorer.span(placed.span) else {
             continue;
         };
         let kind = NodeKind::of(node);
-        let mesh = if kind == NodeKind::External {
+        let mesh = if matches!(kind, NodeKind::Unresolved | NodeKind::Handoff) {
             assets.external.clone()
         } else {
             assets.function.clone()
         };
         commands
             .spawn((
-                Invocation(placed.trace_node),
+                Invocation(placed.span),
                 Mesh3d(mesh),
                 MeshMaterial3d(assets.material(kind, true)),
                 Transform::from_translation(Vec3::from(placed.position)),
@@ -140,7 +141,7 @@ fn on_click(
     }
     if let Ok(invocation) = invocations.get(click.entity) {
         explorer.selected = Some(invocation.0);
-        if let Some(node) = explorer.node(invocation.0) {
+        if let Some(node) = explorer.span(invocation.0) {
             playback.tick = playback.tick.max(node.enter as f32);
         }
     }
@@ -186,7 +187,7 @@ fn keyboard(
     .into_iter()
     .find_map(|(key, step)| keys.just_pressed(key).then_some(step));
     let moved = step.and_then(|step| explorer.step_selection(step));
-    if let Some(node) = moved.and_then(|id| explorer.node(id)) {
+    if let Some(node) = moved.and_then(|id| explorer.span(id)) {
         playback.playing = false;
         playback.tick = node.enter as f32;
     }
@@ -227,7 +228,7 @@ fn update_nodes(
 ) {
     let pulse = 1.25 + 0.15 * (time.elapsed_secs() * 6.0).sin();
     for (invocation, mut material, mut transform) in &mut invocations {
-        let Some(node) = explorer.node(invocation.0) else {
+        let Some(node) = explorer.span(invocation.0) else {
             continue;
         };
         let wanted = assets.material(NodeKind::of(node), playback.has_entered(node));
@@ -259,7 +260,7 @@ fn draw_edges(explorer: Res<Explorer>, playback: Res<Playback>, mut gizmos: Gizm
     };
 
     for placed in &scene.nodes {
-        let Some(node) = explorer.node(placed.trace_node) else {
+        let Some(node) = explorer.span(placed.span) else {
             continue;
         };
         if node.children.is_empty() {
@@ -267,7 +268,7 @@ fn draw_edges(explorer: Res<Explorer>, playback: Res<Playback>, mut gizmos: Gizm
         }
         let start = Vec3::from(placed.position);
         let tick_spacing = explorer.layout.tick_spacing;
-        let span_end = start + Vec3::X * (placed.span - tick_spacing).max(0.0);
+        let span_end = start + Vec3::X * (placed.length - tick_spacing).max(0.0);
         let color = lit(playback.has_entered(node), NodeKind::of(node).color());
         gizmos.line(start, span_end, color.with_alpha(0.35));
     }
@@ -276,14 +277,48 @@ fn draw_edges(explorer: Res<Explorer>, playback: Res<Playback>, mut gizmos: Gizm
         let (Some(from_node), Some(to_node), Some(callee)) = (
             scene.nodes.get(edge.caller.index()),
             scene.nodes.get(edge.callee.index()),
-            explorer.node(edge.callee),
+            explorer.span(edge.callee),
         ) else {
             continue;
         };
         let to = Vec3::from(to_node.position);
         let from = Vec3::new(to.x, from_node.position[1], from_node.position[2]);
-        let color = lit(playback.has_entered(callee), NodeKind::of(callee).color());
+        let mut color = lit(playback.has_entered(callee), NodeKind::of(callee).color());
+        if !callee.conditions.is_empty() {
+            // Conditional calls are fainter than calls that always happen.
+            color = color.with_alpha(color.alpha() * 0.45);
+        }
         gizmos.line(from, to, color);
+    }
+
+    // Exits sit on the lifeline of the span whose body leaves, at the tick they happen.
+    for placed in &scene.nodes {
+        let Some(span) = explorer.span(placed.span) else {
+            continue;
+        };
+        for exit in &span.exits {
+            let at = Vec3::new(
+                exit.tick as f32 * explorer.layout.tick_spacing,
+                placed.position[1],
+                placed.position[2],
+            );
+            let color = match exit.kind {
+                ExitKind::Return => Color::srgb(0.5, 0.85, 0.55),
+                _ => Color::srgb(1.0, 0.3, 0.3),
+            };
+            let color = lit(exit.tick as f32 <= playback.tick, color);
+            let size = NODE_RADIUS * 0.8;
+            gizmos.line(
+                at + Vec3::new(-size, -size, 0.0),
+                at + Vec3::new(size, size, 0.0),
+                color,
+            );
+            gizmos.line(
+                at + Vec3::new(-size, size, 0.0),
+                at + Vec3::new(size, -size, 0.0),
+                color,
+            );
+        }
     }
 
     if let Some(selected) = explorer.selected.and_then(|id| scene.nodes.get(id.index())) {

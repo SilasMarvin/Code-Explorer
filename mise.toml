@@ -9,10 +9,19 @@ run = [
   "cargo test --workspace",
 ]
 
-[tasks.demo]
-description = "Explore the demo Axum server, starting at the place_order handler"
-run = "cargo run -p codeviz -- demo/axum-server --entry handlers::place_order"
+[tasks.demo-docs]
+description = "Regenerate the demo IR documents"
+run = [
+  "cargo run -q -p codeviz -- analyze demo/axum-server -o demo/out/axum-server.json",
+  "cargo run -q -p codeviz -- analyze demo/python-service -o demo/out/python-service.json",
+  "cargo run -q -p codeviz -- import demo/pipelines/deploy.yml --slug orders-deploy -o demo/out/deploy-pipeline.json",
+  "cargo run -q -p codeviz -- validate demo/out/*.json demo/architecture/orders-platform.json",
+]
 
-[tasks.trace]
-description = "Print a text trace: mise run trace -- <entry>"
-run = "cargo run -p codeviz -- demo/axum-server --print-trace --entry"
+[tasks.demo]
+description = "Explore the Rust demo, starting at POST /users/{id}/orders"
+run = "cargo run -p codeviz -- view demo/out/axum-server.json --entry 'POST /users/{id}/orders'"
+
+[tasks.demo-merged]
+description = "Explore the architecture and Rust code as one system"
+run = "cargo run -p codeviz -- view demo/architecture/orders-platform.json demo/out/axum-server.json --entry 'POST /users/{id}/orders'"

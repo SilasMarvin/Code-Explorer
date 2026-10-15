@@ -11,23 +11,31 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/silas/code-explorer"
 
 [workspace.dependencies]
-codeviz-graph = { path = "crates/codeviz-graph" }
+codeviz-buildkite = { path = "crates/codeviz-buildkite" }
+codeviz-core = { path = "crates/codeviz-core" }
+codeviz-ir = { path = "crates/codeviz-ir" }
 codeviz-layout = { path = "crates/codeviz-layout" }
+codeviz-python = { path = "crates/codeviz-python" }
 codeviz-rust = { path = "crates/codeviz-rust" }
 codeviz-viewer = { path = "crates/codeviz-viewer" }
 
 anyhow = "1.0.104"
 axum = "0.8.9"
+blake3 = "1.8.7"
 bevy = "0.20.0"
 bevy_egui = "0.43.1"
 clap = { version = "4.6.7", features = ["derive"] }
+schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = { version = "1.3.0", default-features = false, features = ["deserialize"] }
+serde_json = "1.0.154"
 thiserror = "2.0.21"
 toml = "1.1.8"
 tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 tree-sitter = "0.27.1"
+tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 walkdir = "2.5.0"
 

@@ -1,0 +1,17 @@
+[package]
+name = "codeviz-core"
+description = "Algorithms over codeviz IR documents: journeys, scenarios, and system indexes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+codeviz-ir.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
