@@ -246,6 +246,7 @@ impl Viewer {
     /// Opens the window and blocks until it is closed.
     #[must_use]
     pub fn run(mut self) -> AppExit {
+        let focused = self.focus.is_some();
         let mut explorer = self.explorer();
         let diff = self.diff.take().map(|comparison| {
             let diff =
@@ -255,6 +256,9 @@ impl Viewer {
             if let Some(t) = comparison.morph {
                 view.morph = t;
                 view.playing = false;
+            }
+            if !focused && let Some(tile) = view.hub() {
+                explorer.focus_node(tile);
             }
             explorer.refresh_reach();
             view

@@ -96,6 +96,8 @@ pub(crate) struct DiffView {
     before: Vec<[f32; 3]>,
     after: Vec<[f32; 3]>,
     shared: Vec<[f32; 3]>,
+    /// Calls in and out of each node, by tile.
+    degrees: Vec<usize>,
     /// The clustering `before` and `after` were laid out under.
     laid_out_for: Clustering,
     /// From 0 (before) to 1 (after).
@@ -199,6 +201,7 @@ impl DiffView {
             after: after_at,
             shared: graph.positions.clone(),
             laid_out_for: explorer.clustering(),
+            degrees: (0..map.tiles.len()).map(|t| graph.degree(t)).collect(),
             morph: 0.0,
             playing: true,
             clock: 0.0,
@@ -208,6 +211,21 @@ impl DiffView {
     /// The version the diff starts from.
     pub(crate) fn old(&self) -> &System {
         &self.old
+    }
+
+    /// The change most tied into the rest: the one with the most calls in and out,
+    /// to open on.
+    pub(crate) fn hub(&self) -> Option<usize> {
+        self.changes
+            .iter()
+            .filter(|&(_, &change)| change != Change::Removed)
+            .max_by_key(|&(&tile, _)| {
+                (
+                    self.degrees.get(tile).copied().unwrap_or(0),
+                    std::cmp::Reverse(tile),
+                )
+            })
+            .map(|(&tile, _)| tile)
     }
 
     /// What a moved node was called before.

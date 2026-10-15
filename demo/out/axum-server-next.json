@@ -1133,26 +1133,6 @@
           }
         },
         {
-          "key": "order#0",
-          "text": "order",
-          "targets": [
-            {
-              "unit": "rust:axum_server::store::Store::order",
-              "certainty": "inferred"
-            }
-          ],
-          "via": "rust:axum_server::services::audit::describe",
-          "location": {
-            "uri": "src/services/audit.rs",
-            "range": {
-              "start_line": 4,
-              "start_col": 25,
-              "end_line": 4,
-              "end_col": 30
-            }
-          }
-        },
-        {
           "key": ".append_audit#0",
           "text": ".append_audit",
           "targets": [
@@ -1176,10 +1156,6 @@
         {
           "step": "call",
           "call": "describe#0"
-        },
-        {
-          "step": "call",
-          "call": "order#0"
         },
         {
           "step": "call",
