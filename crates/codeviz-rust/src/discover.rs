@@ -23,6 +23,13 @@ pub(crate) struct SourceFile {
 #[derive(Deserialize)]
 struct Manifest {
     package: Option<ManifestPackage>,
+    workspace: Option<ManifestWorkspace>,
+}
+
+#[derive(Deserialize)]
+struct ManifestWorkspace {
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -30,8 +37,10 @@ struct ManifestPackage {
     name: String,
 }
 
+/// Every package under `root`, except those a workspace there excludes.
 pub(crate) fn packages(root: &Path) -> Result<Vec<Package>, Error> {
     let mut packages = Vec::new();
+    let mut excluded: Vec<PathBuf> = Vec::new();
     for entry in walk(root) {
         let entry = entry.map_err(|source| Error::Walk {
             root: root.to_path_buf(),
@@ -44,10 +53,6 @@ pub(crate) fn packages(root: &Path) -> Result<Vec<Package>, Error> {
         let Some(dir) = manifest_path.parent() else {
             continue;
         };
-        let src_dir = dir.join("src");
-        if !src_dir.is_dir() {
-            continue;
-        }
         let text = std::fs::read_to_string(manifest_path).map_err(|source| Error::Io {
             path: manifest_path.to_path_buf(),
             source,
@@ -56,13 +61,20 @@ pub(crate) fn packages(root: &Path) -> Result<Vec<Package>, Error> {
             path: manifest_path.to_path_buf(),
             source,
         })?;
-        if let Some(package) = manifest.package {
+        if let Some(workspace) = manifest.workspace {
+            excluded.extend(workspace.exclude.iter().map(|path| dir.join(path)));
+        }
+        let src_dir = dir.join("src");
+        if let Some(package) = manifest.package
+            && src_dir.is_dir()
+        {
             packages.push(Package {
                 crate_name: package.name.replace('-', "_"),
                 src_dir,
             });
         }
     }
+    packages.retain(|p| !excluded.iter().any(|dir| p.src_dir.starts_with(dir)));
     packages.sort_by(|a, b| a.crate_name.cmp(&b.crate_name));
     Ok(packages)
 }

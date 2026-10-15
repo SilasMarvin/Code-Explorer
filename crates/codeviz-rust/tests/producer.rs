@@ -300,3 +300,27 @@ fn a_variable_passed_along_is_not_a_method_of_the_same_name() {
         [("show".to_owned(), vec!["rust:app::show".to_owned()])]
     );
 }
+
+#[test]
+fn packages_a_workspace_excludes_are_skipped() {
+    let root = std::env::temp_dir().join(format!("codeviz-rust-exclude-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    for (dir, name) in [("app", "app"), ("fixtures/old", "app")] {
+        fs::create_dir_all(root.join(dir).join("src")).unwrap();
+        fs::write(
+            root.join(dir).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(dir).join("src/main.rs"), "fn main() {}").unwrap();
+    }
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app\"]\nexclude = [\"fixtures\"]\n",
+    )
+    .unwrap();
+    let analysis = analyze(&root, AnalyzeOptions::default()).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert_eq!(analysis.packages.len(), 1, "{:?}", analysis.packages);
+    assert!(analysis.packages[0].src_dir.ends_with("app/src"));
+}
