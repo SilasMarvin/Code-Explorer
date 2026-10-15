@@ -1,7 +1,8 @@
-//! Draws the open journeys, stacked: one bar per span spanning its time, colored by
-//! lane, with exits and divergence markers on it and drops from caller to callee. With
-//! the codebase shown, the map sits above them, lighting up whatever can reach the
-//! cursor's unit and tracing each journey's path through it in the journey's accent.
+//! Draws the open journeys where the [arrangement](crate::geometry::Arrangement) puts
+//! them: one box per span spanning its time, colored by module, with exits and
+//! divergence markers on it and links from caller to callee. With the codebase shown,
+//! the map lights up whatever can reach the cursor's unit and traces each journey's
+//! path through it in the journey's accent.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,8 +12,9 @@ use codeviz_core::{Reach, SpanTarget};
 use codeviz_ir::{ExitKind, Mode};
 
 use crate::{
-    camera::JourneyCamera,
+    camera::{CameraMode, JourneyCamera},
     explorer::{Autoplay, Confidence, Explorer, SpanRef, Step, Track, is_conditional, is_handoff},
+    geometry::{Arrangement, BarBox},
 };
 
 pub(crate) struct ScenePlugin;
@@ -129,11 +131,6 @@ struct Assets3d {
     tiles: HashMap<TileLook, Handle<StandardMaterial>>,
 }
 
-const BAR_HEIGHT: f32 = 0.8;
-const BAR_DEPTH: f32 = 0.8;
-/// Space left between consecutive bars on one row.
-const BAR_GAP: f32 = 0.25;
-
 fn create_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -204,21 +201,25 @@ fn create_assets(
         );
     }
     commands.insert_resource(Assets3d {
-        tile: meshes.add(Cuboid::new(1.0, 1.0, 0.3)),
+        tile: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         tiles,
-        bar: meshes.add(Cuboid::new(1.0, BAR_HEIGHT, BAR_DEPTH)),
+        bar: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         marker: meshes.add(Sphere::new(0.28)),
-        exit: meshes.add(Cuboid::new(0.18, BAR_HEIGHT + 0.3, BAR_DEPTH + 0.1)),
+        exit: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         error: flat(&mut materials, Color::srgb(1.0, 0.32, 0.32)),
         success: flat(&mut materials, Color::srgb(0.45, 0.9, 0.55)),
         materials: table,
     });
 }
 
-/// Despawns and respawns everything when the journey changes.
+/// Despawns and respawns everything when the journeys change; frames the camera when
+/// asked to, and suits it to the arrangement when that changes.
+#[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn rebuild_scene(
     mut commands: Commands,
     mut built: Local<Option<u64>>,
+    mut framed: Local<Option<u64>>,
+    mut arranged: Local<Option<Arrangement>>,
     explorer: Res<Explorer>,
     assets: Res<Assets3d>,
     existing: Query<Entity, With<Spawned>>,
@@ -235,50 +236,59 @@ fn rebuild_scene(
         commands.entity(entity).despawn();
     }
     for (index, track) in explorer.tracks().iter().enumerate() {
-        spawn_track(
-            &mut commands,
-            &assets,
-            explorer.layout.tick_spacing,
-            index,
-            track,
-        );
+        spawn_track(&mut commands, &assets, index, track);
     }
-
-    let (min, mut max) = explorer.bounds();
-    max += Vec3::X * explorer.layout.tick_spacing;
-    let (mut min, mut max) = (min, max);
-    if explorer.codebase() {
+    if explorer.shows_map() {
+        let frame = explorer.map_frame();
         let map = explorer.map();
-        let size = Vec3::new(MAP_TILE.x, MAP_TILE.y, 1.0);
+        let size = frame.extent(frame.tile.x, frame.tile.y, 0.3);
         for (index, tile) in map.tiles.iter().enumerate() {
             commands
                 .spawn((
                     Tile(index),
                     Mesh3d(assets.tile.clone()),
                     MeshMaterial3d(assets.tiles[&TileLook::Other].clone()),
-                    Transform::from_translation(explorer.map_point(tile.position)).with_scale(size),
+                    Transform::from_translation(frame.point(tile.position) - frame.normal() * 0.15)
+                        .with_scale(size),
                 ))
                 .observe(on_tile_click)
                 .observe(on_tile_over)
                 .observe(on_tile_out);
         }
-        let (map_min, map_max) = map.bounds;
-        min = min.min(explorer.map_point(map_min));
-        max = max.max(explorer.map_point(map_max));
     }
+
+    let arrangement = explorer.arrangement();
+    let rearranged = *arranged != Some(arrangement);
+    *arranged = Some(arrangement);
+    if *framed == Some(explorer.framing()) && !rearranged {
+        return;
+    }
+    *framed = Some(explorer.framing());
+    let (min, max) = explorer.bounds();
     for mut camera in &mut cameras {
+        if rearranged {
+            match arrangement {
+                // Flat or tilted is the viewer's choice.
+                Arrangement::Stacked => {}
+                Arrangement::Layers => {
+                    camera.set_mode(CameraMode::Orbit);
+                    camera.set_angles(-1.0, -0.22);
+                }
+                Arrangement::City => {
+                    camera.set_mode(CameraMode::Orbit);
+                    camera.set_angles(-0.3, -0.45);
+                }
+            }
+        }
         camera.frame(min, max);
     }
 }
 
-fn spawn_track(commands: &mut Commands, assets: &Assets3d, tick: f32, index: usize, track: &Track) {
-    let origin = track.offset();
+fn spawn_track(commands: &mut Commands, assets: &Assets3d, index: usize, track: &Track) {
     for placed in &track.scene().nodes {
-        let Some(span) = track.span(placed.span) else {
+        let (Some(span), Some(bar)) = (track.span(placed.span), track.bar(placed.span)) else {
             continue;
         };
-        let length = (placed.length - BAR_GAP).max(tick * 0.4);
-        let at = Vec3::from(placed.position) + origin;
         commands
             .spawn((
                 Bar(SpanRef {
@@ -290,8 +300,7 @@ fn spawn_track(commands: &mut Commands, assets: &Assets3d, tick: f32, index: usi
                     assets.materials[&(track.color(placed.span) % PALETTE.len(), Look::Past)]
                         .clone(),
                 ),
-                Transform::from_translation(at + Vec3::X * length / 2.0)
-                    .with_scale(Vec3::new(length, 1.0, 1.0)),
+                Transform::from_translation(bar.center).with_scale(bar.size),
             ))
             .observe(on_click)
             .observe(on_over)
@@ -302,15 +311,12 @@ fn spawn_track(commands: &mut Commands, assets: &Assets3d, tick: f32, index: usi
                 ExitKind::Return => assets.success.clone(),
                 _ => assets.error.clone(),
             };
+            let back = bar.axis.normalize_or_zero() * 0.12;
             commands.spawn((
                 ExitMark,
                 Mesh3d(assets.exit.clone()),
                 MeshMaterial3d(material),
-                Transform::from_xyz(
-                    exit.tick as f32 * tick - BAR_GAP / 2.0 + origin.x,
-                    at.y,
-                    at.z,
-                ),
+                Transform::from_translation(bar.at(exit.tick) - back).with_scale(bar.cap()),
                 Pickable::IGNORE,
             ));
         }
@@ -318,16 +324,16 @@ fn spawn_track(commands: &mut Commands, assets: &Assets3d, tick: f32, index: usi
 
     let divergences = track.divergences();
     for divergence in divergences {
-        let Some(placed) = track.scene().nodes.get(divergence.span.index()) else {
+        let Some(bar) = track.bar(divergence.span) else {
             continue;
         };
-        let at = Vec3::from(placed.position) + origin;
         let nudge = 0.6
             * divergences
                 .iter()
                 .take_while(|d| d != &divergence)
                 .filter(|d| d.span == divergence.span)
                 .count() as f32;
+        let back = bar.axis.normalize_or_zero() * (0.35 + nudge);
         commands
             .spawn((
                 DivergenceMarker {
@@ -336,20 +342,11 @@ fn spawn_track(commands: &mut Commands, assets: &Assets3d, tick: f32, index: usi
                 },
                 Mesh3d(assets.marker.clone()),
                 MeshMaterial3d(assets.error.clone()),
-                Transform::from_translation(
-                    at + Vec3::new(
-                        placed.length - BAR_GAP - 0.35 - nudge,
-                        0.0,
-                        BAR_DEPTH / 2.0 + 0.1,
-                    ),
-                ),
+                Transform::from_translation(bar.end() - back + Vec3::Z * (bar.size.z / 2.0 + 0.1)),
             ))
             .observe(on_divergence_click);
     }
 }
-
-/// Matches [`codeviz_layout::MapConfig`]'s default tile size.
-const MAP_TILE: Vec2 = Vec2::new(4.4, 0.7);
 
 /// Click starts the active journey here; shift-click opens another journey here.
 fn on_tile_click(
@@ -496,11 +493,24 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyC) {
         explorer.toggle_codebase();
     }
-    if keys.just_pressed(KeyCode::Digit3) {
+    if keys.just_pressed(KeyCode::Digit3) && explorer.arrangement() == Arrangement::Stacked {
         for mut camera in &mut cameras {
             camera.toggle();
         }
         explorer.rebuild();
+    }
+    if keys.just_pressed(KeyCode::KeyV) {
+        let next = match explorer.arrangement() {
+            Arrangement::Stacked => Arrangement::Layers,
+            Arrangement::Layers => Arrangement::City,
+            Arrangement::City => Arrangement::Stacked,
+        };
+        if next == Arrangement::Stacked {
+            for mut camera in &mut cameras {
+                camera.set_mode(CameraMode::Flat);
+            }
+        }
+        explorer.set_arrangement(next);
     }
 }
 
@@ -519,31 +529,46 @@ fn autoplay(time: Res<Time>, mut autoplay: ResMut<Autoplay>, mut explorer: ResMu
     }
 }
 
-/// Keeps what reaches the cursor's unit current while the map is shown.
+/// Keeps what reaches the cursor's unit current while the map is shown, and the
+/// layers lined up on it.
 fn track_focus(mut explorer: ResMut<Explorer>) {
-    if explorer.codebase() && explorer.bypass_change_detection().refresh_upstream() {
+    let inner = explorer.bypass_change_detection();
+    let refreshed = inner.shows_map() && inner.refresh_upstream();
+    let realigned = inner.realign();
+    if refreshed || realigned {
         explorer.set_changed();
     }
 }
 
-/// Keeps the cursor in view by easing the camera towards it when it leaves the
-/// middle of the screen horizontally.
-fn follow_cursor(explorer: Res<Explorer>, mut cameras: Query<&mut JourneyCamera>) {
+/// Keeps the cursor in view: flat, by panning when it leaves the middle of the
+/// screen; in orbit, by easing the focus towards it whenever it moves.
+fn follow_cursor(
+    explorer: Res<Explorer>,
+    mut last: Local<Option<SpanRef>>,
+    mut cameras: Query<&mut JourneyCamera>,
+) {
     if !explorer.is_changed() {
         return;
     }
     let track = explorer.track();
-    let Some((start, placed)) = track
-        .selected()
-        .and_then(|id| Some((track.position(id)?, track.scene().nodes.get(id.index())?)))
-    else {
+    let Some((selected, bar)) = track.selected().and_then(|id| Some((id, *track.bar(id)?))) else {
         return;
     };
+    let at = SpanRef {
+        track: explorer.active(),
+        span: selected,
+    };
+    let moved = *last != Some(at);
+    *last = Some(at);
     for mut camera in &mut cameras {
-        if !camera.shows(start, 1.5) {
-            let half_width = camera.extent * camera.aspect() / 2.0;
-            camera.target.x = start.x + placed.length.min(half_width) / 2.0;
-            camera.target.y = start.y;
+        match camera.mode {
+            CameraMode::Flat if !camera.shows(bar.start, 1.5) => {
+                let half_width = camera.extent * camera.aspect() / 2.0;
+                camera.target.x = bar.start.x + bar.size.x.min(half_width) / 2.0;
+                camera.target.y = bar.start.y;
+            }
+            CameraMode::Orbit if moved => camera.target = bar.center,
+            _ => {}
         }
     }
 }
@@ -570,21 +595,19 @@ fn style_bars(
         let Some(track) = explorer.tracks().get(bar.0.track) else {
             continue;
         };
-        let (Some(span), Some(placed), Some(&cursor)) = (
-            track.span(bar.0.span),
-            track.scene().nodes.get(bar.0.span.index()),
-            cursors.get(bar.0.track),
-        ) else {
+        let (Some(span), Some(&cursor)) = (track.span(bar.0.span), cursors.get(bar.0.track)) else {
             continue;
         };
+        // In the city, time is height: light only what is running at the cursor.
+        let city = explorer.arrangement() == Arrangement::City;
         let look = if Confidence::of(span) == Confidence::Guessed || is_handoff(span) {
             Look::Faint
-        } else if span.enter > cursor {
+        } else if span.enter > cursor || (city && span.exit <= cursor) {
             Look::Future
         } else {
             Look::Past
         };
-        let wanted = &assets.materials[&(track.color(placed.span) % PALETTE.len(), look)];
+        let wanted = &assets.materials[&(track.color(bar.0.span) % PALETTE.len(), look)];
         if &material.0 != wanted {
             material.0 = wanted.clone();
         }
@@ -596,7 +619,7 @@ fn style_tiles(
     assets: Res<Assets3d>,
     mut tiles: Query<(&Tile, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
-    if !explorer.is_changed() || !explorer.codebase() {
+    if !explorer.is_changed() || !explorer.shows_map() {
         return;
     }
     for (tile, mut material) in &mut tiles {
@@ -625,23 +648,30 @@ fn tile_look(explorer: &Explorer, index: usize) -> TileLook {
 }
 
 /// Group boxes, each journey's path in its accent, every call path into the cursor's
-/// unit, and a tether from its tile down to the cursor.
+/// unit, and a tether from its tile to the cursor.
 fn draw_map(explorer: &Explorer, gizmos: &mut Gizmos) {
     let map = explorer.map();
+    let frame = explorer.map_frame();
+    let normal = frame.normal();
     for group in &map.groups {
-        let min = explorer.map_point(group.min);
-        let max = explorer.map_point(group.max);
+        let min = frame.point(group.min);
+        let max = frame.point(group.max);
         gizmos.rect(
-            Isometry3d::from_translation((min + max) / 2.0 - Vec3::Z * 0.2),
-            (max - min).truncate(),
+            Isometry3d::new((min + max) / 2.0 - normal * 0.05, frame.rotation()),
+            Vec2::new(group.max[0] - group.min[0], group.max[1] - group.min[1]),
             Color::srgba(0.6, 0.65, 0.75, 0.3),
         );
     }
-    let center = |index: usize| map.tile(index).map(|t| explorer.map_point(t.position));
+    let center = |index: usize| map.tile(index).map(|t| frame.point(t.position));
+    let city = explorer.arrangement() == Arrangement::City;
 
     // Each journey as a slice of the graph: its calls between tiles. Journeys bow
-    // their arcs by different amounts so shared calls stay distinguishable.
+    // their arcs by different amounts so shared calls stay distinguishable. The city
+    // draws calls between its columns instead.
     for (index, track) in explorer.tracks().iter().enumerate() {
+        if city {
+            break;
+        }
         let alpha = if index == explorer.active() {
             0.8
         } else {
@@ -660,7 +690,8 @@ fn draw_map(explorer: &Explorer, gizmos: &mut Gizmos) {
             }
             if let (Some(a), Some(b)) = (center(from), center(to)) {
                 let bow = -0.1 - 0.08 * index as f32;
-                arc(gizmos, a, b, accent(index).with_alpha(alpha), bow, false);
+                let color = accent(index).with_alpha(alpha);
+                arc(gizmos, (a, b), normal, color, bow, false);
             }
         }
     }
@@ -682,7 +713,14 @@ fn draw_map(explorer: &Explorer, gizmos: &mut Gizmos) {
                 Reach::Guessed => CALLER.with_alpha(0.35),
                 Reach::Call | Reach::Encloses => CALLER.with_alpha(0.9),
             };
-            arc(gizmos, a, b, color, 0.18, edge.reach == Reach::Guessed);
+            arc(
+                gizmos,
+                (a, b),
+                normal,
+                color,
+                0.18,
+                edge.reach == Reach::Guessed,
+            );
         }
     }
     let focus_tile = explorer.focus().and_then(|f| map.tile_of(f));
@@ -690,16 +728,16 @@ fn draw_map(explorer: &Explorer, gizmos: &mut Gizmos) {
         && let Some(at) = center(index)
     {
         gizmos.rect(
-            Isometry3d::from_translation(at + Vec3::Z * 0.2),
-            MAP_TILE + Vec2::splat(0.2),
+            Isometry3d::new(at + normal * 0.05, frame.rotation()),
+            frame.tile + Vec2::splat(0.2),
             Color::WHITE,
         );
         let track = explorer.track();
-        if let Some(bar) = track.selected().and_then(|id| track.position(id)) {
+        if !city && let Some(bar) = track.selected().and_then(|id| track.bar(id)) {
             dashed(
                 gizmos,
-                at - Vec3::Y * MAP_TILE.y / 2.0,
-                bar + Vec3::new(0.4, BAR_HEIGHT / 2.0, 0.0),
+                at + normal * 0.1,
+                bar.label_anchor() - Vec3::Y * 0.15,
                 Color::srgba(1.0, 1.0, 1.0, 0.35),
             );
         }
@@ -709,21 +747,28 @@ fn draw_map(explorer: &Explorer, gizmos: &mut Gizmos) {
         && let Some(at) = center(index)
     {
         gizmos.rect(
-            Isometry3d::from_translation(at + Vec3::Z * 0.2),
-            MAP_TILE + Vec2::splat(0.15),
+            Isometry3d::new(at + normal * 0.05, frame.rotation()),
+            frame.tile + Vec2::splat(0.15),
             Color::srgba(1.0, 1.0, 1.0, 0.5),
         );
     }
 }
 
-/// A call drawn as a curve bowed sideways by `bow` of its length, so calls within one
-/// column stay apart, with an arrowhead at the callee.
-fn arc(gizmos: &mut Gizmos, from: Vec3, to: Vec3, color: Color, bow: f32, dashed_line: bool) {
+/// A call drawn on the map as a curve bowed sideways by `bow` of its length, so calls
+/// within one column stay apart, with an arrowhead at the callee.
+fn arc(
+    gizmos: &mut Gizmos,
+    (from, to): (Vec3, Vec3),
+    normal: Vec3,
+    color: Color,
+    bow: f32,
+    dashed_line: bool,
+) {
     const SEGMENTS: usize = 16;
-    let lift = Vec3::Z * 0.25;
+    let lift = normal * 0.25;
     let (from, to) = (from + lift, to + lift);
     let along = to - from;
-    let side = Vec3::new(-along.y, along.x, 0.0).normalize_or_zero();
+    let side = normal.cross(along).normalize_or_zero();
     let bend = (along.length() * bow).clamp(-3.0, 3.0);
     let control = (from + to) / 2.0 + side * bend;
     let point = |t: f32| from.lerp(control, t).lerp(control.lerp(to, t), t);
@@ -737,43 +782,56 @@ fn arc(gizmos: &mut Gizmos, from: Vec3, to: Vec3, color: Color, bow: f32, dashed
         );
         gizmos.line(a, b, color);
     }
-    let tip = to - (to - point(0.9)).normalize_or_zero() * (MAP_TILE.y / 2.0);
+    let tip = to - (to - point(0.9)).normalize_or_zero() * 0.4;
     gizmos.arrow(point(0.85), tip, color).with_tip_length(0.35);
 }
 
-/// Per journey: caller → callee drops and an accent stripe down its left edge. Then
-/// the cursors, and every other bar that runs the cursor's unit, in any journey.
+/// Per journey: caller → callee links and what marks the journey as one (a stripe,
+/// a pane). Then pillars between layers, the cursors, and every other box that runs
+/// the cursor's unit, in any journey.
 fn draw_overlays(explorer: Res<Explorer>, mut gizmos: Gizmos) {
-    if explorer.codebase() {
+    if explorer.shows_map() {
         draw_map(&explorer, &mut gizmos);
     }
-    let tick = explorer.layout.tick_spacing;
+    let arrangement = explorer.arrangement();
     for (index, track) in explorer.tracks().iter().enumerate() {
-        draw_drops(&mut gizmos, track);
-        let (min, _) = track.scene().bounds;
-        let origin = track.offset();
-        let top = origin + Vec3::new(-0.9, BAR_HEIGHT / 2.0, 0.0);
-        let bottom = Vec3::new(top.x, origin.y + min[1] - BAR_HEIGHT / 2.0, 0.0);
-        let width = if index == explorer.active() { 3 } else { 1 };
-        for n in 0..width {
-            let shift = Vec3::X * 0.06 * n as f32;
-            gizmos.line(top - shift, bottom - shift, accent(index));
+        draw_links(&mut gizmos, track);
+        let active = index == explorer.active();
+        let (min, max) = track.bounds();
+        match arrangement {
+            Arrangement::Stacked => {
+                let top = Vec3::new(min.x - 0.9, max.y, 0.0);
+                let bottom = Vec3::new(top.x, min.y, 0.0);
+                for n in 0..if active { 3 } else { 1 } {
+                    let shift = Vec3::X * 0.06 * n as f32;
+                    gizmos.line(top - shift, bottom - shift, accent(index));
+                }
+            }
+            Arrangement::Layers => {
+                let margin = Vec2::splat(1.2);
+                let center = (min + max) / 2.0;
+                let alpha = if active { 0.9 } else { 0.35 };
+                gizmos.rect(
+                    Isometry3d::from_translation(Vec3::new(center.x, center.y, min.z)),
+                    (max - min).truncate() + margin * 2.0,
+                    accent(index).with_alpha(alpha),
+                );
+            }
+            Arrangement::City => {}
         }
+    }
+    if arrangement == Arrangement::Layers {
+        draw_pillars(&explorer, &mut gizmos);
     }
 
     let outline = |gizmos: &mut Gizmos, at: SpanRef, color: Color| {
-        let Some(track) = explorer.tracks().get(at.track) else {
-            return;
-        };
-        if let (Some(placed), Some(position)) = (
-            track.scene().nodes.get(at.span.index()),
-            track.position(at.span),
-        ) {
-            let length = (placed.length - BAR_GAP).max(tick * 0.4);
+        if let Some(bar) = explorer
+            .tracks()
+            .get(at.track)
+            .and_then(|track| track.bar(at.span))
+        {
             gizmos.cube(
-                Transform::from_translation(position + Vec3::X * length / 2.0).with_scale(
-                    Vec3::new(length + 0.15, BAR_HEIGHT + 0.15, BAR_DEPTH + 0.15),
-                ),
+                Transform::from_translation(bar.center).with_scale(bar.size + Vec3::splat(0.15)),
                 color,
             );
         }
@@ -805,42 +863,103 @@ fn draw_overlays(explorer: Res<Explorer>, mut gizmos: Gizmos) {
             span: selected,
         };
         outline(&mut gizmos, at, Color::WHITE);
-        if let Some(position) = track.position(selected) {
-            let (min, max) = track.scene().bounds;
-            let origin = track.offset();
-            gizmos.line(
-                Vec3::new(position.x, origin.y + max[1] + 1.2, position.z),
-                Vec3::new(position.x, origin.y + min[1] - 1.2, position.z),
-                Color::srgba(1.0, 1.0, 1.0, 0.25),
-            );
+        if let Some(bar) = track.bar(selected) {
+            draw_time_cursor(&explorer, &mut gizmos, bar);
         }
     }
 }
 
-fn draw_drops(gizmos: &mut Gizmos, track: &Track) {
-    let scene = track.scene();
-    let origin = track.offset();
-    for edge in &scene.edges {
+/// The moment the cursor is at: a line across a journey, or in the city a plane
+/// across the ground at that height.
+fn draw_time_cursor(explorer: &Explorer, gizmos: &mut Gizmos, bar: &BarBox) {
+    let color = Color::srgba(1.0, 1.0, 1.0, 0.25);
+    if bar.upright() {
+        let (min, max) = explorer.bounds();
+        let center = Vec3::new(
+            f32::midpoint(min.x, max.x),
+            bar.start.y,
+            f32::midpoint(min.z, max.z),
+        );
+        gizmos.rect(
+            Isometry3d::new(center, Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+            Vec2::new(max.x - min.x, max.z - min.z),
+            color,
+        );
+    } else {
+        let (min, max) = explorer.track().bounds();
+        gizmos.line(
+            Vec3::new(bar.start.x, max.y + 1.2, bar.start.z),
+            Vec3::new(bar.start.x, min.y - 1.2, bar.start.z),
+            color,
+        );
+    }
+}
+
+/// Between neighbouring layers, joins each function's first box in one to its first
+/// box in the next: straight pillars where the journeys agree.
+fn draw_pillars(explorer: &Explorer, gizmos: &mut Gizmos) {
+    let focus = explorer.focus();
+    for pair in explorer.tracks().windows(2) {
+        let [front, back] = pair else {
+            continue;
+        };
+        let Some(journey) = front.journey() else {
+            continue;
+        };
+        let mut seen = HashSet::new();
+        for (id, span) in journey.spans() {
+            let SpanTarget::Unit(unit) = &span.target else {
+                continue;
+            };
+            if !seen.insert(unit) {
+                continue;
+            }
+            let (Some(a), Some(b)) = (
+                front.bar(id),
+                back.find(unit).and_then(|other| back.bar(other)),
+            ) else {
+                continue;
+            };
+            let color = if Some(unit) == focus {
+                Color::srgba(1.0, 1.0, 1.0, 0.85)
+            } else {
+                Color::srgba(1.0, 1.0, 1.0, 0.18)
+            };
+            gizmos.line(a.start, b.start, color);
+        }
+    }
+}
+
+/// Caller → callee: a drop from bar to bar, or in the city a level link from the
+/// caller's column to the callee's at the moment of the call.
+fn draw_links(gizmos: &mut Gizmos, track: &Track) {
+    for edge in &track.scene().edges {
         let (Some(from_bar), Some(to_bar), Some(span)) = (
-            scene.nodes.get(edge.caller.index()),
-            scene.nodes.get(edge.callee.index()),
+            track.bar(edge.caller),
+            track.bar(edge.callee),
             track.span(edge.callee),
         ) else {
             continue;
         };
-        let x = to_bar.position[0] + 0.15;
-        let from = origin
-            + Vec3::new(
-                x,
-                from_bar.position[1] - BAR_HEIGHT / 2.0,
-                from_bar.position[2],
-            );
-        let to = origin + Vec3::new(x, to_bar.position[1] + BAR_HEIGHT / 2.0, to_bar.position[2]);
         let color = match span.mode {
             Mode::Spawn => Color::srgb(0.55, 0.85, 1.0),
             Mode::Register => Color::srgba(0.55, 0.9, 0.4, 0.6),
             _ => Color::srgba(0.85, 0.87, 0.92, 0.7),
         };
+        if to_bar.upright() {
+            let from = Vec3::new(from_bar.center.x, to_bar.start.y, from_bar.center.z);
+            if from.distance(to_bar.start) > 0.05 {
+                gizmos.arrow(from, to_bar.start, color).with_tip_length(0.3);
+            }
+            continue;
+        }
+        let x = to_bar.start.x + 0.15;
+        let from = Vec3::new(
+            x,
+            from_bar.center.y - from_bar.size.y / 2.0,
+            from_bar.center.z,
+        );
+        let to = Vec3::new(x, to_bar.center.y + to_bar.size.y / 2.0, to_bar.center.z);
         if is_conditional(span) {
             dashed(gizmos, from, to, color);
         } else {

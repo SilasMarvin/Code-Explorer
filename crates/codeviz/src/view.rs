@@ -29,12 +29,25 @@ pub(crate) struct ViewArgs {
     /// Also open journeys from these entries, stacked below the first.
     #[arg(long, value_name = "ENTRY")]
     also: Vec<String>,
+    /// How to arrange the journeys in space.
+    #[arg(long, value_enum, default_value_t = Arrange::Stacked)]
+    arrange: Arrange,
     /// Open with the rest of the codebase shown around the journey.
     #[arg(long)]
     codebase: bool,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum Arrange {
+    /// Journeys stacked, facing the camera.
+    Stacked,
+    /// Journeys one behind another, lined up on the cursor.
+    Layers,
+    /// The codebase as ground, time rising from it.
+    City,
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
@@ -79,7 +92,14 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     if let Some(scenario) = args.scenario {
         viewer = viewer.with_scenario(scenario);
     }
-    viewer = viewer.with_step(args.step).with_codebase(args.codebase);
+    viewer = viewer
+        .with_step(args.step)
+        .with_codebase(args.codebase)
+        .with_arrangement(match args.arrange {
+            Arrange::Stacked => "stacked",
+            Arrange::Layers => "layers",
+            Arrange::City => "city",
+        });
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
     }

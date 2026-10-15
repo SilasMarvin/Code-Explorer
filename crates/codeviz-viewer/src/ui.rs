@@ -14,6 +14,7 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 use crate::{
     camera::{CameraMode, JourneyCamera},
     explorer::{Autoplay, Confidence, Explorer, SpanRef, Step, Track, is_conditional},
+    geometry::Arrangement,
     scene::{accent, lane_color},
 };
 
@@ -73,13 +74,13 @@ fn draw_ui(
             .max_rect(ctx.viewport_rect()),
     );
 
-    let mut toggle_mode = false;
+    let mut chosen = None;
     let mode = cameras
         .single()
         .map_or(CameraMode::Flat, |(_, _, c)| c.mode);
     let top = egui::Panel::top("stack")
         .show(&mut root_ui, |ui| {
-            breadcrumb(ui, &mut explorer, mode, &mut toggle_mode);
+            breadcrumb(ui, &mut explorer, mode, &mut chosen);
         })
         .response
         .rect
@@ -124,28 +125,76 @@ fn draw_ui(
         egui::pos2(screen.max.x - right, screen.max.y - bottom),
     );
     if let Ok((mut camera, transform, mut journey_camera)) = cameras.single_mut() {
-        if toggle_mode {
-            journey_camera.toggle();
-            explorer.rebuild();
+        match chosen {
+            Some(View::Flat) => {
+                explorer.set_arrangement(Arrangement::Stacked);
+                journey_camera.set_mode(CameraMode::Flat);
+                explorer.rebuild();
+            }
+            Some(View::Tilted) => {
+                explorer.set_arrangement(Arrangement::Stacked);
+                journey_camera.set_mode(CameraMode::Orbit);
+                explorer.rebuild();
+            }
+            Some(View::Layers) => explorer.set_arrangement(Arrangement::Layers),
+            Some(View::City) => explorer.set_arrangement(Arrangement::City),
+            None => {}
         }
         fit_viewport(&mut camera, &window, central);
         draw_labels(ctx, central, &explorer, &camera, transform);
-        if explorer.codebase() {
+        if explorer.shows_map() {
             draw_map_labels(ctx, central, &explorer, &camera, transform);
         }
     }
     Ok(())
 }
 
-fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, mode: CameraMode, toggle: &mut bool) {
+/// The ways to look at the journeys, as offered in the top bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    Flat,
+    Tilted,
+    Layers,
+    City,
+}
+
+fn breadcrumb(
+    ui: &mut egui::Ui,
+    explorer: &mut Explorer,
+    mode: CameraMode,
+    chosen: &mut Option<View>,
+) {
     ui.horizontal(|ui| {
-        let flat = mode == CameraMode::Flat;
-        if ui.selectable_label(flat, "Flat").clicked() && !flat {
-            *toggle = true;
+        let current = match (explorer.arrangement(), mode) {
+            (Arrangement::Stacked, CameraMode::Flat) => View::Flat,
+            (Arrangement::Stacked, CameraMode::Orbit) => View::Tilted,
+            (Arrangement::Layers, _) => View::Layers,
+            (Arrangement::City, _) => View::City,
+        };
+        for (view, label, hint) in [
+            (View::Flat, "Flat", "Journeys stacked, facing you"),
+            (View::Tilted, "3D", "The same, to orbit around"),
+            (
+                View::Layers,
+                "Layers",
+                "Journeys one behind another, lined up on the cursor (V)",
+            ),
+            (
+                View::City,
+                "City",
+                "The codebase as ground, time rising from it (V)",
+            ),
+        ] {
+            if ui
+                .selectable_label(current == view, label)
+                .on_hover_text(hint)
+                .clicked()
+                && current != view
+            {
+                *chosen = Some(view);
+            }
         }
-        if ui.selectable_label(!flat, "3D").clicked() && flat {
-            *toggle = true;
-        }
+        ui.separator();
         let codebase = explorer.codebase();
         if ui
             .selectable_label(codebase, "Codebase")
@@ -614,7 +663,12 @@ fn draw_labels(
     let several = explorer.tracks().len() > 1;
     for (index, track) in explorer.tracks().iter().enumerate() {
         let active = index == explorer.active();
-        if several && let Some(at) = to_screen(track.offset() + Vec3::new(-0.9, 1.4, 0.0)) {
+        let (min, max) = track.bounds();
+        let title = Vec3::new(min.x - 0.9, max.y + 1.0, max.z);
+        if several
+            && explorer.arrangement() != Arrangement::City
+            && let Some(at) = to_screen(title)
+        {
             painter.text(
                 at,
                 egui::Align2::LEFT_BOTTOM,
@@ -648,10 +702,14 @@ fn draw_track_labels(
     track: &Track,
 ) {
     let scene = track.scene();
-    let tick = explorer.layout.tick_spacing;
-    let origin = track.offset();
-    let label_all = scene.nodes.len() <= LABEL_ALL_LIMIT;
     let active = index == explorer.active();
+    // Layers name everything only on the active pane; the city only what is running.
+    let label_all = scene.nodes.len() <= LABEL_ALL_LIMIT
+        && match explorer.arrangement() {
+            Arrangement::Stacked => true,
+            Arrangement::Layers => active,
+            Arrangement::City => false,
+        };
     let selected = track.selected().filter(|_| active);
     let hovered = explorer
         .hovered
@@ -667,8 +725,10 @@ fn draw_track_labels(
         if !(label_all || emphasized || cursor_stack.contains(&id)) {
             continue;
         }
-        let [x, y, z] = placed.position;
-        let Some(anchor) = to_screen(origin + Vec3::new(x + 0.1, y + 0.55, z)) else {
+        let Some(bar) = track.bar(id) else {
+            continue;
+        };
+        let Some(anchor) = to_screen(bar.label_anchor()) else {
             continue;
         };
         let mut text = explorer.label_in(track, id);
@@ -676,7 +736,9 @@ fn draw_track_labels(
             text = format!("{text}  if {}", condition.arm);
         }
         // Fit the label over its own bar unless it is the one being looked at.
-        let bar_end = to_screen(origin + Vec3::new(x + placed.length - 0.2, y, z));
+        let bar_end = (!bar.upright())
+            .then(|| to_screen(bar.end() - Vec3::X * 0.2))
+            .flatten();
         if !emphasized && let Some(end) = bar_end {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -701,7 +763,12 @@ fn draw_track_labels(
         );
         if emphasized {
             for exit in &span.exits {
-                let point = origin + Vec3::new(exit.tick as f32 * tick, y - 0.6, z);
+                let below = if bar.upright() {
+                    Vec3::X * 0.6
+                } else {
+                    Vec3::NEG_Y * 0.6
+                };
+                let point = bar.at(exit.tick) + below;
                 if let Some(at) = to_screen(point) {
                     let color = if exit.kind == ExitKind::Return {
                         OK
@@ -724,11 +791,10 @@ fn draw_track_labels(
         if hovered != Some(divergence.span) && selected != Some(divergence.span) {
             continue;
         }
-        let Some(placed) = scene.nodes.get(divergence.span.index()) else {
+        let Some(bar) = track.bar(divergence.span) else {
             continue;
         };
-        let [x, y, z] = placed.position;
-        if let Some(at) = to_screen(origin + Vec3::new(x + placed.length - 0.2, y + 1.0, z)) {
+        if let Some(at) = to_screen(bar.end() + Vec3::Y * 1.0) {
             painter.text(
                 at,
                 egui::Align2::RIGHT_BOTTOM,
@@ -769,7 +835,7 @@ fn draw_map_labels(
         to_screen(explorer.map_point([0.0, 0.0])),
         to_screen(explorer.map_point([0.0, 1.0])),
     ) {
-        (Some(a), Some(b)) => (a.y - b.y).abs(),
+        (Some(a), Some(b)) => a.distance(b),
         _ => 0.0,
     };
     let fits = |world: f32, font: f32| world * scale >= font;
@@ -794,11 +860,12 @@ fn draw_map_labels(
         .map(|e| (&e.unit, e.label.as_str()))
         .collect();
     let label_all = map.tiles.len() <= MAP_LABEL_ALL_LIMIT;
+    let tile_size = explorer.map_frame().tile;
     for (index, tile) in map.tiles.iter().enumerate() {
         let distance = explorer.tile_distance(index);
         let hovered = explorer.hovered_tile == Some(index);
         if !(label_all || distance.is_some() || hovered)
-            || (!hovered && !fits(MAP_TILE_HEIGHT, 10.0))
+            || (!hovered && !fits(tile_size.y.min(1.0), 10.0))
         {
             continue;
         }
@@ -807,8 +874,8 @@ fn draw_map_labels(
         };
         let [x, y] = tile.position;
         let (Some(left), Some(right)) = (
-            to_screen(explorer.map_point([x - MAP_TILE_WIDTH / 2.0 + 0.15, y])),
-            to_screen(explorer.map_point([x + MAP_TILE_WIDTH / 2.0 - 0.15, y])),
+            to_screen(explorer.map_point([x - tile_size.x / 2.0 + 0.15, y])),
+            to_screen(explorer.map_point([x + tile_size.x / 2.0 - 0.15, y])),
         ) else {
             continue;
         };
@@ -874,9 +941,7 @@ fn map_caption(explorer: &Explorer) -> Option<String> {
     Some(caption)
 }
 
-/// Match [`codeviz_layout::MapConfig`]'s defaults.
-const MAP_TILE_WIDTH: f32 = 4.4;
-const MAP_TILE_HEIGHT: f32 = 0.7;
+/// Matches [`codeviz_layout::MapConfig`]'s default header.
 const MAP_HEADER: f32 = 1.1;
 
 fn short(text: &str, max: usize) -> String {

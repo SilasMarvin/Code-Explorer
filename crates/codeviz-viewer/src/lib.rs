@@ -12,6 +12,7 @@
 mod camera;
 mod capture;
 mod explorer;
+mod geometry;
 mod scene;
 mod ui;
 
@@ -36,6 +37,7 @@ pub struct Viewer {
     step: usize,
     codebase: bool,
     also: Vec<UnitId>,
+    arrangement: geometry::Arrangement,
 }
 
 impl Viewer {
@@ -51,6 +53,7 @@ impl Viewer {
             step: 0,
             codebase: false,
             also: Vec::new(),
+            arrangement: geometry::Arrangement::default(),
         }
     }
 
@@ -80,6 +83,18 @@ impl Viewer {
     #[must_use]
     pub fn also(mut self, root: UnitId) -> Self {
         self.also.push(root);
+        self
+    }
+
+    /// Opens with journeys layered one behind another (`layers`) or rising from the
+    /// codebase (`city`) instead of stacked (`stacked`).
+    #[must_use]
+    pub fn with_arrangement(mut self, name: &str) -> Self {
+        self.arrangement = match name {
+            "layers" => geometry::Arrangement::Layers,
+            "city" => geometry::Arrangement::City,
+            _ => geometry::Arrangement::Stacked,
+        };
         self
     }
 
@@ -132,6 +147,7 @@ impl Viewer {
         if self.codebase {
             explorer.toggle_codebase();
         }
+        explorer.set_arrangement(self.arrangement);
         explorer
     }
 

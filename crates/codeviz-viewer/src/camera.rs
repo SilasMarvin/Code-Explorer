@@ -87,6 +87,15 @@ impl JourneyCamera {
         offset.x <= half.x && offset.y <= half.y
     }
 
+    pub(crate) fn set_mode(&mut self, mode: CameraMode) {
+        self.mode = mode;
+    }
+
+    pub(crate) fn set_angles(&mut self, yaw: f32, pitch: f32) {
+        self.yaw = yaw;
+        self.pitch = pitch;
+    }
+
     pub(crate) fn toggle(&mut self) {
         self.mode = match self.mode {
             CameraMode::Flat => CameraMode::Orbit,

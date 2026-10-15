@@ -12,6 +12,8 @@ use codeviz_core::{
 use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
 use codeviz_layout::{CodebaseMap, LayoutConfig, MapConfig, Scene};
 
+use crate::geometry::{Arrangement, BarBox, MapFrame};
+
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Confidence {
@@ -60,6 +62,10 @@ pub(crate) struct Track {
     divergences: Vec<Divergence>,
     selected: Option<SpanId>,
     offset: Vec3,
+    /// Each span's bar in the world, when the arrangement places it.
+    boxes: Vec<Option<BarBox>>,
+    /// What the bars occupy in the world, as `(min, max)`.
+    bounds: (Vec3, Vec3),
     /// The color of each of the scene's lanes, shared with the other journeys.
     colors: Vec<usize>,
 }
@@ -85,11 +91,6 @@ impl Track {
         self.selected
     }
 
-    /// Where the journey's origin sits in the world.
-    pub(crate) fn offset(&self) -> Vec3 {
-        self.offset
-    }
-
     pub(crate) fn span(&self, id: SpanId) -> Option<&Span> {
         self.journey.as_ref()?.span(id)
     }
@@ -102,10 +103,14 @@ impl Track {
         }
     }
 
-    /// The span's bar position in world space.
-    pub(crate) fn position(&self, id: SpanId) -> Option<Vec3> {
-        let placed = self.scene.nodes.get(id.index())?;
-        Some(Vec3::from(placed.position) + self.offset)
+    /// The span's bar in the world.
+    pub(crate) fn bar(&self, id: SpanId) -> Option<&BarBox> {
+        self.boxes.get(id.index())?.as_ref()
+    }
+
+    /// What the bars occupy in the world, as `(min, max)`.
+    pub(crate) fn bounds(&self) -> (Vec3, Vec3) {
+        self.bounds
     }
 
     /// The color index for a span's bar: the same module has the same color in
@@ -120,7 +125,7 @@ impl Track {
     }
 
     /// The first span that runs `unit`.
-    fn find(&self, unit: &UnitId) -> Option<SpanId> {
+    pub(crate) fn find(&self, unit: &UnitId) -> Option<SpanId> {
         self.journey.as_ref().and_then(|j| {
             j.spans()
                 .find(|(_, s)| s.target == SpanTarget::Unit(unit.clone()))
@@ -188,6 +193,96 @@ impl Track {
 
 /// Space between stacked journeys.
 const TRACK_GAP: f32 = 3.5;
+/// Space between layered journeys.
+const LAYER_GAP: f32 = 9.0;
+/// Space between journeys' columns on one city tile.
+const COLUMN_SPACING: f32 = 0.85;
+/// Height of one tick in the city.
+const CITY_TICK: f32 = 1.0;
+/// Square tiles, few to a column, so the map reads as ground.
+const CITY_MAP: MapConfig = MapConfig {
+    tile_width: 2.6,
+    tile_height: 2.6,
+    gap: 0.6,
+    header: 1.6,
+    max_rows: 4,
+    max_width: 48.0,
+};
+
+fn stacked_map(max_width: f32) -> MapConfig {
+    MapConfig {
+        max_width,
+        ..MapConfig::default()
+    }
+}
+
+const BAR_HEIGHT: f32 = 0.8;
+const BAR_DEPTH: f32 = 0.8;
+/// Space left between consecutive bars on one row.
+const BAR_GAP: f32 = 0.25;
+
+/// Bars along X at the layout's positions; `lanes` keeps the layout's lane depth.
+fn place_bars(track: &mut Track, tick: f32, lanes: bool) {
+    let origin = track.offset;
+    track.boxes = track
+        .scene
+        .nodes
+        .iter()
+        .map(|placed| {
+            let length = (placed.length - BAR_GAP).max(tick * 0.4);
+            let [x, y, z] = placed.position;
+            let start = origin + Vec3::new(x, y, if lanes { z } else { 0.0 });
+            let enter = track.span(placed.span).map_or(0, |s| s.enter);
+            Some(BarBox {
+                center: start + Vec3::X * length / 2.0,
+                size: Vec3::new(length, BAR_HEIGHT, BAR_DEPTH),
+                start,
+                axis: Vec3::X * tick,
+                enter,
+            })
+        })
+        .collect();
+    track.bounds = box_bounds(&track.boxes);
+}
+
+/// Columns rising from each span's tile, from when it enters to when it returns.
+fn place_columns(track: &mut Track, map: &CodebaseMap, frame: &MapFrame) {
+    let shift = track.offset;
+    track.boxes = track
+        .scene
+        .nodes
+        .iter()
+        .map(|placed| {
+            let span = track.span(placed.span)?;
+            let tile = map.tile(map.tile_of(track.unit_id(placed.span)?)?)?;
+            let ground = frame.point(tile.position) + shift;
+            let bottom = span.enter as f32 * CITY_TICK;
+            let top = (span.exit as f32 * CITY_TICK - 0.12).max(bottom + 0.3);
+            let start = Vec3::new(ground.x, bottom, ground.z);
+            Some(BarBox {
+                center: Vec3::new(ground.x, f32::midpoint(bottom, top), ground.z),
+                size: Vec3::new(0.6, top - bottom, 0.6),
+                start,
+                axis: Vec3::Y * CITY_TICK,
+                enter: span.enter,
+            })
+        })
+        .collect();
+    track.bounds = box_bounds(&track.boxes);
+}
+
+fn box_bounds(boxes: &[Option<BarBox>]) -> (Vec3, Vec3) {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for bar in boxes.iter().flatten() {
+        min = min.min(bar.center - bar.size / 2.0);
+        max = max.max(bar.center + bar.size / 2.0);
+    }
+    if min.x > max.x {
+        return (Vec3::ZERO, Vec3::ZERO);
+    }
+    (min, max)
+}
 
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
@@ -202,8 +297,15 @@ pub(crate) struct Explorer {
     /// Whether the rest of the codebase is drawn around the journeys.
     codebase: bool,
     map: CodebaseMap,
-    /// Where the map's origin sits in the world: above the journeys.
-    map_offset: Vec2,
+    /// The configuration `map` was laid out with.
+    map_config: Option<MapConfig>,
+    /// Where the map lies in the world.
+    map_frame: MapFrame,
+    arrangement: Arrangement,
+    /// The unit the layers were last lined up on.
+    aligned_on: Option<UnitId>,
+    /// Bumped when the camera should frame everything again.
+    framing: u64,
     /// Map tiles each journey runs, with the color each is drawn in there.
     journey_tiles: Vec<HashMap<usize, usize>>,
     /// What can reach the cursor's unit.
@@ -229,7 +331,11 @@ impl Explorer {
             hovered: None,
             codebase: false,
             map: CodebaseMap::default(),
-            map_offset: Vec2::ZERO,
+            map_config: None,
+            map_frame: MapFrame::default(),
+            arrangement: Arrangement::default(),
+            aligned_on: None,
+            framing: 0,
             journey_tiles: Vec::new(),
             upstream: None,
             upstream_tiles: HashMap::new(),
@@ -380,7 +486,7 @@ impl Explorer {
         self.arrange();
     }
 
-    /// Rebuilds the active journey and re-stacks everything around it.
+    /// Rebuilds the active journey and re-places everything around it.
     pub(crate) fn rebuild(&mut self) {
         let index = self.active.min(self.tracks.len() - 1);
         if let Some(track) = self.tracks.get_mut(index) {
@@ -389,13 +495,48 @@ impl Explorer {
         self.arrange();
     }
 
-    /// Stacks the journeys top to bottom, rests the map on the first, and asks for a
-    /// redraw.
+    pub(crate) fn arrangement(&self) -> Arrangement {
+        self.arrangement
+    }
+
+    pub(crate) fn set_arrangement(&mut self, arrangement: Arrangement) {
+        if self.arrangement != arrangement {
+            self.arrangement = arrangement;
+            self.arrange();
+        }
+    }
+
+    /// Bumped when the camera should frame everything again.
+    pub(crate) fn framing(&self) -> u64 {
+        self.framing
+    }
+
+    /// Whether the codebase map is drawn: when asked for, and always as the ground of
+    /// the city.
+    pub(crate) fn shows_map(&self) -> bool {
+        self.codebase || self.arrangement == Arrangement::City
+    }
+
+    /// In layers, slides the panes so the cursor's function lines up in all of them.
+    /// Returns whether anything moved.
+    pub(crate) fn realign(&mut self) -> bool {
+        if self.arrangement != Arrangement::Layers || self.tracks.len() < 2 {
+            return false;
+        }
+        let focus = self.focus().cloned();
+        if focus == self.aligned_on {
+            return false;
+        }
+        self.aligned_on = focus;
+        self.place();
+        self.revision += 1;
+        true
+    }
+
+    /// Re-places everything after a journey, the set of journeys or the arrangement
+    /// changed, and asks for a redraw and a fresh camera framing.
     fn arrange(&mut self) {
-        let mut top = 0.0;
         for track in &mut self.tracks {
-            track.offset = Vec3::new(0.0, top, 0.0);
-            top -= track.height() + TRACK_GAP;
             let colors = &mut self.lane_colors;
             track.colors = track
                 .scene
@@ -407,11 +548,93 @@ impl Explorer {
                 })
                 .collect();
         }
+        self.aligned_on = self.focus().cloned();
+        self.place();
         self.hovered = None;
-        if self.codebase {
-            self.place_map();
-        }
         self.revision += 1;
+        self.framing += 1;
+    }
+
+    /// Computes every bar's box and the map's frame for the arrangement.
+    fn place(&mut self) {
+        let tick = self.layout.tick_spacing;
+        match self.arrangement {
+            Arrangement::Stacked => {
+                let mut top = 0.0;
+                for track in &mut self.tracks {
+                    track.offset = Vec3::new(0.0, top, 0.0);
+                    top -= track.height() + TRACK_GAP;
+                    place_bars(track, tick, true);
+                }
+                if self.shows_map() {
+                    let (min, max) = self.journey_bounds();
+                    self.layout_map(stacked_map((max.x - min.x).max(30.0)));
+                    self.map_frame =
+                        MapFrame::wall(Vec3::new(min.x, max.y + 2.5, 0.0), self.map_tile());
+                }
+            }
+            Arrangement::Layers => {
+                let focus = self.aligned_on.clone();
+                let start_of = |track: &Track| {
+                    let id = focus.as_ref().and_then(|f| track.find(f))?;
+                    track.scene.nodes.get(id.index()).map(|n| n.position[0])
+                };
+                let anchor = start_of(self.track());
+                for (index, track) in self.tracks.iter_mut().enumerate() {
+                    let shift = anchor
+                        .zip(start_of(track))
+                        .map_or(0.0, |(anchor, own)| anchor - own);
+                    track.offset = Vec3::new(shift, 0.0, -(index as f32) * LAYER_GAP);
+                    place_bars(track, tick, false);
+                }
+                if self.shows_map() {
+                    let (min, max) = self.journey_bounds();
+                    self.layout_map(stacked_map((max.x - min.x).max(30.0)));
+                    self.map_frame = MapFrame::floor(
+                        Vec3::new(min.x, min.y - 3.0, max.z + 6.0),
+                        self.map_tile(),
+                    );
+                }
+            }
+            Arrangement::City => {
+                self.layout_map(CITY_MAP);
+                self.map_frame = MapFrame::floor(Vec3::ZERO, self.map_tile());
+                let count = self.tracks.len();
+                for (index, track) in self.tracks.iter_mut().enumerate() {
+                    let shift = (index as f32 - (count as f32 - 1.0) / 2.0) * COLUMN_SPACING;
+                    track.offset = Vec3::X * shift;
+                    place_columns(track, &self.map, &self.map_frame);
+                }
+            }
+        }
+        self.refresh_journey_tiles();
+    }
+
+    /// Lays the map out again only when its configuration changed.
+    fn layout_map(&mut self, config: MapConfig) {
+        if self.map_config != Some(config) {
+            self.map = codeviz_layout::map(&self.system, &config);
+            self.map_config = Some(config);
+            self.upstream = None;
+        }
+    }
+
+    fn map_tile(&self) -> Vec2 {
+        self.map_config
+            .map_or(Vec2::ONE, |c| Vec2::new(c.tile_width, c.tile_height))
+    }
+
+    fn journey_bounds(&self) -> (Vec3, Vec3) {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for track in &self.tracks {
+            min = min.min(track.bounds.0);
+            max = max.max(track.bounds.1);
+        }
+        if min.x > max.x {
+            return (Vec3::ZERO, Vec3::ZERO);
+        }
+        (min, max)
     }
 
     /// Opens another journey from `unit` below the others and makes it active. Its
@@ -449,17 +672,16 @@ impl Explorer {
         }
     }
 
-    /// Everything the journeys occupy in the world, as `(min, max)`.
+    /// Everything drawn, as `(min, max)`: the journeys, and the map when shown.
     pub(crate) fn bounds(&self) -> (Vec3, Vec3) {
-        let mut min = Vec3::splat(f32::INFINITY);
-        let mut max = Vec3::splat(f32::NEG_INFINITY);
-        for track in &self.tracks {
-            let (a, b) = track.scene.bounds;
-            min = min.min(Vec3::from(a) + track.offset);
-            max = max.max(Vec3::from(b) + track.offset);
-        }
-        if min.x > max.x {
-            return (Vec3::ZERO, Vec3::ZERO);
+        let (mut min, mut max) = self.journey_bounds();
+        if self.shows_map() {
+            let (a, b) = self.map.bounds;
+            for corner in [[a[0], a[1]], [b[0], b[1]], [a[0], b[1]], [b[0], a[1]]] {
+                let point = self.map_frame.point(corner);
+                min = min.min(point);
+                max = max.max(point);
+            }
         }
         (min, max)
     }
@@ -470,24 +692,8 @@ impl Explorer {
 
     pub(crate) fn toggle_codebase(&mut self) {
         self.codebase = !self.codebase;
-        if self.codebase {
-            self.place_map();
-        }
         self.hovered_tile = None;
-        self.revision += 1;
-    }
-
-    /// Lays the map out as wide as the journeys and rests it just above them.
-    fn place_map(&mut self) {
-        let (min, max) = self.bounds();
-        let config = MapConfig {
-            max_width: (max.x - min.x).max(30.0),
-            ..MapConfig::default()
-        };
-        self.map = codeviz_layout::map(&self.system, &config);
-        self.upstream = None;
-        self.map_offset = Vec2::new(min.x, max.y + 2.5);
-        self.refresh_journey_tiles();
+        self.arrange();
     }
 
     fn refresh_journey_tiles(&mut self) {
@@ -512,9 +718,14 @@ impl Explorer {
         &self.map
     }
 
+    /// Where the map lies in the world.
+    pub(crate) fn map_frame(&self) -> &MapFrame {
+        &self.map_frame
+    }
+
     /// A map position in world space.
     pub(crate) fn map_point(&self, position: [f32; 2]) -> Vec3 {
-        (Vec2::from(position) + self.map_offset).extend(0.0)
+        self.map_frame.point(position)
     }
 
     /// The color a tile's unit is drawn in on the active journey, if it runs it.
@@ -810,7 +1021,7 @@ mod tests {
         let [first, second] = explorer.tracks() else {
             panic!("two journeys");
         };
-        assert!(second.offset().y < first.offset().y, "stacked below");
+        assert!(second.bounds().1.y < first.bounds().0.y, "stacked below");
         assert_eq!(
             first.color(first.find(&UnitId::new("x:c")).unwrap()),
             second.color(second.find(&UnitId::new("x:c")).unwrap()),
