@@ -20,6 +20,12 @@ pub(crate) struct ViewArgs {
     /// Start with summaries, or the units they refine.
     #[arg(long, value_enum, default_value_t = crate::journey::ZoomArg::Summary)]
     zoom: crate::journey::ZoomArg,
+    /// Open on this outcome (as numbered by `codeviz journey`) instead of the happy path.
+    #[arg(long)]
+    scenario: Option<usize>,
+    /// Open with the cursor this many steps into the journey.
+    #[arg(long, default_value_t = 0)]
+    step: usize,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -56,6 +62,10 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     if let Some(root) = root {
         viewer = viewer.with_root(root);
     }
+    if let Some(scenario) = args.scenario {
+        viewer = viewer.with_scenario(scenario);
+    }
+    viewer = viewer.with_step(args.step);
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
     }

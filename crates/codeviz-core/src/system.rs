@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use codeviz_ir::{Certainty, Document, Entry, LinkKind, Unit, UnitId};
 
@@ -15,6 +15,8 @@ pub struct System {
     children: HashMap<UnitId, Vec<UnitId>>,
     refinements: HashMap<UnitId, Vec<(UnitId, Certainty)>>,
     equivalents: HashMap<UnitId, Vec<UnitId>>,
+    /// Each unit's document root, for resolving relative locations.
+    roots: HashMap<UnitId, String>,
 }
 
 impl System {
@@ -22,6 +24,11 @@ impl System {
     pub fn new(documents: impl IntoIterator<Item = Document>) -> Self {
         let mut system = Self::default();
         for document in documents {
+            for unit in &document.units {
+                if let Some(root) = &document.root {
+                    system.roots.insert(unit.id.clone(), root.clone());
+                }
+            }
             for unit in document.units {
                 if let Some(slot) = system
                     .by_id
@@ -116,6 +123,19 @@ impl System {
     #[must_use]
     pub fn children(&self, id: &UnitId) -> &[UnitId] {
         self.children.get(id).map_or(&[], Vec::as_slice)
+    }
+
+    /// The local file a location in `id`'s document points at, when it is a file.
+    #[must_use]
+    pub fn local_path(&self, id: &UnitId, uri: &str) -> Option<PathBuf> {
+        if let Some(path) = uri.strip_prefix("file://") {
+            return Some(PathBuf::from(path));
+        }
+        if uri.contains("://") {
+            return None;
+        }
+        let root = self.roots.get(id)?.strip_prefix("file://")?;
+        Some(PathBuf::from(root).join(uri))
     }
 
     /// Finer units `id` summarizes, in order, from `refines` links.

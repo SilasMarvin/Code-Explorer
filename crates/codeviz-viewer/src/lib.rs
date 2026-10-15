@@ -22,7 +22,7 @@ use bevy_egui::EguiPlugin;
 use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::UnitId;
 
-use crate::explorer::{Explorer, Playback};
+use crate::explorer::{Autoplay, Explorer};
 
 /// Configures and launches the viewer window.
 #[derive(Debug)]
@@ -32,6 +32,8 @@ pub struct Viewer {
     options: JourneyOptions,
     title: String,
     screenshot: Option<PathBuf>,
+    scenario: Option<usize>,
+    step: usize,
 }
 
 impl Viewer {
@@ -43,6 +45,8 @@ impl Viewer {
             options: JourneyOptions::default(),
             title: "codeviz".to_owned(),
             screenshot: None,
+            scenario: None,
+            step: 0,
         }
     }
 
@@ -50,6 +54,20 @@ impl Viewer {
     #[must_use]
     pub fn with_root(mut self, root: UnitId) -> Self {
         self.root = Some(root);
+        self
+    }
+
+    /// Opens on this outcome (index into the entry's scenarios) instead of the happy path.
+    #[must_use]
+    pub fn with_scenario(mut self, scenario: usize) -> Self {
+        self.scenario = Some(scenario);
+        self
+    }
+
+    /// Opens with the cursor this many steps into the journey.
+    #[must_use]
+    pub fn with_step(mut self, step: usize) -> Self {
+        self.step = step;
         self
     }
 
@@ -74,9 +92,28 @@ impl Viewer {
         self
     }
 
+    fn explorer(&mut self) -> Explorer {
+        let mut explorer = Explorer::new(
+            std::mem::take(&mut self.system),
+            self.root.take(),
+            self.options.clone(),
+        );
+        if self.scenario.is_some() {
+            explorer.set_scenario(self.scenario);
+        }
+        if self.step > 0 {
+            explorer.selected = explorer.journey().map(codeviz_core::Journey::root);
+            for _ in 0..self.step {
+                explorer.step(explorer::Step::Into);
+            }
+        }
+        explorer
+    }
+
     /// Opens the window and blocks until it is closed.
     #[must_use]
-    pub fn run(self) -> AppExit {
+    pub fn run(mut self) -> AppExit {
+        let explorer = self.explorer();
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -89,13 +126,13 @@ impl Viewer {
         .add_plugins((
             MeshPickingPlugin,
             EguiPlugin::default(),
-            camera::OrbitCameraPlugin,
+            camera::JourneyCameraPlugin,
             scene::ScenePlugin,
             ui::UiPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
-        .insert_resource(Explorer::new(self.system, self.root, self.options))
-        .init_resource::<Playback>();
+        .insert_resource(explorer)
+        .init_resource::<Autoplay>();
         if let Some(path) = self.screenshot {
             app.add_plugins(capture::CapturePlugin(path));
         }

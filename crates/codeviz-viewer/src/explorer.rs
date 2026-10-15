@@ -1,87 +1,40 @@
 //! Viewer state that is independent of rendering: the loaded system, the current
-//! journey and its layout, selection, and playback.
+//! journey and its layout, the cursor, and the outcome being shown.
 
 use bevy::prelude::*;
-use std::collections::HashSet;
-
 use codeviz_core::{
     Journey, JourneyOptions, Level, Scenario, Span, SpanId, SpanTarget, StopReason, System,
-    scenarios,
+    display_name, scenarios,
 };
-use codeviz_ir::{Certainty, Mode, Unit, UnitId};
+use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
 use codeviz_layout::{LayoutConfig, Scene};
 
-/// How a span should be drawn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum NodeKind {
-    Root,
-    Exact,
-    Declared,
-    Inferred,
-    Ambiguous,
-    Unresolved,
-    /// Handed off for later: routes, callbacks, subscriptions.
-    Handoff,
-    /// Not expanded: recursion, depth limit, or not loaded.
-    Truncated,
+/// How sure we are that a span really happens as drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Confidence {
+    /// Resolved by the producer's rules, declared, or observed.
+    Known,
+    /// Matched by name, ambiguous, or unresolved.
+    Guessed,
 }
 
-impl NodeKind {
-    pub(crate) const ALL: [Self; 8] = [
-        Self::Root,
-        Self::Exact,
-        Self::Declared,
-        Self::Inferred,
-        Self::Ambiguous,
-        Self::Unresolved,
-        Self::Handoff,
-        Self::Truncated,
-    ];
-
+impl Confidence {
     pub(crate) fn of(span: &Span) -> Self {
-        match (&span.target, span.stopped, span.mode) {
-            (_, _, Mode::Register) => Self::Handoff,
-            (
-                _,
-                Some(StopReason::Recursion | StopReason::DepthLimit | StopReason::NotLoaded),
-                _,
-            ) => Self::Truncated,
-            (SpanTarget::Ambiguous(_), ..) => Self::Ambiguous,
-            (SpanTarget::Unresolved(_), ..) => Self::Unresolved,
-            (SpanTarget::Unit(_), ..) if span.parent.is_none() => Self::Root,
-            (SpanTarget::Unit(_), ..) => match span.certainty {
-                Some(Certainty::Inferred) => Self::Inferred,
-                Some(Certainty::Declared | Certainty::Observed) => Self::Declared,
-                _ => Self::Exact,
-            },
+        match (&span.target, span.certainty) {
+            (SpanTarget::Unit(_), Some(Certainty::Inferred)) => Self::Guessed,
+            (SpanTarget::Unit(_), _) => Self::Known,
+            _ => Self::Guessed,
         }
     }
+}
 
-    pub(crate) fn color(self) -> Color {
-        match self {
-            Self::Root => Color::srgb(1.0, 0.82, 0.3),
-            Self::Exact => Color::srgb(0.35, 0.72, 1.0),
-            Self::Declared => Color::srgb(0.3, 0.85, 0.75),
-            Self::Inferred => Color::srgb(1.0, 0.55, 0.3),
-            Self::Ambiguous => Color::srgb(0.75, 0.5, 1.0),
-            Self::Unresolved => Color::srgb(0.5, 0.52, 0.56),
-            Self::Handoff => Color::srgb(0.55, 0.9, 0.4),
-            Self::Truncated => Color::srgb(0.95, 0.35, 0.4),
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Root => "Entry",
-            Self::Exact => "Resolved",
-            Self::Declared => "Declared / observed",
-            Self::Inferred => "Inferred by name",
-            Self::Ambiguous => "Ambiguous",
-            Self::Unresolved => "Unresolved",
-            Self::Handoff => "Registered handoff",
-            Self::Truncated => "Recursion / depth / not loaded",
-        }
-    }
+/// A place in the happy path where another outcome splits off.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Divergence {
+    pub(crate) span: SpanId,
+    pub(crate) scenario: usize,
+    pub(crate) kind: ExitKind,
+    pub(crate) label: String,
 }
 
 #[derive(Resource, Debug)]
@@ -93,10 +46,10 @@ pub(crate) struct Explorer {
     scenario: Option<usize>,
     pub(crate) options: JourneyOptions,
     pub(crate) layout: LayoutConfig,
-    /// Containers whose spans are merged into one.
-    collapsed: HashSet<UnitId>,
     journey: Option<Journey>,
     scene: Scene,
+    divergences: Vec<Divergence>,
+    /// The span the cursor is on.
     pub(crate) selected: Option<SpanId>,
     pub(crate) hovered: Option<SpanId>,
     /// Bumped whenever `journey` and `scene` are rebuilt.
@@ -114,9 +67,9 @@ impl Explorer {
             scenario: None,
             options,
             layout: LayoutConfig::default(),
-            collapsed: HashSet::new(),
             journey: None,
             scene: Scene::default(),
+            divergences: Vec::new(),
             selected: None,
             hovered: None,
             revision: 0,
@@ -148,13 +101,13 @@ impl Explorer {
         &self.scenarios
     }
 
+    /// The outcome shown; `None` shows every path at once.
     pub(crate) fn scenario(&self) -> Option<usize> {
         self.scenario
     }
 
-    /// Length of the current journey on its clock.
-    pub(crate) fn duration(&self) -> f32 {
-        self.journey.as_ref().map_or(0, Journey::duration) as f32
+    pub(crate) fn divergences(&self) -> &[Divergence] {
+        &self.divergences
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -182,22 +135,31 @@ impl Explorer {
         }
     }
 
-    /// Recomputes scenarios, which depend on the root and the zoom levels.
+    /// Recomputes outcomes for the root and opens on the happy path.
     pub(crate) fn reroot(&mut self) {
         self.scenarios = self
             .root
             .as_ref()
             .map(|root| scenarios(&self.system, root, &self.options.zoom))
             .unwrap_or_default();
-        self.scenario = None;
+        self.scenario = (!self.scenarios.is_empty()).then_some(0);
         self.rebuild();
     }
 
-    /// Restricts the journey to one scenario, or shows every path with `None`.
     pub(crate) fn set_scenario(&mut self, scenario: Option<usize>) {
         if self.scenario != scenario {
             self.scenario = scenario;
             self.rebuild();
+            // Land on the exit the outcome ends at.
+            if scenario.is_some_and(|s| s > 0) {
+                self.selected = self.journey.as_ref().and_then(|j| {
+                    j.spans()
+                        .filter(|(_, s)| s.exits.iter().any(|e| e.kind != ExitKind::Return))
+                        .map(|(id, _)| id)
+                        .last()
+                        .or_else(|| j.spans().last().map(|(id, _)| id))
+                });
+            }
         }
     }
 
@@ -208,7 +170,6 @@ impl Explorer {
         }
     }
 
-    /// Switches a refinable unit between its summary and the units it refines.
     pub(crate) fn toggle_zoom(&mut self, unit: UnitId) {
         let level = match self.options.zoom.level(&unit) {
             Level::Summary => Level::Detail,
@@ -218,49 +179,49 @@ impl Explorer {
         self.reroot();
     }
 
-    pub(crate) fn set_default_zoom(&mut self, level: Level) {
-        self.options.zoom.default = level;
-        self.options.zoom.overrides.clear();
-        self.reroot();
-    }
-
-    pub(crate) fn collapsed(&self) -> &HashSet<UnitId> {
-        &self.collapsed
-    }
-
-    /// Merges or un-merges every span inside `container`.
-    pub(crate) fn toggle_collapse(&mut self, container: UnitId) {
-        if !self.collapsed.remove(&container) {
-            self.collapsed.insert(container);
-        }
-        self.rebuild();
-    }
-
-    pub(crate) fn expand_all(&mut self) {
-        self.collapsed.clear();
-        self.rebuild();
-    }
-
     pub(crate) fn rebuild(&mut self) {
         let scenario = self.scenario.and_then(|i| self.scenarios.get(i));
         self.journey = self
             .root
             .as_ref()
             .and_then(|root| Journey::unroll(&self.system, root, scenario, self.options.clone()));
-        if !self.collapsed.is_empty() {
-            self.journey = self
-                .journey
-                .take()
-                .map(|journey| journey.collapse(&self.system, &self.collapsed));
-        }
+
         self.scene = self
             .journey
             .as_ref()
             .map(|journey| codeviz_layout::layout(&self.system, journey, &self.layout))
             .unwrap_or_default();
+        self.divergences = self.find_divergences();
         self.selected = self.journey.as_ref().map(Journey::root);
         self.hovered = None;
         self.revision += 1;
+    }
+
+    /// On the happy path, where each failing outcome splits off: the deepest unit on
+    /// its chain that the happy path also runs.
+    fn find_divergences(&self) -> Vec<Divergence> {
+        let (Some(journey), Some(0)) = (&self.journey, self.scenario) else {
+            return Vec::new();
+        };
+        self.scenarios
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(index, scenario)| {
+                let span = scenario.chain.iter().rev().find_map(|site| {
+                    journey
+                        .spans()
+                        .find(|(_, s)| s.target == SpanTarget::Unit(site.unit.clone()))
+                        .map(|(id, _)| id)
+                })?;
+                Some(Divergence {
+                    span,
+                    scenario: index,
+                    kind: scenario.outcome.kind,
+                    label: scenario.outcome.label.clone(),
+                })
+            })
+            .collect()
     }
 
     pub(crate) fn span(&self, id: SpanId) -> Option<&Span> {
@@ -286,7 +247,7 @@ impl Explorer {
         let name = match &span.target {
             SpanTarget::Unit(unit) => self.unit_name(unit),
             SpanTarget::Ambiguous(ids) => format!(
-                "{} ({} candidates)",
+                "{} → one of {}",
                 span.text.as_deref().unwrap_or("?"),
                 ids.len()
             ),
@@ -305,28 +266,46 @@ impl Explorer {
         }
     }
 
-    /// `Parent.name`, which reads well in every scheme.
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
-        let Some(unit) = self.system.unit(id) else {
-            return id.to_string();
-        };
-        match unit.parent.as_ref().and_then(|p| self.system.unit(p)) {
-            Some(parent) if parent.parent.is_some() => format!("{}.{}", parent.name, unit.name),
-            _ => unit.name.clone(),
-        }
+        display_name(&self.system, id)
     }
 
-    /// Moves the selection through the journey. Returns the new selection.
-    pub(crate) fn step_selection(&mut self, step: SelectionStep) -> Option<SpanId> {
+    /// The call stack at a span, outermost first.
+    pub(crate) fn stack(&self, id: SpanId) -> Vec<SpanId> {
+        let mut stack: Vec<SpanId> =
+            std::iter::successors(Some(id), |s| self.span(*s).and_then(|s| s.parent)).collect();
+        stack.reverse();
+        stack
+    }
+
+    /// Where the call that started `id` is written: the caller's file and line.
+    pub(crate) fn call_site(&self, id: SpanId) -> Option<(&UnitId, &Location)> {
+        let (caller, key) = self.span(id)?.call.as_ref()?;
+        let location = self.system.unit(caller)?.call(key)?.location.as_ref()?;
+        Some((caller, location))
+    }
+
+    /// Moves the cursor. Returns the new position.
+    pub(crate) fn step(&mut self, step: Step) -> Option<SpanId> {
         let journey = self.journey.as_ref()?;
         let current = self.selected.unwrap_or_else(|| journey.root());
         let span = journey.span(current)?;
         let nth = |index: usize| journey.spans().nth(index).map(|(id, _)| id);
+        // The first span after `id`'s subtree, in pre-order.
+        let after = |id: SpanId| {
+            let end = journey.span(id).map_or(0, |s| s.exit);
+            journey
+                .spans()
+                .skip(id.index() + 1)
+                .find(|(other, s)| s.enter >= end || !is_within(journey, *other, id))
+                .map(|(id, _)| id)
+        };
         let next = match step {
-            SelectionStep::Next => nth(current.index() + 1),
-            SelectionStep::Previous => current.index().checked_sub(1).and_then(nth),
-            SelectionStep::Parent => span.parent,
-            SelectionStep::FirstChild => span.children.first().copied(),
+            Step::Into => nth(current.index() + 1),
+            Step::Back => current.index().checked_sub(1).and_then(nth),
+            Step::Over => after(current),
+            Step::Out => span.parent.and_then(after).or(span.parent),
+            Step::Start => Some(journey.root()),
         };
         if next.is_some() {
             self.selected = next;
@@ -335,49 +314,50 @@ impl Explorer {
     }
 }
 
+fn is_within(journey: &Journey, span: SpanId, ancestor: SpanId) -> bool {
+    std::iter::successors(Some(span), |s| journey.span(*s).and_then(|s| s.parent))
+        .any(|s| s == ancestor)
+}
+
+/// Debugger-style cursor movement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SelectionStep {
-    /// The next span in pre-order.
-    Next,
-    Previous,
-    Parent,
-    FirstChild,
+pub(crate) enum Step {
+    /// The next call in time, entering callees.
+    Into,
+    /// The next call after this one returns.
+    Over,
+    /// The next call after the caller returns.
+    Out,
+    /// The previous call in time.
+    Back,
+    Start,
 }
 
-/// The playhead sweeping along the time axis.
+/// Steps the cursor on a timer.
 #[derive(Resource, Debug)]
-pub(crate) struct Playback {
-    /// Position on the journey clock. Spans with `enter <= tick` have happened.
-    pub(crate) tick: f32,
+pub(crate) struct Autoplay {
     pub(crate) playing: bool,
-    pub(crate) ticks_per_second: f32,
+    pub(crate) steps_per_second: f32,
+    pub(crate) elapsed: f32,
 }
 
-impl Default for Playback {
+impl Default for Autoplay {
     fn default() -> Self {
         Self {
-            tick: f32::MAX,
             playing: false,
-            ticks_per_second: 2.0,
+            steps_per_second: 2.0,
+            elapsed: 0.0,
         }
     }
 }
 
-impl Playback {
-    pub(crate) fn toggle(&mut self, duration: f32) {
-        if !self.playing && self.tick >= duration {
-            self.tick = 0.0;
-        }
-        self.playing = !self.playing;
-    }
+/// Whether a span is reached by a call that always happens on this path.
+pub(crate) fn is_conditional(span: &Span) -> bool {
+    !span.conditions.is_empty() || span.repeats
+}
 
-    pub(crate) fn has_entered(&self, span: &Span) -> bool {
-        span.enter as f32 <= self.tick
-    }
-
-    pub(crate) fn is_active(&self, span: &Span) -> bool {
-        self.has_entered(span) && self.tick < span.exit as f32
-    }
+pub(crate) fn is_handoff(span: &Span) -> bool {
+    span.mode == Mode::Register
 }
 
 #[cfg(test)]
@@ -417,35 +397,40 @@ mod tests {
         )
     }
 
-    fn selected_label(explorer: &Explorer) -> String {
+    fn at(explorer: &Explorer) -> String {
         explorer.label(explorer.selected.unwrap())
     }
 
     #[test]
-    fn selection_walks_time_and_stack() {
+    fn stepping_like_a_debugger() {
         let mut explorer = explorer();
-        assert_eq!(selected_label(&explorer), "main");
+        assert_eq!(at(&explorer), "main");
 
-        explorer.step_selection(SelectionStep::Next);
-        explorer.step_selection(SelectionStep::Next);
-        assert_eq!(selected_label(&explorer), "c");
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "a");
+        explorer.step(Step::Over);
+        assert_eq!(at(&explorer), "b", "over skips a's callee c");
 
-        explorer.step_selection(SelectionStep::Parent);
-        assert_eq!(selected_label(&explorer), "a");
+        explorer.step(Step::Back);
+        explorer.step(Step::Back);
+        assert_eq!(at(&explorer), "a");
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "c");
+        explorer.step(Step::Out);
+        assert_eq!(
+            at(&explorer),
+            "b",
+            "out leaves a and lands on what follows it"
+        );
 
-        explorer.step_selection(SelectionStep::FirstChild);
-        assert_eq!(selected_label(&explorer), "c");
-
-        explorer.step_selection(SelectionStep::Next);
-        assert_eq!(selected_label(&explorer), "b");
-        assert_eq!(explorer.step_selection(SelectionStep::Next), None);
-        assert_eq!(selected_label(&explorer), "b");
+        explorer.step(Step::Start);
+        assert_eq!(at(&explorer), "main");
     }
 
     #[test]
     fn rerooting_keeps_history() {
         let mut explorer = explorer();
-        explorer.step_selection(SelectionStep::FirstChild);
+        explorer.step(Step::Into);
         explorer.trace_from_selected();
         assert_eq!(explorer.journey().map(Journey::len), Some(2));
         assert!(explorer.can_go_back());

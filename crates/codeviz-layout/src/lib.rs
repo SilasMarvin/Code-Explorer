@@ -114,8 +114,8 @@ pub struct Scene {
 
 const UNRESOLVED_LANE: &str = "<unresolved>";
 
-/// Occupied `(enter, exit)` intervals per sub-row, keyed by `(depth, lane)`.
-type Occupancy = HashMap<(u32, usize), Vec<Vec<(u32, u32)>>>;
+/// Occupied `(enter, exit)` intervals per sub-row, keyed by depth.
+type Occupancy = HashMap<u32, Vec<Vec<(u32, u32)>>>;
 
 #[must_use]
 pub fn layout(system: &System, journey: &Journey, config: &LayoutConfig) -> Scene {
@@ -143,7 +143,8 @@ pub fn layout(system: &System, journey: &Journey, config: &LayoutConfig) -> Scen
             lanes.len() - 1
         });
 
-        let tracks = rows.entry((span.depth, lane)).or_default();
+        // Rows are shared across lanes so the flat front view never overlaps bars.
+        let tracks = rows.entry(span.depth).or_default();
         let track = tracks
             .iter()
             .position(|taken| {

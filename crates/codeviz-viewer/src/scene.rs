@@ -1,13 +1,16 @@
-//! Spawns invocation meshes for the current layout and draws edges with gizmos.
+//! Draws the journey: one bar per span spanning its time, colored by lane, with exits
+//! and divergence markers on it and drops from caller to callee.
+
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
 use codeviz_core::SpanId;
-use codeviz_ir::ExitKind;
+use codeviz_ir::{ExitKind, Mode};
 
 use crate::{
-    camera::OrbitCamera,
-    explorer::{Explorer, NodeKind, Playback, SelectionStep},
+    camera::JourneyCamera,
+    explorer::{Autoplay, Confidence, Explorer, Step, is_conditional, is_handoff},
 };
 
 pub(crate) struct ScenePlugin;
@@ -19,157 +22,269 @@ impl Plugin for ScenePlugin {
             (
                 rebuild_scene,
                 keyboard.run_if(not(egui_wants_any_keyboard_input)),
-                advance_playback,
-                update_nodes,
-                draw_edges,
+                autoplay,
+                follow_cursor,
+                style_bars,
+                draw_overlays,
             )
                 .chain(),
         );
     }
 }
 
-/// An entity representing one invocation in the current trace.
+/// Anything `rebuild_scene` spawned, so it can be cleared on the next rebuild.
+#[derive(Component, Debug, Default)]
+struct Spawned;
+
+/// A bar for one span.
 #[derive(Component, Debug)]
-struct Invocation(SpanId);
+#[require(Spawned)]
+struct Bar(SpanId);
+
+/// A clickable marker where another outcome splits off.
+#[derive(Component, Debug)]
+#[require(Spawned)]
+struct DivergenceMarker(usize);
+
+/// Lane colors: distinct, mid-saturation hues that read on a dark background.
+pub(crate) const PALETTE: [(f32, f32, f32); 8] = [
+    (0.36, 0.62, 0.95),
+    (0.95, 0.63, 0.28),
+    (0.45, 0.80, 0.52),
+    (0.82, 0.48, 0.86),
+    (0.95, 0.83, 0.35),
+    (0.40, 0.80, 0.82),
+    (0.93, 0.45, 0.55),
+    (0.62, 0.66, 0.76),
+];
+
+pub(crate) fn lane_color(lane: usize) -> Color {
+    let (r, g, b) = PALETTE[lane % PALETTE.len()];
+    Color::srgb(r, g, b)
+}
+
+/// How a bar is drawn right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Look {
+    /// At or before the cursor in time.
+    Past,
+    /// After the cursor: not reached yet.
+    Future,
+    /// Guessed edges, unresolved calls and handoffs.
+    Faint,
+}
 
 #[derive(Resource)]
 struct Assets3d {
-    function: Handle<Mesh>,
-    external: Handle<Mesh>,
-    /// Indexed like [`NodeKind::ALL`]: `(lit, dimmed)`.
-    materials: Vec<(Handle<StandardMaterial>, Handle<StandardMaterial>)>,
+    bar: Handle<Mesh>,
+    marker: Handle<Mesh>,
+    exit: Handle<Mesh>,
+    materials: HashMap<(usize, Look), Handle<StandardMaterial>>,
+    error: Handle<StandardMaterial>,
+    success: Handle<StandardMaterial>,
 }
 
-impl Assets3d {
-    fn material(&self, kind: NodeKind, lit: bool) -> Handle<StandardMaterial> {
-        let index = NodeKind::ALL.iter().position(|k| *k == kind).unwrap_or(0);
-        self.materials
-            .get(index)
-            .map(|(on, off)| if lit { on.clone() } else { off.clone() })
-            .unwrap_or_default()
-    }
-}
-
-const NODE_RADIUS: f32 = 0.35;
-const EXTERNAL_RADIUS: f32 = 0.2;
-const DIMMED_ALPHA: f32 = 0.12;
+const BAR_HEIGHT: f32 = 0.8;
+const BAR_DEPTH: f32 = 0.8;
+/// Space left between consecutive bars on one row.
+const BAR_GAP: f32 = 0.25;
 
 fn create_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let materials = NodeKind::ALL
-        .iter()
-        .map(|kind| {
-            let color = kind.color();
-            let lit = materials.add(StandardMaterial {
-                base_color: color,
-                emissive: LinearRgba::from(color) * 0.4,
+    let mut table = HashMap::new();
+    for lane in 0..PALETTE.len() {
+        let color = lane_color(lane);
+        for (look, alpha, glow) in [
+            (Look::Past, 1.0, 0.25),
+            (Look::Future, 0.35, 0.0),
+            (Look::Faint, 0.18, 0.0),
+        ] {
+            let material = materials.add(StandardMaterial {
+                base_color: color.with_alpha(alpha),
+                emissive: LinearRgba::from(color) * glow,
+                alpha_mode: if alpha < 1.0 {
+                    AlphaMode::Blend
+                } else {
+                    AlphaMode::Opaque
+                },
+                perceptual_roughness: 0.8,
                 ..default()
             });
-            let dimmed = materials.add(StandardMaterial {
-                base_color: color.with_alpha(DIMMED_ALPHA),
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            });
-            (lit, dimmed)
+            table.insert((lane, look), material);
+        }
+    }
+    let flat = |materials: &mut Assets<StandardMaterial>, color: Color| {
+        materials.add(StandardMaterial {
+            base_color: color,
+            emissive: LinearRgba::from(color) * 0.6,
+            unlit: true,
+            ..default()
         })
-        .collect();
+    };
     commands.insert_resource(Assets3d {
-        function: meshes.add(Sphere::new(NODE_RADIUS)),
-        external: meshes.add(Cuboid::from_length(EXTERNAL_RADIUS * 2.0)),
-        materials,
+        bar: meshes.add(Cuboid::new(1.0, BAR_HEIGHT, BAR_DEPTH)),
+        marker: meshes.add(Sphere::new(0.28)),
+        exit: meshes.add(Cuboid::new(0.18, BAR_HEIGHT + 0.3, BAR_DEPTH + 0.1)),
+        error: flat(&mut materials, Color::srgb(1.0, 0.32, 0.32)),
+        success: flat(&mut materials, Color::srgb(0.45, 0.9, 0.55)),
+        materials: table,
     });
 }
 
+/// Despawns and respawns everything when the journey changes.
 fn rebuild_scene(
     mut commands: Commands,
     mut built: Local<Option<u64>>,
     explorer: Res<Explorer>,
     assets: Res<Assets3d>,
-    existing: Query<Entity, With<Invocation>>,
-    mut cameras: Query<&mut OrbitCamera>,
-    mut playback: ResMut<Playback>,
+    existing: Query<Entity, With<Spawned>>,
+    mut cameras: Query<&mut JourneyCamera>,
+    mut autoplay: ResMut<Autoplay>,
 ) {
     if *built == Some(explorer.revision()) {
         return;
     }
     *built = Some(explorer.revision());
-    *playback = Playback::default();
+    autoplay.playing = false;
 
     for entity in &existing {
         commands.entity(entity).despawn();
     }
+    let tick = explorer.layout.tick_spacing;
     let scene = explorer.scene();
     for placed in &scene.nodes {
-        let Some(node) = explorer.span(placed.span) else {
+        let Some(span) = explorer.span(placed.span) else {
             continue;
         };
-        let kind = NodeKind::of(node);
-        let mesh = if matches!(kind, NodeKind::Unresolved | NodeKind::Handoff) {
-            assets.external.clone()
-        } else {
-            assets.function.clone()
-        };
+        let length = (placed.length - BAR_GAP).max(tick * 0.4);
+        let [x, y, z] = placed.position;
         commands
             .spawn((
-                Invocation(placed.span),
-                Mesh3d(mesh),
-                MeshMaterial3d(assets.material(kind, true)),
-                Transform::from_translation(Vec3::from(placed.position)),
+                Bar(placed.span),
+                Mesh3d(assets.bar.clone()),
+                MeshMaterial3d(
+                    assets.materials[&(placed.lane % PALETTE.len(), Look::Past)].clone(),
+                ),
+                Transform::from_xyz(x + length / 2.0, y, z).with_scale(Vec3::new(length, 1.0, 1.0)),
             ))
             .observe(on_click)
             .observe(on_over)
             .observe(on_out);
+
+        for exit in &span.exits {
+            let material = match exit.kind {
+                ExitKind::Return => assets.success.clone(),
+                _ => assets.error.clone(),
+            };
+            commands.spawn((
+                ExitMark,
+                Mesh3d(assets.exit.clone()),
+                MeshMaterial3d(material),
+                Transform::from_xyz(exit.tick as f32 * tick - BAR_GAP / 2.0, y, z),
+                Pickable::IGNORE,
+            ));
+        }
+    }
+
+    for divergence in explorer.divergences() {
+        let Some(placed) = scene.nodes.get(divergence.span.index()) else {
+            continue;
+        };
+        let [x, y, z] = placed.position;
+        let offset = 0.3
+            * explorer
+                .divergences()
+                .iter()
+                .take_while(|d| d != &divergence)
+                .filter(|d| d.span == divergence.span)
+                .count() as f32;
+        commands
+            .spawn((
+                DivergenceMarker(divergence.scenario),
+                Mesh3d(assets.marker.clone()),
+                MeshMaterial3d(assets.error.clone()),
+                Transform::from_xyz(
+                    x + placed.length - BAR_GAP - 0.35 - offset * 2.0,
+                    y,
+                    z + BAR_DEPTH / 2.0 + 0.1,
+                ),
+            ))
+            .observe(on_divergence_click);
     }
 
     let (min, max) = scene.bounds;
     for mut camera in &mut cameras {
-        camera.frame(Vec3::from(min), Vec3::from(max));
+        let max = Vec3::from(max) + Vec3::X * tick;
+        camera.frame(Vec3::from(min), max);
     }
 }
 
-fn on_click(
-    click: On<PointerClick>,
-    invocations: Query<&Invocation>,
-    mut explorer: ResMut<Explorer>,
-    mut playback: ResMut<Playback>,
-) {
-    if click.button != PointerButton::Primary {
-        return;
-    }
-    if let Ok(invocation) = invocations.get(click.entity) {
-        explorer.selected = Some(invocation.0);
-        if let Some(node) = explorer.span(invocation.0) {
-            playback.tick = playback.tick.max(node.enter as f32);
-        }
+/// An exit drawn on a bar.
+#[derive(Component, Debug)]
+#[require(Spawned)]
+struct ExitMark;
+
+fn on_click(click: On<PointerClick>, bars: Query<&Bar>, mut explorer: ResMut<Explorer>) {
+    if click.button == PointerButton::Primary
+        && let Ok(bar) = bars.get(click.entity)
+    {
+        explorer.selected = Some(bar.0);
     }
 }
 
-fn on_over(over: On<PointerOver>, invocations: Query<&Invocation>, mut explorer: ResMut<Explorer>) {
-    if let Ok(invocation) = invocations.get(over.entity) {
-        explorer.hovered = Some(invocation.0);
+fn on_over(over: On<PointerOver>, bars: Query<&Bar>, mut explorer: ResMut<Explorer>) {
+    if let Ok(bar) = bars.get(over.entity) {
+        explorer.hovered = Some(bar.0);
     }
 }
 
-fn on_out(out: On<PointerOut>, invocations: Query<&Invocation>, mut explorer: ResMut<Explorer>) {
-    if let Ok(invocation) = invocations.get(out.entity)
-        && explorer.hovered == Some(invocation.0)
+fn on_out(out: On<PointerOut>, bars: Query<&Bar>, mut explorer: ResMut<Explorer>) {
+    if let Ok(bar) = bars.get(out.entity)
+        && explorer.hovered == Some(bar.0)
     {
         explorer.hovered = None;
+    }
+}
+
+fn on_divergence_click(
+    click: On<PointerClick>,
+    markers: Query<&DivergenceMarker>,
+    mut explorer: ResMut<Explorer>,
+) {
+    if let Ok(marker) = markers.get(click.entity) {
+        explorer.set_scenario(Some(marker.0));
     }
 }
 
 fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
-    mut playback: ResMut<Playback>,
-    mut cameras: Query<&mut OrbitCamera>,
+    mut autoplay: ResMut<Autoplay>,
+    mut cameras: Query<&mut JourneyCamera>,
 ) {
-    let duration = explorer.duration();
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let step = if keys.just_pressed(KeyCode::ArrowRight) {
+        Some(if shift { Step::Over } else { Step::Into })
+    } else if keys.just_pressed(KeyCode::ArrowDown) {
+        Some(Step::Into)
+    } else if keys.just_pressed(KeyCode::ArrowLeft) {
+        Some(Step::Back)
+    } else if keys.just_pressed(KeyCode::ArrowUp) {
+        Some(Step::Out)
+    } else if keys.just_pressed(KeyCode::Home) {
+        Some(Step::Start)
+    } else {
+        None
+    };
+    if let Some(step) = step {
+        autoplay.playing = false;
+        explorer.step(step);
+    }
     if keys.just_pressed(KeyCode::Space) {
-        playback.toggle(duration);
+        autoplay.playing = !autoplay.playing;
     }
     if keys.just_pressed(KeyCode::Enter) {
         explorer.trace_from_selected();
@@ -177,180 +292,155 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Backspace) {
         explorer.back();
     }
-
-    let step = [
-        (KeyCode::ArrowRight, SelectionStep::Next),
-        (KeyCode::ArrowLeft, SelectionStep::Previous),
-        (KeyCode::ArrowUp, SelectionStep::Parent),
-        (KeyCode::ArrowDown, SelectionStep::FirstChild),
-    ]
-    .into_iter()
-    .find_map(|(key, step)| keys.just_pressed(key).then_some(step));
-    let moved = step.and_then(|step| explorer.step_selection(step));
-    if let Some(node) = moved.and_then(|id| explorer.span(id)) {
-        playback.playing = false;
-        playback.tick = node.enter as f32;
-    }
-
-    if (moved.is_some() || keys.just_pressed(KeyCode::KeyF))
-        && let Some(position) = explorer
-            .selected
-            .and_then(|id| explorer.scene().nodes.get(id.index()))
-            .map(|placed| Vec3::from(placed.position))
-    {
+    if keys.just_pressed(KeyCode::Digit3) {
         for mut camera in &mut cameras {
-            camera.target = position;
+            camera.toggle();
+        }
+        explorer.rebuild();
+    }
+}
+
+fn autoplay(time: Res<Time>, mut autoplay: ResMut<Autoplay>, mut explorer: ResMut<Explorer>) {
+    if !autoplay.playing {
+        autoplay.elapsed = 0.0;
+        return;
+    }
+    autoplay.elapsed += time.delta_secs();
+    let interval = 1.0 / autoplay.steps_per_second;
+    if autoplay.elapsed >= interval {
+        autoplay.elapsed -= interval;
+        if explorer.step(Step::Into).is_none() {
+            autoplay.playing = false;
         }
     }
 }
 
-fn advance_playback(time: Res<Time>, explorer: Res<Explorer>, mut playback: ResMut<Playback>) {
-    let duration = explorer.duration();
-    if playback.playing {
-        playback.tick += time.delta_secs() * playback.ticks_per_second;
-        if playback.tick >= duration {
-            playback.tick = duration;
-            playback.playing = false;
-        }
+/// Keeps the cursor in view by easing the camera towards it when it leaves the
+/// middle of the screen horizontally.
+fn follow_cursor(explorer: Res<Explorer>, mut cameras: Query<&mut JourneyCamera>) {
+    if !explorer.is_changed() {
+        return;
     }
-}
-
-fn update_nodes(
-    time: Res<Time>,
-    explorer: Res<Explorer>,
-    playback: Res<Playback>,
-    assets: Res<Assets3d>,
-    mut invocations: Query<(
-        &Invocation,
-        &mut MeshMaterial3d<StandardMaterial>,
-        &mut Transform,
-    )>,
-) {
-    let pulse = 1.25 + 0.15 * (time.elapsed_secs() * 6.0).sin();
-    for (invocation, mut material, mut transform) in &mut invocations {
-        let Some(node) = explorer.span(invocation.0) else {
-            continue;
-        };
-        let wanted = assets.material(NodeKind::of(node), playback.has_entered(node));
-        if material.0 != wanted {
-            material.0 = wanted;
-        }
-        let active = playback.is_active(node) && playback.tick < explorer.duration();
-        let emphasized =
-            explorer.selected == Some(invocation.0) || explorer.hovered == Some(invocation.0);
-        let scale = match (active, emphasized) {
-            (true, _) => pulse,
-            (false, true) => 1.3,
-            (false, false) => 1.0,
-        };
-        transform.scale = Vec3::splat(scale);
-    }
-}
-
-/// Each caller gets a lifeline along X spanning its invocation; each call drops from
-/// the caller's lifeline at the moment of the call to the callee.
-fn draw_edges(explorer: Res<Explorer>, playback: Res<Playback>, mut gizmos: Gizmos) {
-    let scene = explorer.scene();
-    let lit = |entered: bool, color: Color| {
-        if entered {
-            color
-        } else {
-            color.with_alpha(DIMMED_ALPHA)
-        }
+    let Some(placed) = explorer
+        .selected
+        .and_then(|id| explorer.scene().nodes.get(id.index()))
+    else {
+        return;
     };
+    let [x, y, z] = placed.position;
+    for mut camera in &mut cameras {
+        let start = Vec3::new(x, y, z);
+        if !camera.shows(start, 1.5) {
+            let half_width = camera.extent * camera.aspect() / 2.0;
+            camera.target.x = x + placed.length.min(half_width) / 2.0;
+            camera.target.y = y;
+        }
+    }
+}
 
-    for placed in &scene.nodes {
-        let Some(node) = explorer.span(placed.span) else {
+fn style_bars(
+    explorer: Res<Explorer>,
+    assets: Res<Assets3d>,
+    mut bars: Query<(&Bar, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    if !explorer.is_changed() {
+        return;
+    }
+    let cursor = explorer
+        .selected
+        .and_then(|id| explorer.span(id))
+        .map_or(0, |s| s.enter);
+    for (bar, mut material) in &mut bars {
+        let (Some(span), Some(placed)) = (
+            explorer.span(bar.0),
+            explorer.scene().nodes.get(bar.0.index()),
+        ) else {
             continue;
         };
-        if node.children.is_empty() {
-            continue;
+        let look = if Confidence::of(span) == Confidence::Guessed || is_handoff(span) {
+            Look::Faint
+        } else if span.enter > cursor {
+            Look::Future
+        } else {
+            Look::Past
+        };
+        let wanted = &assets.materials[&(placed.lane % PALETTE.len(), look)];
+        if &material.0 != wanted {
+            material.0 = wanted.clone();
         }
-        let start = Vec3::from(placed.position);
-        let tick_spacing = explorer.layout.tick_spacing;
-        let span_end = start + Vec3::X * (placed.length - tick_spacing).max(0.0);
-        let color = lit(playback.has_entered(node), NodeKind::of(node).color());
-        gizmos.line(start, span_end, color.with_alpha(0.35));
     }
+}
 
+/// Caller → callee drops, the cursor outline, and the time cursor.
+fn draw_overlays(explorer: Res<Explorer>, mut gizmos: Gizmos) {
+    let scene = explorer.scene();
+    let tick = explorer.layout.tick_spacing;
     for edge in &scene.edges {
-        let (Some(from_node), Some(to_node), Some(callee)) = (
+        let (Some(from_bar), Some(to_bar), Some(span)) = (
             scene.nodes.get(edge.caller.index()),
             scene.nodes.get(edge.callee.index()),
             explorer.span(edge.callee),
         ) else {
             continue;
         };
-        let to = Vec3::from(to_node.position);
-        let from = Vec3::new(to.x, from_node.position[1], from_node.position[2]);
-        let mut color = lit(playback.has_entered(callee), NodeKind::of(callee).color());
-        if !callee.conditions.is_empty() {
-            // Conditional calls are fainter than calls that always happen.
-            color = color.with_alpha(color.alpha() * 0.45);
-        }
-        gizmos.line(from, to, color);
-    }
-
-    // Exits sit on the lifeline of the span whose body leaves, at the tick they happen.
-    for placed in &scene.nodes {
-        let Some(span) = explorer.span(placed.span) else {
-            continue;
+        let x = to_bar.position[0] + 0.15;
+        let from = Vec3::new(
+            x,
+            from_bar.position[1] - BAR_HEIGHT / 2.0,
+            from_bar.position[2],
+        );
+        let to = Vec3::new(x, to_bar.position[1] + BAR_HEIGHT / 2.0, to_bar.position[2]);
+        let color = match span.mode {
+            Mode::Spawn => Color::srgb(0.55, 0.85, 1.0),
+            Mode::Register => Color::srgba(0.55, 0.9, 0.4, 0.6),
+            _ => Color::srgba(0.85, 0.87, 0.92, 0.7),
         };
-        for exit in &span.exits {
-            let at = Vec3::new(
-                exit.tick as f32 * explorer.layout.tick_spacing,
-                placed.position[1],
-                placed.position[2],
-            );
-            let color = match exit.kind {
-                ExitKind::Return => Color::srgb(0.5, 0.85, 0.55),
-                _ => Color::srgb(1.0, 0.3, 0.3),
-            };
-            let color = lit(exit.tick as f32 <= playback.tick, color);
-            let size = NODE_RADIUS * 0.8;
-            gizmos.line(
-                at + Vec3::new(-size, -size, 0.0),
-                at + Vec3::new(size, size, 0.0),
-                color,
-            );
-            gizmos.line(
-                at + Vec3::new(-size, size, 0.0),
-                at + Vec3::new(size, -size, 0.0),
-                color,
-            );
+        if is_conditional(span) {
+            dashed(&mut gizmos, from, to, color);
+        } else {
+            gizmos.line(from, to, color);
         }
     }
 
-    if let Some(selected) = explorer.selected.and_then(|id| scene.nodes.get(id.index())) {
-        gizmos.sphere(
-            Isometry3d::from_translation(Vec3::from(selected.position)),
-            NODE_RADIUS * 2.0,
-            Color::WHITE,
-        );
+    let outline = |gizmos: &mut Gizmos, id: SpanId, color: Color| {
+        if let Some(placed) = scene.nodes.get(id.index()) {
+            let length = (placed.length - BAR_GAP).max(tick * 0.4);
+            let [x, y, z] = placed.position;
+            gizmos.cube(
+                Transform::from_xyz(x + length / 2.0, y, z).with_scale(Vec3::new(
+                    length + 0.15,
+                    BAR_HEIGHT + 0.15,
+                    BAR_DEPTH + 0.15,
+                )),
+                color,
+            );
+        }
+    };
+    if let Some(hovered) = explorer.hovered {
+        outline(&mut gizmos, hovered, Color::srgba(1.0, 1.0, 1.0, 0.45));
     }
-
-    let duration = explorer.duration();
-    if playback.tick < duration {
-        let (min, max) = scene.bounds;
-        let x = playback.tick * explorer.layout.tick_spacing;
-        let margin = 1.0;
-        let color = Color::srgba(1.0, 1.0, 1.0, 0.5);
-        let corners = [
-            Vec3::new(x, max[1] + margin, max[2] + margin),
-            Vec3::new(x, min[1] - margin, max[2] + margin),
-            Vec3::new(x, min[1] - margin, min[2] - margin),
-            Vec3::new(x, max[1] + margin, min[2] - margin),
-        ];
-        gizmos.linestrip(corners.into_iter().chain([corners[0]]), color);
+    if let Some(selected) = explorer.selected {
+        outline(&mut gizmos, selected, Color::WHITE);
+        if let Some(placed) = scene.nodes.get(selected.index()) {
+            let (min, max) = scene.bounds;
+            let x = placed.position[0];
+            gizmos.line(
+                Vec3::new(x, max[1] + 1.2, placed.position[2]),
+                Vec3::new(x, min[1] - 1.2, placed.position[2]),
+                Color::srgba(1.0, 1.0, 1.0, 0.25),
+            );
+        }
     }
+}
 
-    for lane in &scene.lanes {
-        let (min, max) = scene.bounds;
-        let y = max[1] + 1.0;
-        gizmos.line(
-            Vec3::new(min[0] - 1.0, y, lane.z),
-            Vec3::new(max[0] + 1.0, y, lane.z),
-            Color::srgba(0.6, 0.65, 0.75, 0.12),
-        );
+fn dashed(gizmos: &mut Gizmos, from: Vec3, to: Vec3, color: Color) {
+    const DASH: f32 = 0.25;
+    let length = from.distance(to);
+    let direction = (to - from).normalize_or_zero();
+    let mut at = 0.0;
+    while at < length {
+        let end = (at + DASH).min(length);
+        gizmos.line(from + direction * at, from + direction * end, color);
+        at += DASH * 2.0;
     }
 }
