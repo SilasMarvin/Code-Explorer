@@ -14,7 +14,7 @@ use crate::{
     hash::content_hash,
     syntax::{
         collect_use, compact, doc_comment, is_test_only, location, receiver_type_path, text,
-        type_name,
+        type_name, unwrapped_type_path,
     },
 };
 
@@ -46,6 +46,12 @@ pub(crate) enum ReceiverRoot {
     Typed {
         path: Vec<String>,
         declared: bool,
+    },
+    /// The value returned by an earlier call in the same unit; `tried` when `?`
+    /// unwrapped it.
+    Returned {
+        call: usize,
+        tried: bool,
     },
 }
 
@@ -125,6 +131,9 @@ pub(crate) struct RawUnit {
     pub(crate) attributes: BTreeMap<String, Scalar>,
     pub(crate) calls: Vec<RawCall>,
     pub(crate) body: Option<Vec<Step>>,
+    /// The declared return type, and the `T` of a returned `Result<T, _>` or `Option<T>`.
+    pub(crate) returns: Option<Vec<String>>,
+    pub(crate) returns_ok: Option<Vec<String>>,
 }
 
 impl RawUnit {
@@ -146,6 +155,8 @@ impl RawUnit {
             attributes: BTreeMap::new(),
             calls: Vec::new(),
             body: None,
+            returns: None,
+            returns_ok: None,
         }
     }
 
@@ -393,9 +404,13 @@ impl Extractor {
         let is_async = node
             .named_children(&mut node.walk())
             .any(|c| c.kind() == "function_modifiers" && text(c, source).contains("async"));
-        let returns_result = node
-            .child_by_field_name("return_type")
-            .is_some_and(|ty| text(ty, source).contains("Result"));
+        let return_type = node.child_by_field_name("return_type");
+        let returns_result = return_type.is_some_and(|ty| text(ty, source).contains("Result"));
+        let returns = return_type.and_then(|ty| receiver_type_path(ty, source));
+        let returns_ok = return_type.and_then(|ty| unwrapped_type_path(ty, source));
+        let where_clause = node
+            .named_children(&mut node.walk())
+            .find(|c| c.kind() == "where_clause");
 
         let built = body::build(
             self,
@@ -406,6 +421,7 @@ impl Extractor {
                 owner,
                 returns_result,
                 parameters: node.child_by_field_name("parameters"),
+                generics: [node.child_by_field_name("type_parameters"), where_clause],
             },
             block,
         );
@@ -431,6 +447,8 @@ impl Extractor {
             attributes,
             calls: built.calls,
             body: Some(built.steps),
+            returns,
+            returns_ok,
         });
     }
 

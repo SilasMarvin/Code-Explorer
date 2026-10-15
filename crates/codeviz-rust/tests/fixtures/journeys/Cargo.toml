@@ -1,0 +1,8 @@
+[package]
+name = "journeys"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Fixture for codeviz-rust journey tests. Parsed, never compiled.
+[workspace]

@@ -1,0 +1,32 @@
+scenarios:
+  [0] ok: completes
+  [1] error: "missing"  (via Store.load)
+  [2] error: "unconfirmed"  (via work.confirm)
+  [3] error: "too many"  (via work.confirm → work.validate)
+
+journey:
+   0-7    journeys.awaited
+   1-3      Store.load [?]
+   2          ✗ error: "missing"   when id == 0 ⇒ then
+   3-7      work.confirm [?]
+   4          ✗ error: "unconfirmed"   when id == 0 ⇒ then
+   5-7        work.validate [?]
+   6            ✗ error: "too many"   when order.quantity > 100 ⇒ then
+
+scenario [1]:
+   0-3    journeys.awaited
+   1-3      Store.load [?]
+   2          ✗ error: "missing"   when id == 0 ⇒ then
+
+scenario [2]:
+   0-4    journeys.awaited
+   1-2      Store.load [?]
+   2-4      work.confirm [?]
+   3          ✗ error: "unconfirmed"   when id == 0 ⇒ then
+
+scenario [3]:
+   0-5    journeys.awaited
+   1-2      Store.load [?]
+   2-5      work.confirm [?]
+   3-5        work.validate [?]
+   4            ✗ error: "too many"   when order.quantity > 100 ⇒ then

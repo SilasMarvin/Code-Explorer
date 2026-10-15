@@ -1,0 +1,7 @@
+scenarios:
+  [0] ok: completes
+
+journey:
+   0-3    journeys.dispatch
+   1-2      .area → one of Circle.area | Square.area
+   2-3      .area → one of Circle.area | Square.area

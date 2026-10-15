@@ -123,7 +123,8 @@ fn branch_arms_overlap_in_time() {
     )
     .unwrap();
     let ticks: Vec<(u32, u32)> = journey.spans().map(|(_, s)| (s.enter, s.exit)).collect();
-    assert_eq!(ticks, vec![(0, 3), (1, 2), (2, 3)]);
+    // `price` may exit (one tick), then `discount` overlaps the arm that skips it.
+    assert_eq!(ticks, vec![(0, 4), (1, 3), (3, 4)]);
     let discount = journey.spans().last().unwrap().1;
     assert_eq!(discount.conditions.len(), 1);
     assert_eq!(discount.conditions[0].arm, "yes");

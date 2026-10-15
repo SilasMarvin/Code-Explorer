@@ -1,0 +1,11 @@
+scenarios:
+  [0] ok: completes
+
+journey:
+   0-6    journeys.closures
+   1-3      closures.{closure#0}
+   2-3        work.price
+   3-5      closures.{closure#1} [spawn]
+   4-5        work.drain
+   4-6      closures.{closure#2}
+   5-6        work.audit_all

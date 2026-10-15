@@ -17,5 +17,8 @@ tree-sitter.workspace = true
 tree-sitter-rust.workspace = true
 walkdir.workspace = true
 
+[dev-dependencies]
+codeviz-core.workspace = true
+
 [lints]
 workspace = true

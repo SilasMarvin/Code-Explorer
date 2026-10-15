@@ -414,6 +414,9 @@ impl Builder<'_> {
                         conditions: cx.conditions.clone(),
                     });
                 }
+                // An exit is a moment on the clock, so it never shares a tick with
+                // what comes after it.
+                self.clock += 1;
                 Flow::Stop
             }
             Step::Branch { guard, arms } => {
@@ -603,7 +606,13 @@ impl Builder<'_> {
                         filter,
                     );
                 } else {
-                    let origin = origin(unit, invocation, Some(Certainty::Inferred));
+                    // Dispatch is only as certain as its least certain candidate.
+                    let certainty = many
+                        .iter()
+                        .map(|t| t.certainty)
+                        .find(|c| *c == Certainty::Inferred)
+                        .unwrap_or(Certainty::Exact);
+                    let origin = origin(unit, invocation, Some(certainty));
                     let ids = many.iter().map(|t| t.unit.clone()).collect();
                     self.invoke(
                         SpanTarget::Ambiguous(ids),

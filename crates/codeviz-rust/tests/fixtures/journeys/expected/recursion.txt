@@ -1,0 +1,8 @@
+scenarios:
+  [0] ok: completes
+
+journey:
+   0-4    journeys.recursion
+   1-2      journeys.recursion [recursion]   when n == 0 ⇒ else
+   2-4      work.ping   when n == 0 ⇒ else
+   3-4        journeys.recursion [recursion]

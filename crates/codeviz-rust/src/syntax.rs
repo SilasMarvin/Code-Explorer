@@ -112,8 +112,27 @@ pub(crate) fn receiver_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<St
         }
         "type_identifier" | "scoped_type_identifier" => path_segments(node, source),
         "primitive_type" => Some(vec![text(node, source).to_owned()]),
+        // `dyn Trait` and `impl Trait` dispatch to the trait's implementations.
+        "dynamic_type" | "abstract_type" => {
+            receiver_type_path(node.child_by_field_name("trait")?, source)
+        }
         _ => None,
     }
+}
+
+/// The `T` in `Result<T, E>` or `Option<T>`: what `?` leaves behind.
+pub(crate) fn unwrapped_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
+    if node.kind() != "generic_type" {
+        return None;
+    }
+    let base = path_segments(node.child_by_field_name("type")?, source)?;
+    if !base.last().is_some_and(|b| b == "Result" || b == "Option") {
+        return None;
+    }
+    let arguments = node.child_by_field_name("type_arguments")?;
+    let mut cursor = arguments.walk();
+    let first = arguments.named_children(&mut cursor).next()?;
+    receiver_type_path(first, source)
 }
 
 pub(crate) fn type_name(node: Node<'_>, source: &[u8]) -> String {

@@ -120,20 +120,16 @@ impl<'a> Index<'a> {
     }
 
     fn targets(&self, caller: &RawUnit, call: &RawCall) -> Vec<Target> {
-        let (ids, certainty) = match &call.target {
-            CallTarget::Path(segments) | CallTarget::Reference(segments) => {
-                self.resolve_path(caller, segments)
-            }
-            CallTarget::Method { name, receiver } => {
-                self.resolve_method(caller, name, receiver.as_ref())
-            }
-            CallTarget::Closure(path) => {
-                return vec![Target {
-                    unit: id(path),
-                    certainty: Certainty::Exact,
-                }];
-            }
-        };
+        if let CallTarget::Closure(path) = &call.target {
+            return vec![Target {
+                unit: id(path),
+                certainty: Certainty::Exact,
+            }];
+        }
+        let (mut ids, certainty) = self.candidates(caller, call);
+        // Candidates come from hash maps; source order keeps documents deterministic.
+        ids.sort_unstable();
+        ids.dedup();
         ids.into_iter()
             .filter_map(|i| self.extraction.units.get(i))
             .map(|unit| Target {
@@ -198,6 +194,24 @@ impl<'a> Index<'a> {
             return (candidates.to_vec(), Certainty::Inferred);
         };
         let type_name = ty.last().map_or("", String::as_str);
+        if self.extraction.traits.contains(type_name) {
+            // A trait object or generic bound: any implementation may run.
+            let implementations: Vec<usize> = self
+                .methods_named(name)
+                .filter(|&i| {
+                    self.extraction
+                        .units
+                        .get(i)
+                        .and_then(|u| u.owner.as_ref())
+                        .is_some_and(|o| {
+                            o.trait_name.as_deref() == Some(type_name) && o.type_name != type_name
+                        })
+                })
+                .collect();
+            if !implementations.is_empty() {
+                return (implementations, certainty);
+            }
+        }
         let on_type = self
             .by_type
             .get(&(type_name, name))
@@ -224,6 +238,44 @@ impl<'a> Index<'a> {
         (provided, Certainty::Inferred)
     }
 
+    /// Every method called `name`, on any type or trait.
+    fn methods_named<'s>(&'s self, name: &'s str) -> impl Iterator<Item = usize> + 's {
+        self.by_type
+            .iter()
+            .filter(move |((_, method), _)| *method == name)
+            .flat_map(|(_, ids)| ids.iter().copied())
+    }
+
+    /// What a call site may invoke, before closures are considered.
+    fn candidates(&self, caller: &RawUnit, call: &RawCall) -> (Vec<usize>, Certainty) {
+        match &call.target {
+            CallTarget::Path(segments) | CallTarget::Reference(segments) => {
+                self.resolve_path(caller, segments)
+            }
+            CallTarget::Method { name, receiver } => {
+                self.resolve_method(caller, name, receiver.as_ref())
+            }
+            CallTarget::Closure(_) => (Vec::new(), Certainty::Exact),
+        }
+    }
+
+    /// Resolves a type path written in `scope`'s module; `Self` is `scope`'s owner.
+    fn type_path(&self, scope: &RawUnit, mut path: Vec<String>) -> Option<Vec<String>> {
+        if path.first().is_some_and(|s| s == "Self") {
+            let owner = scope.owner.as_ref()?;
+            path.splice(
+                ..1,
+                scope
+                    .module
+                    .iter()
+                    .cloned()
+                    .chain([owner.type_name.clone()]),
+            );
+            return Some(path);
+        }
+        self.absolute(&scope.module, path, 0)
+    }
+
     /// The type path of a receiver, following declared field types.
     fn receiver_type(
         &self,
@@ -243,7 +295,22 @@ impl<'a> Index<'a> {
                 } else {
                     Certainty::Inferred
                 };
-                (self.absolute(&caller.module, path.clone(), 0)?, certainty)
+                (self.type_path(caller, path.clone())?, certainty)
+            }
+            ReceiverRoot::Returned { call, tried } => {
+                // The receiver is what an earlier call returned: use its declared type.
+                let call = caller.calls.get(*call)?;
+                let (ids, certainty) = self.candidates(caller, call);
+                let [function] = ids.as_slice() else {
+                    return None;
+                };
+                let function = self.extraction.units.get(*function)?;
+                let returned = if *tried {
+                    &function.returns_ok
+                } else {
+                    &function.returns
+                };
+                (self.type_path(function, returned.clone()?)?, certainty)
             }
         };
         for field in &receiver.fields {

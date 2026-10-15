@@ -2447,6 +2447,7 @@ name = "codeviz-rust"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "codeviz-core",
  "codeviz-ir",
  "serde",
  "thiserror 2.0.21",

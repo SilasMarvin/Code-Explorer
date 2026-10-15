@@ -1264,7 +1264,7 @@
                 {
                   "step": "exit",
                   "kind": "error",
-                  "label": "Err(AppError::Invalid(format!(\"unknown sku {other}\")))"
+                  "label": "AppError::Invalid(format!(\"unknown sku {other}\"))"
                 }
               ]
             }
@@ -1473,7 +1473,7 @@
                 {
                   "step": "exit",
                   "kind": "error",
-                  "label": "Err(AppError::Invalid(format!(\"{email} is already registered\")))"
+                  "label": "AppError::Invalid(format!(\"{email} is already registered\"))"
                 }
               ]
             },
@@ -1529,7 +1529,7 @@
                 {
                   "step": "exit",
                   "kind": "error",
-                  "label": "Err(AppError::Invalid(format!( \"quantity must be between 1 and {MAX_QUANTITY}\" )…"
+                  "label": "AppError::Invalid(format!( \"quantity must be between 1 and {MAX_QUANTITY}\" ))"
                 }
               ]
             },
@@ -1601,7 +1601,6 @@
               "certainty": "exact"
             }
           ],
-          "mode": "register",
           "location": {
             "uri": "src/services/validation.rs",
             "range": {
@@ -1782,7 +1781,7 @@
                 {
                   "step": "exit",
                   "kind": "error",
-                  "label": "Err(AppError::Invalid(format!( \"{email} is not an email address\" )))"
+                  "label": "AppError::Invalid(format!( \"{email} is not an email address\" ))"
                 }
               ]
             },
@@ -1897,7 +1896,7 @@
                 {
                   "step": "exit",
                   "kind": "error",
-                  "label": "Err(AppError::Invalid(\"name must not be empty\".into()))"
+                  "label": "AppError::Invalid(\"name must not be empty\")"
                 }
               ]
             },

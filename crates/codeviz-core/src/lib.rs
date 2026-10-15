@@ -7,6 +7,7 @@
 //! its level of detail.
 
 mod journey;
+mod outline;
 mod scenario;
 mod system;
 mod zoom;
@@ -14,6 +15,7 @@ mod zoom;
 pub use journey::{
     Condition, ExitMarker, Journey, JourneyOptions, Span, SpanId, SpanTarget, StopReason,
 };
+pub use outline::{describe_scenario, display_name, outline};
 pub use scenario::{Outcome, Scenario, Seg, Site, StepPath, scenarios};
 pub use system::System;
 pub use zoom::{Level, Zoom};

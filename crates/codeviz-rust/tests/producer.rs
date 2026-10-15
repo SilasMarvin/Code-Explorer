@@ -146,8 +146,8 @@ fn receivers_resolve_through_declared_types() {
             (".solo".into(), Some(Certainty::Exact)),
             (".work".into(), Some(Certainty::Exact)),
             ("Inner::new".into(), Some(Certainty::Exact)),
-            // Guessed from the `Inner::new()` initializer.
-            (".work".into(), Some(Certainty::Inferred)),
+            // `Inner::new` returns `Self`.
+            (".work".into(), Some(Certainty::Exact)),
             // `u8` is known and has no `solo` here: not a guess at `B::solo`.
             (".solo".into(), None),
             // Nothing known about `unknown`: matched by name.
@@ -231,7 +231,7 @@ fn handoffs_and_routes() {
     let handoffs: Vec<(&str, Mode, Vec<String>)> = main
         .calls
         .iter()
-        .filter(|c| c.mode == Mode::Register)
+        .filter(|c| c.mode != Mode::Call)
         .map(|c| {
             (
                 c.text.as_str(),
@@ -250,7 +250,7 @@ fn handoffs_and_routes() {
             ),
             (
                 "{closure#0}",
-                Mode::Register,
+                Mode::Spawn,
                 vec!["rust:app::main::{closure#0}".to_owned()]
             ),
         ]

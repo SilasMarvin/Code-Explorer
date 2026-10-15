@@ -1,0 +1,9 @@
+scenarios:
+  [0] ok: completes
+
+journey:
+   0-4    journeys.asynchronous
+   1-2      Store.refresh
+   2-4      asynchronous.{async#0} [spawn]
+   3-4        work.drain
+   3-4      work.notify

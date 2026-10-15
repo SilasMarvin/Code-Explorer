@@ -24,6 +24,8 @@ pub(crate) struct Context<'a> {
     pub(crate) returns_result: bool,
     /// The function's or closure's parameter list, for declared binding types.
     pub(crate) parameters: Option<Node<'a>>,
+    /// Type parameters and where clause, for the traits generic parameters dispatch to.
+    pub(crate) generics: [Option<Node<'a>>; 2],
 }
 
 pub(crate) struct Built {
@@ -35,6 +37,28 @@ const PANIC_MACROS: [&str; 4] = ["panic", "unreachable", "todo", "unimplemented"
 const ERROR_MACROS: [&str; 1] = ["bail"];
 const ROUTE_METHODS: [&str; 8] = [
     "get", "post", "put", "patch", "delete", "head", "options", "any",
+];
+/// Callees that run a closure or function argument concurrently.
+const SPAWNERS: [&str; 4] = ["spawn", "spawn_blocking", "spawn_local", "spawn_on"];
+/// Callees that keep a closure or function argument to invoke later. Anything else
+/// is assumed to call its argument during the call (`map`, `and_then`, `for_each`).
+const REGISTRARS: [&str; 16] = [
+    "route",
+    "route_service",
+    "get",
+    "post",
+    "put",
+    "patch",
+    "delete",
+    "head",
+    "options",
+    "any",
+    "on",
+    "subscribe",
+    "register",
+    "add_listener",
+    "connect",
+    "set_handler",
 ];
 
 pub(crate) fn build(
@@ -50,8 +74,15 @@ pub(crate) fn build(
         calls: Vec::new(),
         occurrences: HashMap::new(),
         closures: 0,
+        async_blocks: 0,
         bindings: HashMap::new(),
+        stored_closures: HashMap::new(),
+        generics: HashMap::new(),
+        call_nodes: HashMap::new(),
     };
+    for generics in cx.generics.into_iter().flatten() {
+        builder.generics(generics);
+    }
     if let Some(parameters) = cx.parameters {
         builder.parameters(parameters);
     }
@@ -69,9 +100,16 @@ struct Builder<'a, 'b, 'f> {
     calls: Vec<RawCall>,
     occurrences: HashMap<String, usize>,
     closures: usize,
-    /// Binding name → (type path, whether the type was written down). Scopes are
-    /// ignored: the last binding of a name wins.
-    bindings: HashMap<String, (Vec<String>, bool)>,
+    async_blocks: usize,
+    /// Binding name → what its value is known to be. Scopes are ignored: the last
+    /// binding of a name wins.
+    bindings: HashMap<String, ReceiverRoot>,
+    /// `let f = || ..` → the closure's unit path, so `f()` resolves.
+    stored_closures: HashMap<String, Vec<String>>,
+    /// Generic parameter → the trait bound it dispatches through.
+    generics: HashMap<String, Vec<String>>,
+    /// Call expression node id → index into `calls`, for receivers that are calls.
+    call_nodes: HashMap<usize, usize>,
 }
 
 impl Builder<'_, '_, '_> {
@@ -97,7 +135,52 @@ impl Builder<'_, '_, '_> {
             ) else {
                 continue;
             };
-            self.bindings.insert(name, (ty, true));
+            let path = self.substitute(ty);
+            self.bindings.insert(
+                name,
+                ReceiverRoot::Typed {
+                    path,
+                    declared: true,
+                },
+            );
+        }
+    }
+
+    /// Records `T: Trait` from type parameters and where clauses.
+    fn generics(&mut self, node: Node<'_>) {
+        let source = self.file.source;
+        let mut cursor = node.walk();
+        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        for child in children {
+            let (name, bounds) = match child.kind() {
+                "type_parameter" => (
+                    child.child_by_field_name("name"),
+                    child.child_by_field_name("bounds"),
+                ),
+                "where_predicate" => (
+                    child.child_by_field_name("left"),
+                    child.child_by_field_name("bounds"),
+                ),
+                _ => continue,
+            };
+            let (Some(name), Some(bounds)) = (name, bounds) else {
+                continue;
+            };
+            let mut cursor = bounds.walk();
+            let first_trait = bounds
+                .named_children(&mut cursor)
+                .find_map(|bound| receiver_type_path(bound, source));
+            if let Some(bound) = first_trait {
+                self.generics.insert(text(name, source).to_owned(), bound);
+            }
+        }
+    }
+
+    /// A generic parameter's type is its trait bound.
+    fn substitute(&self, ty: Vec<String>) -> Vec<String> {
+        match ty.as_slice() {
+            [single] => self.generics.get(single).cloned().unwrap_or(ty),
+            _ => ty,
         }
     }
 
@@ -115,29 +198,41 @@ impl Builder<'_, '_, '_> {
             .child_by_field_name("type")
             .and_then(|t| receiver_type_path(t, source));
         if let Some(ty) = declared {
-            self.bindings.insert(name, (ty, true));
+            let path = self.substitute(ty);
+            self.bindings.insert(
+                name,
+                ReceiverRoot::Typed {
+                    path,
+                    declared: true,
+                },
+            );
             return;
         }
         let Some(value) = declaration.child_by_field_name("value") else {
             return;
         };
-        let guessed = match value.kind() {
+        if value.kind() == "closure_expression" && self.closures > 0 {
+            // `expr` has just built this closure's unit.
+            let mut path = self.cx.path.to_vec();
+            path.push(format!("{{closure#{}}}", self.closures - 1));
+            self.stored_closures.insert(name, path);
+            return;
+        }
+        let known = match value.kind() {
             "struct_expression" => value
                 .child_by_field_name("name")
                 .and_then(|n| path_segments(n, source))
-                .map(|ty| (ty, true)),
-            "call_expression" => value
-                .child_by_field_name("function")
-                .and_then(|f| path_segments(f, source))
-                .filter(|segments| segments.len() >= 2)
-                .and_then(|mut segments| {
-                    segments.pop();
-                    is_constructor(&segments).then_some((segments, false))
+                .map(|path| ReceiverRoot::Typed {
+                    path,
+                    declared: true,
                 }),
-            _ => None,
+            _ => self
+                .receiver(value)
+                .filter(|r| r.fields.is_empty())
+                .map(|r| r.root),
         };
-        if let Some(binding) = guessed {
-            self.bindings.insert(name, binding);
+        if let Some(root) = known {
+            self.bindings.insert(name, root);
         }
     }
 
@@ -148,15 +243,24 @@ impl Builder<'_, '_, '_> {
                 root: ReceiverRoot::SelfValue,
                 fields: Vec::new(),
             }),
-            "identifier" => {
-                let (path, declared) = self.bindings.get(text(node, self.source()))?;
-                Some(Receiver {
-                    root: ReceiverRoot::Typed {
-                        path: path.clone(),
-                        declared: *declared,
-                    },
-                    fields: Vec::new(),
-                })
+            "identifier" => Some(Receiver {
+                root: self.bindings.get(text(node, self.source()))?.clone(),
+                fields: Vec::new(),
+            }),
+            "call_expression" => Some(Receiver {
+                root: ReceiverRoot::Returned {
+                    call: *self.call_nodes.get(&node.id())?,
+                    tried: false,
+                },
+                fields: Vec::new(),
+            }),
+            "await_expression" => self.receiver(node.named_child(0)?),
+            "try_expression" => {
+                let mut receiver = self.receiver(node.named_child(0)?)?;
+                if let ReceiverRoot::Returned { tried, .. } = &mut receiver.root {
+                    *tried = true;
+                }
+                Some(receiver)
             }
             "field_expression" => {
                 let mut receiver = self.receiver(node.child_by_field_name("value")?)?;
@@ -362,7 +466,10 @@ impl Builder<'_, '_, '_> {
         let value = node.named_child(0);
         if let Some(error) = value.and_then(|v| self.err_constructor(v)) {
             self.expr(error, false, steps);
-            steps.push(exit(ExitKind::Error, Some(label(error, self.source()))));
+            steps.push(exit(
+                ExitKind::Error,
+                Some(error_label(error, self.source())),
+            ));
             return;
         }
         if let Some(value) = value {
@@ -378,10 +485,21 @@ impl Builder<'_, '_, '_> {
         };
         let before = self.calls.len();
         self.expr(inner, false, steps);
-        let last_direct = self.calls[before..]
-            .iter()
-            .rposition(|call| call.mode == Mode::Call)
-            .map(|offset| before + offset);
+        // The `?` applies to the call it wraps (through `.await` and parentheses);
+        // for macro-recovered calls, the last call recorded that is not a handoff.
+        let wrapped = std::iter::successors(Some(inner), |n| match n.kind() {
+            "await_expression" | "parenthesized_expression" => n.named_child(0),
+            _ => None,
+        })
+        .last()
+        .and_then(|n| self.call_nodes.get(&n.id()).copied())
+        .filter(|&index| index >= before);
+        let last_direct = wrapped.or_else(|| {
+            self.calls[before..]
+                .iter()
+                .rposition(|call| call.mode == Mode::Call && call.via_call.is_none())
+                .map(|offset| before + offset)
+        });
         if let Some(call) = last_direct.and_then(|index| self.calls.get_mut(index)) {
             call.propagates = true;
         } else {
@@ -419,7 +537,15 @@ impl Builder<'_, '_, '_> {
                             .and_then(|v| self.receiver(v)),
                     })
             }
-            _ => path_segments(function, source).map(CallTarget::Path),
+            _ => path_segments(function, source).map(|segments| match segments.as_slice() {
+                [name] if self.stored_closures.contains_key(name) => self
+                    .stored_closures
+                    .get(name)
+                    .map_or(CallTarget::Path(segments.clone()), |path| {
+                        CallTarget::Closure(path.clone())
+                    }),
+                _ => CallTarget::Path(segments),
+            }),
         };
 
         if let Some(CallTarget::Path(segments)) = &target
@@ -429,7 +555,7 @@ impl Builder<'_, '_, '_> {
                 self.expr(arguments, false, steps);
             }
             if tail && segments.last().is_some_and(|s| s == "Err") {
-                steps.push(exit(ExitKind::Error, Some(label(node, source))));
+                steps.push(exit(ExitKind::Error, Some(error_label(node, source))));
             }
             return;
         }
@@ -444,7 +570,7 @@ impl Builder<'_, '_, '_> {
             let args: Vec<Node<'_>> = arguments.named_children(&mut cursor).collect();
             for arg in args {
                 match arg.kind() {
-                    "closure_expression" => {
+                    "closure_expression" | "async_block" => {
                         let path = self.closure(arg);
                         handoffs.push((CallTarget::Closure(path), arg));
                     }
@@ -467,6 +593,7 @@ impl Builder<'_, '_, '_> {
             CallTarget::Method { name, .. } => format!(".{name}"),
             _ => text(function, source).split_whitespace().collect(),
         };
+        let handoff_mode = handoff_mode(&target);
         let index = self.record(written, target, Mode::Call, None, node, steps);
         if tail
             && self.cx.returns_result
@@ -479,7 +606,7 @@ impl Builder<'_, '_, '_> {
                 CallTarget::Closure(path) => path.last().cloned().unwrap_or_default(),
                 _ => text(arg, source).to_owned(),
             };
-            self.record(written, handoff, Mode::Register, Some(index), arg, steps);
+            self.record(written, handoff, handoff_mode, Some(index), arg, steps);
         }
     }
 
@@ -496,6 +623,7 @@ impl Builder<'_, '_, '_> {
         let key = CallKey::for_text(&text, *occurrence);
         *occurrence += 1;
         steps.push(Step::Call { call: key.clone() });
+        self.call_nodes.insert(node.id(), self.calls.len());
         self.calls.push(RawCall {
             key,
             text,
@@ -508,11 +636,20 @@ impl Builder<'_, '_, '_> {
         self.calls.len() - 1
     }
 
+    /// Builds a closure or async block as its own unit, parented to this one.
     fn closure(&mut self, node: Node<'_>) -> Vec<String> {
         let mut path = self.cx.path.to_vec();
-        path.push(format!("{{closure#{}}}", self.closures));
-        self.closures += 1;
-        let Some(body) = node.child_by_field_name("body") else {
+        let body = if node.kind() == "async_block" {
+            path.push(format!("{{async#{}}}", self.async_blocks));
+            self.async_blocks += 1;
+            node.named_children(&mut node.walk())
+                .find(|c| c.kind() == "block")
+        } else {
+            path.push(format!("{{closure#{}}}", self.closures));
+            self.closures += 1;
+            node.child_by_field_name("body")
+        };
+        let Some(body) = body else {
             return path;
         };
         let cx = Context {
@@ -521,6 +658,7 @@ impl Builder<'_, '_, '_> {
             owner: self.cx.owner,
             returns_result: false,
             parameters: node.child_by_field_name("parameters"),
+            generics: [None, None],
         };
         let built = build(self.ex, self.file, &cx, body);
         self.ex.push_unit(RawUnit {
@@ -536,6 +674,8 @@ impl Builder<'_, '_, '_> {
             attributes: BTreeMap::new(),
             calls: built.calls,
             body: Some(built.steps),
+            returns: None,
+            returns_ok: None,
         });
         path
     }
@@ -671,6 +811,38 @@ impl Builder<'_, '_, '_> {
             .filter(|f| text(*f, self.file.source) == "Err")
             .map(|_| node)
     }
+}
+
+/// How a callee treats a closure or function passed to it, judged by its name.
+fn handoff_mode(callee: &CallTarget) -> Mode {
+    let name = match callee {
+        CallTarget::Path(segments) | CallTarget::Reference(segments) => {
+            segments.last().map_or("", String::as_str)
+        }
+        CallTarget::Method { name, .. } => name.as_str(),
+        CallTarget::Closure(_) => "",
+    };
+    if SPAWNERS.contains(&name) {
+        Mode::Spawn
+    } else if REGISTRARS.contains(&name) {
+        Mode::Register
+    } else {
+        Mode::Call
+    }
+}
+
+/// `Err(AppError::NotFound("user".into()))` → `AppError::NotFound("user")`: the error
+/// value, without the `Err` wrapper or a trailing conversion.
+fn error_label(err: Node<'_>, source: &[u8]) -> String {
+    let value = err
+        .child_by_field_name("arguments")
+        .and_then(|a| a.named_child(0))
+        .map_or_else(|| label(err, source), |v| label(v, source));
+    let mut value = value.as_str();
+    for conversion in [".into()", ".to_string()", ".to_owned()"] {
+        value = value.strip_suffix(conversion).unwrap_or(value);
+    }
+    value.replace(".into())", ")")
 }
 
 fn arm(label: &str, body: Vec<Step>) -> Arm {

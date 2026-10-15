@@ -4,9 +4,9 @@ use std::{fmt::Write as _, io::Write as _, path::PathBuf};
 
 use anyhow::{Context, bail};
 use codeviz_core::{
-    Journey, JourneyOptions, Level, Scenario, SpanTarget, StopReason, System, Zoom, scenarios,
+    Journey, JourneyOptions, Level, System, Zoom, describe_scenario, outline, scenarios,
 };
-use codeviz_ir::{Certainty, ExitKind, Mode, UnitId};
+use codeviz_ir::UnitId;
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct JourneyArgs {
@@ -71,7 +71,7 @@ pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
     let scenarios = scenarios(&system, &entry, &zoom);
     let _ = writeln!(out, "scenarios for {entry}:");
     for (index, scenario) in scenarios.iter().enumerate() {
-        let _ = writeln!(out, "  [{index}] {}", describe(&system, scenario));
+        let _ = writeln!(out, "  [{index}] {}", describe_scenario(&system, scenario));
     }
     let scenario = args
         .scenario
@@ -103,7 +103,7 @@ pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
         journey.duration(),
         journey.max_depth()
     );
-    render(&system, &journey, &mut out);
+    out.push_str(&outline(&system, &journey));
     print(&out)
 }
 
@@ -118,132 +118,6 @@ pub(crate) fn find_one(system: &System, query: &str) -> anyhow::Result<UnitId> {
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
-    }
-}
-
-fn describe(system: &System, scenario: &Scenario) -> String {
-    let kind = match scenario.outcome.kind {
-        ExitKind::Return => "ok",
-        ExitKind::Error => "error",
-        ExitKind::Panic => "panic",
-        ExitKind::Unknown => "?",
-    };
-    let via: Vec<String> = scenario
-        .chain
-        .iter()
-        .skip(1)
-        .map(|site| name(system, &site.unit))
-        .collect();
-    if via.is_empty() {
-        format!("{kind}: {}", scenario.outcome.label)
-    } else {
-        format!(
-            "{kind}: {}  (via {})",
-            scenario.outcome.label,
-            via.join(" → ")
-        )
-    }
-}
-
-fn render(system: &System, journey: &Journey, out: &mut String) {
-    for (_, span) in journey.spans() {
-        let name = match &span.target {
-            SpanTarget::Unit(id) => name(system, id),
-            SpanTarget::Ambiguous(ids) => format!(
-                "{} ({} candidates)",
-                span.text.as_deref().unwrap_or("?"),
-                ids.len()
-            ),
-            SpanTarget::Unresolved(text) => format!("{text} [unresolved]"),
-        };
-        let mut tags = Vec::new();
-        match span.mode {
-            Mode::Spawn => tags.push("spawn".to_owned()),
-            Mode::Register => tags.push("register".to_owned()),
-            _ => {}
-        }
-        if span.certainty == Some(Certainty::Inferred) {
-            tags.push("inferred".to_owned());
-        }
-        if span.propagates {
-            tags.push("?".to_owned());
-        }
-        if span.refinement {
-            tags.push("detail".to_owned());
-        }
-        match span.zoom {
-            Some(Level::Summary) => tags.push("zoomable".to_owned()),
-            Some(Level::Detail) => tags.push("zoomed in".to_owned()),
-            None => {}
-        }
-        if span.merged > 1 {
-            tags.push(format!("{} merged", span.merged));
-        }
-        if span.repeats {
-            tags.push("loop".to_owned());
-        }
-        match span.stopped {
-            Some(StopReason::Recursion) => tags.push("recursion".to_owned()),
-            Some(StopReason::DepthLimit) => tags.push("depth limit".to_owned()),
-            Some(StopReason::NotLoaded) => tags.push("not loaded".to_owned()),
-            Some(StopReason::Registered) | None => {}
-        }
-        let conditions: Vec<String> = span
-            .conditions
-            .iter()
-            .map(|c| format!("{} ⇒ {}", c.guard.as_deref().unwrap_or("?"), c.arm))
-            .collect();
-        let indent = "  ".repeat(span.depth as usize);
-        let tags = if tags.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", tags.join(", "))
-        };
-        let when = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("   when {}", conditions.join("; "))
-        };
-        let _ = writeln!(
-            out,
-            "{:>4}-{:<4} {indent}{name}{tags}{when}",
-            span.enter, span.exit
-        );
-        for exit in &span.exits {
-            let kind = match exit.kind {
-                ExitKind::Return => "↩ return",
-                ExitKind::Error => "✗ error",
-                ExitKind::Panic => "‼ panic",
-                ExitKind::Unknown => "? exit",
-            };
-            let label = exit
-                .label
-                .as_deref()
-                .map(|l| format!(": {l}"))
-                .unwrap_or_default();
-            let when: Vec<String> = exit
-                .conditions
-                .iter()
-                .map(|c| format!("{} ⇒ {}", c.guard.as_deref().unwrap_or("?"), c.arm))
-                .collect();
-            let when = if when.is_empty() {
-                String::new()
-            } else {
-                format!("   when {}", when.join("; "))
-            };
-            let _ = writeln!(out, "{:>4}      {indent}  {kind}{label}{when}", exit.tick);
-        }
-    }
-}
-
-/// `scheme:a::b::c` → `b::c`: the unit with its parent, which reads well in every scheme.
-fn name(system: &System, id: &UnitId) -> String {
-    let Some(unit) = system.unit(id) else {
-        return id.to_string();
-    };
-    match unit.parent.as_ref().and_then(|p| system.unit(p)) {
-        Some(parent) => format!("{}.{}", parent.name, unit.name),
-        None => unit.name.clone(),
     }
 }
 

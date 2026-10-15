@@ -1,0 +1,8 @@
+scenarios:
+  [0] ok: completes
+
+journey:
+   0-4    journeys.looping
+   1-2      work.price [loop]
+   2-3      work.pending [loop]
+   3-4      work.drain [loop]
