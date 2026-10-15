@@ -15,6 +15,7 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
+    diff_view::{self, DiffStyle, DiffView},
     explorer::{
         Autoplay, Clustering, Confidence, Explorer, Quiet, SpanRef, Step, Track, is_conditional,
     },
@@ -62,7 +63,7 @@ impl Sources {
 
 const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
+pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn draw_ui(
@@ -73,6 +74,7 @@ fn draw_ui(
     mut sources: ResMut<Sources>,
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
+    mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform), With<OrbitCamera>>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
@@ -145,16 +147,25 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
-        draw_graph_labels(&painter, &to_screen, &explorer, transform.up().into());
+        draw_graph_labels(
+            &painter,
+            &to_screen,
+            &explorer,
+            diff.as_deref(),
+            transform.up().into(),
+        );
+        if let Some(diff) = diff.as_deref_mut() {
+            diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
+        }
         focus_card(ctx, graph_area, &mut explorer);
         if panel.mode != PanelMode::Full {
-            legend(ctx, graph_area, &mut explorer);
+            legend(ctx, graph_area, &mut explorer, diff.is_some());
         }
         if help.0 {
             key_help(ctx, graph_area, &mut help.0);
         }
         if let Some(area) = panel_area {
-            let bar = journey_panel::draw(ctx, area, &mut explorer, &mut panel);
+            let bar = journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
             // From the cursor's bar up to its node.
             let node = explorer
                 .focus()
@@ -162,20 +173,25 @@ fn draw_ui(
                 .and_then(|tile| explorer.tile_point(tile))
                 .and_then(to_screen);
             if let (Some(bar), Some(node)) = (bar, node) {
-                let tether = ctx.layer_painter(egui::LayerId::new(
-                    egui::Order::Foreground,
-                    egui::Id::new("tether"),
-                ));
-                let from = egui::pos2(bar.min.x + 2.0, bar.min.y);
-                tether.line_segment(
-                    [from, node],
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)),
-                );
-                tether.circle_filled(from, 2.5, egui::Color32::WHITE);
+                tether(ctx, bar, node);
             }
         }
     }
     Ok(())
+}
+
+/// A line from the cursor's bar in the journey up to its node in the graph.
+fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("tether"),
+    ));
+    let from = egui::pos2(bar.min.x + 2.0, bar.min.y);
+    painter.line_segment(
+        [from, node],
+        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)),
+    );
+    painter.circle_filled(from, 2.5, egui::Color32::WHITE);
 }
 
 fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPanel) {
@@ -698,8 +714,7 @@ fn node_name(explorer: &Explorer, tile: usize) -> String {
         .map_or_else(
             || {
                 explorer
-                    .system()
-                    .unit(unit)
+                    .any_unit(unit)
                     .map_or_else(|| unit.to_string(), |u| u.name.clone())
             },
             |e| e.label.clone(),
@@ -818,9 +833,25 @@ fn draw_graph_labels(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
+    diff: Option<&DiffView>,
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
+    // Under a diff, what changed is named first and what it reaches next.
+    let diff_tier = |tile: usize| {
+        let diff = diff?;
+        if diff.presence(tile) < 0.3 {
+            return Some(u8::MAX);
+        }
+        match (diff.change(tile), diff.style, diff.impact(tile)) {
+            (Some(_), _, _) => Some(1),
+            (None, DiffStyle::Impact, Some(_)) if diff.affected.iter().any(|a| a.tile == tile) => {
+                Some(1)
+            }
+            (None, DiffStyle::Impact, Some(_)) => Some(3),
+            _ => None,
+        }
+    };
     let center = explorer.attention();
     let reach = explorer.reach();
     let related = |tile: usize| reach.and_then(|r| relation(r, tile));
@@ -850,6 +881,8 @@ fn draw_graph_labels(
         }
         let tier = match related(tile) {
             _ if center == Some(tile) => 0,
+            _ if diff_tier(tile) == Some(u8::MAX) => continue,
+            _ if diff_tier(tile).is_some() => diff_tier(tile).unwrap_or(1),
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
             _ if stack.contains(&tile) => 2,
             Some(Relation::Upstream(2) | Relation::Downstream(2)) => 3,
@@ -865,6 +898,10 @@ fn draw_graph_labels(
     }
     let mut centers: Vec<(Vec3, usize)> = vec![(Vec3::ZERO, 0); map.groups.len()];
     for tile in 0..map.tiles.len() {
+        // A container counts only the functions showing.
+        if diff.is_some_and(|d| d.presence(tile) < 0.3) {
+            continue;
+        }
         if let (Some(group), Some(at)) = (graph.group(tile), explorer.tile_point(tile))
             && let Some(slot) = centers.get_mut(group)
         {
@@ -881,17 +918,28 @@ fn draw_graph_labels(
     }
     order.sort_by_key(|&(key, _)| key);
 
-    // Labels keep off the nodes that matter, so they never hide a neighbor.
+    // Labels keep off the cards over the graph, as last laid out.
+    let cards: Vec<egui::Rect> = ["focus_card", "diff_card", "legend"]
+        .into_iter()
+        .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
+        .collect();
+    // And off the nodes that matter, so they never hide a neighbor.
     let mut placer = Placer {
         painter,
-        taken: order
-            .iter()
-            .filter(|((tier, _, _), _)| *tier <= 3)
-            .filter_map(|&(_, named)| match named {
-                Named::Node(tile) => discs[tile],
-                Named::Group(_) => None,
-            })
-            .map(|(node, edge)| egui::Rect::from_center_size(node, egui::Vec2::splat(edge * 2.0)))
+        taken: cards
+            .into_iter()
+            .chain(
+                order
+                    .iter()
+                    .filter(|((tier, _, _), _)| *tier <= 3)
+                    .filter_map(|&(_, named)| match named {
+                        Named::Node(tile) => discs[tile],
+                        Named::Group(_) => None,
+                    })
+                    .map(|(node, edge)| {
+                        egui::Rect::from_center_size(node, egui::Vec2::splat(edge * 2.0))
+                    }),
+            )
             .collect(),
     };
     let focus = explorer.graph_focus();
@@ -926,7 +974,29 @@ fn draw_graph_labels(
                     _ => egui::Color32::from_rgb(160, 167, 182),
                 };
                 let focused = focus.filter(|&f| center == Some(f));
+                let change = diff.and_then(|d| d.change(tile));
+                let color = match change {
+                    Some(change) if tier != 0 => egui_color(diff_view::change_color(change)),
+                    _ if diff.is_some_and(|d| d.impact(tile).is_some()) && tier != 0 => {
+                        egui_color(diff_view::MODIFIED).gamma_multiply(0.8)
+                    }
+                    // Amber and blue are not drawn under a diff.
+                    _ if diff.is_some() && tier != 0 => egui::Color32::from_rgb(205, 210, 220),
+                    _ => color,
+                };
+                let impact_note = diff
+                    .filter(|d| d.style == DiffStyle::Impact)
+                    .and_then(|d| d.affected.iter().find(|a| a.tile == tile))
+                    .map(|a| match a.hops {
+                        0 => "changed".to_owned(),
+                        1 => "calls a change".to_owned(),
+                        n => format!("{n} calls from a change"),
+                    });
                 let (lead, aside) = match (relation, focused) {
+                    _ if change.is_some() => {
+                        (change.map(|c| (diff_view::sign(c).to_owned(), color)), None)
+                    }
+                    _ if impact_note.is_some() => (None, impact_note),
                     (Some(Relation::Downstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color)), None)
@@ -1088,7 +1158,7 @@ fn focus_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
 /// it: a container whose functions mostly call each other holds together when only
 /// calls pull, and one that leaks calls everywhere scatters.
 #[expect(clippy::too_many_lines, reason = "one panel, top to bottom")]
-fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
+fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer, diffing: bool) {
     let stats = explorer.graph().group_stats();
     let total: usize = stats.iter().map(|s| s.internal + s.outgoing).sum();
     let inside: usize = stats.iter().map(|s| s.internal).sum();
@@ -1123,7 +1193,11 @@ fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
-                    color_key(ui, explorer.active());
+                    if diffing {
+                        diff_key(ui);
+                    } else {
+                        color_key(ui, explorer.active());
+                    }
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Show").small().color(MUTED));
                         let mut quiet = explorer.quiet();
@@ -1215,6 +1289,27 @@ fn color_key(ui: &mut egui::Ui, active: usize) {
     );
 }
 
+/// What each color means under a diff.
+fn diff_key(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let swatch = |ui: &mut egui::Ui, color: Color, text: &str| {
+            ui.label(egui::RichText::new("■").color(egui_color(color)));
+            ui.label(egui::RichText::new(text).small());
+            ui.add_space(6.0);
+        };
+        swatch(ui, diff_view::ADDED, "added");
+        swatch(ui, diff_view::MODIFIED, "rewritten");
+        swatch(ui, diff_view::REMOVED, "removed");
+        swatch(ui, Color::WHITE, "focus");
+    });
+    ui.label(
+        egui::RichText::new("dashed = call removed · dim gold = reaches a change")
+            .small()
+            .color(MUTED),
+    );
+}
+
 /// Every key, grouped by what it moves.
 const KEYS: [(&str, &[(&str, &str)]); 3] = [
     (
@@ -1246,6 +1341,8 @@ const KEYS: [(&str, &[(&str, &str)]); 3] = [
             ("K", "cluster by modules / calls"),
             ("F", "face the focus head-on"),
             ("R", "frame the whole graph"),
+            ("D", "diff: status → impact → morph"),
+            ("T", "play or pause the morph"),
         ],
     ),
     (

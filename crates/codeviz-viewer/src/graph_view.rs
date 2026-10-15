@@ -7,10 +7,12 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
+use codeviz_core::Change;
 use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
     camera::{FRONT, OrbitCamera},
+    diff_view::{ADDED, DiffView, MODIFIED, REMOVED, diff_look, draw_diff_graph},
     explorer::Explorer,
     scene::{ACCENTS, PALETTE, Tile, accent, lane_color},
 };
@@ -38,6 +40,10 @@ pub(crate) enum NodeLook {
     Faded(usize),
     /// Anything while nothing is focused, in its container's color.
     Plain(usize),
+    /// Added, removed or rewritten, when showing a diff.
+    Changed(Change),
+    /// Can reach a change in this many calls (capped at [`FARTHEST_SHADE`]).
+    Impacted(u32),
 }
 
 pub(crate) fn node_materials(
@@ -79,6 +85,37 @@ pub(crate) fn node_materials(
     for track in 0..ACCENTS.len() {
         let base = accent(track);
         table.insert(NodeLook::Journey(track), glow(materials, base, 0.35));
+    }
+    table.insert(
+        NodeLook::Changed(Change::Added),
+        glow(materials, ADDED, 2.4),
+    );
+    table.insert(
+        NodeLook::Changed(Change::Modified),
+        glow(materials, MODIFIED, 2.4),
+    );
+    table.insert(
+        NodeLook::Changed(Change::Removed),
+        materials.add(StandardMaterial {
+            base_color: REMOVED.with_alpha(0.55),
+            emissive: LinearRgba::from(REMOVED) * 0.8,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+    );
+    for hops in 1..=FARTHEST_SHADE {
+        let (shade, strength) = match hops {
+            1 => (0.8, 1.0),
+            2 => (0.6, 0.45),
+            _ => (0.45, 0.15),
+        };
+        let linear = LinearRgba::from(MODIFIED);
+        let color = Color::from(LinearRgba::rgb(
+            linear.red * shade,
+            linear.green * shade * 0.85,
+            linear.blue * shade * 0.6,
+        ));
+        table.insert(NodeLook::Impacted(hops), glow(materials, color, strength));
     }
     table.insert(
         NodeLook::Hidden,
@@ -159,14 +196,18 @@ pub(crate) fn track_attention(mut explorer: ResMut<Explorer>) {
 /// Restyles nodes when attention or the journeys change.
 pub(crate) fn style_nodes(
     explorer: Res<Explorer>,
+    diff: Option<Res<DiffView>>,
     materials: Res<NodeMaterials>,
     mut nodes: Query<(&Tile, &mut MeshMaterial3d<StandardMaterial>, &mut Transform)>,
 ) {
-    if !explorer.is_changed() {
+    if !explorer.is_changed() && !diff.as_ref().is_some_and(DetectChanges::is_changed) {
         return;
     }
     for (tile, mut material, mut transform) in &mut nodes {
-        let look = node_look(&explorer, tile.0);
+        let look = match &diff {
+            Some(diff) => diff_look(&explorer, diff, tile.0),
+            None => node_look(&explorer, tile.0),
+        };
         // Specks left out by quiet mode shrink as well as fade.
         let size =
             node_size(explorer.graph(), tile.0) * if look == NodeLook::Hidden { 0.35 } else { 1.0 };
@@ -203,7 +244,16 @@ fn fade(hops: u32) -> f32 {
 /// Every call as a link. Calls leading into the focus are amber and calls leading out
 /// of it blue, fading with distance; the active journey's path is in its accent;
 /// everything else is faint.
-pub(crate) fn draw_graph(explorer: Res<Explorer>, mut gizmos: Gizmos) {
+pub(crate) fn draw_graph(
+    explorer: Res<Explorer>,
+    diff: Option<Res<DiffView>>,
+    clock: Res<Time>,
+    mut gizmos: Gizmos,
+) {
+    if let Some(diff) = diff {
+        draw_diff_graph(&explorer, &diff, clock.elapsed_secs(), &mut gizmos);
+        return;
+    }
     let graph = explorer.graph();
     let center = explorer.attention();
     let reach = explorer.reach();

@@ -190,7 +190,7 @@ pub(crate) enum Clustering {
 }
 
 impl Clustering {
-    fn forces(self) -> ForceConfig {
+    pub(crate) fn forces(self) -> ForceConfig {
         ForceConfig {
             cohesion: match self {
                 Self::Modules => 0.05,
@@ -209,6 +209,8 @@ const SETTLED_SPEED: f32 = 0.002;
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
     system: System,
+    /// What the graph lays out, when wider than `system`.
+    layout_system: Option<System>,
     pub(crate) options: JourneyOptions,
     pub(crate) layout: LayoutConfig,
     /// Open journeys.
@@ -243,16 +245,30 @@ pub(crate) struct Explorer {
 }
 
 impl Explorer {
+    #[cfg(test)]
     pub(crate) fn new(system: System, root: Option<UnitId>, options: JourneyOptions) -> Self {
+        Self::with_layout(system, None, root, options)
+    }
+
+    /// Journeys run over `system`; the graph lays out `layout` when given, a wider
+    /// system such as both sides of a diff, so it can place units `system` lacks.
+    pub(crate) fn with_layout(
+        system: System,
+        layout: Option<System>,
+        root: Option<UnitId>,
+        options: JourneyOptions,
+    ) -> Self {
         let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
-        let map = codeviz_layout::map(&system, &MapConfig::default());
+        let placed = layout.as_ref().unwrap_or(&system);
+        let map = codeviz_layout::map(placed, &MapConfig::default());
         let clustering = Clustering::default();
-        let mut graph = ForceGraph::new(&system, &map, clustering.forces());
+        let mut graph = ForceGraph::new(placed, &map, clustering.forces());
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
         }
         let mut explorer = Self {
             system,
+            layout_system: layout,
             options,
             layout: LayoutConfig::default(),
             tracks: vec![Track::default()],
@@ -281,6 +297,19 @@ impl Explorer {
 
     pub(crate) fn system(&self) -> &System {
         &self.system
+    }
+
+    /// A unit of the journeys' system, or else of the wider one the graph lays out.
+    pub(crate) fn any_unit(&self, id: &UnitId) -> Option<&Unit> {
+        self.system
+            .unit(id)
+            .or_else(|| self.layout_system.as_ref()?.unit(id))
+    }
+
+    /// Moves every node to a given place, and stops the simulation moving them.
+    pub(crate) fn place_nodes(&mut self, positions: &[[f32; 3]]) {
+        self.graph.positions.clone_from_slice(positions);
+        self.settling = false;
     }
 
     pub(crate) fn tracks(&self) -> &[Track] {
@@ -773,7 +802,10 @@ impl Explorer {
     }
 
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
-        display_name(&self.system, id)
+        match &self.layout_system {
+            Some(layout) if self.system.unit(id).is_none() => display_name(layout, id),
+            _ => display_name(&self.system, id),
+        }
     }
 
     /// The call stack at a span of the active journey, outermost first.

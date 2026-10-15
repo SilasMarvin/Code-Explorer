@@ -9,6 +9,7 @@ use codeviz_core::SpanId;
 use codeviz_ir::ExitKind;
 
 use crate::{
+    diff_view::{DiffView, change_color},
     explorer::{Confidence, Explorer, SpanRef, is_conditional, is_handoff},
     graph_view::{CALLEE, CALLER, Relation, relation},
     scene::{PALETTE, accent, lane_color},
@@ -128,6 +129,7 @@ pub(crate) fn draw(
     rect: egui::Rect,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
+    diff: Option<&DiffView>,
 ) -> Option<egui::Rect> {
     let mut cursor_bar = None;
     egui::Area::new("journey_panel".into())
@@ -153,7 +155,7 @@ pub(crate) fn draw(
             let content =
                 egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.min.y + HEADER), rect.max)
                     .shrink(PAD);
-            cursor_bar = canvas(ui, content, explorer, panel);
+            cursor_bar = canvas(ui, content, explorer, panel, diff);
         });
     cursor_bar
 }
@@ -222,6 +224,7 @@ fn canvas(
     content: egui::Rect,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
+    diff: Option<&DiffView>,
 ) -> Option<egui::Rect> {
     let response = ui.interact(
         content,
@@ -392,11 +395,23 @@ fn canvas(
         let related = tile
             .zip(reach)
             .and_then(|(tile, reach)| relation(reach, tile));
-        let underline = match related {
-            Some(Relation::Upstream(1)) => Some(CALLER),
-            Some(Relation::Downstream(1)) => Some(CALLEE),
+        // Under a diff, what changed instead, outlined too.
+        let change = diff.zip(tile).and_then(|(diff, tile)| diff.change(tile));
+        let underline = match (change, related) {
+            (Some(change), _) => Some(change_color(change)),
+            _ if diff.is_some() => None,
+            (None, Some(Relation::Upstream(1))) => Some(CALLER),
+            (None, Some(Relation::Downstream(1))) => Some(CALLEE),
             _ => None,
         };
+        if let Some(change) = change {
+            painter.rect_stroke(
+                bar.rect,
+                3.0,
+                egui::Stroke::new(1.5, egui_color(change_color(change))),
+                egui::StrokeKind::Inside,
+            );
+        }
         if let Some(color) = underline {
             let line = egui::Rect::from_min_max(
                 egui::pos2(bar.rect.min.x, bar.rect.max.y - 3.0),

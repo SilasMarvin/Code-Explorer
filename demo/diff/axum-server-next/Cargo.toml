@@ -1,0 +1,6 @@
+[package]
+name = "axum-server"
+description = "The axum-server fixture after a change: tax, an audit trail, a simpler discount. Read by codeviz, never built."
+publish = false
+version = "0.1.0"
+edition = "2024"

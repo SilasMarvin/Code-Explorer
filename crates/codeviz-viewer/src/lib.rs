@@ -12,6 +12,7 @@
 
 mod camera;
 mod capture;
+mod diff_view;
 mod explorer;
 mod graph_view;
 mod journey_panel;
@@ -22,10 +23,11 @@ use std::path::PathBuf;
 
 use bevy::{prelude::*, window::WindowPlugin};
 use bevy_egui::EguiPlugin;
-use codeviz_core::{JourneyOptions, System};
-use codeviz_ir::UnitId;
+use codeviz_core::{Diff, JourneyOptions, System};
+use codeviz_ir::{Document, UnitId};
 
 use crate::{
+    diff_view::{DiffStyle, DiffView},
     explorer::{Autoplay, Clustering, Explorer, Quiet},
     journey_panel::{JourneyPanel, PanelMode},
 };
@@ -45,6 +47,16 @@ pub struct Viewer {
     clustering: Clustering,
     quiet: Quiet,
     focus: Option<UnitId>,
+    diff: Option<Comparison>,
+}
+
+/// The older version a diff compares against, and both versions together for layout.
+#[derive(Debug)]
+struct Comparison {
+    before: System,
+    both: Option<System>,
+    style: DiffStyle,
+    morph: Option<f32>,
 }
 
 impl Viewer {
@@ -63,7 +75,44 @@ impl Viewer {
             clustering: Clustering::default(),
             quiet: Quiet::default(),
             focus: None,
+            diff: None,
         }
+    }
+
+    /// Shows `after` with what changed since `before` drawn over the graph.
+    #[must_use]
+    pub fn compare(before: Vec<Document>, after: Vec<Document>) -> Self {
+        let both = System::new(codeviz_core::union(&before, after.clone()));
+        let mut viewer = Self::new(System::new(after));
+        viewer.diff = Some(Comparison {
+            before: System::new(before),
+            both: Some(both),
+            style: DiffStyle::default(),
+            morph: None,
+        });
+        viewer
+    }
+
+    /// How a diff is drawn: `status`, `impact` or `morph`.
+    #[must_use]
+    pub fn with_diff_style(mut self, name: &str) -> Self {
+        if let Some(diff) = &mut self.diff {
+            diff.style = match name {
+                "impact" => DiffStyle::Impact,
+                "morph" => DiffStyle::Morph,
+                _ => DiffStyle::Status,
+            };
+        }
+        self
+    }
+
+    /// Holds the morph at `t`, from 0 (before) to 1 (after), instead of playing it.
+    #[must_use]
+    pub fn with_morph(mut self, t: f32) -> Self {
+        if let Some(diff) = &mut self.diff {
+            diff.morph = Some(t);
+        }
+        self
     }
 
     /// The unit to start from. Without one, the first entry is used.
@@ -158,8 +207,9 @@ impl Viewer {
     }
 
     fn explorer(&mut self) -> Explorer {
-        let mut explorer = Explorer::new(
+        let mut explorer = Explorer::with_layout(
             std::mem::take(&mut self.system),
+            self.diff.as_mut().and_then(|d| d.both.take()),
             self.root.take(),
             self.options.clone(),
         );
@@ -191,6 +241,16 @@ impl Viewer {
     #[must_use]
     pub fn run(mut self) -> AppExit {
         let explorer = self.explorer();
+        let diff = self.diff.take().map(|comparison| {
+            let diff = Diff::between(&comparison.before, explorer.system());
+            let mut view = DiffView::new(&explorer, &diff, &comparison.before, explorer.system());
+            view.style = comparison.style;
+            if let Some(t) = comparison.morph {
+                view.morph = t;
+                view.playing = false;
+            }
+            view
+        });
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -206,11 +266,15 @@ impl Viewer {
             camera::OrbitCameraPlugin,
             scene::ScenePlugin,
             ui::UiPlugin,
+            diff_view::DiffPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
         .insert_resource(JourneyPanel::new(self.panel))
         .init_resource::<Autoplay>();
+        if let Some(diff) = diff {
+            app.insert_resource(diff);
+        }
         if let Some(path) = self.screenshot {
             app.add_plugins(capture::CapturePlugin(path));
         }

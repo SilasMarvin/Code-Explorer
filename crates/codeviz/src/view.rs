@@ -35,6 +35,16 @@ pub(crate) struct ViewArgs {
     /// What pulls the graph's nodes together.
     #[arg(long, value_enum, default_value_t = ClusterArg::Modules)]
     cluster: ClusterArg,
+    /// Compare against these documents, an older version of the same system, and draw
+    /// what changed over the graph.
+    #[arg(long, value_name = "PATH", num_args = 1..)]
+    before: Vec<PathBuf>,
+    /// How to draw the diff.
+    #[arg(long, value_enum, default_value_t = DiffStyleArg::Status)]
+    diff_style: DiffStyleArg,
+    /// Hold the morph at this point, from 0 (before) to 1 (after), instead of playing it.
+    #[arg(long, value_name = "T")]
+    morph: Option<f32>,
     /// Show only what is near the focus.
     #[arg(long, value_enum, default_value_t = QuietArg::Off)]
     quiet: QuietArg,
@@ -54,6 +64,16 @@ enum JourneyArg {
     Docked,
     /// Below a strip of graph.
     Full,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum DiffStyleArg {
+    /// What changed, and the calls that came and went.
+    Status,
+    /// Everything that can reach a change, out to the entry points.
+    Impact,
+    /// The graph before, then after.
+    Morph,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -80,7 +100,12 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .iter()
         .map(crate::ir::read)
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let system = System::new(documents);
+    let before = args
+        .before
+        .iter()
+        .map(crate::ir::read)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let system = System::new(documents.clone());
     let root = match &args.entry {
         Some(query) => Some(crate::journey::find_one(&system, query)?),
         None => None,
@@ -105,13 +130,25 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
             .join(" + ")
     );
 
-    let mut viewer = Viewer::new(system)
-        .with_title(title)
-        .with_options(JourneyOptions {
-            include_unresolved: args.unresolved,
-            zoom: args.zoom.into(),
-            ..JourneyOptions::default()
-        });
+    let viewer = if before.is_empty() {
+        Viewer::new(system)
+    } else {
+        let mut viewer =
+            Viewer::compare(before, documents).with_diff_style(match args.diff_style {
+                DiffStyleArg::Status => "status",
+                DiffStyleArg::Impact => "impact",
+                DiffStyleArg::Morph => "morph",
+            });
+        if let Some(t) = args.morph {
+            viewer = viewer.with_morph(t);
+        }
+        viewer
+    };
+    let mut viewer = viewer.with_title(title).with_options(JourneyOptions {
+        include_unresolved: args.unresolved,
+        zoom: args.zoom.into(),
+        ..JourneyOptions::default()
+    });
     if let Some(root) = root {
         viewer = viewer.with_root(root);
     }
