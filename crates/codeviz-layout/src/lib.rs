@@ -18,7 +18,7 @@ use codeviz_ir::{Unit, UnitId};
 mod graph;
 mod map;
 
-pub use graph::{ForceConfig, ForceGraph};
+pub use graph::{ForceConfig, ForceGraph, GroupStats, Reach};
 pub use map::{CodebaseMap, MapConfig, MapGroup, MapTile, map};
 
 /// What groups spans into lanes along the Z axis.

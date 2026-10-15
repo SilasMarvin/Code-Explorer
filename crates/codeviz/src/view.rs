@@ -26,31 +26,39 @@ pub(crate) struct ViewArgs {
     /// Open with the cursor this many steps into the journey.
     #[arg(long, default_value_t = 0)]
     step: usize,
-    /// Also open journeys from these entries, stacked below the first.
+    /// Also open journeys from these entries.
     #[arg(long, value_name = "ENTRY")]
     also: Vec<String>,
-    /// How to arrange the journeys in space.
-    #[arg(long, value_enum, default_value_t = Arrange::Stacked)]
-    arrange: Arrange,
-    /// With `--arrange graph`, open facing the journeys instead of orbiting the focus.
-    #[arg(long)]
-    front: bool,
-    /// Open with the rest of the codebase shown around the journey.
-    #[arg(long)]
-    codebase: bool,
+    /// How the journey shows over the graph.
+    #[arg(long, value_enum, default_value_t = JourneyArg::Docked)]
+    journey: JourneyArg,
+    /// What pulls the graph's nodes together.
+    #[arg(long, value_enum, default_value_t = ClusterArg::Modules)]
+    cluster: ClusterArg,
+    /// Open with this function (entry label or unit id suffix) focused in the graph.
+    #[arg(long, value_name = "UNIT")]
+    focus: Option<String>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum Arrange {
-    /// Journeys stacked, facing the camera.
-    Stacked,
-    /// Journeys one behind another, lined up on the cursor.
-    Layers,
-    /// Pulled out in front of the codebase floating as a graph of calls.
-    Graph,
+enum JourneyArg {
+    /// The graph alone.
+    Hidden,
+    /// Docked in a corner over the graph.
+    Docked,
+    /// Below a strip of graph.
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ClusterArg {
+    /// Functions in the same container pull together.
+    Modules,
+    /// Only calls pull.
+    Calls,
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
@@ -69,6 +77,11 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .iter()
         .map(|query| crate::journey::find_one(&system, query))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    let focus = args
+        .focus
+        .as_ref()
+        .map(|query| crate::journey::find_one(&system, query))
+        .transpose()?;
     let title = format!(
         "codeviz — {}",
         args.documents
@@ -92,17 +105,22 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     for root in also {
         viewer = viewer.also(root);
     }
+    if let Some(focus) = focus {
+        viewer = viewer.with_focus(focus);
+    }
     if let Some(scenario) = args.scenario {
         viewer = viewer.with_scenario(scenario);
     }
     viewer = viewer
         .with_step(args.step)
-        .with_codebase(args.codebase)
-        .facing_journeys(args.front)
-        .with_arrangement(match args.arrange {
-            Arrange::Stacked => "stacked",
-            Arrange::Layers => "layers",
-            Arrange::Graph => "graph",
+        .with_journey(match args.journey {
+            JourneyArg::Hidden => "hidden",
+            JourneyArg::Docked => "docked",
+            JourneyArg::Full => "full",
+        })
+        .with_clustering(match args.cluster {
+            ClusterArg::Modules => "modules",
+            ClusterArg::Calls => "calls",
         });
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

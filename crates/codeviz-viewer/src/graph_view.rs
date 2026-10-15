@@ -1,38 +1,41 @@
 //! The codebase as a graph of calls: how its nodes look, which links light up, and
 //! where the camera goes. Whatever the pointer is over, or else the focused node, is
-//! the center of attention: its callers turn amber, its callees cyan, and the rest of
-//! the graph fades so that neighborhood reads on its own.
+//! the center of attention. Everything that calls into it turns amber and everything
+//! it calls turns blue, brightest one call away and fading with each call further;
+//! the rest of the graph fades so that neighborhood reads on its own.
 
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
-use codeviz_layout::ForceGraph;
+use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
-    camera::{CameraMode, JourneyCamera},
+    camera::{FRONT, OrbitCamera},
     explorer::Explorer,
     scene::{PALETTE, Tile, accent, lane_color},
 };
 
-pub(crate) const CALLER: Color = Color::srgb(1.0, 0.72, 0.25);
-pub(crate) const CALLEE: Color = Color::srgb(0.35, 0.85, 1.0);
+pub(crate) const CALLER: Color = Color::srgb(1.0, 0.62, 0.2);
+pub(crate) const CALLEE: Color = Color::srgb(0.3, 0.68, 1.0);
+
+/// Calls away from the focus that still get their own shade; further is drawn as this.
+const FARTHEST_SHADE: u32 = 3;
 
 /// How a node is drawn right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NodeLook {
     /// The center of attention.
     Focus,
-    /// Calls the focus.
-    Caller,
-    /// Called by the focus.
-    Callee,
-    /// Reaches the focus through other calls.
-    Upstream,
-    /// Run by the active journey, or anything while nothing is focused.
-    Bright(usize),
-    Dim(usize),
-    /// Away from the focus.
+    /// Calls into the focus, this many calls away (capped at [`FARTHEST_SHADE`]).
+    Upstream(u32),
+    /// Called from the focus, this many calls away (capped at [`FARTHEST_SHADE`]).
+    Downstream(u32),
+    /// Run by the active journey, unrelated to the focus.
+    Journey(usize),
+    /// Unrelated to the focus.
     Faded(usize),
+    /// Anything while nothing is focused, in its container's color.
+    Plain(usize),
 }
 
 pub(crate) fn node_materials(
@@ -47,13 +50,34 @@ pub(crate) fn node_materials(
     };
     let mut table = HashMap::new();
     table.insert(NodeLook::Focus, glow(materials, Color::WHITE, 4.0));
-    table.insert(NodeLook::Caller, glow(materials, CALLER, 2.5));
-    table.insert(NodeLook::Callee, glow(materials, CALLEE, 2.5));
-    table.insert(NodeLook::Upstream, glow(materials, CALLER, 0.6));
+    for hops in 1..=FARTHEST_SHADE {
+        // Bright and glowing next door, darker and flat further out.
+        let (shade, strength) = match hops {
+            1 => (1.0, 2.6),
+            2 => (0.75, 0.8),
+            _ => (0.5, 0.25),
+        };
+        let darken = |color: Color| {
+            let linear = LinearRgba::from(color);
+            Color::from(LinearRgba::rgb(
+                linear.red * shade,
+                linear.green * shade,
+                linear.blue * shade,
+            ))
+        };
+        table.insert(
+            NodeLook::Upstream(hops),
+            glow(materials, darken(CALLER), strength),
+        );
+        table.insert(
+            NodeLook::Downstream(hops),
+            glow(materials, darken(CALLEE), strength),
+        );
+    }
     for color in 0..PALETTE.len() {
         let base = lane_color(color);
-        table.insert(NodeLook::Bright(color), glow(materials, base, 1.6));
-        table.insert(NodeLook::Dim(color), glow(materials, base, 0.35));
+        table.insert(NodeLook::Plain(color), glow(materials, base, 1.2));
+        table.insert(NodeLook::Journey(color), glow(materials, base, 0.3));
         table.insert(
             NodeLook::Faded(color),
             materials.add(StandardMaterial {
@@ -72,63 +96,44 @@ pub(crate) fn node_size(graph: &ForceGraph, tile: usize) -> f32 {
     1.0 + (1.0 + graph.degree(tile) as f32).ln() * 0.55
 }
 
-/// The node at the center of attention: under the pointer, else focused.
-pub(crate) fn attention(explorer: &Explorer) -> Option<usize> {
-    explorer.hovered_tile.or_else(|| explorer.graph_focus())
+/// Which way a node relates to the focus, and how many calls away: upstream wins a
+/// tie, as for a function that both calls the focus and is called by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Relation {
+    Upstream(u32),
+    Downstream(u32),
 }
 
-/// What calls the attended node and what it calls.
-#[derive(Debug, Default)]
-pub(crate) struct Neighbors {
-    pub(crate) callers: HashSet<usize>,
-    pub(crate) callees: HashSet<usize>,
-}
-
-impl Neighbors {
-    pub(crate) fn of(graph: &ForceGraph, tile: Option<usize>) -> Self {
-        let Some(tile) = tile else {
-            return Self::default();
-        };
-        Self {
-            callers: graph.callers(tile).collect(),
-            callees: graph.callees(tile).collect(),
-        }
-    }
-
-    pub(crate) fn contains(&self, tile: usize) -> bool {
-        self.callers.contains(&tile) || self.callees.contains(&tile)
+pub(crate) fn relation(reach: &Reach, tile: usize) -> Option<Relation> {
+    match (reach.upstream.get(&tile), reach.downstream.get(&tile)) {
+        (Some(&up), Some(&down)) if down < up => Some(Relation::Downstream(down)),
+        (Some(&up), _) => Some(Relation::Upstream(up)),
+        (None, Some(&down)) => Some(Relation::Downstream(down)),
+        (None, None) => None,
     }
 }
 
-pub(crate) fn node_look(
-    explorer: &Explorer,
-    tile: usize,
-    center: Option<usize>,
-    neighbors: &Neighbors,
-) -> NodeLook {
+pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     let color = explorer.tile_color(tile) % PALETTE.len();
+    let center = explorer.attention();
     if center == Some(tile) {
         return NodeLook::Focus;
     }
-    if neighbors.callers.contains(&tile) {
-        return NodeLook::Caller;
+    let Some(reach) = explorer.reach() else {
+        return NodeLook::Plain(color);
+    };
+    match relation(reach, tile) {
+        Some(Relation::Upstream(hops)) => NodeLook::Upstream(hops.min(FARTHEST_SHADE)),
+        Some(Relation::Downstream(hops)) => NodeLook::Downstream(hops.min(FARTHEST_SHADE)),
+        None if explorer.journey_lane(tile).is_some() => NodeLook::Journey(color),
+        None => NodeLook::Faded(color),
     }
-    if neighbors.callees.contains(&tile) {
-        return NodeLook::Callee;
-    }
-    if center.is_some() && explorer.tile_distance(tile).is_some() {
-        return NodeLook::Upstream;
-    }
-    let run = explorer.journey_lane(tile).is_some();
-    match (center.is_some(), run) {
-        (false, _) | (true, true) => {
-            if run {
-                NodeLook::Bright(color)
-            } else {
-                NodeLook::Dim(color)
-            }
-        }
-        (true, false) => NodeLook::Faded(color),
+}
+
+/// Keeps what reaches the center of attention current.
+pub(crate) fn track_attention(mut explorer: ResMut<Explorer>) {
+    if explorer.bypass_change_detection().refresh_reach() {
+        explorer.set_changed();
     }
 }
 
@@ -138,16 +143,11 @@ pub(crate) fn style_nodes(
     materials: Res<NodeMaterials>,
     mut nodes: Query<(&Tile, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
-    let Some(graph) = explorer.graph() else {
-        return;
-    };
     if !explorer.is_changed() {
         return;
     }
-    let center = attention(&explorer);
-    let neighbors = Neighbors::of(graph, center);
     for (tile, mut material) in &mut nodes {
-        let look = node_look(&explorer, tile.0, center, &neighbors);
+        let look = node_look(&explorer, tile.0);
         if let Some(wanted) = materials.0.get(&look)
             && &material.0 != wanted
         {
@@ -166,10 +166,22 @@ pub(crate) fn create_node_materials(
     commands.insert_resource(NodeMaterials(node_materials(&mut materials)));
 }
 
-/// Every call as a link: lit by direction around the center of attention, in the
-/// journey's accent along the active journey's path, faint elsewhere.
-pub(crate) fn draw_graph(explorer: &Explorer, graph: &ForceGraph, gizmos: &mut Gizmos) {
-    let center = attention(explorer);
+/// How strongly to draw a link this many calls from the focus.
+fn fade(hops: u32) -> f32 {
+    match hops {
+        0 | 1 => 0.95,
+        2 => 0.5,
+        _ => 0.22,
+    }
+}
+
+/// Every call as a link. Calls leading into the focus are amber and calls leading out
+/// of it blue, fading with distance; the active journey's path is in its accent;
+/// everything else is faint.
+pub(crate) fn draw_graph(explorer: Res<Explorer>, mut gizmos: Gizmos) {
+    let graph = explorer.graph();
+    let center = explorer.attention();
+    let reach = explorer.reach();
     let point = |tile: usize| explorer.tile_point(tile);
     let map = explorer.map();
     let track = explorer.track();
@@ -183,24 +195,42 @@ pub(crate) fn draw_graph(explorer: &Explorer, graph: &ForceGraph, gizmos: &mut G
         })
         .collect();
     let path_color = accent(explorer.active());
+    // Calls from the focus, counting the focus itself as zero.
+    let hops = |side: &HashMap<usize, u32>, tile: usize| {
+        if center == Some(tile) {
+            Some(0)
+        } else {
+            side.get(&tile).copied()
+        }
+    };
 
     for &(from, to) in &graph.calls {
         let (Some(a), Some(b)) = (point(from), point(to)) else {
             continue;
         };
-        let (color, arrow) = if center == Some(to) {
-            (CALLER.with_alpha(0.95), true)
-        } else if center == Some(from) {
-            (CALLEE.with_alpha(0.95), true)
-        } else if path.contains(&(from, to)) {
-            (
-                path_color.with_alpha(if center.is_some() { 0.35 } else { 0.85 }),
+        // A link lights up when it takes one step nearer the focus (amber) or one
+        // step further out from it (blue).
+        let lit = reach.and_then(|reach| {
+            let up = hops(&reach.upstream, from).zip(hops(&reach.upstream, to));
+            let down = hops(&reach.downstream, from).zip(hops(&reach.downstream, to));
+            match (up, down) {
+                (Some((outer, inner)), _) if outer == inner + 1 => {
+                    Some(CALLER.with_alpha(fade(outer)))
+                }
+                (_, Some((inner, outer))) if outer == inner + 1 => {
+                    Some(CALLEE.with_alpha(fade(outer)))
+                }
+                _ => None,
+            }
+        });
+        let (color, arrow) = match lit {
+            Some(color) => (color, true),
+            None if path.contains(&(from, to)) => (
+                path_color.with_alpha(if center.is_some() { 0.3 } else { 0.85 }),
                 true,
-            )
-        } else if center.is_some() {
-            (Color::srgba(0.6, 0.66, 0.8, 0.04), false)
-        } else {
-            (Color::srgba(0.6, 0.66, 0.8, 0.16), false)
+            ),
+            None if center.is_some() => (Color::srgba(0.6, 0.66, 0.8, 0.04), false),
+            None => (Color::srgba(0.6, 0.66, 0.8, 0.16), false),
         };
         if arrow {
             // Stop at the callee's surface so the head stays visible.
@@ -214,58 +244,43 @@ pub(crate) fn draw_graph(explorer: &Explorer, graph: &ForceGraph, gizmos: &mut G
         let radius = center.map_or(1.0, |c| node_size(graph, c)) * 0.5 + 0.35;
         gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
     }
-    // The cursor's bar, tethered back to the node it runs.
-    let tether = track.selected().and_then(|span| {
-        let bar = track.bar(span)?;
-        let node = point(map.tile_of(track.unit_id(span)?)?)?;
-        Some((bar.label_anchor(), node))
-    });
-    if let Some((bar, node)) = tether {
-        gizmos.line(bar, node, Color::srgba(1.0, 1.0, 1.0, 0.45));
+    // The cursor's node, when attention is elsewhere.
+    let cursor = explorer.focus().and_then(|unit| map.tile_of(unit));
+    if let Some(tile) = cursor.filter(|&t| Some(t) != center)
+        && let Some(at) = point(tile)
+    {
+        let radius = node_size(graph, tile) * 0.5 + 0.35;
+        gizmos.sphere(
+            Isometry3d::from_translation(at),
+            radius,
+            Color::srgba(1.0, 1.0, 1.0, 0.4),
+        );
     }
-}
-
-/// Whether the camera faces the journeys head-on or orbits the focused node.
-#[derive(Resource, Debug, Default)]
-pub(crate) struct GraphCamera {
-    pub(crate) front: bool,
 }
 
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F snaps to the journeys, head-on and framed; again, back to orbiting the focus.
+/// F turns to face the graph head-on, still centered on the focus.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
-    mut view: ResMut<GraphCamera>,
-    mut cameras: Query<&mut JourneyCamera>,
+    mut cameras: Query<&mut OrbitCamera>,
 ) {
-    if explorer.graph().is_none() || !keys.just_pressed(KeyCode::KeyF) {
+    if !keys.just_pressed(KeyCode::KeyF) {
         return;
     }
-    view.front = !view.front;
     for mut camera in &mut cameras {
-        if view.front {
-            face_journeys(&explorer, &mut camera);
-        } else {
-            camera.set_angles(-0.35, -0.2);
-            orbit_focus(&explorer, &mut camera);
-        }
+        camera.turn_to(FRONT);
+        orbit_focus(&explorer, &mut camera);
     }
-}
-
-pub(crate) fn face_journeys(explorer: &Explorer, camera: &mut JourneyCamera) {
-    camera.set_mode(CameraMode::Flat);
-    let (min, max) = explorer.journeys_bounds();
-    camera.glide_frame(min, max);
 }
 
 /// Orbits the focused node from far enough back to see everything it calls and
 /// everything that calls it.
-pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut JourneyCamera) {
-    camera.set_mode(CameraMode::Orbit);
-    let (Some(graph), Some(focus)) = (explorer.graph(), explorer.graph_focus()) else {
+pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut OrbitCamera) {
+    let graph = explorer.graph();
+    let Some(focus) = explorer.graph_focus() else {
         return;
     };
     let Some(at) = explorer.tile_point(focus) else {
@@ -281,30 +296,20 @@ pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut JourneyCamera) {
     camera.glide_to(at, (reach * 3.4).max(MIN_ORBIT_DISTANCE));
 }
 
-/// Orbiting, keeps the camera centered on the focused node as it moves or changes.
-/// Clicking a node while facing the journeys swings back to orbit it.
+/// Swings round to a newly focused node, and keeps it centered while the graph moves.
 pub(crate) fn follow_focus(
     explorer: Res<Explorer>,
-    mut view: ResMut<GraphCamera>,
-    mut clicked: Local<Option<usize>>,
-    mut cameras: Query<&mut JourneyCamera>,
+    mut followed: Local<Option<usize>>,
+    mut cameras: Query<&mut OrbitCamera>,
 ) {
-    if explorer.graph().is_none() {
-        *clicked = None;
-        view.front = false;
-        return;
-    }
-    let click = explorer.clicked_node();
-    let newly_clicked = click.is_some() && click != *clicked;
-    *clicked = click;
+    let focus = explorer.graph_focus();
+    let changed = focus != *followed;
+    *followed = focus;
     for mut camera in &mut cameras {
-        if newly_clicked && view.front {
-            view.front = false;
-            camera.set_angles(-0.35, -0.2);
+        if changed {
             orbit_focus(&explorer, &mut camera);
-        }
-        if !view.front
-            && let Some(at) = explorer.graph_focus().and_then(|t| explorer.tile_point(t))
+        } else if explorer.settling()
+            && let Some(at) = focus.and_then(|t| explorer.tile_point(t))
         {
             camera.target = at;
         }

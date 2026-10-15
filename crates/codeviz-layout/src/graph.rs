@@ -1,11 +1,11 @@
 //! The codebase as a force-directed graph in 3D: one node per function (as tiled by
 //! the [`CodebaseMap`]), one link per pair of functions where one calls the other.
-//! Nodes repel, links pull, and functions in the same container drift together, so
-//! clusters come from what calls what.
+//! Nodes repel and links pull, so clusters come from what calls what; with cohesion
+//! on, functions in the same container also drift together.
 //!
 //! The simulation runs a step at a time so a viewer can show it settling.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use codeviz_core::System;
 
@@ -49,7 +49,33 @@ pub struct ForceGraph {
     pub links: Vec<(usize, usize)>,
     /// The same links with their direction: `(caller, callee)`, sorted.
     pub calls: Vec<(usize, usize)>,
+    /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
+    sequences: Vec<Vec<usize>>,
     config: ForceConfig,
+}
+
+/// Where a call is written: line, column, then declaration order as a tiebreak.
+type SiteKey = (u32, u32, usize);
+
+/// How a container's functions call: among themselves, or across its boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GroupStats {
+    pub nodes: usize,
+    /// Calls between two of its functions.
+    pub internal: usize,
+    /// Calls from its functions to other containers.
+    pub outgoing: usize,
+    /// Calls into its functions from other containers.
+    pub incoming: usize,
+}
+
+/// Fewest calls between a node and the tiles that reach it, or that it reaches.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reach {
+    /// Tiles that call into the node, directly (1) or through others.
+    pub upstream: HashMap<usize, u32>,
+    /// Tiles the node calls, directly (1) or through others.
+    pub downstream: HashMap<usize, u32>,
 }
 
 impl ForceGraph {
@@ -57,18 +83,37 @@ impl ForceGraph {
     #[must_use]
     pub fn new(system: &System, map: &CodebaseMap, config: ForceConfig) -> Self {
         let mut calls = HashSet::new();
-        for unit in system.units() {
+        // Each call site with where it is written, to put a tile's calls in order.
+        let mut sites: Vec<Vec<(SiteKey, usize)>> = vec![Vec::new(); map.tiles.len()];
+        for (order, unit) in system.units().enumerate() {
             let Some(from) = map.tile_of(&unit.id) else {
                 continue;
             };
-            for target in unit.calls.iter().flat_map(|c| &c.targets) {
-                if let Some(to) = map.tile_of(&target.unit)
-                    && to != from
-                {
-                    calls.insert((from, to));
+            for (index, call) in unit.calls.iter().enumerate() {
+                let at = call
+                    .location
+                    .as_ref()
+                    .and_then(|l| l.range)
+                    .map_or((u32::MAX, u32::MAX), |r| (r.start_line, r.start_col));
+                for target in &call.targets {
+                    if let Some(to) = map.tile_of(&target.unit)
+                        && to != from
+                    {
+                        calls.insert((from, to));
+                        if let Some(list) = sites.get_mut(from) {
+                            list.push(((at.0, at.1, order * 1024 + index), to));
+                        }
+                    }
                 }
             }
         }
+        let sequences = sites
+            .into_iter()
+            .map(|mut list| {
+                list.sort_by_key(|&(key, _)| key);
+                list.into_iter().map(|(_, to)| to).collect()
+            })
+            .collect();
         let mut links: Vec<(usize, usize)> = calls
             .iter()
             .map(|&(a, b)| (a.min(b), a.max(b)))
@@ -91,8 +136,81 @@ impl ForceGraph {
             positions,
             links,
             calls,
+            sequences,
             config,
         }
+    }
+
+    /// Changes the forces; the graph moves until it settles under them.
+    pub fn set_config(&mut self, config: ForceConfig) {
+        self.config = config;
+    }
+
+    /// The tiles `tile` calls, in the order the calls are written, repeats kept.
+    #[must_use]
+    pub fn sequence(&self, tile: usize) -> &[usize] {
+        self.sequences.get(tile).map_or(&[], Vec::as_slice)
+    }
+
+    /// Everything that reaches `tile` and everything it reaches, by fewest calls.
+    #[must_use]
+    pub fn reach(&self, tile: usize) -> Reach {
+        Reach {
+            upstream: self.walk(tile, |(caller, callee)| (callee, caller)),
+            downstream: self.walk(tile, |call| call),
+        }
+    }
+
+    /// Breadth-first from `start` along calls turned `(from, to)` by `direction`.
+    fn walk(
+        &self,
+        start: usize,
+        direction: impl Fn((usize, usize)) -> (usize, usize),
+    ) -> HashMap<usize, u32> {
+        let mut next: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &call in &self.calls {
+            let (from, to) = direction(call);
+            next.entry(from).or_default().push(to);
+        }
+        let mut found = HashMap::new();
+        let mut queue = VecDeque::from([(start, 0)]);
+        while let Some((tile, hops)) = queue.pop_front() {
+            for &to in next.get(&tile).into_iter().flatten() {
+                if to != start && !found.contains_key(&to) {
+                    found.insert(to, hops + 1);
+                    queue.push_back((to, hops + 1));
+                }
+            }
+        }
+        found
+    }
+
+    /// The container each tile belongs to, by group index.
+    #[must_use]
+    pub fn group(&self, tile: usize) -> Option<usize> {
+        self.groups.get(tile).copied()
+    }
+
+    /// Per container, by group index: its functions and where their calls go.
+    #[must_use]
+    pub fn group_stats(&self) -> Vec<GroupStats> {
+        let count = self.groups.iter().max().map_or(0, |g| g + 1);
+        let mut stats = vec![GroupStats::default(); count];
+        for &group in &self.groups {
+            stats[group].nodes += 1;
+        }
+        for &(from, to) in &self.calls {
+            let (Some(a), Some(b)) = (self.group(from), self.group(to)) else {
+                continue;
+            };
+            if a == b {
+                stats[a].internal += 1;
+            } else {
+                stats[a].outgoing += 1;
+                stats[b].incoming += 1;
+            }
+        }
+        stats
     }
 
     /// Tiles that call `tile`.
@@ -270,6 +388,26 @@ mod tests {
             dot(d, d).sqrt()
         };
         assert!(distance("x:a", "x:b") < distance("x:a", "x:lonely"));
+    }
+
+    #[test]
+    fn reach_counts_calls_both_ways() {
+        let system = system();
+        let map = map(&system, &MapConfig::default());
+        let graph = ForceGraph::new(&system, &map, ForceConfig::default());
+        let tile = |name: &str| map.tile_of(&codeviz_ir::UnitId::new(name)).unwrap();
+        let reach = graph.reach(tile("x:b"));
+        assert_eq!(reach.upstream, HashMap::from([(tile("x:a"), 1)]));
+        assert_eq!(reach.downstream, HashMap::from([(tile("x:c"), 1)]));
+        let from_a = graph.reach(tile("x:a"));
+        assert_eq!(from_a.downstream.get(&tile("x:c")), Some(&2));
+        assert_eq!(graph.sequence(tile("x:a")), [tile("x:b")]);
+        let stats = graph.group_stats();
+        assert_eq!(stats.iter().map(|s| s.nodes).sum::<usize>(), 4);
+        assert_eq!(
+            stats.iter().map(|s| s.internal + s.outgoing).sum::<usize>(),
+            2
+        );
     }
 
     #[test]

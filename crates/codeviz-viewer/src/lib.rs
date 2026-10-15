@@ -1,8 +1,9 @@
 //! Interactive 3D viewer for codeviz journeys, built on Bevy.
 //!
-//! The viewer owns a [`System`] and renders the [`Journey`](codeviz_core::Journey) from
-//! one entry at a time, laid out by [`codeviz_layout`]: time runs along X, depth down Y,
-//! and lanes (containers by default) along Z.
+//! The viewer owns a [`System`] and floats it in 3D as a graph of calls, lighting up
+//! what calls into the focused function and what it calls. The
+//! [`Journey`](codeviz_core::Journey) through the focus sits over the graph as a flame
+//! graph, sharing its cursor.
 
 #![expect(
     clippy::needless_pass_by_value,
@@ -12,8 +13,8 @@
 mod camera;
 mod capture;
 mod explorer;
-mod geometry;
 mod graph_view;
+mod journey_panel;
 mod scene;
 mod ui;
 
@@ -24,7 +25,10 @@ use bevy_egui::EguiPlugin;
 use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::UnitId;
 
-use crate::explorer::{Autoplay, Explorer};
+use crate::{
+    explorer::{Autoplay, Clustering, Explorer},
+    journey_panel::{JourneyPanel, PanelMode},
+};
 
 /// Configures and launches the viewer window.
 #[derive(Debug)]
@@ -36,10 +40,10 @@ pub struct Viewer {
     screenshot: Option<PathBuf>,
     scenario: Option<usize>,
     step: usize,
-    codebase: bool,
     also: Vec<UnitId>,
-    arrangement: geometry::Arrangement,
-    front: bool,
+    panel: PanelMode,
+    clustering: Clustering,
+    focus: Option<UnitId>,
 }
 
 impl Viewer {
@@ -53,10 +57,10 @@ impl Viewer {
             screenshot: None,
             scenario: None,
             step: 0,
-            codebase: false,
             also: Vec::new(),
-            arrangement: geometry::Arrangement::default(),
-            front: false,
+            panel: PanelMode::default(),
+            clustering: Clustering::default(),
+            focus: None,
         }
     }
 
@@ -89,29 +93,32 @@ impl Viewer {
         self
     }
 
-    /// Opens with journeys layered one behind another (`layers`) or pulled out of the
-    /// codebase's graph (`graph`) instead of stacked (`stacked`).
+    /// How the journey shows: `hidden`, `docked` over the graph, or `full` below it.
     #[must_use]
-    pub fn with_arrangement(mut self, name: &str) -> Self {
-        self.arrangement = match name {
-            "layers" => geometry::Arrangement::Layers,
-            "graph" => geometry::Arrangement::Graph,
-            _ => geometry::Arrangement::Stacked,
+    pub fn with_journey(mut self, mode: &str) -> Self {
+        self.panel = match mode {
+            "hidden" => PanelMode::Hidden,
+            "full" => PanelMode::Full,
+            _ => PanelMode::Docked,
         };
         self
     }
 
-    /// In the graph, opens facing the journeys instead of orbiting the focus.
+    /// Clusters the graph by `modules` (functions in a container pull together) or
+    /// by `calls` alone.
     #[must_use]
-    pub fn facing_journeys(mut self, front: bool) -> Self {
-        self.front = front;
+    pub fn with_clustering(mut self, name: &str) -> Self {
+        self.clustering = match name {
+            "calls" => Clustering::Calls,
+            _ => Clustering::Modules,
+        };
         self
     }
 
-    /// Opens with the rest of the codebase shown around the journey.
+    /// Opens with this function focused in the graph.
     #[must_use]
-    pub fn with_codebase(mut self, codebase: bool) -> Self {
-        self.codebase = codebase;
+    pub fn with_focus(mut self, unit: UnitId) -> Self {
+        self.focus = Some(unit);
         self
     }
 
@@ -154,10 +161,14 @@ impl Viewer {
         for root in self.also.drain(..) {
             explorer.add_track(root);
         }
-        if self.codebase {
-            explorer.toggle_codebase();
+        explorer.set_clustering(self.clustering);
+        if let Some(tile) = self
+            .focus
+            .take()
+            .and_then(|unit| explorer.map().tile_of(&unit))
+        {
+            explorer.focus_node(tile);
         }
-        explorer.set_arrangement(self.arrangement);
         explorer
     }
 
@@ -177,13 +188,13 @@ impl Viewer {
         .add_plugins((
             MeshPickingPlugin,
             EguiPlugin::default(),
-            camera::JourneyCameraPlugin,
+            camera::OrbitCameraPlugin,
             scene::ScenePlugin,
             ui::UiPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
-        .insert_resource(graph_view::GraphCamera { front: self.front })
+        .insert_resource(JourneyPanel::new(self.panel))
         .init_resource::<Autoplay>();
         if let Some(path) = self.screenshot {
             app.add_plugins(capture::CapturePlugin(path));

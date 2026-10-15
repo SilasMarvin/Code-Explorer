@@ -1,18 +1,16 @@
-//! Viewer state that is independent of rendering: the loaded system, the current
-//! journey and its layout, the cursor, the outcome being shown, and the codebase map
-//! with what reaches the cursor's unit.
+//! Viewer state that is independent of rendering: the loaded system, the open
+//! journeys and their cursors, and the codebase as a graph of calls with the node at
+//! the center of attention and what reaches it.
 
 use std::collections::HashMap;
 
 use bevy::prelude::*;
 use codeviz_core::{
     Journey, JourneyOptions, Level, Scenario, Span, SpanId, SpanTarget, StopReason, System,
-    Upstream, display_name, scenarios, upstream,
+    display_name, scenarios,
 };
 use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
-use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Scene};
-
-use crate::geometry::{Arrangement, BarBox, MapFrame};
+use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,8 +47,8 @@ pub(crate) struct SpanRef {
     pub(crate) span: SpanId,
 }
 
-/// One open journey: where it starts, which outcome it shows, its own cursor, and
-/// where it sits in the world.
+/// One open journey: where it starts, which outcome it shows, its own cursor, and its
+/// layout in time and depth.
 #[derive(Debug, Default)]
 pub(crate) struct Track {
     root: Option<UnitId>,
@@ -61,11 +59,6 @@ pub(crate) struct Track {
     scene: Scene,
     divergences: Vec<Divergence>,
     selected: Option<SpanId>,
-    offset: Vec3,
-    /// Each span's bar in the world, when the arrangement places it.
-    boxes: Vec<Option<BarBox>>,
-    /// What the bars occupy in the world, as `(min, max)`.
-    bounds: (Vec3, Vec3),
     /// The color of each of the scene's lanes, shared with the other journeys.
     colors: Vec<usize>,
 }
@@ -103,16 +96,6 @@ impl Track {
         }
     }
 
-    /// The span's bar in the world.
-    pub(crate) fn bar(&self, id: SpanId) -> Option<&BarBox> {
-        self.boxes.get(id.index())?.as_ref()
-    }
-
-    /// What the bars occupy in the world, as `(min, max)`.
-    pub(crate) fn bounds(&self) -> (Vec3, Vec3) {
-        self.bounds
-    }
-
     /// The color index for a span's bar: the same module has the same color in
     /// every journey.
     pub(crate) fn color(&self, id: SpanId) -> usize {
@@ -133,9 +116,13 @@ impl Track {
         })
     }
 
-    /// Lowest point of the journey below its origin, in world units.
-    fn height(&self) -> f32 {
-        -self.scene.bounds.0[1] + 1.0
+    /// The first span that runs anything drawn as graph node `tile`.
+    pub(crate) fn find_tile(&self, map: &CodebaseMap, tile: usize) -> Option<SpanId> {
+        self.journey.as_ref().and_then(|j| {
+            j.spans()
+                .find(|(id, _)| self.unit_id(*id).and_then(|u| map.tile_of(u)) == Some(tile))
+                .map(|(id, _)| id)
+        })
     }
 
     fn reroot(&mut self, system: &System, options: &JourneyOptions, layout: &LayoutConfig) {
@@ -191,111 +178,74 @@ impl Track {
     }
 }
 
-/// Space between stacked journeys.
-const TRACK_GAP: f32 = 3.5;
-/// Space between layered journeys.
-const LAYER_GAP: f32 = 9.0;
+/// How the graph gathers its nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Clustering {
+    /// Functions in the same container pull together.
+    #[default]
+    Modules,
+    /// Only calls pull, so functions gather with whatever they talk to. Containers
+    /// that stay together anyway call mostly among themselves.
+    Calls,
+}
 
-/// Space between the graph and the journeys pulled out of it.
-const PULL_DISTANCE: f32 = 8.0;
+impl Clustering {
+    fn forces(self) -> ForceConfig {
+        ForceConfig {
+            cohesion: match self {
+                Self::Modules => 0.05,
+                Self::Calls => 0.0,
+            },
+            ..ForceConfig::default()
+        }
+    }
+}
+
 /// Simulation steps run before the graph is first shown, so it opens nearly settled.
 const PRESETTLE_STEPS: usize = 200;
 /// Below this mean speed the graph counts as settled and stops simulating.
 const SETTLED_SPEED: f32 = 0.002;
-
-fn stacked_map(max_width: f32) -> MapConfig {
-    MapConfig {
-        max_width,
-        ..MapConfig::default()
-    }
-}
-
-const BAR_HEIGHT: f32 = 0.8;
-const BAR_DEPTH: f32 = 0.8;
-/// Space left between consecutive bars on one row.
-const BAR_GAP: f32 = 0.25;
-
-/// Bars along X at the layout's positions; `lanes` keeps the layout's lane depth.
-fn place_bars(track: &mut Track, tick: f32, lanes: bool) {
-    let origin = track.offset;
-    track.boxes = track
-        .scene
-        .nodes
-        .iter()
-        .map(|placed| {
-            let length = (placed.length - BAR_GAP).max(tick * 0.4);
-            let [x, y, z] = placed.position;
-            let start = origin + Vec3::new(x, y, if lanes { z } else { 0.0 });
-            let enter = track.span(placed.span).map_or(0, |s| s.enter);
-            Some(BarBox {
-                center: start + Vec3::X * length / 2.0,
-                size: Vec3::new(length, BAR_HEIGHT, BAR_DEPTH),
-                start,
-                axis: Vec3::X * tick,
-                enter,
-            })
-        })
-        .collect();
-    track.bounds = box_bounds(&track.boxes);
-}
-
-fn box_bounds(boxes: &[Option<BarBox>]) -> (Vec3, Vec3) {
-    let mut min = Vec3::splat(f32::INFINITY);
-    let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for bar in boxes.iter().flatten() {
-        min = min.min(bar.center - bar.size / 2.0);
-        max = max.max(bar.center + bar.size / 2.0);
-    }
-    if min.x > max.x {
-        return (Vec3::ZERO, Vec3::ZERO);
-    }
-    (min, max)
-}
 
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
     system: System,
     pub(crate) options: JourneyOptions,
     pub(crate) layout: LayoutConfig,
-    /// Open journeys, stacked top to bottom.
+    /// Open journeys.
     tracks: Vec<Track>,
-    /// The journey the cursor keys, the outline and the side panels follow.
+    /// The journey the cursor keys, the panel and the outline follow.
     active: usize,
     pub(crate) hovered: Option<SpanRef>,
-    /// Whether the rest of the codebase is drawn around the journeys.
-    codebase: bool,
+    /// Every function, grouped by container; graph nodes are its tiles.
     map: CodebaseMap,
-    /// The configuration `map` was laid out with.
-    map_config: Option<MapConfig>,
-    /// Where the map lies in the world.
-    map_frame: MapFrame,
-    arrangement: Arrangement,
-    /// The unit the layers were last lined up on.
-    aligned_on: Option<UnitId>,
-    /// Bumped when the camera should frame everything again.
-    framing: u64,
-    /// The codebase as a graph, built the first time it is shown.
-    graph: Option<ForceGraph>,
+    /// The codebase as a graph of calls.
+    graph: ForceGraph,
+    clustering: Clustering,
     /// Whether the graph is still moving.
     settling: bool,
-    /// A node focused in the graph, until the cursor moves.
+    /// A node focused in the graph that the active journey does not run, until the
+    /// cursor moves.
     graph_focus: Option<usize>,
     /// Map tiles each journey runs, with the color each is drawn in there.
     journey_tiles: Vec<HashMap<usize, usize>>,
-    /// What can reach the cursor's unit.
-    upstream: Option<(UnitId, Upstream)>,
-    /// Fewest calls from each map tile to the cursor's unit.
-    upstream_tiles: HashMap<usize, u32>,
+    /// What reaches the node at the center of attention, and what it reaches.
+    reach: Option<(usize, Reach)>,
     pub(crate) hovered_tile: Option<usize>,
     /// Lane label to color index, in order of first appearance across journeys.
     lane_colors: HashMap<String, usize>,
-    /// Bumped whenever a journey or the map is rebuilt.
+    /// Bumped whenever a journey is rebuilt.
     revision: u64,
 }
 
 impl Explorer {
     pub(crate) fn new(system: System, root: Option<UnitId>, options: JourneyOptions) -> Self {
         let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
+        let map = codeviz_layout::map(&system, &MapConfig::default());
+        let clustering = Clustering::default();
+        let mut graph = ForceGraph::new(&system, &map, clustering.forces());
+        for _ in 0..PRESETTLE_STEPS {
+            graph.step();
+        }
         let mut explorer = Self {
             system,
             options,
@@ -303,19 +253,13 @@ impl Explorer {
             tracks: vec![Track::default()],
             active: 0,
             hovered: None,
-            codebase: false,
-            map: CodebaseMap::default(),
-            map_config: None,
-            map_frame: MapFrame::default(),
-            arrangement: Arrangement::default(),
-            aligned_on: None,
-            framing: 0,
-            graph: None,
-            settling: false,
+            map,
+            graph,
+            clustering,
+            settling: true,
             graph_focus: None,
             journey_tiles: Vec::new(),
-            upstream: None,
-            upstream_tiles: HashMap::new(),
+            reach: None,
             hovered_tile: None,
             lane_colors: HashMap::new(),
             revision: 0,
@@ -419,13 +363,15 @@ impl Explorer {
         }
     }
 
-    /// Recomputes outcomes for the active journey's root and opens on the happy path.
+    /// Recomputes outcomes for the active journey's root and opens on the happy path,
+    /// with the cursor and the graph's focus on the root.
     pub(crate) fn reroot(&mut self) {
         let index = self.active.min(self.tracks.len() - 1);
         if let Some(track) = self.tracks.get_mut(index) {
             track.reroot(&self.system, &self.options, &self.layout);
         }
-        self.arrange();
+        self.graph_focus = None;
+        self.recolor();
     }
 
     pub(crate) fn set_scenario(&mut self, scenario: Option<usize>) {
@@ -462,95 +408,63 @@ impl Explorer {
         for track in &mut self.tracks {
             track.reroot(&self.system, &self.options, &self.layout);
         }
-        self.arrange();
+        self.recolor();
     }
 
-    /// Rebuilds the active journey and re-places everything around it.
+    /// Rebuilds the active journey.
     pub(crate) fn rebuild(&mut self) {
         let index = self.active.min(self.tracks.len() - 1);
         if let Some(track) = self.tracks.get_mut(index) {
             track.rebuild(&self.system, &self.options, &self.layout);
         }
-        self.arrange();
+        self.recolor();
     }
 
-    pub(crate) fn arrangement(&self) -> Arrangement {
-        self.arrangement
+    /// The codebase as a graph of calls.
+    pub(crate) fn graph(&self) -> &ForceGraph {
+        &self.graph
     }
 
-    pub(crate) fn set_arrangement(&mut self, arrangement: Arrangement) {
-        if self.arrangement != arrangement {
-            self.arrangement = arrangement;
-            self.arrange();
-        }
-    }
-
-    /// Bumped when the camera should frame everything again.
-    pub(crate) fn framing(&self) -> u64 {
-        self.framing
-    }
-
-    /// Whether the codebase is drawn: when asked for, and always behind the journeys
-    /// in the graph.
-    pub(crate) fn shows_map(&self) -> bool {
-        self.codebase || self.arrangement == Arrangement::Graph
-    }
-
-    /// The codebase as a graph of calls, when the arrangement floats it in space.
-    pub(crate) fn graph(&self) -> Option<&ForceGraph> {
-        self.graph
-            .as_ref()
-            .filter(|_| self.arrangement == Arrangement::Graph)
-    }
-
-    /// Where a map tile's function sits in the world: its node in the graph, or its
-    /// tile on the map.
+    /// Where a graph node sits in the world.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        match self.graph() {
-            Some(graph) => graph.positions.get(tile).map(|&p| Vec3::from(p)),
-            None => self
-                .map
-                .tile(tile)
-                .map(|t| self.map_frame.point(t.position)),
+        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+    }
+
+    pub(crate) fn clustering(&self) -> Clustering {
+        self.clustering
+    }
+
+    /// Regathers the graph; it moves until it settles.
+    pub(crate) fn set_clustering(&mut self, clustering: Clustering) {
+        if self.clustering != clustering {
+            self.clustering = clustering;
+            self.graph.set_config(clustering.forces());
+            self.settling = true;
         }
+    }
+
+    /// Whether the graph is still moving.
+    pub(crate) fn settling(&self) -> bool {
+        self.settling
     }
 
     /// Runs the graph simulation a few steps while it is still moving. Returns whether
     /// anything moved.
     pub(crate) fn simulate(&mut self, steps: usize) -> bool {
-        if self.arrangement != Arrangement::Graph || !self.settling {
+        if !self.settling {
             return false;
         }
-        let Some(graph) = self.graph.as_mut() else {
-            return false;
-        };
         let mut speed = 0.0;
         for _ in 0..steps {
-            speed = graph.step();
+            speed = self.graph.step();
         }
         self.settling = speed > SETTLED_SPEED;
         true
     }
 
-    /// In layers, slides the panes so the cursor's function lines up in all of them.
-    /// Returns whether anything moved.
-    pub(crate) fn realign(&mut self) -> bool {
-        if self.arrangement != Arrangement::Layers || self.tracks.len() < 2 {
-            return false;
-        }
-        let focus = self.focus().cloned();
-        if focus == self.aligned_on {
-            return false;
-        }
-        self.aligned_on = focus;
-        self.place();
-        self.revision += 1;
-        true
-    }
-
-    /// Re-places everything after a journey, the set of journeys or the arrangement
-    /// changed, and asks for a redraw and a fresh camera framing.
-    fn arrange(&mut self) {
+    /// Gives lanes and containers their colors after the journeys changed, and asks
+    /// for a redraw.
+    fn recolor(&mut self) {
         for track in &mut self.tracks {
             let colors = &mut self.lane_colors;
             track.colors = track
@@ -563,124 +477,14 @@ impl Explorer {
                 })
                 .collect();
         }
-        self.aligned_on = self.focus().cloned();
-        self.place();
-        self.hovered = None;
-        self.revision += 1;
-        self.framing += 1;
-    }
-
-    /// Computes every bar's box and the map's frame for the arrangement.
-    fn place(&mut self) {
-        let tick = self.layout.tick_spacing;
-        match self.arrangement {
-            Arrangement::Stacked => {
-                let mut top = 0.0;
-                for track in &mut self.tracks {
-                    track.offset = Vec3::new(0.0, top, 0.0);
-                    top -= track.height() + TRACK_GAP;
-                    place_bars(track, tick, true);
-                }
-                if self.shows_map() {
-                    let (min, max) = self.journey_bounds();
-                    self.layout_map(stacked_map((max.x - min.x).max(30.0)));
-                    self.map_frame =
-                        MapFrame::wall(Vec3::new(min.x, max.y + 2.5, 0.0), self.map_tile());
-                }
-            }
-            Arrangement::Layers => {
-                let focus = self.aligned_on.clone();
-                let start_of = |track: &Track| {
-                    let id = focus.as_ref().and_then(|f| track.find(f))?;
-                    track.scene.nodes.get(id.index()).map(|n| n.position[0])
-                };
-                let anchor = start_of(self.track());
-                for (index, track) in self.tracks.iter_mut().enumerate() {
-                    let shift = anchor
-                        .zip(start_of(track))
-                        .map_or(0.0, |(anchor, own)| anchor - own);
-                    track.offset = Vec3::new(shift, 0.0, -(index as f32) * LAYER_GAP);
-                    place_bars(track, tick, false);
-                }
-                if self.shows_map() {
-                    let (min, max) = self.journey_bounds();
-                    self.layout_map(stacked_map((max.x - min.x).max(30.0)));
-                    self.map_frame = MapFrame::floor(
-                        Vec3::new(min.x, min.y - 3.0, max.z + 6.0),
-                        self.map_tile(),
-                    );
-                }
-            }
-            Arrangement::Graph => {
-                self.layout_map(MapConfig::default());
-                if self.graph.is_none() {
-                    let mut graph =
-                        ForceGraph::new(&self.system, &self.map, ForceConfig::default());
-                    for _ in 0..PRESETTLE_STEPS {
-                        graph.step();
-                    }
-                    self.graph = Some(graph);
-                    self.settling = true;
-                }
-                // Journeys stack as usual, pulled down and forward out of the graph:
-                // centered under it and in front of its nearest node.
-                let (low, near) = self.graph.as_ref().map_or((0.0, 0.0), |g| {
-                    g.positions
-                        .iter()
-                        .fold((0.0_f32, 0.0_f32), |(low, near), p| {
-                            (low.min(p[1]), near.max(p[2]))
-                        })
-                });
-                let mut top = 0.0;
-                for track in &mut self.tracks {
-                    track.offset = Vec3::new(0.0, top, 0.0);
-                    top -= track.height() + TRACK_GAP;
-                }
-                let width = self
-                    .tracks
-                    .iter()
-                    .map(|t| t.scene.bounds.1[0] - t.scene.bounds.0[0])
-                    .fold(0.0, f32::max);
-                let shift = Vec3::new(-width / 2.0, low - PULL_DISTANCE, near + PULL_DISTANCE);
-                for track in &mut self.tracks {
-                    track.offset += shift;
-                    place_bars(track, tick, false);
-                }
-            }
-        }
         self.color_groups();
         self.refresh_journey_tiles();
+        self.hovered = None;
+        self.revision += 1;
     }
 
-    /// Lays the map out again only when its configuration changed.
-    fn layout_map(&mut self, config: MapConfig) {
-        if self.map_config != Some(config) {
-            self.map = codeviz_layout::map(&self.system, &config);
-            self.map_config = Some(config);
-            self.upstream = None;
-        }
-    }
-
-    fn map_tile(&self) -> Vec2 {
-        self.map_config
-            .map_or(Vec2::ONE, |c| Vec2::new(c.tile_width, c.tile_height))
-    }
-
-    fn journey_bounds(&self) -> (Vec3, Vec3) {
-        let mut min = Vec3::splat(f32::INFINITY);
-        let mut max = Vec3::splat(f32::NEG_INFINITY);
-        for track in &self.tracks {
-            min = min.min(track.bounds.0);
-            max = max.max(track.bounds.1);
-        }
-        if min.x > max.x {
-            return (Vec3::ZERO, Vec3::ZERO);
-        }
-        (min, max)
-    }
-
-    /// Opens another journey from `unit` below the others and makes it active. Its
-    /// cursor lands on the unit the active cursor was on, when it reaches it.
+    /// Opens another journey from `unit` and makes it active. Its cursor lands on the
+    /// unit the active cursor was on, when it reaches it.
     pub(crate) fn add_track(&mut self, unit: UnitId) {
         let focus = self.focus().cloned();
         let mut track = Track {
@@ -693,7 +497,8 @@ impl Explorer {
         }
         self.tracks.push(track);
         self.active = self.tracks.len() - 1;
-        self.arrange();
+        self.graph_focus = None;
+        self.recolor();
     }
 
     /// Opens the selected span's unit as another journey.
@@ -710,42 +515,8 @@ impl Explorer {
             if self.active >= index && self.active > 0 {
                 self.active -= 1;
             }
-            self.arrange();
+            self.recolor();
         }
-    }
-
-    /// What the open journeys occupy in the world, as `(min, max)`.
-    pub(crate) fn journeys_bounds(&self) -> (Vec3, Vec3) {
-        self.journey_bounds()
-    }
-
-    /// Everything drawn, as `(min, max)`: the journeys, and the map when shown.
-    pub(crate) fn bounds(&self) -> (Vec3, Vec3) {
-        let (mut min, mut max) = self.journey_bounds();
-        if let Some(graph) = self.graph() {
-            for &point in &graph.positions {
-                min = min.min(Vec3::from(point));
-                max = max.max(Vec3::from(point));
-            }
-        } else if self.shows_map() {
-            let (a, b) = self.map.bounds;
-            for corner in [[a[0], a[1]], [b[0], b[1]], [a[0], b[1]], [b[0], a[1]]] {
-                let point = self.map_frame.point(corner);
-                min = min.min(point);
-                max = max.max(point);
-            }
-        }
-        (min, max)
-    }
-
-    pub(crate) fn codebase(&self) -> bool {
-        self.codebase
-    }
-
-    pub(crate) fn toggle_codebase(&mut self) {
-        self.codebase = !self.codebase;
-        self.hovered_tile = None;
-        self.arrange();
     }
 
     /// The node the graph centers on and lights up around: one clicked in the graph,
@@ -755,40 +526,75 @@ impl Explorer {
             .or_else(|| self.focus().and_then(|f| self.map.tile_of(f)))
     }
 
-    /// A node focused by clicking it in the graph, if the cursor has not moved since.
-    pub(crate) fn clicked_node(&self) -> Option<usize> {
-        self.graph_focus
+    /// Focuses a node. When the active journey runs it, its cursor moves there too.
+    pub(crate) fn focus_node(&mut self, tile: usize) {
+        match self.track().find_tile(&self.map, tile) {
+            Some(span) => self.select(Some(span)),
+            None => self.graph_focus = Some(tile),
+        }
     }
 
-    pub(crate) fn focus_node(&mut self, tile: usize) {
-        self.graph_focus = Some(tile);
+    /// The function a node stands for.
+    pub(crate) fn tile_unit(&self, tile: usize) -> Option<&UnitId> {
+        self.map.tile(tile).map(|t| &t.unit)
     }
 
     /// Starts the active journey at the focused node.
     pub(crate) fn trace_from_focus(&mut self) {
-        if let Some(unit) = self
-            .graph_focus
-            .and_then(|t| self.map.tile(t))
-            .map(|t| t.unit.clone())
-        {
+        if let Some(unit) = self.graph_focus.and_then(|t| self.tile_unit(t)).cloned() {
             self.start_from(unit);
         } else {
             self.trace_from_selected();
         }
     }
 
-    /// The color index for a map tile's container, shared with journey bars.
+    /// Brings up a journey through the focused node: the active one when it runs the
+    /// node, else one traced from it.
+    pub(crate) fn journey_for_focus(&mut self) {
+        if let Some(unit) = self.graph_focus.and_then(|t| self.tile_unit(t)).cloned() {
+            self.set_root(unit);
+        }
+    }
+
+    /// The node at the center of attention: under the pointer, else focused.
+    pub(crate) fn attention(&self) -> Option<usize> {
+        self.hovered_tile.or_else(|| self.graph_focus())
+    }
+
+    /// What reaches the node at the center of attention and what it reaches, once
+    /// [`Self::refresh_reach`] has run.
+    pub(crate) fn reach(&self) -> Option<&Reach> {
+        self.reach
+            .as_ref()
+            .filter(|(tile, _)| Some(*tile) == self.attention())
+            .map(|(_, reach)| reach)
+    }
+
+    /// Recomputes [`Self::reach`] when attention moved. Returns whether it did.
+    pub(crate) fn refresh_reach(&mut self) -> bool {
+        let attention = self.attention();
+        if self.reach.as_ref().map(|(tile, _)| *tile) == attention {
+            return false;
+        }
+        self.reach = attention.map(|tile| (tile, self.graph.reach(tile)));
+        true
+    }
+
+    /// The color index for a node's container, shared with journey bars.
     pub(crate) fn tile_color(&self, tile: usize) -> usize {
         self.map
             .tile(tile)
-            .and_then(|t| self.map.groups.get(t.group))
-            .and_then(|g| g.unit.as_ref())
-            .and_then(|unit| self.lane_colors.get(unit.as_str()))
-            .copied()
+            .and_then(|t| self.group_color(t.group))
             .unwrap_or_default()
     }
 
-    /// Gives every container on the map a color, after those the journeys use.
+    /// The color index for a container.
+    pub(crate) fn group_color(&self, group: usize) -> Option<usize> {
+        let unit = self.map.groups.get(group)?.unit.as_ref()?;
+        self.lane_colors.get(unit.as_str()).copied()
+    }
+
+    /// Gives every container a color, after those the journeys use.
     fn color_groups(&mut self) {
         for group in &self.map.groups {
             if let Some(unit) = &group.unit {
@@ -820,17 +626,7 @@ impl Explorer {
         &self.map
     }
 
-    /// Where the map lies in the world.
-    pub(crate) fn map_frame(&self) -> &MapFrame {
-        &self.map_frame
-    }
-
-    /// A map position in world space.
-    pub(crate) fn map_point(&self, position: [f32; 2]) -> Vec3 {
-        self.map_frame.point(position)
-    }
-
-    /// The color a tile's unit is drawn in on the active journey, if it runs it.
+    /// The color a node is drawn in on the active journey, if it runs it.
     pub(crate) fn journey_lane(&self, tile: usize) -> Option<usize> {
         self.journey_tiles.get(self.active)?.get(&tile).copied()
     }
@@ -839,37 +635,6 @@ impl Explorer {
     pub(crate) fn focus(&self) -> Option<&UnitId> {
         let track = self.track();
         track.selected.and_then(|id| track.unit_id(id))
-    }
-
-    /// What can reach the cursor's unit, once [`Self::refresh_upstream`] has run.
-    pub(crate) fn upstream(&self) -> Option<&Upstream> {
-        self.upstream.as_ref().map(|(_, up)| up)
-    }
-
-    /// Recomputes [`Self::upstream`] when the cursor's unit changed. Returns whether it did.
-    pub(crate) fn refresh_upstream(&mut self) -> bool {
-        let focus = self.focus().cloned();
-        if self.upstream.as_ref().map(|(id, _)| id) == focus.as_ref() {
-            return false;
-        }
-        self.upstream = focus.map(|id| {
-            let up = upstream(&self.system, &id);
-            (id, up)
-        });
-        self.upstream_tiles.clear();
-        let distances = self.upstream.as_ref().map(|(_, up)| &up.distance);
-        for (unit, &distance) in distances.into_iter().flatten() {
-            if let Some(tile) = self.map.tile_of(unit) {
-                let best = self.upstream_tiles.entry(tile).or_insert(distance);
-                *best = (*best).min(distance);
-            }
-        }
-        true
-    }
-
-    /// Fewest calls from a tile to the cursor's unit, if it can reach it at all.
-    pub(crate) fn tile_distance(&self, tile: usize) -> Option<u32> {
-        self.upstream_tiles.get(&tile).copied()
     }
 
     /// Starts the active journey at `unit`, with the cursor on the unit it was on
@@ -1094,15 +859,11 @@ mod tests {
         explorer.step(Step::Into);
         assert_eq!(at(&explorer), "c");
 
-        explorer.toggle_codebase();
-        explorer.refresh_upstream();
-        let callers: Vec<&str> = explorer
-            .upstream()
-            .unwrap()
-            .direct()
-            .map(|e| e.caller.as_str())
-            .collect();
-        assert_eq!(callers, ["x:a"]);
+        explorer.refresh_reach();
+        let tile = |name: &str| explorer.map().tile_of(&UnitId::new(name)).unwrap();
+        let reach = explorer.reach().unwrap();
+        assert_eq!(reach.upstream.get(&tile("x:a")), Some(&1));
+        assert_eq!(reach.upstream.get(&tile("x:main")), Some(&2));
 
         explorer.start_from(UnitId::new("x:a"));
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
@@ -1110,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn pulling_out_a_journey_stacks_it_below_with_its_own_cursor() {
+    fn pulling_out_a_journey_gives_it_its_own_cursor() {
         let mut explorer = explorer();
         explorer.step(Step::Into);
         explorer.step(Step::Into);
@@ -1123,7 +884,6 @@ mod tests {
         let [first, second] = explorer.tracks() else {
             panic!("two journeys");
         };
-        assert!(second.bounds().1.y < first.bounds().0.y, "stacked below");
         assert_eq!(
             first.color(first.find(&UnitId::new("x:c")).unwrap()),
             second.color(second.find(&UnitId::new("x:c")).unwrap()),
@@ -1157,5 +917,25 @@ mod tests {
         explorer.back();
         assert_eq!(explorer.journey().map(Journey::len), Some(4));
         assert!(!explorer.can_go_back());
+    }
+
+    #[test]
+    fn focusing_a_node_moves_the_cursor_when_the_journey_runs_it() {
+        let mut explorer = explorer();
+        let tile =
+            |explorer: &Explorer, name: &str| explorer.map().tile_of(&UnitId::new(name)).unwrap();
+        let c = tile(&explorer, "x:c");
+        explorer.focus_node(c);
+        assert_eq!(at(&explorer), "c");
+        assert_eq!(explorer.graph_focus(), Some(c));
+
+        explorer.set_root(UnitId::new("x:a"));
+        let main = tile(&explorer, "x:main");
+        explorer.focus_node(main);
+        assert_eq!(at(&explorer), "a", "a's journey never runs main");
+        assert_eq!(explorer.graph_focus(), Some(main));
+        explorer.journey_for_focus();
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
+        assert_eq!(at(&explorer), "main");
     }
 }
