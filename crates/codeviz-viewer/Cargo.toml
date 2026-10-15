@@ -1,0 +1,17 @@
+[package]
+name = "codeviz-viewer"
+description = "Bevy-based 3D viewer for codeviz call traces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bevy.workspace = true
+bevy_egui.workspace = true
+codeviz-graph.workspace = true
+codeviz-layout.workspace = true
+
+[lints]
+workspace = true

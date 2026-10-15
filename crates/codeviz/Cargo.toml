@@ -1,0 +1,18 @@
+[package]
+name = "codeviz"
+description = "Explore a Rust codebase's call flow in 3D."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+codeviz-graph.workspace = true
+codeviz-rust.workspace = true
+codeviz-viewer.workspace = true
+
+[lints]
+workspace = true
