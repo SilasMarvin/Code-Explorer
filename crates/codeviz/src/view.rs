@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::bail;
 use codeviz_core::{JourneyOptions, System};
+use codeviz_ir::Document;
 use codeviz_viewer::Viewer;
 
 #[derive(Debug, clap::Args)]
@@ -11,6 +12,17 @@ pub(crate) struct ViewArgs {
     /// IR documents to load; later documents override earlier ones.
     #[arg(required = true)]
     documents: Vec<PathBuf>,
+    /// Compare against these documents, an older version of the same system, and draw
+    /// what changed over the graph.
+    #[arg(long, value_name = "PATH", num_args = 1..)]
+    before: Vec<PathBuf>,
+    #[command(flatten)]
+    display: Display,
+}
+
+/// What the viewer opens on and how it shows it.
+#[derive(Debug, clap::Args)]
+pub(crate) struct Display {
     /// Entry label (`POST /users`) or unit id suffix to start from.
     #[arg(short, long)]
     entry: Option<String>,
@@ -35,10 +47,6 @@ pub(crate) struct ViewArgs {
     /// What pulls the graph's nodes together.
     #[arg(long, value_enum, default_value_t = ClusterArg::Modules)]
     cluster: ClusterArg,
-    /// Compare against these documents, an older version of the same system, and draw
-    /// what changed over the graph.
-    #[arg(long, value_name = "PATH", num_args = 1..)]
-    before: Vec<PathBuf>,
     /// How to draw the diff.
     #[arg(long, value_enum, default_value_t = DiffStyleArg::Status)]
     diff_style: DiffStyleArg,
@@ -105,6 +113,24 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .iter()
         .map(crate::ir::read)
         .collect::<anyhow::Result<Vec<_>>>()?;
+    let title = args
+        .documents
+        .iter()
+        .filter_map(|p| p.file_stem())
+        .map(|s| s.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" + ");
+    open(documents, before, &args.display, &title)
+}
+
+/// Opens `documents`, diffed against `before` unless it is empty, and blocks until the
+/// window closes.
+pub(crate) fn open(
+    documents: Vec<Document>,
+    before: Vec<Document>,
+    args: &Display,
+    title: &str,
+) -> anyhow::Result<()> {
     let system = System::new(documents.clone());
     let root = match &args.entry {
         Some(query) => Some(crate::journey::find_one(&system, query)?),
@@ -120,15 +146,7 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .as_ref()
         .map(|query| crate::journey::find_one(&system, query))
         .transpose()?;
-    let title = format!(
-        "codeviz — {}",
-        args.documents
-            .iter()
-            .filter_map(|p| p.file_stem())
-            .map(|s| s.to_string_lossy())
-            .collect::<Vec<_>>()
-            .join(" + ")
-    );
+    let title = format!("codeviz — {title}");
 
     let viewer = if before.is_empty() {
         Viewer::new(system)

@@ -22,6 +22,7 @@ use crate::{
     graph_view::{self, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     scene::{accent, lane_color},
+    source_diff,
 };
 
 pub(crate) struct UiPlugin;
@@ -31,8 +32,30 @@ impl Plugin for UiPlugin {
         app.init_resource::<Search>()
             .init_resource::<KeyHelp>()
             .init_resource::<Sources>()
-            .add_systems(EguiPrimaryContextPass, draw_ui);
+            .add_systems(EguiPrimaryContextPass, (fallback_fonts, draw_ui).chain());
     }
+}
+
+/// egui's proportional font has no arrows; its monospace one does, so it fills in.
+fn fallback_fonts(mut contexts: EguiContexts, mut done: Local<bool>) -> Result {
+    if *done {
+        return Ok(());
+    }
+    let mut fonts = egui::FontDefinitions::default();
+    let monospace = fonts
+        .families
+        .get(&egui::FontFamily::Monospace)
+        .and_then(|family| family.first())
+        .cloned();
+    if let (Some(name), Some(family)) = (
+        monospace,
+        fonts.families.get_mut(&egui::FontFamily::Proportional),
+    ) {
+        family.push(name);
+    }
+    contexts.ctx_mut()?.set_fonts(fonts);
+    *done = true;
+    Ok(())
 }
 
 /// Whether the key reference is showing.
@@ -119,7 +142,10 @@ fn draw_ui(
         .default_size(460.0)
         .show(&mut root_ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                source(ui, &explorer, &mut sources);
+                match diff.as_deref() {
+                    Some(view) => changed_source(ui, &explorer, view, &mut sources),
+                    None => source(ui, &explorer, &mut sources),
+                }
                 ui.separator();
                 details(ui, &mut explorer);
             });
@@ -547,6 +573,67 @@ fn source(ui: &mut egui::Ui, explorer: &Explorer, sources: &mut Sources) {
     }
 }
 
+/// The focused function as the diff changed it: its old and new source as one
+/// unified diff.
+fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, sources: &mut Sources) {
+    let Some((tile, unit)) = explorer
+        .graph_focus()
+        .and_then(|tile| Some((tile, explorer.tile_unit(tile)?.clone())))
+    else {
+        ui.label(egui::RichText::new("Click a node to see how it changed.").color(MUTED));
+        return;
+    };
+    let change = view.change(tile);
+    let heading = format!(
+        "{}  {}",
+        change.map_or(" ", diff_view::sign),
+        explorer.unit_name(&unit)
+    );
+    let color = change.map_or(egui::Color32::WHITE, |c| {
+        egui_color(diff_view::change_color(c))
+    });
+    ui.label(
+        egui::RichText::new(heading)
+            .strong()
+            .size(15.0)
+            .color(color),
+    );
+    let mut side = |system: &codeviz_core::System| -> Option<(Vec<String>, usize, String)> {
+        let location = system.unit(&unit)?.location.as_ref()?;
+        let range = location.range?;
+        let path = system.local_path(&unit, &location.uri)?;
+        let lines = sources.lines(&path)?;
+        let (first, last) = (range.start_line as usize, range.end_line as usize);
+        let body = lines
+            .get(first.checked_sub(1)?..last.min(lines.len()))?
+            .to_vec();
+        Some((body, first, location.uri.clone()))
+    };
+    let (old, new) = (side(view.old()), side(explorer.system()));
+    let place = match (&old, &new) {
+        (Some((_, a, uri_a)), Some((_, b, uri_b))) if uri_a != uri_b || a != b => {
+            format!("was {uri_a}:{a}, now {uri_b}:{b}")
+        }
+        (_, Some((_, line, uri))) | (Some((_, line, uri)), None) => format!("{uri}:{line}"),
+        (None, None) => {
+            ui.label(egui::RichText::new("No source to show.").color(MUTED));
+            return;
+        }
+    };
+    ui.label(egui::RichText::new(place).small().color(MUTED));
+    if change.is_none() {
+        ui.label(egui::RichText::new("Unchanged.").small().color(MUTED));
+    }
+    source_diff::show(ui, as_side(old.as_ref()), as_side(new.as_ref()));
+}
+
+fn as_side(side: Option<&(Vec<String>, usize, String)>) -> Option<source_diff::Side<'_>> {
+    side.map(|(lines, first, _)| source_diff::Side {
+        lines: lines.as_slice(),
+        first: *first,
+    })
+}
+
 fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
     let Some(selected) = explorer.selected() else {
         return;
@@ -775,10 +862,12 @@ impl Placer<'_> {
             )
         };
         let pad = egui::vec2(5.0, 2.0);
-        let free = SIDES
-            .iter()
-            .map(|&side| spot(side))
-            .find(|rect| !self.taken.iter().any(|r| r.intersects(rect.expand2(pad))));
+        // Inside the graph, so no label is cut off at its edge.
+        let bounds = self.painter.clip_rect();
+        let free = SIDES.iter().map(|&side| spot(side)).find(|rect| {
+            bounds.contains_rect(rect.expand2(pad))
+                && !self.taken.iter().any(|r| r.intersects(rect.expand2(pad)))
+        });
         let Some(rect) = free.or_else(|| force.then(|| spot(SIDES[0]))) else {
             return false;
         };
@@ -962,7 +1051,12 @@ fn draw_graph_labels(
                 let Some((node, edge)) = discs[tile] else {
                     continue;
                 };
-                let name = node_name(explorer, tile);
+                let change = diff.and_then(|d| d.change(tile));
+                // A change is named in full: `new` alone could be any type's.
+                let name = match (change, explorer.tile_unit(tile)) {
+                    (Some(_), Some(unit)) => explorer.unit_name(unit),
+                    _ => node_name(explorer, tile),
+                };
                 let relation = related(tile);
                 let color = match (tier, relation) {
                     (0, _) => egui::Color32::WHITE,
@@ -974,14 +1068,16 @@ fn draw_graph_labels(
                     _ => egui::Color32::from_rgb(160, 167, 182),
                 };
                 let focused = focus.filter(|&f| center == Some(f));
-                let change = diff.and_then(|d| d.change(tile));
+                let impacted =
+                    diff.is_some_and(|d| d.style == DiffStyle::Impact && d.impact(tile).is_some());
                 let color = match change {
                     Some(change) if tier != 0 => egui_color(diff_view::change_color(change)),
-                    _ if diff.is_some_and(|d| d.impact(tile).is_some()) && tier != 0 => {
+                    _ if impacted && tier != 0 => {
                         egui_color(diff_view::MODIFIED).gamma_multiply(0.8)
                     }
-                    // Amber and blue are not drawn under a diff.
-                    _ if diff.is_some() && tier != 0 => egui::Color32::from_rgb(205, 210, 220),
+                    // Amber and blue are not drawn under a diff, and what did not change
+                    // steps back.
+                    _ if diff.is_some() && tier != 0 => egui::Color32::from_rgb(150, 156, 172),
                     _ => color,
                 };
                 let impact_note = diff

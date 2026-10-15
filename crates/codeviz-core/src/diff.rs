@@ -5,12 +5,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use codeviz_ir::{CallKey, Document, Unit, UnitId};
+use codeviz_ir::{CallKey, Document, Invocation, Unit, UnitId};
 
 use crate::System;
 
 /// How a unit changed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Change {
     Added,
     Removed,
@@ -30,26 +30,30 @@ pub struct Diff {
 }
 
 impl Diff {
+    /// What changed from `before` to `after`, function by function: closures and other
+    /// units nested in a function count as part of it, since their ids are positional
+    /// (`{closure#2}`) and shift whenever an earlier one is added.
     #[must_use]
     pub fn between(before: &System, after: &System) -> Self {
+        let (old_calls, new_calls) = (calls(before), calls(after));
         let mut units = HashMap::new();
-        for unit in after.units() {
+        for unit in after.units().filter(|u| after.owner(&u.id) == &u.id) {
             match before.unit(&unit.id) {
                 None => {
                     units.insert(unit.id.clone(), Change::Added);
                 }
-                Some(old) if rewritten(old, unit) => {
+                Some(old) if rewritten(old, unit, &old_calls, &new_calls) => {
                     units.insert(unit.id.clone(), Change::Modified);
                 }
                 Some(_) => {}
             }
         }
-        for unit in before.units() {
+        for unit in before.units().filter(|u| before.owner(&u.id) == &u.id) {
             if after.unit(&unit.id).is_none() {
                 units.insert(unit.id.clone(), Change::Removed);
             }
         }
-        let (old, new) = (calls(before.units()), calls(after.units()));
+        let (old, new) = (pairs(&old_calls), pairs(&new_calls));
         Self {
             units,
             added_calls: new.difference(&old).cloned().collect(),
@@ -76,64 +80,71 @@ impl Diff {
     }
 }
 
+type Calls = HashMap<UnitId, HashSet<UnitId>>;
+
 /// Different content: by hash when both versions have one, else by what they call.
-fn rewritten(old: &Unit, new: &Unit) -> bool {
+fn rewritten(old: &Unit, new: &Unit, old_calls: &Calls, new_calls: &Calls) -> bool {
     match (&old.content_hash, &new.content_hash) {
         (Some(a), Some(b)) => a != b,
-        _ => calls([old]) != calls([new]),
+        _ => old_calls.get(&old.id) != new_calls.get(&new.id),
     }
 }
 
-fn calls<'a>(units: impl IntoIterator<Item = &'a Unit>) -> HashSet<Call> {
-    units
-        .into_iter()
-        .flat_map(|unit| {
-            unit.calls
-                .iter()
-                .flat_map(|call| &call.targets)
-                .map(|target| (unit.id.clone(), target.unit.clone()))
-        })
+/// What each function calls, its closures' calls included, by owner on both ends.
+fn calls(system: &System) -> Calls {
+    let mut calls = Calls::new();
+    for unit in system.units() {
+        let from = system.owner(&unit.id);
+        for target in unit.calls.iter().flat_map(|call| &call.targets) {
+            let to = system.owner(&target.unit);
+            if to != from {
+                calls.entry(from.clone()).or_default().insert(to.clone());
+            }
+        }
+    }
+    calls
+}
+
+fn pairs(calls: &Calls) -> HashSet<Call> {
+    calls
+        .iter()
+        .flat_map(|(from, targets)| targets.iter().map(|to| (from.clone(), to.clone())))
         .collect()
 }
 
-/// `after`, plus every unit only `before` has and every call only `before` makes: one
-/// system holding both versions, for laying them out together; journeys should
-/// still follow `after` alone. Removed calls keep their place among the caller's
-/// calls.
+/// `after`, plus every function only `before` has and every call only `before` makes:
+/// one system holding both versions, for laying them out together; journeys should
+/// still follow `after` alone. A removed call keeps its place among the caller's
+/// calls when the caller made it directly, and is keyed `…~removed`.
 #[must_use]
 pub fn union(before: &[Document], mut after: Vec<Document>) -> Vec<Document> {
-    let old: HashMap<&UnitId, &Unit> = before
-        .iter()
-        .flat_map(|d| &d.units)
-        .map(|u| (&u.id, u))
-        .collect();
-    let mut present = HashSet::new();
+    let old = System::new(before.to_vec());
+    let new = System::new(after.clone());
+    let (old_calls, new_calls) = (calls(&old), calls(&new));
     for document in &mut after {
         for unit in &mut document.units {
-            present.insert(unit.id.clone());
-            let Some(previous) = old.get(&unit.id) else {
+            let Some(previous) = old_calls.get(&unit.id) else {
                 continue;
             };
-            let current = calls([&*unit]);
-            for (index, call) in previous.calls.iter().enumerate() {
-                let gone = call
-                    .targets
-                    .iter()
-                    .any(|t| !current.contains(&(unit.id.clone(), t.unit.clone())));
-                if gone {
-                    let mut call = call.clone();
-                    call.targets
-                        .retain(|t| !current.contains(&(unit.id.clone(), t.unit.clone())));
-                    call.key = CallKey::new(format!("{}~removed", call.key));
+            let current = new_calls.get(&unit.id);
+            let mut gone: Vec<&UnitId> = previous
+                .iter()
+                .filter(|t| !current.is_some_and(|c| c.contains(*t)))
+                .collect();
+            gone.sort();
+            for target in gone {
+                if let Some((index, call)) = removed_call(&old, &unit.id, target) {
                     unit.calls.insert(index.min(unit.calls.len()), call);
                 }
             }
         }
     }
+    // Whole functions that went away; closures of a function still there went with
+    // its rewrite.
     let removed: Vec<Unit> = before
         .iter()
         .flat_map(|d| &d.units)
-        .filter(|u| !present.contains(&u.id))
+        .filter(|u| new.unit(&u.id).is_none() && new.unit(old.owner(&u.id)).is_none())
         .cloned()
         .collect();
     if let (false, Some(template)) = (removed.is_empty(), before.first()) {
@@ -144,6 +155,29 @@ pub fn union(before: &[Document], mut after: Vec<Document>) -> Vec<Document> {
         after.push(document);
     }
     after
+}
+
+/// The call `from` made to `to` in `old`, aimed at `to` itself, and where it sat among
+/// `from`'s own calls (past the end when one of its closures made it).
+fn removed_call(old: &System, from: &UnitId, to: &UnitId) -> Option<(usize, Invocation)> {
+    let reaches = |call: &Invocation| call.targets.iter().any(|t| old.owner(&t.unit) == to);
+    let direct = old
+        .unit(from)
+        .and_then(|u| u.calls.iter().position(reaches).map(|i| (i, &u.calls[i])));
+    let (index, call) = direct.or_else(|| {
+        old.units()
+            .filter(|u| u.id != *from && old.owner(&u.id) == from)
+            .find_map(|u| u.calls.iter().find(|c| reaches(c)))
+            .map(|call| (usize::MAX, call))
+    })?;
+    let mut call = call.clone();
+    call.targets.retain(|t| old.owner(&t.unit) == to);
+    for target in &mut call.targets {
+        target.unit = to.clone();
+    }
+    call.targets.truncate(1);
+    call.key = CallKey::new(format!("{}~removed", call.key));
+    Some((index, call))
 }
 
 #[cfg(test)]
@@ -202,5 +236,60 @@ mod tests {
             ["x:a", "x:b", "x:c"],
             "removed calls keep their place"
         );
+    }
+
+    /// One function with closures: `(closure index, what it calls)`.
+    fn closures(hash: &str, closures: &[(usize, &str)]) -> System {
+        let unit = |id: &str, parent: &str, calls: &str, hash: &str| {
+            let calls = if calls.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    r#"{{ "key": "{calls}#0", "text": "{calls}", "targets": [{{ "unit": "x:{calls}", "certainty": "exact" }}] }}"#
+                )
+            };
+            let parent = if parent.is_empty() {
+                String::new()
+            } else {
+                format!(r#""parent": "{parent}","#)
+            };
+            format!(
+                r#"{{ "id": "{id}", "name": "{id}", "kind": "fn", "role": "invocable", {parent} "content_hash": {{ "algo": "t", "value": "{hash}" }}, "calls": [{calls}] }}"#
+            )
+        };
+        let mut units = vec![
+            unit("x:main", "", "", hash),
+            unit("x:a", "", "", "1"),
+            unit("x:b", "", "", "1"),
+        ];
+        for (index, calls) in closures {
+            units.push(unit(
+                &format!("x:main::{{closure#{index}}}"),
+                "x:main",
+                calls,
+                "c",
+            ));
+        }
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        System::new(vec![Document::from_json(&json).unwrap()])
+    }
+
+    #[test]
+    fn closures_count_as_their_function() {
+        // A closure inserted ahead of another renumbers it.
+        let before = closures("1", &[(0, "a")]);
+        let after = closures("2", &[(0, "b"), (1, "a")]);
+        let diff = Diff::between(&before, &after);
+        let id = |name: &str| UnitId::new(format!("x:{name}"));
+        assert_eq!(
+            diff.units,
+            HashMap::from([(id("main"), Change::Modified)]),
+            "closures are not changes of their own"
+        );
+        assert_eq!(diff.added_calls, HashSet::from([(id("main"), id("b"))]));
+        assert!(diff.removed_calls.is_empty(), "main still calls a");
     }
 }

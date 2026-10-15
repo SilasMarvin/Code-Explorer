@@ -2,7 +2,7 @@
 //! journeys and their cursors, and the codebase as a graph of calls with the node at
 //! the center of attention and what reaches it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use codeviz_core::{
@@ -310,6 +310,14 @@ impl Explorer {
     pub(crate) fn place_nodes(&mut self, positions: &[[f32; 3]]) {
         self.graph.positions.clone_from_slice(positions);
         self.settling = false;
+    }
+
+    /// Calls the graph still lays out but that no longer run, as a diff's removed
+    /// calls: they stop counting as callers and callees.
+    pub(crate) fn retire_calls(&mut self, gone: &HashSet<(usize, usize)>) {
+        self.graph.retire(gone);
+        self.reach = None;
+        self.focus_reach = None;
     }
 
     pub(crate) fn tracks(&self) -> &[Track] {

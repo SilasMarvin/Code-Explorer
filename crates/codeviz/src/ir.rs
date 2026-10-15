@@ -1,12 +1,15 @@
 //! Commands that operate on IR documents.
 
-use std::{io::Write as _, path::PathBuf};
+use std::{
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, bail};
 use codeviz_ir::{Document, Severity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum Language {
+pub(crate) enum Language {
     Rust,
     Python,
 }
@@ -32,21 +35,28 @@ pub(crate) fn analyze(args: &AnalyzeArgs) -> anyhow::Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot open {}", args.path.display()))?;
-    let language = match args.lang {
+    let document = analyze_dir(&root, args.lang, args.include_tests)?;
+    write(&document, args.output.as_ref())
+}
+
+/// Analyzes the source under `root`, in `language` or the one its files suggest.
+pub(crate) fn analyze_dir(
+    root: &Path,
+    language: Option<Language>,
+    include_tests: bool,
+) -> anyhow::Result<Document> {
+    let language = match language {
         Some(language) => language,
         None if root.join("Cargo.toml").exists() => Language::Rust,
         None => Language::Python,
     };
-    let document = match language {
+    Ok(match language {
         Language::Rust => {
-            let options = codeviz_rust::AnalyzeOptions {
-                include_tests: args.include_tests,
-            };
-            codeviz_rust::analyze(&root, options)?.document
+            let options = codeviz_rust::AnalyzeOptions { include_tests };
+            codeviz_rust::analyze(root, options)?.document
         }
-        Language::Python => codeviz_python::analyze(&root)?,
-    };
-    write(&document, args.output.as_ref())
+        Language::Python => codeviz_python::analyze(root)?,
+    })
 }
 
 #[derive(Debug, clap::Args)]

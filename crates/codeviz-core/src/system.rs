@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use codeviz_ir::{Certainty, Document, Entry, LinkKind, Unit, UnitId};
+use codeviz_ir::{Certainty, Document, Entry, LinkKind, Role, Unit, UnitId};
 
 /// One or more documents merged by unit id. Later documents override earlier ones.
 ///
@@ -177,6 +177,26 @@ impl System {
             current = next_id;
         }
         chain
+    }
+
+    /// The function `id` is part of: the outermost invocable in its chain of invocable
+    /// parents, so a closure's owner is the function that defines it. Anything else is
+    /// its own owner.
+    #[must_use]
+    pub fn owner<'a>(&'a self, id: &'a UnitId) -> &'a UnitId {
+        let invocable = |id: &UnitId| self.unit(id).is_some_and(|u| u.role == Role::Invocable);
+        let mut top = id;
+        if !invocable(top) {
+            return top;
+        }
+        while let Some(parent) = self
+            .unit(top)
+            .and_then(|u| u.parent.as_ref())
+            .filter(|&p| p != top && invocable(p))
+        {
+            top = parent;
+        }
+        top
     }
 
     /// Finds units whose id ends with `query`, or whose entry label equals it.

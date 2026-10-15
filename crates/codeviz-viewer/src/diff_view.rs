@@ -11,7 +11,7 @@
 //!   units shrink away, added ones grow in, and the rest shift as the calls between
 //!   them change.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use bevy::prelude::*;
 use bevy_egui::{egui, input::egui_wants_any_keyboard_input};
@@ -84,6 +84,8 @@ pub(crate) struct DiffView {
     impact: HashMap<usize, u32>,
     pub(crate) affected: Vec<Affected>,
     pub(crate) entry_count: usize,
+    /// The old version.
+    old: System,
     /// Where each node sits in the old version, the new one, and both together.
     before: Vec<[f32; 3]>,
     after: Vec<[f32; 3]>,
@@ -95,7 +97,20 @@ pub(crate) struct DiffView {
 }
 
 impl DiffView {
-    pub(crate) fn new(explorer: &Explorer, diff: &Diff, before: &System, after: &System) -> Self {
+    /// Draws `diff` over the explorer's graph, which stops counting removed calls as
+    /// calls. Journeys run over the explorer's system, the new version.
+    pub(crate) fn new(explorer: &mut Explorer, diff: &Diff, before: System) -> Self {
+        let removed = {
+            let map = explorer.map();
+            diff.removed_calls
+                .iter()
+                .filter_map(|(a, b)| Some((map.tile_of(a)?, map.tile_of(b)?)))
+                .filter(|(a, b)| a != b)
+                .collect()
+        };
+        explorer.retire_calls(&removed);
+        let explorer = &*explorer;
+        let after = explorer.system();
         let map = explorer.map();
         let tile = |unit: &codeviz_ir::UnitId| map.tile_of(unit);
         let changes: HashMap<usize, Change> = diff
@@ -159,7 +174,7 @@ impl DiffView {
             }
             version.positions
         };
-        let (mut before_at, mut after_at) = (settle(before), settle(after));
+        let (mut before_at, mut after_at) = (settle(&before), settle(after));
         // What one side lacks grows or shrinks where the other side has it.
         for (&tile, &change) in &changes {
             match change {
@@ -177,6 +192,7 @@ impl DiffView {
             impact,
             affected,
             entry_count: entries.len(),
+            old: before,
             before: before_at,
             after: after_at,
             shared,
@@ -184,6 +200,11 @@ impl DiffView {
             playing: true,
             clock: 0.0,
         }
+    }
+
+    /// The version the diff starts from.
+    pub(crate) fn old(&self) -> &System {
+        &self.old
     }
 
     pub(crate) fn change(&self, tile: usize) -> Option<Change> {
@@ -403,7 +424,7 @@ pub(crate) fn draw_diff_graph(
 ) {
     let graph = explorer.graph();
     let center = explorer.attention();
-    for &(from, to) in &graph.calls {
+    for &(from, to) in graph.calls.iter().chain(&graph.ghosts) {
         let (Some(a), Some(b)) = (explorer.tile_point(from), explorer.tile_point(to)) else {
             continue;
         };
@@ -546,24 +567,7 @@ pub(crate) fn diff_card(
                     });
                     match style {
                         DiffStyle::Status => {
-                            let mut rows: Vec<(usize, Change)> = view.changed().collect();
-                            rows.sort_by_key(|&(tile, change)| {
-                                (change as u8, explorer.tile_unit(tile).cloned())
-                            });
-                            for (tile, change) in rows.into_iter().take(16) {
-                                let name = explorer
-                                    .tile_unit(tile)
-                                    .map_or_else(String::new, |u| explorer.unit_name(u));
-                                let text = egui::RichText::new(format!("{}  {name}", sign(change)))
-                                    .color(egui_color(change_color(change)));
-                                if ui
-                                    .add(egui::Label::new(text).sense(egui::Sense::click()))
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    chosen = Some(tile);
-                                }
-                            }
+                            chosen = status_list(ui, explorer, view, area.height() * 0.55);
                         }
                         DiffStyle::Impact => {
                             ui.label(
@@ -624,6 +628,69 @@ pub(crate) fn diff_card(
     if let Some(tile) = chosen {
         explorer.focus_node(tile);
     }
+}
+
+/// Every change, grouped by container, in a list that scrolls past `max_height`.
+/// Returns the node of a row clicked.
+fn status_list(
+    ui: &mut egui::Ui,
+    explorer: &Explorer,
+    view: &DiffView,
+    max_height: f32,
+) -> Option<usize> {
+    let map = explorer.map();
+    let mut groups: BTreeMap<&str, Vec<(Change, String, usize)>> = BTreeMap::new();
+    for (tile, change) in view.changed() {
+        let group = map
+            .tile(tile)
+            .and_then(|t| map.groups.get(t.group))
+            .map_or("", |g| g.label.as_str());
+        let name = explorer
+            .tile_unit(tile)
+            .and_then(|u| explorer.any_unit(u))
+            .map_or_else(String::new, |u| u.name.clone());
+        groups.entry(group).or_default().push((change, name, tile));
+    }
+    let open = groups.len() <= 6;
+    let mut chosen = None;
+    egui::ScrollArea::vertical()
+        .max_height(max_height)
+        .show(ui, |ui| {
+            for (label, rows) in &mut groups {
+                rows.sort();
+                let mut header = egui::text::LayoutJob::default();
+                let format = |color| egui::TextFormat {
+                    color,
+                    font_id: egui::FontId::proportional(13.5),
+                    ..Default::default()
+                };
+                header.append(label, 0.0, format(egui::Color32::from_rgb(215, 220, 230)));
+                for change in [Change::Added, Change::Modified, Change::Removed] {
+                    let n = rows.iter().filter(|r| r.0 == change).count();
+                    if n > 0 {
+                        let text = format!("{}{n}", sign(change));
+                        header.append(&text, 8.0, format(egui_color(change_color(change))));
+                    }
+                }
+                egui::CollapsingHeader::new(header)
+                    .id_salt(*label)
+                    .default_open(open || rows.len() <= 3)
+                    .show(ui, |ui| {
+                        for (change, name, tile) in rows.iter() {
+                            let text = egui::RichText::new(format!("{}  {name}", sign(*change)))
+                                .color(egui_color(change_color(*change)));
+                            if ui
+                                .add(egui::Label::new(text).sense(egui::Sense::click()))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                chosen = Some(*tile);
+                            }
+                        }
+                    });
+            }
+        });
+    chosen
 }
 
 #[cfg(test)]

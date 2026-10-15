@@ -17,6 +17,7 @@ mod explorer;
 mod graph_view;
 mod journey_panel;
 mod scene;
+mod source_diff;
 mod ui;
 
 use std::path::PathBuf;
@@ -240,15 +241,16 @@ impl Viewer {
     /// Opens the window and blocks until it is closed.
     #[must_use]
     pub fn run(mut self) -> AppExit {
-        let explorer = self.explorer();
+        let mut explorer = self.explorer();
         let diff = self.diff.take().map(|comparison| {
             let diff = Diff::between(&comparison.before, explorer.system());
-            let mut view = DiffView::new(&explorer, &diff, &comparison.before, explorer.system());
+            let mut view = DiffView::new(&mut explorer, &diff, comparison.before);
             view.style = comparison.style;
             if let Some(t) = comparison.morph {
                 view.morph = t;
                 view.playing = false;
             }
+            explorer.refresh_reach();
             view
         });
         let mut app = App::new();

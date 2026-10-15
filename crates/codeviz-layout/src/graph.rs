@@ -49,6 +49,9 @@ pub struct ForceGraph {
     pub links: Vec<(usize, usize)>,
     /// The same links with their direction: `(caller, callee)`, sorted.
     pub calls: Vec<(usize, usize)>,
+    /// Calls that still pull as links but no longer run, such as the calls a diff
+    /// removed: kept out of [`Self::calls`], callers, reach and sequences.
+    pub ghosts: Vec<(usize, usize)>,
     /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
     sequences: Vec<Vec<usize>>,
     config: ForceConfig,
@@ -136,8 +139,21 @@ impl ForceGraph {
             positions,
             links,
             calls,
+            ghosts: Vec::new(),
             sequences,
             config,
+        }
+    }
+
+    /// Turns these calls into ghosts: they keep pulling their ends together, but no
+    /// longer count as calls.
+    pub fn retire(&mut self, gone: &HashSet<(usize, usize)>) {
+        let (ghosts, calls) = self.calls.iter().partition(|call| gone.contains(call));
+        self.calls = calls;
+        self.ghosts.extend::<Vec<_>>(ghosts);
+        self.ghosts.sort_unstable();
+        for (from, sequence) in self.sequences.iter_mut().enumerate() {
+            sequence.retain(|&to| !gone.contains(&(from, to)));
         }
     }
 
