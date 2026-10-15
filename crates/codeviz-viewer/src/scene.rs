@@ -1,11 +1,12 @@
 //! Draws the journey: one bar per span spanning its time, colored by lane, with exits
-//! and divergence markers on it and drops from caller to callee.
+//! and divergence markers on it and drops from caller to callee. With the codebase
+//! shown, the map sits above it, lighting up whatever can reach the cursor's unit.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
-use codeviz_core::SpanId;
+use codeviz_core::{Reach, SpanId};
 use codeviz_ir::{ExitKind, Mode};
 
 use crate::{
@@ -23,8 +24,10 @@ impl Plugin for ScenePlugin {
                 rebuild_scene,
                 keyboard.run_if(not(egui_wants_any_keyboard_input)),
                 autoplay,
+                track_focus,
                 follow_cursor,
                 style_bars,
+                style_tiles,
                 draw_overlays,
             )
                 .chain(),
@@ -45,6 +48,27 @@ struct Bar(SpanId);
 #[derive(Component, Debug)]
 #[require(Spawned)]
 struct DivergenceMarker(usize);
+
+/// A function on the codebase map, by index into its tiles.
+#[derive(Component, Debug)]
+#[require(Spawned)]
+struct Tile(usize);
+
+/// How a map tile is drawn right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TileLook {
+    /// The cursor's unit.
+    Focus,
+    /// Calls the cursor's unit directly.
+    Caller,
+    /// Reaches the cursor's unit through other calls.
+    Upstream,
+    /// Run by the journey, but cannot reach the cursor's unit; drawn in its lane color.
+    Journey(usize),
+    Other,
+}
+
+const CALLER: Color = Color::srgb(1.0, 0.72, 0.25);
 
 /// Lane colors: distinct, mid-saturation hues that read on a dark background.
 pub(crate) const PALETTE: [(f32, f32, f32); 8] = [
@@ -82,6 +106,8 @@ struct Assets3d {
     materials: HashMap<(usize, Look), Handle<StandardMaterial>>,
     error: Handle<StandardMaterial>,
     success: Handle<StandardMaterial>,
+    tile: Handle<Mesh>,
+    tiles: HashMap<TileLook, Handle<StandardMaterial>>,
 }
 
 const BAR_HEIGHT: f32 = 0.8;
@@ -124,7 +150,43 @@ fn create_assets(
             ..default()
         })
     };
+    let mut tiles = HashMap::new();
+    let soft = |materials: &mut Assets<StandardMaterial>, color: Color, glow: f32| {
+        let alpha = color.alpha();
+        materials.add(StandardMaterial {
+            base_color: color,
+            emissive: LinearRgba::from(color) * glow,
+            alpha_mode: if alpha < 1.0 {
+                AlphaMode::Blend
+            } else {
+                AlphaMode::Opaque
+            },
+            perceptual_roughness: 0.8,
+            ..default()
+        })
+    };
+    tiles.insert(
+        TileLook::Focus,
+        soft(&mut materials, Color::srgb(0.95, 0.96, 1.0), 0.5),
+    );
+    tiles.insert(TileLook::Caller, soft(&mut materials, CALLER, 0.45));
+    tiles.insert(
+        TileLook::Upstream,
+        soft(&mut materials, Color::srgba(0.85, 0.6, 0.25, 0.75), 0.15),
+    );
+    tiles.insert(
+        TileLook::Other,
+        soft(&mut materials, Color::srgba(0.32, 0.35, 0.42, 0.45), 0.0),
+    );
+    for lane in 0..PALETTE.len() {
+        tiles.insert(
+            TileLook::Journey(lane),
+            soft(&mut materials, lane_color(lane).with_alpha(0.4), 0.0),
+        );
+    }
     commands.insert_resource(Assets3d {
+        tile: meshes.add(Cuboid::new(1.0, 1.0, 0.3)),
+        tiles,
         bar: meshes.add(Cuboid::new(1.0, BAR_HEIGHT, BAR_DEPTH)),
         marker: meshes.add(Sphere::new(0.28)),
         exit: meshes.add(Cuboid::new(0.18, BAR_HEIGHT + 0.3, BAR_DEPTH + 0.1)),
@@ -215,10 +277,61 @@ fn rebuild_scene(
             .observe(on_divergence_click);
     }
 
-    let (min, max) = scene.bounds;
+    let (mut min, mut max) = (Vec3::from(scene.bounds.0), Vec3::from(scene.bounds.1));
+    max += Vec3::X * tick;
+    if explorer.codebase() {
+        let map = explorer.map();
+        let size = Vec3::new(MAP_TILE.x, MAP_TILE.y, 1.0);
+        for (index, tile) in map.tiles.iter().enumerate() {
+            commands
+                .spawn((
+                    Tile(index),
+                    Mesh3d(assets.tile.clone()),
+                    MeshMaterial3d(assets.tiles[&TileLook::Other].clone()),
+                    Transform::from_translation(explorer.map_point(tile.position)).with_scale(size),
+                ))
+                .observe(on_tile_click)
+                .observe(on_tile_over)
+                .observe(on_tile_out);
+        }
+        let (map_min, map_max) = map.bounds;
+        min = min.min(explorer.map_point(map_min));
+        max = max.max(explorer.map_point(map_max));
+    }
     for mut camera in &mut cameras {
-        let max = Vec3::from(max) + Vec3::X * tick;
-        camera.frame(Vec3::from(min), max);
+        camera.frame(min, max);
+    }
+}
+
+/// Matches [`codeviz_layout::MapConfig`]'s default tile size.
+const MAP_TILE: Vec2 = Vec2::new(4.4, 0.7);
+
+fn on_tile_click(click: On<PointerClick>, tiles: Query<&Tile>, mut explorer: ResMut<Explorer>) {
+    if click.button != PointerButton::Primary {
+        return;
+    }
+    let Some(unit) = tiles
+        .get(click.entity)
+        .ok()
+        .and_then(|tile| explorer.map().tile(tile.0))
+        .map(|tile| tile.unit.clone())
+    else {
+        return;
+    };
+    explorer.start_from(unit);
+}
+
+fn on_tile_over(over: On<PointerOver>, tiles: Query<&Tile>, mut explorer: ResMut<Explorer>) {
+    if let Ok(tile) = tiles.get(over.entity) {
+        explorer.hovered_tile = Some(tile.0);
+    }
+}
+
+fn on_tile_out(out: On<PointerOut>, tiles: Query<&Tile>, mut explorer: ResMut<Explorer>) {
+    if let Ok(tile) = tiles.get(out.entity)
+        && explorer.hovered_tile == Some(tile.0)
+    {
+        explorer.hovered_tile = None;
     }
 }
 
@@ -292,6 +405,9 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Backspace) {
         explorer.back();
     }
+    if keys.just_pressed(KeyCode::KeyC) {
+        explorer.toggle_codebase();
+    }
     if keys.just_pressed(KeyCode::Digit3) {
         for mut camera in &mut cameras {
             camera.toggle();
@@ -312,6 +428,13 @@ fn autoplay(time: Res<Time>, mut autoplay: ResMut<Autoplay>, mut explorer: ResMu
         if explorer.step(Step::Into).is_none() {
             autoplay.playing = false;
         }
+    }
+}
+
+/// Keeps what reaches the cursor's unit current while the map is shown.
+fn track_focus(mut explorer: ResMut<Explorer>) {
+    if explorer.codebase() && explorer.bypass_change_detection().refresh_upstream() {
+        explorer.set_changed();
     }
 }
 
@@ -371,8 +494,140 @@ fn style_bars(
     }
 }
 
+fn style_tiles(
+    explorer: Res<Explorer>,
+    assets: Res<Assets3d>,
+    mut tiles: Query<(&Tile, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    if !explorer.is_changed() || !explorer.codebase() {
+        return;
+    }
+    for (tile, mut material) in &mut tiles {
+        let look = tile_look(&explorer, tile.0);
+        let wanted = &assets.tiles[&look];
+        if &material.0 != wanted {
+            material.0 = wanted.clone();
+        }
+    }
+}
+
+fn tile_look(explorer: &Explorer, index: usize) -> TileLook {
+    let map = explorer.map();
+    if explorer.focus().and_then(|f| map.tile_of(f)) == Some(index) {
+        return TileLook::Focus;
+    }
+    match explorer.tile_distance(index) {
+        Some(1) => TileLook::Caller,
+        Some(_) => TileLook::Upstream,
+        None => explorer
+            .journey_lane(index)
+            .map_or(TileLook::Other, |lane| {
+                TileLook::Journey(lane % PALETTE.len())
+            }),
+    }
+}
+
+/// Group boxes, every call path into the cursor's unit, and a tether from its tile
+/// down to the cursor.
+fn draw_map(explorer: &Explorer, gizmos: &mut Gizmos) {
+    let map = explorer.map();
+    for group in &map.groups {
+        let min = explorer.map_point(group.min);
+        let max = explorer.map_point(group.max);
+        gizmos.rect(
+            Isometry3d::from_translation((min + max) / 2.0 - Vec3::Z * 0.2),
+            (max - min).truncate(),
+            Color::srgba(0.6, 0.65, 0.75, 0.3),
+        );
+    }
+    let center = |index: usize| map.tile(index).map(|t| explorer.map_point(t.position));
+    let mut drawn = HashSet::new();
+    if let Some(up) = explorer.upstream() {
+        for edge in &up.edges {
+            let (Some(from), Some(to)) = (map.tile_of(&edge.caller), map.tile_of(&edge.callee))
+            else {
+                continue;
+            };
+            if from == to || !drawn.insert((from, to)) {
+                continue;
+            }
+            let (Some(a), Some(b)) = (center(from), center(to)) else {
+                continue;
+            };
+            let color = match edge.reach {
+                Reach::Guessed => CALLER.with_alpha(0.35),
+                Reach::Call | Reach::Encloses => CALLER.with_alpha(0.9),
+            };
+            arc(gizmos, a, b, color, edge.reach == Reach::Guessed);
+        }
+    }
+    let focus_tile = explorer.focus().and_then(|f| map.tile_of(f));
+    if let Some(index) = focus_tile.or(explorer.hovered_tile)
+        && let Some(at) = center(index)
+    {
+        gizmos.rect(
+            Isometry3d::from_translation(at + Vec3::Z * 0.2),
+            MAP_TILE + Vec2::splat(0.2),
+            Color::WHITE,
+        );
+    }
+    if let (Some(index), Some(placed)) = (
+        focus_tile,
+        explorer
+            .selected
+            .and_then(|s| explorer.scene().nodes.get(s.index())),
+    ) && let Some(at) = center(index)
+    {
+        let [x, y, z] = placed.position;
+        dashed(
+            gizmos,
+            at - Vec3::Y * MAP_TILE.y / 2.0,
+            Vec3::new(x + 0.4, y + BAR_HEIGHT / 2.0, z),
+            Color::srgba(1.0, 1.0, 1.0, 0.35),
+        );
+    }
+    if let Some(index) = explorer.hovered_tile
+        && Some(index) != focus_tile
+        && let Some(at) = center(index)
+    {
+        gizmos.rect(
+            Isometry3d::from_translation(at + Vec3::Z * 0.2),
+            MAP_TILE + Vec2::splat(0.15),
+            Color::srgba(1.0, 1.0, 1.0, 0.5),
+        );
+    }
+}
+
+/// A call drawn as a bowed curve so calls within one column stay apart, with an
+/// arrowhead at the callee.
+fn arc(gizmos: &mut Gizmos, from: Vec3, to: Vec3, color: Color, dashed_line: bool) {
+    const SEGMENTS: usize = 16;
+    let lift = Vec3::Z * 0.25;
+    let (from, to) = (from + lift, to + lift);
+    let along = to - from;
+    let side = Vec3::new(-along.y, along.x, 0.0).normalize_or_zero();
+    let bow = side * (along.length() * 0.18).min(3.0);
+    let control = (from + to) / 2.0 + bow;
+    let point = |t: f32| from.lerp(control, t).lerp(control.lerp(to, t), t);
+    for i in 0..SEGMENTS {
+        if dashed_line && i % 2 == 1 {
+            continue;
+        }
+        let (a, b) = (
+            point(i as f32 / SEGMENTS as f32),
+            point((i + 1) as f32 / SEGMENTS as f32),
+        );
+        gizmos.line(a, b, color);
+    }
+    let tip = to - (to - point(0.9)).normalize_or_zero() * (MAP_TILE.y / 2.0);
+    gizmos.arrow(point(0.85), tip, color).with_tip_length(0.35);
+}
+
 /// Caller → callee drops, the cursor outline, and the time cursor.
 fn draw_overlays(explorer: Res<Explorer>, mut gizmos: Gizmos) {
+    if explorer.codebase() {
+        draw_map(&explorer, &mut gizmos);
+    }
     let scene = explorer.scene();
     let tick = explorer.layout.tick_spacing;
     for edge in &scene.edges {

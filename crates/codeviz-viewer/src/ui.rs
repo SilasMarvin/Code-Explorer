@@ -130,6 +130,9 @@ fn draw_ui(
         }
         fit_viewport(&mut camera, &window, central);
         draw_labels(ctx, central, &explorer, &camera, transform);
+        if explorer.codebase() {
+            draw_map_labels(ctx, central, &explorer, &camera, transform);
+        }
     }
     Ok(())
 }
@@ -142,6 +145,14 @@ fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, mode: CameraMode, togg
         }
         if ui.selectable_label(!flat, "3D").clicked() && flat {
             *toggle = true;
+        }
+        let codebase = explorer.codebase();
+        if ui
+            .selectable_label(codebase, "Codebase")
+            .on_hover_text("Show every function, lighting up what reaches the cursor (C)")
+            .clicked()
+        {
+            explorer.toggle_codebase();
         }
         ui.separator();
         let Some(selected) = explorer.selected else {
@@ -646,6 +657,145 @@ fn draw_labels(
         }
     }
 }
+
+/// Above this many tiles, only the lit-up ones are named.
+const MAP_LABEL_ALL_LIMIT: usize = 400;
+const CALLER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 196, 110);
+
+/// Group names, tile names (routes for entries that reach the cursor), and a caption
+/// saying what reaches it.
+fn draw_map_labels(
+    ctx: &egui::Context,
+    area: egui::Rect,
+    explorer: &Explorer,
+    camera: &Camera,
+    transform: &GlobalTransform,
+) {
+    let painter = ctx
+        .layer_painter(egui::LayerId::background())
+        .with_clip_rect(area);
+    let to_screen = |position: Vec3| {
+        camera
+            .world_to_viewport(transform, position)
+            .ok()
+            .map(|p| egui::pos2(p.x, p.y))
+    };
+    let map = explorer.map();
+    let system = explorer.system();
+    // Screen pixels per world unit, to skip labels that cannot fit.
+    let scale = match (
+        to_screen(explorer.map_point([0.0, 0.0])),
+        to_screen(explorer.map_point([0.0, 1.0])),
+    ) {
+        (Some(a), Some(b)) => (a.y - b.y).abs(),
+        _ => 0.0,
+    };
+    let fits = |world: f32, font: f32| world * scale >= font;
+    for group in &map.groups {
+        if !fits(MAP_HEADER, 11.0) {
+            break;
+        }
+        let corner = explorer.map_point([group.min[0] + 0.3, group.max[1] - 0.15]);
+        if let Some(at) = to_screen(corner) {
+            painter.text(
+                at,
+                egui::Align2::LEFT_TOP,
+                &group.label,
+                egui::FontId::proportional(12.0),
+                MUTED,
+            );
+        }
+    }
+    let routes: HashMap<&UnitId, &str> = system
+        .entries()
+        .iter()
+        .map(|e| (&e.unit, e.label.as_str()))
+        .collect();
+    let label_all = map.tiles.len() <= MAP_LABEL_ALL_LIMIT;
+    for (index, tile) in map.tiles.iter().enumerate() {
+        let distance = explorer.tile_distance(index);
+        let hovered = explorer.hovered_tile == Some(index);
+        if !(label_all || distance.is_some() || hovered)
+            || (!hovered && !fits(MAP_TILE_HEIGHT, 10.0))
+        {
+            continue;
+        }
+        let Some(unit) = system.unit(&tile.unit) else {
+            continue;
+        };
+        let [x, y] = tile.position;
+        let (Some(left), Some(right)) = (
+            to_screen(explorer.map_point([x - MAP_TILE_WIDTH / 2.0 + 0.15, y])),
+            to_screen(explorer.map_point([x + MAP_TILE_WIDTH / 2.0 - 0.15, y])),
+        ) else {
+            continue;
+        };
+        // Entry points read better by their route than their function name.
+        let text = routes
+            .get(&tile.unit)
+            .map_or_else(|| unit.name.clone(), |route| (*route).to_owned());
+        // Dark text on lit tiles, light on the rest.
+        let color = distance.map_or(egui::Color32::from_rgb(170, 176, 190), |_| {
+            egui::Color32::from_rgb(30, 22, 8)
+        });
+        if hovered {
+            painter.text(
+                egui::pos2(left.x, left.y - 12.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{}  — click to start here", explorer.unit_name(&tile.unit)),
+                egui::FontId::proportional(13.0),
+                egui::Color32::WHITE,
+            );
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a small, clamped character count"
+        )]
+        let room = ((right.x - left.x) / 6.0).clamp(0.0, 80.0) as usize;
+        if room < 3 {
+            continue;
+        }
+        painter.text(
+            left,
+            egui::Align2::LEFT_CENTER,
+            short(&text, room),
+            egui::FontId::proportional(11.0),
+            color,
+        );
+    }
+
+    if let Some(caption) = map_caption(explorer) {
+        painter.text(
+            area.min + egui::vec2(12.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            caption,
+            egui::FontId::proportional(14.0),
+            CALLER_TEXT,
+        );
+    }
+}
+
+/// `orders.place · 2 direct callers · reached from POST /users/{id}/orders, …`
+fn map_caption(explorer: &Explorer) -> Option<String> {
+    let (up, focus) = (explorer.upstream()?, explorer.focus()?);
+    let callers = up.direct().filter(|e| e.caller != *focus).count();
+    let mut caption = format!(
+        "{} · {callers} direct caller{}",
+        explorer.unit_name(focus),
+        if callers == 1 { "" } else { "s" }
+    );
+    let routes: Vec<&str> = up.entries.iter().map(|e| e.label.as_str()).collect();
+    if !routes.is_empty() {
+        caption = format!("{caption} · reached from {}", routes.join(", "));
+    }
+    Some(caption)
+}
+
+/// Match [`codeviz_layout::MapConfig`]'s defaults.
+const MAP_TILE_WIDTH: f32 = 4.4;
+const MAP_TILE_HEIGHT: f32 = 0.7;
+const MAP_HEADER: f32 = 1.1;
 
 fn short(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {

@@ -34,6 +34,7 @@ pub struct Viewer {
     screenshot: Option<PathBuf>,
     scenario: Option<usize>,
     step: usize,
+    codebase: bool,
 }
 
 impl Viewer {
@@ -47,6 +48,7 @@ impl Viewer {
             screenshot: None,
             scenario: None,
             step: 0,
+            codebase: false,
         }
     }
 
@@ -68,6 +70,13 @@ impl Viewer {
     #[must_use]
     pub fn with_step(mut self, step: usize) -> Self {
         self.step = step;
+        self
+    }
+
+    /// Opens with the rest of the codebase shown around the journey.
+    #[must_use]
+    pub fn with_codebase(mut self, codebase: bool) -> Self {
+        self.codebase = codebase;
         self
     }
 
@@ -106,6 +115,9 @@ impl Viewer {
             for _ in 0..self.step {
                 explorer.step(explorer::Step::Into);
             }
+        }
+        if self.codebase {
+            explorer.toggle_codebase();
         }
         explorer
     }

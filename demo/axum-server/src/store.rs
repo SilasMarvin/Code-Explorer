@@ -42,6 +42,10 @@ impl Store {
         self.inner.users.read().await.get(&id).cloned()
     }
 
+    pub(crate) async fn order(&self, id: OrderId) -> Option<Order> {
+        self.inner.orders.read().await.get(&id).cloned()
+    }
+
     pub(crate) async fn email_taken(&self, email: &str) -> bool {
         self.inner
             .users

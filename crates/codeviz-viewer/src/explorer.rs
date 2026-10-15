@@ -1,13 +1,16 @@
 //! Viewer state that is independent of rendering: the loaded system, the current
-//! journey and its layout, the cursor, and the outcome being shown.
+//! journey and its layout, the cursor, the outcome being shown, and the codebase map
+//! with what reaches the cursor's unit.
+
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 use codeviz_core::{
     Journey, JourneyOptions, Level, Scenario, Span, SpanId, SpanTarget, StopReason, System,
-    display_name, scenarios,
+    Upstream, display_name, scenarios, upstream,
 };
 use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
-use codeviz_layout::{LayoutConfig, Scene};
+use codeviz_layout::{CodebaseMap, LayoutConfig, MapConfig, Scene};
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +55,18 @@ pub(crate) struct Explorer {
     /// The span the cursor is on.
     pub(crate) selected: Option<SpanId>,
     pub(crate) hovered: Option<SpanId>,
+    /// Whether the rest of the codebase is drawn around the journey.
+    codebase: bool,
+    map: CodebaseMap,
+    /// Where the map's origin sits in the world: above the journey.
+    map_offset: Vec2,
+    /// Map tiles the journey runs, with the lane each is drawn in.
+    journey_tiles: HashMap<usize, usize>,
+    /// What can reach the cursor's unit.
+    upstream: Option<(UnitId, Upstream)>,
+    /// Fewest calls from each map tile to the cursor's unit.
+    upstream_tiles: HashMap<usize, u32>,
+    pub(crate) hovered_tile: Option<usize>,
     /// Bumped whenever `journey` and `scene` are rebuilt.
     revision: u64,
 }
@@ -72,6 +87,13 @@ impl Explorer {
             divergences: Vec::new(),
             selected: None,
             hovered: None,
+            codebase: false,
+            map: CodebaseMap::default(),
+            map_offset: Vec2::ZERO,
+            journey_tiles: HashMap::new(),
+            upstream: None,
+            upstream_tiles: HashMap::new(),
+            hovered_tile: None,
             revision: 0,
         };
         if let Some(root) = root {
@@ -194,7 +216,112 @@ impl Explorer {
         self.divergences = self.find_divergences();
         self.selected = self.journey.as_ref().map(Journey::root);
         self.hovered = None;
+        if self.codebase {
+            self.place_map();
+        }
         self.revision += 1;
+    }
+
+    pub(crate) fn codebase(&self) -> bool {
+        self.codebase
+    }
+
+    pub(crate) fn toggle_codebase(&mut self) {
+        self.codebase = !self.codebase;
+        if self.codebase {
+            self.place_map();
+        }
+        self.hovered_tile = None;
+        self.revision += 1;
+    }
+
+    /// Lays the map out as wide as the journey and rests it just above it.
+    fn place_map(&mut self) {
+        let (min, max) = self.scene.bounds;
+        let config = MapConfig {
+            max_width: (max[0] - min[0]).max(30.0),
+            ..MapConfig::default()
+        };
+        self.map = codeviz_layout::map(&self.system, &config);
+        self.upstream = None;
+        self.map_offset = Vec2::new(min[0], max[1] + 2.5);
+        self.journey_tiles = self
+            .scene
+            .nodes
+            .iter()
+            .filter_map(|placed| {
+                let unit = self.unit_id(placed.span)?;
+                Some((self.map.tile_of(unit)?, placed.lane))
+            })
+            .collect();
+    }
+
+    pub(crate) fn map(&self) -> &CodebaseMap {
+        &self.map
+    }
+
+    /// A map position in world space.
+    pub(crate) fn map_point(&self, position: [f32; 2]) -> Vec3 {
+        (Vec2::from(position) + self.map_offset).extend(0.0)
+    }
+
+    /// The lane a tile's unit is drawn in on the journey, if the journey runs it.
+    pub(crate) fn journey_lane(&self, tile: usize) -> Option<usize> {
+        self.journey_tiles.get(&tile).copied()
+    }
+
+    /// The unit under the cursor.
+    pub(crate) fn focus(&self) -> Option<&UnitId> {
+        self.selected.and_then(|id| self.unit_id(id))
+    }
+
+    /// What can reach the cursor's unit, once [`Self::refresh_upstream`] has run.
+    pub(crate) fn upstream(&self) -> Option<&Upstream> {
+        self.upstream.as_ref().map(|(_, up)| up)
+    }
+
+    /// Recomputes [`Self::upstream`] when the cursor's unit changed. Returns whether it did.
+    pub(crate) fn refresh_upstream(&mut self) -> bool {
+        let focus = self.focus().cloned();
+        if self.upstream.as_ref().map(|(id, _)| id) == focus.as_ref() {
+            return false;
+        }
+        self.upstream = focus.map(|id| {
+            let up = upstream(&self.system, &id);
+            (id, up)
+        });
+        self.upstream_tiles.clear();
+        let distances = self.upstream.as_ref().map(|(_, up)| &up.distance);
+        for (unit, &distance) in distances.into_iter().flatten() {
+            if let Some(tile) = self.map.tile_of(unit) {
+                let best = self.upstream_tiles.entry(tile).or_insert(distance);
+                *best = (*best).min(distance);
+            }
+        }
+        true
+    }
+
+    /// Fewest calls from a tile to the cursor's unit, if it can reach it at all.
+    pub(crate) fn tile_distance(&self, tile: usize) -> Option<u32> {
+        self.upstream_tiles.get(&tile).copied()
+    }
+
+    /// Starts the journey at `unit`, with the cursor on the unit it was on before when
+    /// the new journey reaches it: from a caller, straight to the call that led here.
+    pub(crate) fn start_from(&mut self, unit: UnitId) {
+        let focus = self.focus().cloned();
+        self.set_root(unit);
+        let Some(focus) = focus else {
+            return;
+        };
+        let landing = self.journey.as_ref().and_then(|j| {
+            j.spans()
+                .find(|(_, s)| s.target == SpanTarget::Unit(focus.clone()))
+                .map(|(id, _)| id)
+        });
+        if landing.is_some() {
+            self.selected = landing;
+        }
     }
 
     /// On the happy path, where each failing outcome splits off: the deepest unit on
@@ -425,6 +552,28 @@ mod tests {
 
         explorer.step(Step::Start);
         assert_eq!(at(&explorer), "main");
+    }
+
+    #[test]
+    fn starting_from_a_caller_keeps_the_cursor_on_the_callee() {
+        let mut explorer = explorer();
+        explorer.step(Step::Into);
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "c");
+
+        explorer.toggle_codebase();
+        explorer.refresh_upstream();
+        let callers: Vec<&str> = explorer
+            .upstream()
+            .unwrap()
+            .direct()
+            .map(|e| e.caller.as_str())
+            .collect();
+        assert_eq!(callers, ["x:a"]);
+
+        explorer.start_from(UnitId::new("x:a"));
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
+        assert_eq!(at(&explorer), "c");
     }
 
     #[test]

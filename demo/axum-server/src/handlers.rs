@@ -5,7 +5,7 @@ use axum::{
 
 use crate::{
     error::AppError,
-    models::{NewOrder, NewUser, Order, User, UserId},
+    models::{NewOrder, NewUser, Order, OrderId, User, UserId},
     services::{orders, users},
     store::Store,
 };
@@ -36,5 +36,21 @@ pub(crate) async fn place_order(
     Json(input): Json<NewOrder>,
 ) -> Result<Json<Order>, AppError> {
     let order = orders::place(&store, user_id, input).await?;
+    Ok(Json(order))
+}
+
+pub(crate) async fn reorder(
+    State(store): State<Store>,
+    Path(order_id): Path<OrderId>,
+) -> Result<Json<Order>, AppError> {
+    let previous = store
+        .order(order_id)
+        .await
+        .ok_or(AppError::NotFound("order"))?;
+    let input = NewOrder {
+        sku: previous.sku,
+        quantity: previous.quantity,
+    };
+    let order = orders::place(&store, previous.user_id, input).await?;
     Ok(Json(order))
 }

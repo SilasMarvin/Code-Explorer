@@ -26,6 +26,9 @@ pub(crate) struct ViewArgs {
     /// Open with the cursor this many steps into the journey.
     #[arg(long, default_value_t = 0)]
     step: usize,
+    /// Open with the rest of the codebase shown around the journey.
+    #[arg(long)]
+    codebase: bool,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -65,7 +68,7 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     if let Some(scenario) = args.scenario {
         viewer = viewer.with_scenario(scenario);
     }
-    viewer = viewer.with_step(args.step);
+    viewer = viewer.with_step(args.step).with_codebase(args.codebase);
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
     }

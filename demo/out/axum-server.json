@@ -409,6 +409,99 @@
       ]
     },
     {
+      "id": "rust:axum_server::handlers::reorder",
+      "name": "reorder",
+      "kind": "async_fn",
+      "role": "invocable",
+      "parent": "rust:axum_server::handlers",
+      "location": {
+        "uri": "src/handlers.rs",
+        "range": {
+          "start_line": 42,
+          "start_col": 1,
+          "end_line": 56,
+          "end_col": 2
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "57e57af5c429f04dd902d4ad0c1f0c92e0726a86cb8d41b9f8258dc10a5a9a1f"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn reorder( State(store): State<Store>, Path(order_id): Path<OrderId>, ) -> Result<Json<Order>, AppError>"
+      },
+      "calls": [
+        {
+          "key": ".order#0",
+          "text": ".order",
+          "targets": [
+            {
+              "unit": "rust:axum_server::store::Store::order",
+              "certainty": "inferred"
+            }
+          ],
+          "location": {
+            "uri": "src/handlers.rs",
+            "range": {
+              "start_line": 46,
+              "start_col": 20,
+              "end_line": 47,
+              "end_col": 25
+            }
+          }
+        },
+        {
+          "key": ".ok_or#0",
+          "text": ".ok_or",
+          "targets": [],
+          "propagates": true,
+          "location": {
+            "uri": "src/handlers.rs",
+            "range": {
+              "start_line": 46,
+              "start_col": 20,
+              "end_line": 49,
+              "end_col": 44
+            }
+          }
+        },
+        {
+          "key": "orders::place#0",
+          "text": "orders::place",
+          "targets": [
+            {
+              "unit": "rust:axum_server::services::orders::place",
+              "certainty": "exact"
+            }
+          ],
+          "propagates": true,
+          "location": {
+            "uri": "src/handlers.rs",
+            "range": {
+              "start_line": 54,
+              "start_col": 17,
+              "end_line": 54,
+              "end_col": 63
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".order#0"
+        },
+        {
+          "step": "call",
+          "call": ".ok_or#0"
+        },
+        {
+          "step": "call",
+          "call": "orders::place#0"
+        }
+      ]
+    },
+    {
       "id": "rust:axum_server::main",
       "name": "main",
       "kind": "async_fn",
@@ -607,13 +700,13 @@
         "range": {
           "start_line": 8,
           "start_col": 1,
-          "end_line": 15,
+          "end_line": 16,
           "end_col": 2
         }
       },
       "content_hash": {
         "algo": "codeviz-tokens-blake3",
-        "value": "d5138a0a63d4a5c0921a11facc1128617f899f37cd856fed201b31645bbf70bb"
+        "value": "7a5ee25e350154218fa75e64c4e31d3877fe29cdd5903cd212054fba1493055d"
       },
       "attributes": {
         "signature": "pub(crate) fn router(store: Store) -> Router"
@@ -826,6 +919,54 @@
           }
         },
         {
+          "key": "post#2",
+          "text": "post",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 14,
+              "start_col": 40,
+              "end_line": 14,
+              "end_col": 63
+            }
+          }
+        },
+        {
+          "key": "handlers::reorder#0",
+          "text": "handlers::reorder",
+          "targets": [
+            {
+              "unit": "rust:axum_server::handlers::reorder",
+              "certainty": "exact"
+            }
+          ],
+          "mode": "register",
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 14,
+              "start_col": 45,
+              "end_line": 14,
+              "end_col": 62
+            }
+          }
+        },
+        {
+          "key": ".route#4",
+          "text": ".route",
+          "targets": [],
+          "location": {
+            "uri": "src/routes.rs",
+            "range": {
+              "start_line": 9,
+              "start_col": 5,
+              "end_line": 14,
+              "end_col": 64
+            }
+          }
+        },
+        {
           "key": ".with_state#0",
           "text": ".with_state",
           "targets": [],
@@ -834,7 +975,7 @@
             "range": {
               "start_line": 9,
               "start_col": 5,
-              "end_line": 14,
+              "end_line": 15,
               "end_col": 27
             }
           }
@@ -892,6 +1033,18 @@
         {
           "step": "call",
           "call": ".route#3"
+        },
+        {
+          "step": "call",
+          "call": "post#2"
+        },
+        {
+          "step": "call",
+          "call": "handlers::reorder#0"
+        },
+        {
+          "step": "call",
+          "call": ".route#4"
         },
         {
           "step": "call",
@@ -1942,9 +2095,9 @@
       "location": {
         "uri": "src/store.rs",
         "range": {
-          "start_line": 45,
+          "start_line": 49,
           "start_col": 5,
-          "end_line": 52,
+          "end_line": 56,
           "end_col": 6
         }
       },
@@ -1963,9 +2116,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 46,
+              "start_line": 50,
               "start_col": 9,
-              "end_line": 48,
+              "end_line": 52,
               "end_col": 20
             }
           }
@@ -1977,9 +2130,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 46,
+              "start_line": 50,
               "start_col": 9,
-              "end_line": 50,
+              "end_line": 54,
               "end_col": 22
             }
           }
@@ -1991,9 +2144,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 46,
+              "start_line": 50,
               "start_col": 9,
-              "end_line": 51,
+              "end_line": 55,
               "end_col": 45
             }
           }
@@ -2011,9 +2164,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 51,
+              "start_line": 55,
               "start_col": 18,
-              "end_line": 51,
+              "end_line": 55,
               "end_col": 44
             }
           }
@@ -2047,9 +2200,9 @@
       "location": {
         "uri": "src/store.rs",
         "range": {
-          "start_line": 51,
+          "start_line": 55,
           "start_col": 18,
-          "end_line": 51,
+          "end_line": 55,
           "end_col": 44
         }
       },
@@ -2068,9 +2221,9 @@
       "location": {
         "uri": "src/store.rs",
         "range": {
-          "start_line": 64,
+          "start_line": 68,
           "start_col": 5,
-          "end_line": 84,
+          "end_line": 88,
           "end_col": 6
         }
       },
@@ -2094,9 +2247,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 72,
+              "start_line": 76,
               "start_col": 17,
-              "end_line": 72,
+              "end_line": 76,
               "end_col": 31
             }
           }
@@ -2108,9 +2261,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 78,
+              "start_line": 82,
               "start_col": 9,
-              "end_line": 80,
+              "end_line": 84,
               "end_col": 21
             }
           }
@@ -2122,9 +2275,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 82,
+              "start_line": 86,
               "start_col": 31,
-              "end_line": 82,
+              "end_line": 86,
               "end_col": 44
             }
           }
@@ -2136,9 +2289,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 78,
+              "start_line": 82,
               "start_col": 9,
-              "end_line": 82,
+              "end_line": 86,
               "end_col": 45
             }
           }
@@ -2172,9 +2325,9 @@
       "location": {
         "uri": "src/store.rs",
         "range": {
-          "start_line": 54,
+          "start_line": 58,
           "start_col": 5,
-          "end_line": 62,
+          "end_line": 66,
           "end_col": 6
         }
       },
@@ -2198,9 +2351,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 56,
+              "start_line": 60,
               "start_col": 17,
-              "end_line": 56,
+              "end_line": 60,
               "end_col": 31
             }
           }
@@ -2212,9 +2365,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 60,
+              "start_line": 64,
               "start_col": 9,
-              "end_line": 60,
+              "end_line": 64,
               "end_col": 33
             }
           }
@@ -2226,9 +2379,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 60,
+              "start_line": 64,
               "start_col": 56,
-              "end_line": 60,
+              "end_line": 64,
               "end_col": 68
             }
           }
@@ -2240,9 +2393,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 60,
+              "start_line": 64,
               "start_col": 9,
-              "end_line": 60,
+              "end_line": 64,
               "end_col": 69
             }
           }
@@ -2276,9 +2429,9 @@
       "location": {
         "uri": "src/store.rs",
         "range": {
-          "start_line": 86,
+          "start_line": 90,
           "start_col": 5,
-          "end_line": 88,
+          "end_line": 92,
           "end_col": 6
         }
       },
@@ -2297,9 +2450,9 @@
           "location": {
             "uri": "src/store.rs",
             "range": {
-              "start_line": 87,
+              "start_line": 91,
               "start_col": 9,
-              "end_line": 87,
+              "end_line": 91,
               "end_col": 59
             }
           }
@@ -2309,6 +2462,87 @@
         {
           "step": "call",
           "call": ".fetch_add#0"
+        }
+      ]
+    },
+    {
+      "id": "rust:axum_server::store::Store::order",
+      "name": "order",
+      "kind": "method",
+      "role": "invocable",
+      "parent": "rust:axum_server::store::Store",
+      "location": {
+        "uri": "src/store.rs",
+        "range": {
+          "start_line": 45,
+          "start_col": 5,
+          "end_line": 47,
+          "end_col": 6
+        }
+      },
+      "content_hash": {
+        "algo": "codeviz-tokens-blake3",
+        "value": "2094c3be2c172316dc5d7a9eef3807a69df1098ef2159bb6bca9f9db09ec9048"
+      },
+      "attributes": {
+        "signature": "pub(crate) async fn order(&self, id: OrderId) -> Option<Order>"
+      },
+      "calls": [
+        {
+          "key": ".read#0",
+          "text": ".read",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 46,
+              "start_col": 9,
+              "end_line": 46,
+              "end_col": 33
+            }
+          }
+        },
+        {
+          "key": ".get#0",
+          "text": ".get",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 46,
+              "start_col": 9,
+              "end_line": 46,
+              "end_col": 48
+            }
+          }
+        },
+        {
+          "key": ".cloned#0",
+          "text": ".cloned",
+          "targets": [],
+          "location": {
+            "uri": "src/store.rs",
+            "range": {
+              "start_line": 46,
+              "start_col": 9,
+              "end_line": 46,
+              "end_col": 57
+            }
+          }
+        }
+      ],
+      "body": [
+        {
+          "step": "call",
+          "call": ".read#0"
+        },
+        {
+          "step": "call",
+          "call": ".get#0"
+        },
+        {
+          "step": "call",
+          "call": ".cloned#0"
         }
       ]
     },
@@ -2566,6 +2800,11 @@
     {
       "unit": "rust:axum_server::handlers::place_order",
       "label": "POST /users/{id}/orders",
+      "kind": "http"
+    },
+    {
+      "unit": "rust:axum_server::handlers::reorder",
+      "label": "POST /orders/{id}/reorder",
       "kind": "http"
     },
     {
