@@ -22,6 +22,7 @@ use crate::{
     camera::OrbitCamera,
     explorer::{Clustering, Explorer},
     graph_view::{self, NodeLook},
+    lens::SPECK,
     scene::{PALETTE, Tile},
     ui::{MUTED, egui_color},
 };
@@ -521,10 +522,11 @@ pub(crate) fn draw_diff_graph(
         let (Some(a), Some(b)) = (explorer.tile_point(from), explorer.tile_point(to)) else {
             continue;
         };
-        if !(explorer.shown(from) && explorer.shown(to)) {
+        let shown = explorer.visibility(from).min(explorer.visibility(to));
+        if shown < SPECK {
             continue;
         }
-        let presence = view.call_presence(from, to);
+        let presence = view.call_presence(from, to) * shown;
         if presence <= 0.01 {
             continue;
         }
@@ -552,20 +554,20 @@ pub(crate) fn draw_diff_graph(
                         2 => 0.55,
                         _ => 0.35,
                     };
-                    gizmos.line(a, b, MODIFIED.with_alpha(strength));
+                    gizmos.line(a, b, MODIFIED.with_alpha(strength * shown));
                     // A pulse running from the callee out to its caller.
                     let phase = (time * 0.7 + (from * 7 + to * 13) as f32 * 0.137).fract();
                     gizmos.sphere(
                         Isometry3d::from_translation(b.lerp(a, phase)),
                         0.22,
-                        MODIFIED.with_alpha(strength + 0.2),
+                        MODIFIED.with_alpha((strength + 0.2) * shown),
                     );
                 } else if touches {
                     gizmos
-                        .arrow(a, b - back, Color::srgba(1.0, 1.0, 1.0, 0.7))
+                        .arrow(a, b - back, Color::srgba(1.0, 1.0, 1.0, 0.7 * shown))
                         .with_tip_length(0.6);
                 } else {
-                    gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, 0.07));
+                    gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, 0.07 * shown));
                 }
             }
         }

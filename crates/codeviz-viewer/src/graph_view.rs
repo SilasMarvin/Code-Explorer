@@ -14,6 +14,7 @@ use crate::{
     camera::{FRONT, OrbitCamera},
     diff_view::{ADDED, DiffView, MODIFIED, MOVED, REMOVED, diff_look, draw_diff_graph},
     explorer::Explorer,
+    lens::{Lens, SPECK, Source},
     scene::{ACCENTS, PALETTE, Tile, accent, lane_color},
 };
 
@@ -46,18 +47,52 @@ pub(crate) enum NodeLook {
     Impacted(u32),
 }
 
+/// Steps of brightness a node fades through as the lens reveals or hides it.
+pub(crate) const LEVELS: u8 = 6;
+
+/// Every look at every level of brightness, [`LEVELS`] being full.
 pub(crate) fn node_materials(
     materials: &mut Assets<StandardMaterial>,
-) -> HashMap<NodeLook, Handle<StandardMaterial>> {
-    let glow = |materials: &mut Assets<StandardMaterial>, color: Color, strength: f32| {
-        materials.add(StandardMaterial {
-            base_color: color,
-            emissive: LinearRgba::from(color) * strength,
-            ..default()
-        })
+) -> HashMap<(NodeLook, u8), Handle<StandardMaterial>> {
+    let mut table = HashMap::new();
+    for (look, material) in node_looks() {
+        for level in 0..=LEVELS {
+            let share = 0.12 + 0.88 * f32::from(level) / f32::from(LEVELS);
+            table.insert((look, level), materials.add(dimmed(&material, share)));
+        }
+    }
+    table
+}
+
+/// `material` at `share` of its brightness: darker, and fainter where it is see-through.
+fn dimmed(material: &StandardMaterial, share: f32) -> StandardMaterial {
+    let base = LinearRgba::from(material.base_color);
+    let alpha = if material.alpha_mode == AlphaMode::Blend {
+        base.alpha * share
+    } else {
+        base.alpha
+    };
+    StandardMaterial {
+        base_color: Color::from(LinearRgba::new(
+            base.red * share,
+            base.green * share,
+            base.blue * share,
+            alpha,
+        )),
+        emissive: material.emissive * share,
+        ..material.clone()
+    }
+}
+
+/// How each look is drawn at full brightness.
+fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
+    let glow = |color: Color, strength: f32| StandardMaterial {
+        base_color: color,
+        emissive: LinearRgba::from(color) * strength,
+        ..default()
     };
     let mut table = HashMap::new();
-    table.insert(NodeLook::Focus, glow(materials, Color::WHITE, 4.0));
+    table.insert(NodeLook::Focus, glow(Color::WHITE, 4.0));
     for hops in 1..=FARTHEST_SHADE {
         // Bright and glowing next door, darker and flat further out.
         let (shade, strength) = match hops {
@@ -73,39 +108,24 @@ pub(crate) fn node_materials(
                 linear.blue * shade,
             ))
         };
-        table.insert(
-            NodeLook::Upstream(hops),
-            glow(materials, darken(CALLER), strength),
-        );
-        table.insert(
-            NodeLook::Downstream(hops),
-            glow(materials, darken(CALLEE), strength),
-        );
+        table.insert(NodeLook::Upstream(hops), glow(darken(CALLER), strength));
+        table.insert(NodeLook::Downstream(hops), glow(darken(CALLEE), strength));
     }
     for track in 0..ACCENTS.len() {
         let base = accent(track);
-        table.insert(NodeLook::Journey(track), glow(materials, base, 0.35));
+        table.insert(NodeLook::Journey(track), glow(base, 0.35));
     }
-    table.insert(
-        NodeLook::Changed(Change::Added),
-        glow(materials, ADDED, 2.4),
-    );
-    table.insert(
-        NodeLook::Changed(Change::Modified),
-        glow(materials, MODIFIED, 2.4),
-    );
-    table.insert(
-        NodeLook::Changed(Change::Moved),
-        glow(materials, MOVED, 2.4),
-    );
+    table.insert(NodeLook::Changed(Change::Added), glow(ADDED, 2.4));
+    table.insert(NodeLook::Changed(Change::Modified), glow(MODIFIED, 2.4));
+    table.insert(NodeLook::Changed(Change::Moved), glow(MOVED, 2.4));
     table.insert(
         NodeLook::Changed(Change::Removed),
-        materials.add(StandardMaterial {
+        StandardMaterial {
             base_color: REMOVED.with_alpha(0.55),
             emissive: LinearRgba::from(REMOVED) * 0.8,
             alpha_mode: AlphaMode::Blend,
             ..default()
-        }),
+        },
     );
     for hops in 1..=FARTHEST_SHADE {
         let (shade, strength) = match hops {
@@ -119,28 +139,28 @@ pub(crate) fn node_materials(
             linear.green * shade * 0.85,
             linear.blue * shade * 0.6,
         ));
-        table.insert(NodeLook::Impacted(hops), glow(materials, color, strength));
+        table.insert(NodeLook::Impacted(hops), glow(color, strength));
     }
     table.insert(
         NodeLook::Hidden,
-        materials.add(StandardMaterial {
+        StandardMaterial {
             base_color: Color::srgba(0.6, 0.65, 0.75, 0.08),
             alpha_mode: AlphaMode::Blend,
             unlit: true,
             ..default()
-        }),
+        },
     );
     for color in 0..PALETTE.len() {
         let base = lane_color(color);
-        table.insert(NodeLook::Plain(color), glow(materials, base, 1.2));
+        table.insert(NodeLook::Plain(color), glow(base, 1.2));
         table.insert(
             NodeLook::Faded(color),
-            materials.add(StandardMaterial {
+            StandardMaterial {
                 base_color: base.with_alpha(0.12),
                 alpha_mode: AlphaMode::Blend,
                 unlit: true,
                 ..default()
-            }),
+            },
         );
     }
     table
@@ -212,13 +232,26 @@ pub(crate) fn style_nodes(
             Some(diff) => diff_look(&explorer, diff, tile.0),
             None => node_look(&explorer, tile.0),
         };
-        // Specks left out by quiet mode shrink as well as fade.
-        let size =
-            node_size(explorer.graph(), tile.0) * if look == NodeLook::Hidden { 0.35 } else { 1.0 };
-        if (transform.scale.x - size).abs() > f32::EPSILON {
+        // What the lens leaves out shrinks as well as fades, down to a speck.
+        let shown = explorer.visibility(tile.0);
+        let (scale, level) = if look == NodeLook::Hidden {
+            (0.35, LEVELS)
+        } else {
+            let level = (shown * f32::from(LEVELS))
+                .round()
+                .clamp(0.0, f32::from(LEVELS));
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to 0..=LEVELS"
+            )]
+            (0.35 + 0.65 * shown, level as u8)
+        };
+        let size = node_size(explorer.graph(), tile.0) * scale;
+        if (transform.scale.x - size).abs() > 0.001 {
             transform.scale = Vec3::splat(size);
         }
-        if let Some(wanted) = materials.0.get(&look)
+        if let Some(wanted) = materials.0.get(&(look, level))
             && &material.0 != wanted
         {
             material.0 = wanted.clone();
@@ -227,7 +260,7 @@ pub(crate) fn style_nodes(
 }
 
 #[derive(Resource, Debug)]
-pub(crate) struct NodeMaterials(pub(crate) HashMap<NodeLook, Handle<StandardMaterial>>);
+pub(crate) struct NodeMaterials(pub(crate) HashMap<(NodeLook, u8), Handle<StandardMaterial>>);
 
 pub(crate) fn create_node_materials(
     mut commands: Commands,
@@ -287,7 +320,8 @@ pub(crate) fn draw_graph(
         let (Some(a), Some(b)) = (point(from), point(to)) else {
             continue;
         };
-        if !(explorer.shown(from) && explorer.shown(to)) {
+        let shown = explorer.visibility(from).min(explorer.visibility(to));
+        if shown < SPECK {
             continue;
         }
         // A link lights up when it takes one step nearer the focus (amber) or one
@@ -314,6 +348,7 @@ pub(crate) fn draw_graph(
             None if center.is_some() => (Color::srgba(0.6, 0.66, 0.8, 0.04), false),
             None => (Color::srgba(0.6, 0.66, 0.8, 0.16), false),
         };
+        let color = color.with_alpha(color.alpha() * shown);
         if arrow {
             // Stop at the callee's surface so the head stays visible.
             let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
@@ -344,7 +379,7 @@ pub(crate) fn draw_graph(
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
 /// F turns to face the graph head-on, still centered on the focus; R pulls back to
-/// take in the whole graph; Q's quiet mode refits to what it leaves showing.
+/// take in the whole graph.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
@@ -353,9 +388,6 @@ pub(crate) fn graph_keys(
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
             camera.turn_to(FRONT);
-            orbit_focus(&explorer, &mut camera);
-        }
-        if keys.just_pressed(KeyCode::KeyQ) {
             orbit_focus(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {
@@ -369,6 +401,44 @@ fn frame_all(explorer: &Explorer, camera: &mut OrbitCamera) {
     let points: Vec<Vec3> = (0..explorer.map().tiles.len())
         .filter_map(|t| explorer.tile_point(t))
         .collect();
+    frame_points(&points, camera);
+}
+
+/// When the lens changes, or opens limited, refits the view to what it shows in full:
+/// around the focus when that is where it starts, else around everything it reveals.
+pub(crate) fn frame_reveal(
+    explorer: Res<Explorer>,
+    mut last: Local<Option<Lens>>,
+    mut cameras: Query<&mut OrbitCamera>,
+) {
+    let lens = explorer.lens();
+    // A reveal set from the start frames what it shows too.
+    let changed = last.map_or(lens.reach.is_some(), |l| l != lens);
+    *last = Some(lens);
+    if !changed {
+        return;
+    }
+    for mut camera in &mut cameras {
+        if lens.source == Source::Focus && explorer.graph_focus().is_some() {
+            orbit_focus(&explorer, &mut camera);
+            continue;
+        }
+        let Some(targets) = explorer.reveal_targets() else {
+            frame_all(&explorer, &mut camera);
+            continue;
+        };
+        let points: Vec<Vec3> = targets
+            .iter()
+            .enumerate()
+            .filter(|&(_, &shown)| shown >= 0.5)
+            .filter_map(|(tile, _)| explorer.tile_point(tile))
+            .collect();
+        frame_points(&points, &mut camera);
+    }
+}
+
+/// Looks at the middle of `points` from far enough back to see them all.
+fn frame_points(points: &[Vec3], camera: &mut OrbitCamera) {
     if points.is_empty() {
         return;
     }

@@ -16,11 +16,10 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 use crate::{
     camera::OrbitCamera,
     diff_view::{self, DiffStyle, DiffView},
-    explorer::{
-        Autoplay, Clustering, Confidence, Explorer, Quiet, SpanRef, Step, Track, is_conditional,
-    },
+    explorer::{Autoplay, Clustering, Confidence, Explorer, SpanRef, Step, Track, is_conditional},
     graph_view::{self, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
+    lens::{self, Measure, Source},
     scene::{accent, lane_color},
     source_diff,
 };
@@ -1041,6 +1040,67 @@ fn label_job(
     job
 }
 
+/// What the lens shows: how far, around what, and measured how.
+fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
+    let mut lens = explorer.lens();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Show").small().color(MUTED));
+        if ui
+            .selectable_label(lens.reach.is_none(), "All")
+            .on_hover_text("Every function (=, until it shows all)")
+            .clicked()
+        {
+            lens.reach = None;
+        }
+        let mut reach = lens.reach.unwrap_or(lens::MAX_REACH + 1);
+        let unit = match (lens.measure, lens.reach) {
+            (Measure::Calls, Some(1)) => "call",
+            (Measure::Calls, _) => "calls",
+            (_, Some(1)) => "step",
+            _ => "steps",
+        };
+        if ui
+            .add(
+                egui::Slider::new(&mut reach, 0..=lens::MAX_REACH + 1)
+                    .show_value(false)
+                    .custom_formatter(|_, _| String::new()),
+            )
+            .on_hover_text("How far out from the start shows in full (- and =)")
+            .changed()
+        {
+            lens.reach = (reach <= lens::MAX_REACH).then_some(reach);
+        }
+        if let Some(reach) = lens.reach {
+            ui.label(egui::RichText::new(format!("{reach} {unit}")).small());
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Around").small().color(MUTED));
+        for source in [Source::Focus, Source::Changes, Source::Journey] {
+            if source == Source::Changes && !diffing {
+                continue;
+            }
+            ui.selectable_value(&mut lens.source, source, source.label())
+                .on_hover_text("What the reveal starts from (L)");
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Near by").small().color(MUTED));
+        ui.selectable_value(&mut lens.measure, Measure::Calls, "calls")
+            .on_hover_text("Calls between, along call chains (G)");
+        ui.selectable_value(&mut lens.measure, Measure::Space, "space")
+            .on_hover_text("Distance in the graph, in steps of a typical call's length (G)");
+        ui.selectable_value(&mut lens.measure, Measure::Blend, "blend")
+            .on_hover_text(
+                "Distance in the graph, with each call between counting against it; \
+                 direct callers and callees always show (G)",
+            );
+    });
+    if lens != explorer.lens() {
+        explorer.set_lens(lens);
+    }
+}
+
 /// Names beside graph nodes, most important first, each on a dark pill so it reads
 /// over links and glow. The focus's callees lead with the order it calls them in, and
 /// its callers note where in their own calls they call it. A name tries each side of
@@ -1083,7 +1143,10 @@ fn draw_graph_labels(
     // Where each shown node sits on screen, and how far its edge is from its middle.
     let discs: Vec<Option<(egui::Pos2, f32)>> = (0..map.tiles.len())
         .map(|tile| {
-            let world = explorer.tile_point(tile).filter(|_| explorer.shown(tile))?;
+            // Only what the lens shows at least half way gets a name.
+            let world = explorer
+                .tile_point(tile)
+                .filter(|_| explorer.visibility(tile) >= 0.5)?;
             let node = to_screen(world)?;
             let radius = graph_view::node_size(graph, tile) / 2.0;
             let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
@@ -1127,7 +1190,7 @@ fn draw_graph_labels(
             slot.1 += 1;
         }
     }
-    if explorer.quiet().radius().is_none() {
+    if explorer.lens().reach.is_none() {
         for (group, &(_, count)) in centers.iter().enumerate() {
             if count >= 2 {
                 order.push(((7, std::cmp::Reverse(count), group), Named::Group(group)));
@@ -1392,7 +1455,6 @@ fn focus_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
 /// How the graph is clustered, and per container how many of its calls stay inside
 /// it: a container whose functions mostly call each other holds together when only
 /// calls pull, and one that leaks calls everywhere scatters.
-#[expect(clippy::too_many_lines, reason = "one panel, top to bottom")]
 fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer, diffing: bool) {
     let stats = explorer.graph().group_stats();
     let total: usize = stats.iter().map(|s| s.internal + s.outgoing).sum();
@@ -1433,19 +1495,7 @@ fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer, diffin
                     } else {
                         color_key(ui, explorer.active());
                     }
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Show").small().color(MUTED));
-                        let mut quiet = explorer.quiet();
-                        ui.selectable_value(&mut quiet, Quiet::Off, "All")
-                            .on_hover_text("Every function (Q)");
-                        ui.selectable_value(&mut quiet, Quiet::Near, "2 calls")
-                            .on_hover_text("Only what is within two calls of the focus (Q)");
-                        ui.selectable_value(&mut quiet, Quiet::Direct, "1 call")
-                            .on_hover_text("Only what the focus calls and what calls it (Q)");
-                        if quiet != explorer.quiet() {
-                            explorer.set_quiet(quiet);
-                        }
-                    });
+                    reveal_controls(ui, explorer, diffing);
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Cluster by").small().color(MUTED));
                         ui.selectable_value(&mut clustering, Clustering::Modules, "Modules")
@@ -1573,7 +1623,10 @@ const KEYS: [(&str, &[(&str, &str)]); 3] = [
             ("Shift 1 – 9", "focus its nth caller"),
             ("Backspace", "back to the previous focus"),
             ("Esc", "focus the journey's cursor again"),
-            ("Q", "quiet: all → within 2 calls → within 1"),
+            ("- / =", "show less / more around the start"),
+            ("Q", "show all → 2 steps → 1 step"),
+            ("L", "reveal around: focus → changes → journey"),
+            ("G", "nearness by: calls → space → blend"),
             ("K", "cluster by modules / calls"),
             ("F", "face the focus head-on"),
             ("R", "frame the whole graph"),

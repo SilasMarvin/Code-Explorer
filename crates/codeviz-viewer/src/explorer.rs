@@ -12,6 +12,8 @@ use codeviz_core::{
 use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
 
+use crate::lens::{self, Lens};
+
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Confidence {
@@ -234,9 +236,14 @@ pub(crate) struct Explorer {
     journey_tiles: Vec<HashMap<usize, usize>>,
     /// What reaches the node at the center of attention, and what it reaches.
     reach: Option<(usize, Reach)>,
-    /// The same for the focused node, which decides what quiet mode keeps.
+    /// The same for the focused node.
     focus_reach: Option<(usize, Reach)>,
-    quiet: Quiet,
+    /// How much of the graph shows.
+    lens: Lens,
+    /// How fully each node shows, by tile, eased towards what the lens says.
+    visibility: Vec<f32>,
+    /// A diff's changed nodes, for a lens that starts from them.
+    changed_tiles: Vec<usize>,
     /// Nodes focused before the current one, most recent last.
     focus_history: Vec<usize>,
     pub(crate) hovered_tile: Option<usize>,
@@ -268,6 +275,7 @@ impl Explorer {
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
         }
+        let tiles = map.tiles.len();
         let mut explorer = Self {
             system,
             layout_system: layout,
@@ -284,7 +292,9 @@ impl Explorer {
             journey_tiles: Vec::new(),
             reach: None,
             focus_reach: None,
-            quiet: Quiet::Off,
+            lens: Lens::default(),
+            visibility: vec![1.0; tiles],
+            changed_tiles: Vec::new(),
             focus_history: Vec::new(),
             hovered_tile: None,
             lane_colors: HashMap::new(),
@@ -643,38 +653,71 @@ impl Explorer {
         }
     }
 
-    pub(crate) fn quiet(&self) -> Quiet {
-        self.quiet
+    pub(crate) fn lens(&self) -> Lens {
+        self.lens
     }
 
-    pub(crate) fn set_quiet(&mut self, quiet: Quiet) {
-        self.quiet = quiet;
+    pub(crate) fn set_lens(&mut self, lens: Lens) {
+        self.lens = lens;
     }
 
-    /// Calls between `tile` and the focus, the nearer way: zero for the focus itself.
-    pub(crate) fn focus_distance(&self, tile: usize) -> Option<u32> {
-        let (focus, reach) = self.focus_reach.as_ref()?;
-        if *focus == tile {
-            return Some(0);
+    /// The nodes a diff changed, for a lens that starts from them.
+    pub(crate) fn set_changed_tiles(&mut self, tiles: Vec<usize>) {
+        self.changed_tiles = tiles;
+    }
+
+    /// Where the lens starts: the focus, the changes, or the active journey.
+    fn seeds(&self) -> Vec<usize> {
+        match self.lens.source {
+            lens::Source::Focus => self.graph_focus().into_iter().collect(),
+            lens::Source::Changes => self.changed_tiles.clone(),
+            lens::Source::Journey => self
+                .journey_tiles
+                .get(self.active)
+                .map(|tiles| tiles.keys().copied().collect())
+                .unwrap_or_default(),
         }
-        match (reach.upstream.get(&tile), reach.downstream.get(&tile)) {
-            (Some(&up), Some(&down)) => Some(up.min(down)),
-            (Some(&hops), None) | (None, Some(&hops)) => Some(hops),
-            (None, None) => None,
+    }
+
+    /// How fully the lens would show each node, by tile, once eased there; `None`
+    /// when it shows everything. The journey's cursor always shows.
+    pub(crate) fn reveal_targets(&self) -> Option<Vec<f32>> {
+        let mut targets = self.lens.targets(&self.graph, &self.seeds())?;
+        if let Some(cursor) = self.focus().and_then(|u| self.map.tile_of(u))
+            && let Some(target) = targets.get_mut(cursor)
+        {
+            *target = 1.0;
+        }
+        Some(targets)
+    }
+
+    /// Eases every node towards how fully the lens shows it. Returns whether any moved.
+    pub(crate) fn ease_visibility(&mut self, dt: f32) -> bool {
+        let targets = self.reveal_targets();
+        lens::ease(&mut self.visibility, targets.as_deref(), dt)
+    }
+
+    /// Puts every node where the lens shows it at once.
+    #[cfg(test)]
+    pub(crate) fn settle_visibility(&mut self) {
+        let targets = self.reveal_targets();
+        for (tile, shown) in self.visibility.iter_mut().enumerate() {
+            *shown = targets
+                .as_ref()
+                .and_then(|t| t.get(tile))
+                .copied()
+                .unwrap_or(1.0);
         }
     }
 
-    /// Whether quiet mode leaves a node showing: near enough the focus, or under the
-    /// journey's cursor.
+    /// How fully a node shows, from 0 (a speck) to 1.
+    pub(crate) fn visibility(&self, tile: usize) -> f32 {
+        self.visibility.get(tile).copied().unwrap_or(1.0)
+    }
+
+    /// Whether a node shows as more than a speck.
     pub(crate) fn shown(&self, tile: usize) -> bool {
-        let Some(radius) = self.quiet.radius() else {
-            return true;
-        };
-        if self.graph_focus().is_none() {
-            return true;
-        }
-        self.focus_distance(tile).is_some_and(|d| d <= radius)
-            || self.focus().and_then(|u| self.map.tile_of(u)) == Some(tile)
+        self.visibility(tile) >= lens::SPECK
     }
 
     /// The node at the center of attention: under the pointer, else focused.
@@ -919,37 +962,6 @@ pub(crate) enum Step {
     Parent,
 }
 
-/// How much of the graph shows around the focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Quiet {
-    /// Everything.
-    #[default]
-    Off,
-    /// Only what is within two calls of the focus, either way.
-    Near,
-    /// Only the focus and what it calls or is called by directly.
-    Direct,
-}
-
-impl Quiet {
-    /// Calls from the focus still shown, if limited.
-    pub(crate) fn radius(self) -> Option<u32> {
-        match self {
-            Self::Off => None,
-            Self::Near => Some(2),
-            Self::Direct => Some(1),
-        }
-    }
-
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::Off => Self::Near,
-            Self::Near => Self::Direct,
-            Self::Direct => Self::Off,
-        }
-    }
-}
-
 /// Steps the cursor on a timer.
 #[derive(Resource, Debug)]
 pub(crate) struct Autoplay {
@@ -982,6 +994,7 @@ mod tests {
     use codeviz_ir::Document;
 
     use super::*;
+    use crate::lens::Measure;
 
     /// `main -> (a -> c), b`
     fn explorer() -> Explorer {
@@ -1064,7 +1077,69 @@ mod tests {
     }
 
     #[test]
-    fn quiet_mode_keeps_the_focus_neighborhood() {
+    fn the_lens_measures_in_calls_space_or_both() {
+        let mut explorer = explorer();
+        let tile = |explorer: &Explorer, name: &str| {
+            explorer
+                .map()
+                .tile_of(&UnitId::new(format!("x:{name}")))
+                .unwrap()
+        };
+        let (main, a, b, c) = (
+            tile(&explorer, "main"),
+            tile(&explorer, "a"),
+            tile(&explorer, "b"),
+            tile(&explorer, "c"),
+        );
+        // b sits right next to a but only meets it through main.
+        let mut positions = vec![[0.0; 3]; explorer.map().tiles.len()];
+        positions[main] = [0.0, 0.0, 0.0];
+        positions[a] = [1.0, 0.0, 0.0];
+        positions[b] = [1.5, 0.0, 0.0];
+        positions[c] = [2.0, 0.0, 0.0];
+        explorer.place_nodes(&positions);
+        explorer.focus_node(a);
+        let shown = |explorer: &mut Explorer, lens: Lens| {
+            explorer.set_lens(lens);
+            explorer.settle_visibility();
+            [main, a, b, c].map(|t| explorer.visibility(t))
+        };
+        let lens = |measure, reach| Lens {
+            measure,
+            reach: Some(reach),
+            ..Lens::default()
+        };
+
+        assert_eq!(
+            shown(&mut explorer, lens(Measure::Calls, 0)),
+            [0.3, 1.0, 0.0, 0.3]
+        );
+        assert_eq!(
+            shown(&mut explorer, lens(Measure::Space, 0))[2],
+            1.0,
+            "in space, b is as near as anything"
+        );
+        assert_eq!(
+            shown(&mut explorer, lens(Measure::Blend, 0)),
+            [1.0, 1.0, 0.0, 1.0],
+            "a blend shows direct calls, and holds b back for the calls between"
+        );
+        assert_eq!(shown(&mut explorer, lens(Measure::Blend, 3))[2], 1.0);
+
+        explorer.set_changed_tiles(vec![c]);
+        let changes = Lens {
+            source: lens::Source::Changes,
+            ..lens(Measure::Calls, 1)
+        };
+        assert_eq!(
+            shown(&mut explorer, changes),
+            [0.3, 1.0, 0.0, 1.0],
+            "from changes, only what calls them counts"
+        );
+    }
+
+    #[test]
+    fn the_lens_keeps_the_focus_neighborhood() {
         let mut explorer = explorer();
         let tile = |name: &str| {
             explorer
@@ -1075,10 +1150,19 @@ mod tests {
         let (main, a, b, c) = (tile("main"), tile("a"), tile("b"), tile("c"));
         explorer.focus_node(a);
         explorer.refresh_reach();
-        explorer.set_quiet(Quiet::Direct);
+        explorer.set_lens(Lens {
+            reach: Some(0),
+            ..Lens::default()
+        });
+        explorer.settle_visibility();
         assert!(explorer.shown(a) && explorer.shown(main) && explorer.shown(c));
+        assert!(
+            explorer.visibility(main) < 1.0,
+            "one call past the reach dims"
+        );
         explorer.focus_node(b);
         explorer.refresh_reach();
+        explorer.settle_visibility();
         assert!(!explorer.shown(c), "c is not on any call chain through b");
         assert!(
             !explorer.shown(a),

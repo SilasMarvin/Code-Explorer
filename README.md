@@ -26,7 +26,10 @@ codeviz diff v1..v2 --summary        # print the changes instead
 The codebase floats as a graph, one node per function; the journey through the focused
 function docks over it as a flame graph. Click a node to focus it: what calls it lights
 amber, what it calls blue. Digits walk to its nth call, shift+digit to its nth caller,
-`Q` quiets everything more than two (then one) calls away. In the journey, `←`/`→` move
+`-` and `=` reveal less or more around a starting point, the focus, a diff's changes
+or the active journey (`L` switches), measured in calls, distance in the graph, or a
+blend of both (`G` switches); what is out of reach dims, then shrinks to a speck. `Q`
+jumps between everything, two steps and one. In the journey, `←`/`→` move
 between calls by the same caller, `↓`/`↑` go in and out, `[`/`]` step through time.
 `H` lists every key.
 

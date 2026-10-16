@@ -53,9 +53,16 @@ pub(crate) struct Display {
     /// Hold the morph at this point, from 0 (before) to 1 (after), instead of playing it.
     #[arg(long, value_name = "T")]
     morph: Option<f32>,
-    /// Show only what is near the focus.
-    #[arg(long, value_enum, default_value_t = QuietArg::Off)]
-    quiet: QuietArg,
+    /// Show only what is within this many steps of where the reveal starts; the rest
+    /// dims, then shrinks to specks. Everything shows without it.
+    #[arg(long, value_name = "STEPS")]
+    reveal: Option<u32>,
+    /// What the reveal starts from; by default a diff's changes, else the focus.
+    #[arg(long, value_enum)]
+    reveal_around: Option<AroundArg>,
+    /// How the reveal measures nearness.
+    #[arg(long, value_enum, default_value_t = NearArg::Calls)]
+    reveal_by: NearArg,
     /// Open with this function (entry label or unit id suffix) focused in the graph.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
@@ -85,13 +92,23 @@ enum DiffStyleArg {
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum QuietArg {
-    /// Everything.
-    Off,
-    /// Within two calls of the focus.
-    Near,
-    /// Within one call of the focus.
-    Direct,
+enum AroundArg {
+    /// The focused function.
+    Focus,
+    /// A diff's changes, counting only towards their callers.
+    Changes,
+    /// The functions the active journey runs.
+    Journey,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum NearArg {
+    /// Calls between, along call chains.
+    Calls,
+    /// Distance in the graph, in steps of a typical call's length.
+    Space,
+    /// Distance in the graph, with each call between counting against it.
+    Blend,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -190,11 +207,19 @@ pub(crate) fn open(
             ClusterArg::Modules => "modules",
             ClusterArg::Calls => "calls",
         })
-        .with_quiet(match args.quiet {
-            QuietArg::Off => "off",
-            QuietArg::Near => "near",
-            QuietArg::Direct => "direct",
-        });
+        .with_reveal(
+            args.reveal_around.map(|around| match around {
+                AroundArg::Focus => "focus",
+                AroundArg::Changes => "changes",
+                AroundArg::Journey => "journey",
+            }),
+            match args.reveal_by {
+                NearArg::Calls => "calls",
+                NearArg::Space => "space",
+                NearArg::Blend => "blend",
+            },
+            args.reveal,
+        );
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
     }

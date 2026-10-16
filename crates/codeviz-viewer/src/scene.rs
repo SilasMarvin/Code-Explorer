@@ -8,6 +8,7 @@ use crate::{
     explorer::{Autoplay, Clustering, Explorer, SpanRef, Step, Track},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
+    lens::Lens,
     ui::KeyHelp,
 };
 
@@ -27,8 +28,10 @@ impl Plugin for ScenePlugin {
                 autoplay,
                 graph_view::track_attention,
                 simulate,
+                reveal,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::follow_focus,
+                graph_view::frame_reveal,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
             )
@@ -194,7 +197,8 @@ fn journey_step(keys: &ButtonInput<KeyCode>) -> Option<Step> {
 
 /// The graph's keys: digits walk to the focus's nth call (with shift, its nth caller),
 /// Backspace goes back to the node focused before, Escape hands the focus back to the
-/// journey's cursor, Q quiets everything far from the focus.
+/// journey's cursor. Q, - and = narrow and widen what shows, L picks what it shows
+/// around and G how it measures nearness.
 fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
     if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key))
         && let Some(focus) = explorer.graph_focus()
@@ -214,9 +218,34 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     if keys.just_pressed(KeyCode::Escape) {
         explorer.unfocus();
     }
-    if keys.just_pressed(KeyCode::KeyQ) {
-        let next = explorer.quiet().next();
-        explorer.set_quiet(next);
+    let lens = explorer.lens();
+    let lens = if keys.just_pressed(KeyCode::KeyQ) {
+        // Everything, then two steps out, then one.
+        let reach = match lens.reach {
+            None => Some(2),
+            Some(2) => Some(1),
+            Some(_) => None,
+        };
+        Lens { reach, ..lens }
+    } else if keys.just_pressed(KeyCode::Minus) {
+        lens.narrower()
+    } else if keys.just_pressed(KeyCode::Equal) {
+        lens.wider()
+    } else if keys.just_pressed(KeyCode::KeyL) {
+        Lens {
+            source: lens.source.next(),
+            ..lens
+        }
+    } else if keys.just_pressed(KeyCode::KeyG) {
+        Lens {
+            measure: lens.measure.next(),
+            ..lens
+        }
+    } else {
+        lens
+    };
+    if lens != explorer.lens() {
+        explorer.set_lens(lens);
     }
     if keys.just_pressed(KeyCode::KeyK) {
         let next = match explorer.clustering() {
@@ -294,6 +323,16 @@ fn autoplay(time: Res<Time>, mut autoplay: ResMut<Autoplay>, mut explorer: ResMu
         if explorer.step(Step::Into).is_none() {
             autoplay.playing = false;
         }
+    }
+}
+
+/// Fades nodes in and out as the lens moves.
+fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>) {
+    if explorer
+        .bypass_change_detection()
+        .ease_visibility(time.delta_secs())
+    {
+        explorer.set_changed();
     }
 }
 

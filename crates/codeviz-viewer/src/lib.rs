@@ -16,6 +16,7 @@ mod diff_view;
 mod explorer;
 mod graph_view;
 mod journey_panel;
+mod lens;
 mod scene;
 mod source_diff;
 mod ui;
@@ -29,8 +30,9 @@ use codeviz_ir::{Document, UnitId};
 
 use crate::{
     diff_view::{DiffStyle, DiffView},
-    explorer::{Autoplay, Clustering, Explorer, Quiet},
+    explorer::{Autoplay, Clustering, Explorer},
     journey_panel::{JourneyPanel, PanelMode},
+    lens::{Lens, Measure, Source},
 };
 
 /// Configures and launches the viewer window.
@@ -46,7 +48,9 @@ pub struct Viewer {
     also: Vec<UnitId>,
     panel: PanelMode,
     clustering: Clustering,
-    quiet: Quiet,
+    lens: Lens,
+    /// Whether the lens's starting point was chosen, rather than left to the default.
+    lens_source: bool,
     focus: Option<UnitId>,
     diff: Option<Comparison>,
 }
@@ -75,7 +79,8 @@ impl Viewer {
             also: Vec::new(),
             panel: PanelMode::default(),
             clustering: Clustering::default(),
-            quiet: Quiet::default(),
+            lens: Lens::default(),
+            lens_source: false,
             focus: None,
             diff: None,
         }
@@ -172,15 +177,26 @@ impl Viewer {
         self
     }
 
-    /// Shows only what is within `near` (two calls) or `direct` (one call) of the
-    /// focus; anything else shows everything.
+    /// Shows only what is near a starting point: `focus`, `changes` or `journey`
+    /// (by default the changes in a diff, else the focus), out to `reach` steps
+    /// measured in `calls`, `space` or a `blend` of both. Without a reach, everything
+    /// shows.
     #[must_use]
-    pub fn with_quiet(mut self, name: &str) -> Self {
-        self.quiet = match name {
-            "near" => Quiet::Near,
-            "direct" => Quiet::Direct,
-            _ => Quiet::Off,
+    pub fn with_reveal(mut self, source: Option<&str>, measure: &str, reach: Option<u32>) -> Self {
+        if let Some(source) = source {
+            self.lens.source = match source {
+                "changes" => Source::Changes,
+                "journey" => Source::Journey,
+                _ => Source::Focus,
+            };
+            self.lens_source = true;
+        }
+        self.lens.measure = match measure {
+            "space" => Measure::Space,
+            "blend" => Measure::Blend,
+            _ => Measure::Calls,
         };
+        self.lens.reach = reach;
         self
     }
 
@@ -232,7 +248,7 @@ impl Viewer {
             explorer.add_track(root);
         }
         explorer.set_clustering(self.clustering);
-        explorer.set_quiet(self.quiet);
+        explorer.set_lens(self.lens);
         if let Some(tile) = self
             .focus
             .take()
@@ -256,6 +272,13 @@ impl Viewer {
             if let Some(t) = comparison.morph {
                 view.morph = t;
                 view.playing = false;
+            }
+            explorer.set_changed_tiles(view.changed().map(|(tile, _)| tile).collect());
+            if !self.lens_source {
+                explorer.set_lens(Lens {
+                    source: Source::Changes,
+                    ..explorer.lens()
+                });
             }
             if !focused && let Some(tile) = view.hub() {
                 explorer.focus_node(tile);
