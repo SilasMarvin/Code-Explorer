@@ -816,7 +816,7 @@ fn node_name(explorer: &Explorer, tile: usize) -> String {
 }
 
 /// What a graph label names.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Named {
     Node(usize),
     Group(usize),
@@ -833,18 +833,73 @@ const SIDES: [egui::Align2; 4] = [
     egui::Align2::CENTER_TOP,
 ];
 
-/// Labels already placed and nodes they must not cover.
+/// Room kept around a label's text: its pill.
+const PILL_PAD: egui::Vec2 = egui::vec2(5.0, 2.0);
+/// How fast a label slides to a new side: the share of the way left it covers in a
+/// second is `1 - e^-SLIDE`.
+const SLIDE: f32 = 14.0;
+/// Seconds a label takes to fade in or out.
+const FADE: f32 = 0.18;
+
+/// A label as last drawn, so the next frame eases it instead of jumping it.
+#[derive(Clone)]
+struct Shown {
+    /// Index into [`SIDES`].
+    side: usize,
+    /// Where its text sits, from its node.
+    offset: egui::Vec2,
+    opacity: f32,
+    galley: std::sync::Arc<egui::Galley>,
+    stroke: Option<egui::Color32>,
+}
+
+/// Every label drawn last frame.
+type ShownLabels = HashMap<Named, Shown>;
+
+/// Places labels so none overlaps another or a node that matters, and draws them
+/// eased from where they were: a label keeps its side while that side stays free,
+/// slides when it must change sides, and fades in and out instead of popping.
 struct Placer<'a> {
     painter: &'a egui::Painter,
     taken: Vec<egui::Rect>,
+    last: ShownLabels,
+    next: ShownLabels,
+    /// Where each label placed this frame sits.
+    anchors: HashMap<Named, egui::Pos2>,
+    /// The share of the way to its new side a label covers this frame.
+    slide: f32,
+    /// How much opacity a label gains or loses this frame.
+    fade: f32,
 }
 
-impl Placer<'_> {
-    /// Paints `job` on a pill on the first side of `node` (a disc of `edge` points)
-    /// where it overlaps nothing already placed, or the first side anyway when
-    /// `force` is set. Returns whether it was placed.
+impl<'a> Placer<'a> {
+    fn new(painter: &'a egui::Painter, taken: Vec<egui::Rect>) -> Self {
+        let dt = painter.ctx().input(|i| i.stable_dt).min(0.1);
+        Self {
+            painter,
+            taken,
+            last: painter
+                .ctx()
+                .data_mut(|d| d.get_temp::<ShownLabels>(Self::id()))
+                .unwrap_or_default(),
+            next: HashMap::new(),
+            anchors: HashMap::new(),
+            slide: 1.0 - (-SLIDE * dt).exp(),
+            fade: dt / FADE,
+        }
+    }
+
+    fn id() -> egui::Id {
+        egui::Id::new("graph_labels")
+    }
+
+    /// Places `job` on a side of `node` (a disc of `edge` points) where it overlaps
+    /// nothing already placed: the side it had last frame if that is still free,
+    /// else the first free one, else the first anyway when `force` is set. Returns
+    /// whether it was placed.
     fn place(
         &mut self,
+        key: Named,
         node: egui::Pos2,
         edge: f32,
         job: egui::text::LayoutJob,
@@ -852,45 +907,112 @@ impl Placer<'_> {
         force: bool,
     ) -> bool {
         let galley = self.painter.layout_job(job);
-        let size = galley.size();
+        let extent = galley.size();
         let gap = edge + 6.0;
-        let ppp = self.painter.pixels_per_point();
-        let spot = |side: egui::Align2| {
-            let anchor = match side {
+        let spot = |side: usize| {
+            let anchor = match SIDES[side] {
                 egui::Align2::LEFT_CENTER => node + egui::vec2(gap, 0.0),
                 egui::Align2::RIGHT_CENTER => node - egui::vec2(gap, 0.0),
                 egui::Align2::CENTER_BOTTOM => node - egui::vec2(0.0, gap),
                 _ => node + egui::vec2(0.0, gap),
             };
-            let rect = side.anchor_size(anchor, size);
-            egui::Rect::from_min_size(
-                egui::emath::GuiRounding::round_to_pixels(rect.min, ppp),
-                size,
-            )
+            SIDES[side].anchor_size(anchor, extent)
         };
-        let pad = egui::vec2(5.0, 2.0);
         // Inside the graph, so no label is cut off at its edge.
         let bounds = self.painter.clip_rect();
-        let free = SIDES.iter().map(|&side| spot(side)).find(|rect| {
+        let fits = |rect: egui::Rect, pad: egui::Vec2| {
             bounds.contains_rect(rect.expand2(pad))
                 && !self.taken.iter().any(|r| r.intersects(rect.expand2(pad)))
-        });
-        let Some(rect) = free.or_else(|| force.then(|| spot(SIDES[0]))) else {
+        };
+        let previous = self.last.get(&key);
+        // A label holds its side until something actually covers it; a new side must
+        // be clear with room to spare. That margin keeps a label from flipping back
+        // and forth as the view moves.
+        let kept = previous
+            .map(|p| p.side)
+            .filter(|&side| fits(spot(side), egui::Vec2::ZERO));
+        let side = kept
+            .or_else(|| (0..SIDES.len()).find(|&side| fits(spot(side), PILL_PAD)))
+            .or_else(|| force.then(|| previous.map_or(0, |p| p.side)));
+        let Some(side) = side else {
             return false;
         };
-        let pill = rect.expand2(pad);
-        self.taken.push(pill);
-        self.painter.rect_filled(pill, 4.0, PILL);
-        if let Some(color) = stroke {
-            self.painter.rect_stroke(
+        let rect = spot(side);
+        self.taken.push(rect.expand2(PILL_PAD));
+        let target = rect.min - node;
+        let (offset, opacity) = match previous {
+            Some(p) => (
+                p.offset + (target - p.offset) * self.slide,
+                (p.opacity + self.fade).min(1.0),
+            ),
+            // A new label fades in where it belongs.
+            None => (target, self.fade.min(1.0)),
+        };
+        self.anchors.insert(key, node);
+        self.next.insert(
+            key,
+            Shown {
+                side,
+                offset,
+                opacity,
+                galley,
+                stroke,
+            },
+        );
+        true
+    }
+
+    /// Draws what was placed, and fades out what was not where its node, found by
+    /// `anchor`, still shows. Remembers it all for the next frame.
+    fn finish(mut self, anchor: impl Fn(Named) -> Option<egui::Pos2>) {
+        let mut leaving = Vec::new();
+        for (key, mut shown) in std::mem::take(&mut self.last) {
+            if self.next.contains_key(&key) {
+                continue;
+            }
+            shown.opacity -= self.fade;
+            if shown.opacity > 0.0
+                && let Some(node) = anchor(key)
+            {
+                leaving.push((key, node, shown));
+            }
+        }
+        // Leaving labels go underneath the ones that hold their place.
+        for (_, node, shown) in &leaving {
+            self.paint(*node, shown);
+        }
+        for (key, shown) in &self.next {
+            if let Some(&node) = self.anchors.get(key) {
+                self.paint(node, shown);
+            }
+        }
+        self.next
+            .extend(leaving.into_iter().map(|(key, _, shown)| (key, shown)));
+        let next = self.next;
+        self.painter
+            .ctx()
+            .data_mut(|d| d.insert_temp(Self::id(), next));
+    }
+
+    /// A label on its pill, at its eased place beside `node`.
+    fn paint(&self, node: egui::Pos2, shown: &Shown) {
+        let mut painter = self.painter.clone();
+        painter.multiply_opacity(shown.opacity.clamp(0.0, 1.0));
+        let min = egui::emath::GuiRounding::round_to_pixels(
+            node + shown.offset,
+            painter.pixels_per_point(),
+        );
+        let pill = egui::Rect::from_min_size(min, shown.galley.size()).expand2(PILL_PAD);
+        painter.rect_filled(pill, 4.0, PILL);
+        if let Some(color) = shown.stroke {
+            painter.rect_stroke(
                 pill,
                 4.0,
                 egui::Stroke::new(1.0, color.gamma_multiply(0.45)),
                 egui::StrokeKind::Inside,
             );
         }
-        self.painter.galley(rect.min, galley, egui::Color32::WHITE);
-        true
+        painter.galley(min, shown.galley.clone(), egui::Color32::WHITE);
     }
 }
 
@@ -1020,9 +1142,9 @@ fn draw_graph_labels(
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .collect();
     // And off the nodes that matter, so they never hide a neighbor.
-    let mut placer = Placer {
+    let mut placer = Placer::new(
         painter,
-        taken: cards
+        cards
             .into_iter()
             .chain(
                 order
@@ -1037,7 +1159,7 @@ fn draw_graph_labels(
                     }),
             )
             .collect(),
-    };
+    );
     let focus = explorer.graph_focus();
     for ((tier, _, _), named) in order {
         match named {
@@ -1052,7 +1174,7 @@ fn draw_graph_labels(
                     .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
                 let label = map.groups.get(group).map_or("", |g| g.label.as_str());
                 let job = label_job(None, &label.to_uppercase(), None, color, 11.0);
-                placer.place(at, 0.0, job, None, false);
+                placer.place(named, at, 0.0, job, None, false);
             }
             Named::Node(tile) => {
                 let Some((node, edge)) = discs[tile] else {
@@ -1123,6 +1245,7 @@ fn draw_graph_labels(
                 };
                 let stroke = (tier <= 1).then_some(color);
                 placer.place(
+                    named,
                     node,
                     edge,
                     label_job(lead, &name, aside, color, size),
@@ -1132,6 +1255,13 @@ fn draw_graph_labels(
             }
         }
     }
+    placer.finish(|named| match named {
+        Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
+        Named::Group(group) => {
+            let &(sum, count) = centers.get(group)?;
+            (count > 0).then(|| to_screen(sum / count as f32)).flatten()
+        }
+    });
 }
 
 #[expect(clippy::too_many_lines, reason = "one card, top to bottom")]
@@ -1519,4 +1649,61 @@ pub(crate) fn short(text: &str, max: usize) -> String {
 pub(crate) fn egui_color(color: Color) -> egui::Color32 {
     let [r, g, b, a] = color.to_srgba().to_u8_array();
     egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs one frame that places a label for `key` at `node` with `blocked` taken,
+    /// and returns the side it took and where its text was drawn from the node.
+    fn frame(ctx: &egui::Context, node: egui::Pos2, blocked: &[egui::Rect]) -> (usize, egui::Vec2) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let ctx = ui.ctx();
+            let painter = ctx.layer_painter(egui::LayerId::background());
+            let mut placer = Placer::new(&painter, blocked.to_vec());
+            let job = label_job(None, "draw_graph", None, egui::Color32::WHITE, 12.5);
+            assert!(placer.place(Named::Node(0), node, 5.0, job, None, false));
+            placer.finish(|_| Some(node));
+        });
+        output.textures_delta.clear();
+        let shown = ctx
+            .data_mut(|d| d.get_temp::<ShownLabels>(Placer::id()))
+            .and_then(|labels| labels.get(&Named::Node(0)).cloned())
+            .unwrap_or_else(|| panic!("the label was not remembered"));
+        (shown.side, shown.offset)
+    }
+
+    #[test]
+    fn labels_hold_their_side_and_ease_to_a_new_one() {
+        let ctx = egui::Context::default();
+        let node = egui::pos2(400.0, 300.0);
+        let right = egui::Rect::from_min_max(egui::pos2(405.0, 280.0), egui::pos2(600.0, 320.0));
+        let left = egui::Rect::from_min_max(egui::pos2(200.0, 280.0), egui::pos2(395.0, 320.0));
+
+        let (side, start) = frame(&ctx, node, &[right]);
+        assert_eq!(side, 1, "the right is taken, so it goes left");
+        let (side, offset) = frame(&ctx, node, &[]);
+        assert_eq!(side, 1, "the right freeing up does not flip it back");
+        assert_eq!(offset, start);
+
+        let (side, offset) = frame(&ctx, node, &[left]);
+        assert_eq!(side, 0, "covered, it moves");
+        assert!(
+            offset.x > start.x && offset.x < 0.0,
+            "it slides over rather than jumping: {start:?} → {offset:?}"
+        );
+        let mut settled = offset;
+        for _ in 0..60 {
+            settled = frame(&ctx, node, &[left]).1;
+        }
+        assert!(settled.x > 0.0, "and gets there: {settled:?}");
+    }
 }
