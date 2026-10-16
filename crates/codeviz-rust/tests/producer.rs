@@ -5,10 +5,14 @@
 use std::fs;
 
 use codeviz_ir::{Certainty, Document, ExitKind, Mode, Role, Step, Unit, UnitId};
-use codeviz_rust::{AnalyzeOptions, analyze};
+use codeviz_rust::{AnalyzeOptions, Resolver, analyze, rust_analyzer_available};
 
 /// Writes `files` as crate `app` in a temp dir and analyzes it.
 fn analyze_files(files: &[(&str, &str)]) -> Document {
+    analyze_files_with(files, &AnalyzeOptions::default())
+}
+
+fn analyze_files_with(files: &[(&str, &str)], options: &AnalyzeOptions) -> Document {
     let root = std::env::temp_dir().join(format!(
         "codeviz-rust-test-{}-{}",
         std::process::id(),
@@ -26,8 +30,9 @@ fn analyze_files(files: &[(&str, &str)]) -> Document {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, source).unwrap();
     }
-    let document = analyze(&root, AnalyzeOptions::default()).unwrap().document;
+    let document = analyze(&root, options);
     fs::remove_dir_all(&root).unwrap();
+    let document = document.unwrap().document;
     let diagnostics = codeviz_ir::validate(&document);
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     document
@@ -319,8 +324,71 @@ fn packages_a_workspace_excludes_are_skipped() {
         "[workspace]\nmembers = [\"app\"]\nexclude = [\"fixtures\"]\n",
     )
     .unwrap();
-    let analysis = analyze(&root, AnalyzeOptions::default()).unwrap();
+    let analysis = analyze(&root, &AnalyzeOptions::default()).unwrap();
     fs::remove_dir_all(&root).unwrap();
     assert_eq!(analysis.packages.len(), 1, "{:?}", analysis.packages);
     assert!(analysis.packages[0].src_dir.ends_with("app/src"));
+}
+
+#[test]
+fn rust_analyzer_resolves_what_names_alone_cannot() {
+    if !rust_analyzer_available() {
+        eprintln!("skipped: rust-analyzer is not installed");
+        return;
+    }
+    let source = "pub trait Shape {
+            fn area(&self) -> f64;
+            fn describe(&self) -> String { format!(\"{}\", self.area()) }
+        }
+        pub struct Circle(pub f64);
+        pub struct Square(pub f64);
+        impl Shape for Circle { fn area(&self) -> f64 { self.0 * self.0 * 3.0 } }
+        impl Shape for Square { fn area(&self) -> f64 { self.0 * self.0 } }
+        pub struct Store { items: Vec<u32> }
+        impl Store { pub fn map(&self) -> Vec<u32> { self.items.clone() } }
+        fn make() -> Circle { Circle(1.0) }
+        pub fn circle() -> f64 { let c = make(); c.area() }
+        pub fn doubled(store: &Store) -> Vec<u32> {
+            store.map().into_iter().map(|x| x * 2).collect()
+        }
+        pub fn report(apply: fn() -> f64) -> f64 { apply() }";
+    let options = AnalyzeOptions {
+        resolver: Resolver::RustAnalyzer { target_dir: None },
+        ..AnalyzeOptions::default()
+    };
+    let document = analyze_files_with(&[("lib.rs", source)], &options);
+    let circle_area = "rust:app::Circle::{impl#Shape}::area".to_owned();
+    let square_area = "rust:app::Square::{impl#Shape}::area".to_owned();
+
+    let doubled = unit(&document, "app::doubled");
+    assert_eq!(
+        calls(doubled)[..3],
+        [
+            (".map".to_owned(), vec!["rust:app::Store::map".to_owned()]),
+            (".into_iter".to_owned(), vec![]),
+            (".map".to_owned(), vec![]),
+        ],
+        "Iterator::map is not Store::map"
+    );
+    assert!(
+        doubled
+            .calls
+            .iter()
+            .all(|c| c.targets.iter().all(|t| t.certainty == Certainty::Exact))
+    );
+    assert_eq!(
+        calls(unit(&document, "app::circle"))[1],
+        (".area".to_owned(), vec![circle_area.clone()]),
+        "the type `make` returns picks the implementation"
+    );
+    assert!(
+        calls(unit(&document, "app::Shape::describe"))
+            .contains(&(".area".to_owned(), vec![circle_area, square_area])),
+        "through the trait, any implementation may run"
+    );
+    assert_eq!(
+        calls(unit(&document, "app::report")),
+        [("apply".to_owned(), vec![])],
+        "a parameter is not a function of the same name"
+    );
 }

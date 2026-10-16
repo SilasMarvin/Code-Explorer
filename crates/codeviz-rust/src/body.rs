@@ -12,7 +12,10 @@ use crate::{
         UnitKind,
     },
     hash::content_hash,
-    syntax::{is_constructor, label, location, path_segments, receiver_type_path, text},
+    syntax::{
+        callee_name, is_constructor, label, location, path_segments, receiver_type_path, start,
+        text,
+    },
 };
 
 pub(crate) struct Context<'a> {
@@ -632,6 +635,8 @@ impl Builder<'_, '_, '_> {
             via_call,
             propagates: false,
             location: location(self.file.path, node),
+            // A call expression's callee, or the name passed or macro-called itself.
+            name_at: callee_name(node.child_by_field_name("function").unwrap_or(node)).map(start),
         });
         self.calls.len() - 1
     }
@@ -669,6 +674,7 @@ impl Builder<'_, '_, '_> {
             module: self.cx.module.to_vec(),
             owner: self.cx.owner.cloned(),
             location: Some(location(self.file.path, node)),
+            name_at: None,
             content_hash: Some(content_hash(node, self.file.source)),
             doc: None,
             attributes: BTreeMap::new(),

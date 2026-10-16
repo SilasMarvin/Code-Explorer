@@ -10,10 +10,10 @@ use codeviz_ir::{CallKey, ContentHash, Location, Mode, Role, Scalar, Step};
 use tree_sitter::{Node, Parser};
 
 use crate::{
-    AnalyzeOptions, Error, body,
+    Error, body,
     hash::content_hash,
     syntax::{
-        collect_use, compact, doc_comment, is_test_only, location, receiver_type_path, text,
+        collect_use, compact, doc_comment, is_test_only, location, receiver_type_path, start, text,
         type_name, unwrapped_type_path,
     },
 };
@@ -81,6 +81,8 @@ pub(crate) struct RawCall {
     pub(crate) via_call: Option<usize>,
     pub(crate) propagates: bool,
     pub(crate) location: Location,
+    /// Where the name of what it calls is written, as [`crate::syntax::start`] gives it.
+    pub(crate) name_at: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +128,8 @@ pub(crate) struct RawUnit {
     pub(crate) module: Vec<String>,
     pub(crate) owner: Option<Owner>,
     pub(crate) location: Option<Location>,
+    /// Where a function's name is written, as [`crate::syntax::start`] gives it.
+    pub(crate) name_at: Option<(u32, u32)>,
     pub(crate) content_hash: Option<ContentHash>,
     pub(crate) doc: Option<String>,
     pub(crate) attributes: BTreeMap<String, Scalar>,
@@ -150,6 +154,7 @@ impl RawUnit {
             module,
             owner: None,
             location: None,
+            name_at: None,
             content_hash: None,
             doc: None,
             attributes: BTreeMap::new(),
@@ -201,7 +206,7 @@ pub(crate) struct Extraction {
 
 pub(crate) struct Extractor {
     parser: Parser,
-    options: AnalyzeOptions,
+    include_tests: bool,
     pub(crate) out: Extraction,
 }
 
@@ -211,12 +216,12 @@ pub(crate) struct File<'a> {
 }
 
 impl Extractor {
-    pub(crate) fn new(options: AnalyzeOptions) -> Result<Self, Error> {
+    pub(crate) fn new(include_tests: bool) -> Result<Self, Error> {
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
         Ok(Self {
             parser,
-            options,
+            include_tests,
             out: Extraction::default(),
         })
     }
@@ -282,7 +287,7 @@ impl Extractor {
         let source = file.source;
         match node.kind() {
             "function_item" => {
-                if self.options.include_tests || !is_test_only(node, source) {
+                if self.include_tests || !is_test_only(node, source) {
                     self.function(file, node, module, owner);
                 }
             }
@@ -329,7 +334,7 @@ impl Extractor {
                 }
             }
             "mod_item" => {
-                if !self.options.include_tests && is_test_only(node, source) {
+                if !self.include_tests && is_test_only(node, source) {
                     return true;
                 }
                 if let (Some(name), Some(body)) = (
@@ -381,6 +386,7 @@ impl Extractor {
         ) else {
             return;
         };
+        let name_at = start(name);
         let name = text(name, source).to_owned();
 
         let mut parent = module.to_vec();
@@ -442,6 +448,7 @@ impl Extractor {
             module: module.to_vec(),
             owner: owner.cloned(),
             location: Some(location(file.path, node)),
+            name_at: Some(name_at),
             content_hash: Some(content_hash(node, source)),
             doc: doc_comment(node, source),
             attributes,

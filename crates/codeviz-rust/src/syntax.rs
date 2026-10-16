@@ -42,6 +42,25 @@ pub(crate) fn location(path: &Path, node: Node<'_>) -> Location {
     }
 }
 
+/// The identifier that names what a call invokes: `f`, the `f` of `a::f` or
+/// `a::f::<T>`, the `m` of `x.m`.
+pub(crate) fn callee_name(node: Node<'_>) -> Option<Node<'_>> {
+    match node.kind() {
+        "identifier" | "field_identifier" => Some(node),
+        "scoped_identifier" => node.child_by_field_name("name"),
+        "field_expression" => node.child_by_field_name("field"),
+        "generic_function" => callee_name(node.child_by_field_name("function")?),
+        _ => None,
+    }
+}
+
+/// Where `node` starts: its zero-based line and byte column.
+pub(crate) fn start(node: Node<'_>) -> (u32, u32) {
+    let point = node.start_position();
+    let to_u32 = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+    (to_u32(point.row), to_u32(point.column))
+}
+
 /// `a::b::c`, `Self::new`, `Vec::<u8>::new` → path segments. `None` for anything else.
 pub(crate) fn path_segments(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
     match node.kind() {

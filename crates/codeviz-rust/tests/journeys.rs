@@ -43,7 +43,7 @@ fn render(system: &System, entry: &UnitId) -> String {
 #[test]
 fn golden_journeys() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/journeys");
-    let document = analyze(&fixture, AnalyzeOptions::default())
+    let document = analyze(&fixture, &AnalyzeOptions::default())
         .unwrap()
         .document;
     assert_eq!(codeviz_ir::validate(&document), Vec::new());

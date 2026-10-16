@@ -13,7 +13,7 @@ use anyhow::{Context, bail};
 use codeviz_core::{Change, Diff, System, align};
 use codeviz_ir::Document;
 
-use crate::{ir::Language, view::Display};
+use crate::{ir::Source, view::Display};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct DiffArgs {
@@ -24,12 +24,8 @@ pub(crate) struct DiffArgs {
     /// Directory to analyze, inside the repository.
     #[arg(short = 'C', long, default_value = ".")]
     path: PathBuf,
-    /// Source language; detected from the directory when omitted.
-    #[arg(short, long, value_enum)]
-    lang: Option<Language>,
-    /// Include `#[cfg(test)]` code.
-    #[arg(long)]
-    include_tests: bool,
+    #[command(flatten)]
+    source: Source,
     /// Print what changed and exit instead of opening the viewer.
     #[arg(long)]
     summary: bool,
@@ -49,7 +45,13 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     let prefix = git(&path, &["rev-parse", "--show-prefix"])?;
     let (base, head) = revisions(&top, &args.revisions)?;
 
-    let analyze = |root: &Path| analyze_dir(root, args.lang, args.include_tests);
+    // The checkouts have no build of their own: rust-analyzer builds their build
+    // scripts and proc macros where the working tree's are, not from scratch.
+    let target_dir = crate::ir::target_dir(&path);
+    let analyze = |root: &Path| {
+        crate::ir::analyze_dir(root, &args.source, target_dir.as_deref())
+            .with_context(|| format!("cannot analyze {}", root.display()))
+    };
     let old = Checkout::new(&top, &base)?;
     let before = analyze(&old.dir.join(&prefix))?;
     let (after, new) = match &head {
@@ -82,15 +84,6 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
         eprintln!("{title}: nothing changed");
     }
     crate::view::open(vec![after], vec![before], &args.display, &title)
-}
-
-fn analyze_dir(
-    root: &Path,
-    lang: Option<Language>,
-    include_tests: bool,
-) -> anyhow::Result<Document> {
-    crate::ir::analyze_dir(root, lang, include_tests)
-        .with_context(|| format!("cannot analyze {}", root.display()))
 }
 
 /// The revision to compare from, and the one to compare to (the working tree if none).

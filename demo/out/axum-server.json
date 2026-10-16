@@ -437,7 +437,7 @@
           "targets": [
             {
               "unit": "rust:axum_server::store::Store::order",
-              "certainty": "inferred"
+              "certainty": "exact"
             }
           ],
           "location": {

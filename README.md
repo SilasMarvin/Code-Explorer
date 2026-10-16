@@ -11,6 +11,7 @@ mise run demo-merged                 # architecture + Rust code as one system
 mise run demo-diff                   # the Rust demo after a change, diffed
 
 codeviz analyze <dir> -o app.json    # Rust or Python source → IR
+codeviz analyze <dir> --resolve syntax   # skip rust-analyzer: fast, guesses method calls
 codeviz import pipeline.yml -o ci.json
 codeviz validate app.json
 codeviz journey app.json             # list entries
@@ -60,7 +61,7 @@ Rust, Python, a Buildkite pipeline and a hand-written architecture.
 | --- | --- |
 | `codeviz-ir` | The IR types, JSON (de)serialization, schema and validation. |
 | `codeviz-core` | Merges documents; unrolls journeys; enumerates scenarios; diffs versions. |
-| `codeviz-rust` | Rust producer (tree-sitter). |
+| `codeviz-rust` | Rust producer (tree-sitter, calls resolved by rust-analyzer). |
 | `codeviz-python` | Python producer (tree-sitter). |
 | `codeviz-buildkite` | Buildkite pipeline importer. |
 | `codeviz-layout` | The codebase map, the force-directed graph, journey layout. Renderer-agnostic. |
@@ -69,10 +70,17 @@ Rust, Python, a Buildkite pipeline and a hand-written architecture.
 
 Producers depend only on `codeviz-ir`. Core, layout and the viewer never see a producer.
 
-## Limits of syntactic resolution
+## Call resolution
 
-There is no type information. Method calls on anything other than `self` are matched
-by name across the analyzed source; calls into trait impls of external traits are not
-matched by name. Capitalized call targets are treated as constructors and dropped.
-Trait-object and generic dispatch, re-exports via `pub use`, and macro-generated items
-are not modeled.
+Rust calls are resolved by `rust-analyzer scip`, which type-checks the workspace: a
+method call goes to the method that actually runs, a call into std or a dependency goes
+nowhere, and a call through a trait object or generic bound goes to every
+implementation in the analyzed source. It builds build scripts and proc macros first,
+so it takes seconds where the syntax takes a fraction of one; `codeviz diff` points the
+checkouts at the working tree's target directory so they are not built from scratch.
+`mise install` installs it. Without it, or with `--resolve syntax`, and for any call it
+leaves unresolved (code outside the Cargo workspace, or in a crate that does not build),
+calls are resolved from the syntax alone: module paths, `use` imports, `self` and
+declared types are followed, and a method call on a value of unknown type is matched by
+name and marked `inferred`. Capitalized call targets are treated as constructors and
+dropped either way.

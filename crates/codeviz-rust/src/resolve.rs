@@ -9,8 +9,9 @@ use codeviz_ir::{
     CallKey, Certainty, Dispatch, Document, Entry, Invocation, Step, Target, Unit, UnitId,
 };
 
-use crate::extract::{
-    CallTarget, Extraction, Fields, RawCall, RawUnit, Receiver, ReceiverRoot, UnitKind,
+use crate::{
+    extract::{CallTarget, Extraction, Fields, RawCall, RawUnit, Receiver, ReceiverRoot, UnitKind},
+    scip::{self, Scip},
 };
 
 /// Bound on `use` indirection, so import cycles cannot loop forever.
@@ -24,11 +25,13 @@ pub(crate) fn id(path: &[String]) -> UnitId {
 pub(crate) fn assemble(
     extraction: &mut Extraction,
     crate_names: &HashSet<String>,
+    scip: Option<&Scip>,
     document: &mut Document,
 ) {
     disambiguate(&mut extraction.units);
     let extraction = &*extraction;
-    let index = Index::new(extraction, crate_names);
+    let mut index = Index::new(extraction, crate_names);
+    index.semantic = scip.map(|scip| Semantic::new(scip, extraction));
     for raw in &extraction.units {
         document.units.push(index.unit(raw));
     }
@@ -45,6 +48,40 @@ struct Index<'a> {
     methods: HashMap<&'a str, Vec<usize>>,
     /// `(type name, method name)` to every method on that type, trait impls included.
     by_type: HashMap<(&'a str, &'a str), Vec<usize>>,
+    semantic: Option<Semantic<'a>>,
+}
+
+/// rust-analyzer's resolution, tied to the extracted units.
+struct Semantic<'a> {
+    scip: &'a Scip,
+    /// Each function symbol defined in the analyzed source, to its units.
+    units: HashMap<&'a str, Vec<usize>>,
+}
+
+impl<'a> Semantic<'a> {
+    fn new(scip: &'a Scip, extraction: &Extraction) -> Self {
+        let at: HashMap<scip::Position, usize> = extraction
+            .units
+            .iter()
+            .enumerate()
+            .filter_map(|(index, unit)| {
+                let (line, column) = unit.name_at?;
+                Some(((unit.location.as_ref()?.uri.clone(), line, column), index))
+            })
+            .collect();
+        let mut units: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (symbol, positions) in &scip.definitions {
+            if !scip::is_function(symbol) {
+                continue;
+            }
+            for position in positions {
+                if let Some(&index) = at.get(position) {
+                    units.entry(symbol.as_str()).or_default().push(index);
+                }
+            }
+        }
+        Self { scip, units }
+    }
 }
 
 impl<'a> Index<'a> {
@@ -77,6 +114,7 @@ impl<'a> Index<'a> {
             by_path,
             methods,
             by_type,
+            semantic: None,
         }
     }
 
@@ -258,6 +296,9 @@ impl<'a> Index<'a> {
 
     /// What a call site may invoke, before closures are considered.
     fn candidates(&self, caller: &RawUnit, call: &RawCall) -> (Vec<usize>, Certainty) {
+        if let Some(resolved) = self.resolved(call) {
+            return resolved;
+        }
         match &call.target {
             CallTarget::Path(segments) => self.resolve_path(caller, segments),
             // A bare name passed as a value is far more often a variable than a
@@ -271,6 +312,45 @@ impl<'a> Index<'a> {
             }
             CallTarget::Closure(_) => (Vec::new(), Certainty::Exact),
         }
+    }
+
+    /// What rust-analyzer resolved `call` to, if it did. A call into std or a
+    /// dependency, or of a local binding, resolves to nothing.
+    fn resolved(&self, call: &RawCall) -> Option<(Vec<usize>, Certainty)> {
+        let semantic = self.semantic.as_ref()?;
+        if matches!(call.target, CallTarget::Closure(_)) {
+            return None;
+        }
+        let (line, column) = call.name_at?;
+        let position = (call.location.uri.clone(), line, column);
+        let symbols = semantic.scip.symbols_at(&position)?;
+        let Some(symbol) = symbols.iter().find(|s| scip::is_function(s)) else {
+            // A local binding, a field, a constructor: nothing of ours runs.
+            return Some((Vec::new(), Certainty::Exact));
+        };
+        let symbol = symbol.as_str();
+        let defined = semantic.units.get(symbol).map_or(&[][..], Vec::as_slice);
+        let Some((trait_name, method)) =
+            scip::trait_method(symbol).filter(|(t, _)| self.extraction.traits.contains(*t))
+        else {
+            return Some((defined.to_vec(), Certainty::Exact));
+        };
+        // Called through a generic bound or a trait object: any implementation may run,
+        // or the trait's own default.
+        let mut implementations: Vec<usize> = self
+            .methods_named(method)
+            .filter(|&i| {
+                self.extraction
+                    .units
+                    .get(i)
+                    .and_then(|u| u.owner.as_ref())
+                    .is_some_and(|o| {
+                        o.trait_name.as_deref() == Some(trait_name) && o.type_name != trait_name
+                    })
+            })
+            .collect();
+        implementations.extend_from_slice(defined);
+        Some((implementations, Certainty::Exact))
     }
 
     /// Resolves a type path written in `scope`'s module; `Self` is `scope`'s owner.

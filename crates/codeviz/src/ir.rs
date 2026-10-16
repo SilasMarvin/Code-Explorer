@@ -14,20 +14,42 @@ pub(crate) enum Language {
     Python,
 }
 
+/// How Rust calls are resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum Resolve {
+    /// rust-analyzer when it is installed, the syntax otherwise.
+    Auto,
+    /// rust-analyzer, which type-checks the workspace: exact, but slow.
+    RustAnalyzer,
+    /// The syntax alone: fast, but method calls on values of unknown type are matched
+    /// by name.
+    Syntax,
+}
+
+/// What to analyze, and how.
+#[derive(Debug, clap::Args)]
+pub(crate) struct Source {
+    /// Source language; detected from the directory when omitted.
+    #[arg(short, long, value_enum)]
+    lang: Option<Language>,
+    /// Include `#[cfg(test)]` code.
+    #[arg(long)]
+    include_tests: bool,
+    /// How Rust calls are resolved.
+    #[arg(long, value_enum, default_value_t = Resolve::Auto)]
+    resolve: Resolve,
+}
+
 #[derive(Debug, clap::Args)]
 pub(crate) struct AnalyzeArgs {
     /// Directory to analyze.
     #[arg(default_value = ".")]
     path: PathBuf,
-    /// Source language; detected from the directory when omitted.
-    #[arg(short, long, value_enum)]
-    lang: Option<Language>,
     /// Write the document here instead of stdout.
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// Include `#[cfg(test)]` code.
-    #[arg(long)]
-    include_tests: bool,
+    #[command(flatten)]
+    source: Source,
 }
 
 pub(crate) fn analyze(args: &AnalyzeArgs) -> anyhow::Result<()> {
@@ -35,28 +57,69 @@ pub(crate) fn analyze(args: &AnalyzeArgs) -> anyhow::Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot open {}", args.path.display()))?;
-    let document = analyze_dir(&root, args.lang, args.include_tests)?;
+    let document = analyze_dir(&root, &args.source, None)?;
     write(&document, args.output.as_ref())
 }
 
-/// Analyzes the source under `root`, in `language` or the one its files suggest.
+/// Analyzes the source under `root`, in the language asked for or the one its files
+/// suggest. rust-analyzer builds into `target_dir` when one is given.
 pub(crate) fn analyze_dir(
     root: &Path,
-    language: Option<Language>,
-    include_tests: bool,
+    source: &Source,
+    target_dir: Option<&Path>,
 ) -> anyhow::Result<Document> {
-    let language = match language {
+    let language = match source.lang {
         Some(language) => language,
         None if root.join("Cargo.toml").exists() => Language::Rust,
         None => Language::Python,
     };
-    Ok(match language {
-        Language::Rust => {
-            let options = codeviz_rust::AnalyzeOptions { include_tests };
-            codeviz_rust::analyze(root, options)?.document
+    if language == Language::Python {
+        return Ok(codeviz_python::analyze(root)?);
+    }
+    let mut options = codeviz_rust::AnalyzeOptions {
+        include_tests: source.include_tests,
+        resolver: codeviz_rust::Resolver::Syntax,
+    };
+    let use_rust_analyzer = match source.resolve {
+        Resolve::Syntax => false,
+        Resolve::RustAnalyzer => true,
+        Resolve::Auto => codeviz_rust::rust_analyzer_available(),
+    };
+    if !use_rust_analyzer {
+        return Ok(codeviz_rust::analyze(root, &options)?.document);
+    }
+    eprintln!("rust-analyzer: resolving calls in {}", root.display());
+    let syntax = options.clone();
+    options.resolver = codeviz_rust::Resolver::RustAnalyzer {
+        target_dir: target_dir.map(Path::to_path_buf),
+    };
+    match codeviz_rust::analyze(root, &options) {
+        Ok(analysis) => Ok(analysis.document),
+        Err(error) if source.resolve == Resolve::Auto => {
+            eprintln!("rust-analyzer: {error:#}; resolving from the syntax instead");
+            Ok(codeviz_rust::analyze(root, &syntax)?.document)
         }
-        Language::Python => codeviz_python::analyze(root)?,
-    })
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The target directory of the Cargo workspace at `dir`, unless `CARGO_TARGET_DIR`
+/// already picks one.
+pub(crate) fn target_dir(dir: &Path) -> Option<PathBuf> {
+    if std::env::var_os("CARGO_TARGET_DIR").is_some() {
+        return None;
+    }
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    metadata
+        .get("target_directory")?
+        .as_str()
+        .map(PathBuf::from)
 }
 
 #[derive(Debug, clap::Args)]
