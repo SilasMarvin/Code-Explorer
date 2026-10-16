@@ -60,6 +60,9 @@ pub(crate) struct Display {
     /// What the reveal starts from; by default a diff's changes, else the focus.
     #[arg(long, value_enum)]
     reveal_around: Option<AroundArg>,
+    /// Open a diff with what did not change showing too, not only the changes.
+    #[arg(long)]
+    show_unchanged: bool,
     /// How the reveal measures nearness.
     #[arg(long, value_enum, default_value_t = NearArg::Calls)]
     reveal_by: NearArg,
@@ -220,6 +223,9 @@ pub(crate) fn open(
             },
             args.reveal,
         );
+    if args.show_unchanged {
+        viewer = viewer.with_unchanged();
+    }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
     }

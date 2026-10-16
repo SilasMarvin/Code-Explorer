@@ -419,7 +419,7 @@ pub(crate) fn frame_reveal(
         return;
     }
     for mut camera in &mut cameras {
-        if lens.source == Source::Focus && explorer.graph_focus().is_some() {
+        if lens.source == Source::Focus && !lens.changes_only && explorer.graph_focus().is_some() {
             orbit_focus(&explorer, &mut camera);
             continue;
         }

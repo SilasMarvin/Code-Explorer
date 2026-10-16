@@ -47,7 +47,8 @@ callees) is one node, not a removal and an addition. `D` cycles three views:
   points it affects (or, without declared entries, the functions nothing calls).
 - **Morph**: each version laid out alone, animating between them; `T` pauses.
 
-Focusing a node shows its old and new source as a line diff.
+A diff opens showing only what changed, the focus and the journey's root; `C` (or
+`--show-unchanged`) brings back everything else. Focusing a node shows its old and new source as a line diff.
 
 ## The model
 

@@ -22,7 +22,7 @@ use crate::{
     camera::OrbitCamera,
     explorer::{Clustering, Explorer},
     graph_view::{self, NodeLook},
-    lens::SPECK,
+    lens::{Lens, SPECK},
     scene::{PALETTE, Tile},
     ui::{MUTED, egui_color},
 };
@@ -395,8 +395,20 @@ impl Plugin for DiffPlugin {
     }
 }
 
-/// D cycles the styles; T pauses or resumes the morph.
-fn diff_keys(keys: Res<ButtonInput<KeyCode>>, mut view: ResMut<DiffView>) {
+/// D cycles the styles; T pauses or resumes the morph; C shows only what changed, or
+/// everything again.
+fn diff_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut view: ResMut<DiffView>,
+    mut explorer: ResMut<Explorer>,
+) {
+    if keys.just_pressed(KeyCode::KeyC) {
+        let lens = explorer.lens();
+        explorer.set_lens(Lens {
+            changes_only: !lens.changes_only,
+            ..lens
+        });
+    }
     if keys.just_pressed(KeyCode::KeyD) {
         view.style = view.style.next();
     }
@@ -632,30 +644,17 @@ pub(crate) fn diff_card(
                 .show(ui, |ui| {
                     ui.set_max_width(300.0);
                     ui.label(egui::RichText::new("Changes").strong().size(15.0));
-                    let totals = view.totals;
-                    ui.horizontal(|ui| {
-                        let count = |ui: &mut egui::Ui, change, n: usize, what: &str| {
-                            if n == 0 {
-                                return;
-                            }
-                            ui.label(
-                                egui::RichText::new(format!("{}{n} {what}", sign(change)))
-                                    .color(egui_color(change_color(change))),
-                            );
-                        };
-                        count(ui, Change::Added, totals.added, "added");
-                        count(ui, Change::Modified, totals.modified, "rewritten");
-                        count(ui, Change::Removed, totals.removed, "removed");
-                        count(ui, Change::Moved, totals.moved, "moved");
-                    });
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "calls: +{} new, −{} gone",
-                            totals.calls_added, totals.calls_removed
-                        ))
-                        .small()
-                        .color(MUTED),
-                    );
+                    totals_line(ui, view.totals);
+                    let mut lens = explorer.lens();
+                    if ui
+                        .checkbox(&mut lens.changes_only, "Only changes")
+                        .on_hover_text(
+                            "Hide what did not change, but for the focus and the journey's root (C)",
+                        )
+                        .changed()
+                    {
+                        explorer.set_lens(lens);
+                    }
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut style, DiffStyle::Status, "Status")
@@ -717,6 +716,33 @@ pub(crate) fn diff_card(
     if let Some(tile) = chosen {
         explorer.focus_node(tile);
     }
+}
+
+/// How many functions changed each way, and how many calls came and went.
+fn totals_line(ui: &mut egui::Ui, totals: Totals) {
+    ui.horizontal(|ui| {
+        let count = |ui: &mut egui::Ui, change, n: usize, what: &str| {
+            if n == 0 {
+                return;
+            }
+            ui.label(
+                egui::RichText::new(format!("{}{n} {what}", sign(change)))
+                    .color(egui_color(change_color(change))),
+            );
+        };
+        count(ui, Change::Added, totals.added, "added");
+        count(ui, Change::Modified, totals.modified, "rewritten");
+        count(ui, Change::Removed, totals.removed, "removed");
+        count(ui, Change::Moved, totals.moved, "moved");
+    });
+    ui.label(
+        egui::RichText::new(format!(
+            "calls: +{} new, −{} gone",
+            totals.calls_added, totals.calls_removed
+        ))
+        .small()
+        .color(MUTED),
+    );
 }
 
 /// The entry points a change reaches, nearest first, in a list that scrolls past

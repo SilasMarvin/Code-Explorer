@@ -51,6 +51,8 @@ pub struct Viewer {
     lens: Lens,
     /// Whether the lens's starting point was chosen, rather than left to the default.
     lens_source: bool,
+    /// Whether a diff opens showing only what changed.
+    changes_only: bool,
     focus: Option<UnitId>,
     diff: Option<Comparison>,
 }
@@ -81,6 +83,7 @@ impl Viewer {
             clustering: Clustering::default(),
             lens: Lens::default(),
             lens_source: false,
+            changes_only: true,
             focus: None,
             diff: None,
         }
@@ -200,6 +203,13 @@ impl Viewer {
         self
     }
 
+    /// Opens a diff with everything showing, not only what changed.
+    #[must_use]
+    pub fn with_unchanged(mut self) -> Self {
+        self.changes_only = false;
+        self
+    }
+
     /// Opens with this function focused in the graph.
     #[must_use]
     pub fn with_focus(mut self, unit: UnitId) -> Self {
@@ -274,12 +284,16 @@ impl Viewer {
                 view.playing = false;
             }
             explorer.set_changed_tiles(view.changed().map(|(tile, _)| tile).collect());
-            if !self.lens_source {
-                explorer.set_lens(Lens {
-                    source: Source::Changes,
-                    ..explorer.lens()
-                });
-            }
+            // A diff opens on what changed alone, around the changes.
+            explorer.set_lens(Lens {
+                source: if self.lens_source {
+                    explorer.lens().source
+                } else {
+                    Source::Changes
+                },
+                changes_only: self.changes_only,
+                ..explorer.lens()
+            });
             if !focused && let Some(tile) = view.hub() {
                 explorer.focus_node(tile);
             }

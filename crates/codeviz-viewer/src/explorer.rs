@@ -682,7 +682,25 @@ impl Explorer {
     /// How fully the lens would show each node, by tile, once eased there; `None`
     /// when it shows everything. The journey's cursor always shows.
     pub(crate) fn reveal_targets(&self) -> Option<Vec<f32>> {
-        let mut targets = self.lens.targets(&self.graph, &self.seeds())?;
+        let mut targets = if self.lens.changes_only && !self.changed_tiles.is_empty() {
+            // What changed, and where you stand: the focus and the journey's root.
+            let mut targets = vec![0.0; self.map.tiles.len()];
+            let root = self.root().and_then(|u| self.map.tile_of(u));
+            for tile in self
+                .changed_tiles
+                .iter()
+                .copied()
+                .chain(self.graph_focus())
+                .chain(root)
+            {
+                if let Some(target) = targets.get_mut(tile) {
+                    *target = 1.0;
+                }
+            }
+            targets
+        } else {
+            self.lens.targets(&self.graph, &self.seeds())?
+        };
         if let Some(cursor) = self.focus().and_then(|u| self.map.tile_of(u))
             && let Some(target) = targets.get_mut(cursor)
         {
@@ -1136,6 +1154,34 @@ mod tests {
             [0.3, 1.0, 0.0, 1.0],
             "from changes, only what calls them counts"
         );
+    }
+
+    #[test]
+    fn only_changes_hides_the_rest_but_where_you_stand() {
+        let mut explorer = explorer();
+        let tile = |explorer: &Explorer, name: &str| {
+            explorer
+                .map()
+                .tile_of(&UnitId::new(format!("x:{name}")))
+                .unwrap()
+        };
+        let (main, a, b, c) = (
+            tile(&explorer, "main"),
+            tile(&explorer, "a"),
+            tile(&explorer, "b"),
+            tile(&explorer, "c"),
+        );
+        explorer.set_changed_tiles(vec![c]);
+        explorer.focus_node(b);
+        explorer.set_lens(Lens {
+            changes_only: true,
+            ..Lens::default()
+        });
+        explorer.settle_visibility();
+        assert!(explorer.shown(c), "what changed");
+        assert!(explorer.shown(b), "the focus");
+        assert!(explorer.shown(main), "the journey's root");
+        assert!(!explorer.shown(a), "and nothing else");
     }
 
     #[test]

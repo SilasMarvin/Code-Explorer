@@ -1045,6 +1045,11 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     let mut lens = explorer.lens();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Show").small().color(MUTED));
+        if lens.changes_only && diffing {
+            ui.label("only changes")
+                .on_hover_text("Everything else is hidden; C or the Changes card shows it");
+            return;
+        }
         if ui
             .selectable_label(lens.reach.is_none(), "All")
             .on_hover_text("Every function (=, until it shows all)")
@@ -1180,7 +1185,7 @@ fn draw_graph_labels(
     let mut centers: Vec<(Vec3, usize)> = vec![(Vec3::ZERO, 0); map.groups.len()];
     for tile in 0..map.tiles.len() {
         // A container counts only the functions showing.
-        if diff.is_some_and(|d| d.presence(tile) < 0.3) {
+        if diff.is_some_and(|d| d.presence(tile) < 0.3) || explorer.visibility(tile) < 0.5 {
             continue;
         }
         if let (Some(group), Some(at)) = (graph.group(tile), explorer.tile_point(tile))
@@ -1627,6 +1632,7 @@ const KEYS: [(&str, &[(&str, &str)]); 3] = [
             ("Q", "show all → 2 steps → 1 step"),
             ("L", "reveal around: focus → changes → journey"),
             ("G", "nearness by: calls → space → blend"),
+            ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
             ("F", "face the focus head-on"),
             ("R", "frame the whole graph"),

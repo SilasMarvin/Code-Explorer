@@ -84,6 +84,8 @@ pub(crate) struct Lens {
     pub(crate) measure: Measure,
     /// Steps out from the start that show in full; `None` shows everything.
     pub(crate) reach: Option<u32>,
+    /// Under a diff, show only what changed, whatever the reach.
+    pub(crate) changes_only: bool,
 }
 
 impl Lens {
