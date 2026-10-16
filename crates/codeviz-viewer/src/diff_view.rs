@@ -530,6 +530,18 @@ pub(crate) fn draw_diff_graph(
 ) {
     let graph = explorer.graph();
     let center = explorer.attention();
+    // The calls the open journey discloses, drawn as arrows so it reads as a path.
+    let track = explorer.track();
+    let path: HashSet<(usize, usize)> = track
+        .scene()
+        .edges
+        .iter()
+        .filter(|edge| explorer.disclosed(edge.callee))
+        .filter_map(|edge| {
+            let node = |span| track.unit_id(span).and_then(|u| explorer.map().tile_of(u));
+            Some((node(edge.caller)?, node(edge.callee)?))
+        })
+        .collect();
     for &(from, to) in graph.calls.iter().chain(&graph.ghosts) {
         let (Some(a), Some(b)) = (explorer.tile_point(from), explorer.tile_point(to)) else {
             continue;
@@ -577,6 +589,10 @@ pub(crate) fn draw_diff_graph(
                 } else if touches {
                     gizmos
                         .arrow(a, b - back, Color::srgba(1.0, 1.0, 1.0, 0.7 * shown))
+                        .with_tip_length(0.6);
+                } else if path.contains(&(from, to)) {
+                    gizmos
+                        .arrow(a, b - back, Color::srgba(0.85, 0.9, 1.0, 0.5 * shown))
                         .with_tip_length(0.6);
                 } else {
                     gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, 0.07 * shown));
@@ -714,7 +730,7 @@ pub(crate) fn diff_card(
         view.style = style;
     }
     if let Some(tile) = chosen {
-        explorer.focus_node(tile);
+        explorer.open_at(tile);
     }
 }
 

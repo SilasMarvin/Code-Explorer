@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
 
 use crate::{
+    disclosure::Disclose,
     explorer::{Autoplay, Clustering, Explorer, SpanRef, Step, Track},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
@@ -110,12 +111,14 @@ fn spawn_nodes(
     }
 }
 
-/// Click focuses a node; shift-click opens a journey from it.
+/// Click centers on a node and opens its journey; shift-click opens it as another
+/// journey alongside.
 fn on_node_click(
     click: On<PointerClick>,
     tiles: Query<&Tile>,
     keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
+    mut panel: ResMut<JourneyPanel>,
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -131,7 +134,11 @@ fn on_node_click(
             explorer.add_track(unit);
         }
     } else {
-        explorer.focus_node(tile.0);
+        explorer.open_at(tile.0);
+        // Clicking a node is asking what it does: its journey opens with it.
+        if panel.mode == PanelMode::Hidden {
+            panel.mode = PanelMode::Docked;
+        }
     }
 }
 
@@ -209,7 +216,7 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
             explorer.graph().sequence(focus).get(index).copied()
         };
         if let Some(tile) = target {
-            explorer.focus_node(tile);
+            explorer.open_at(tile);
         }
     }
     if keys.just_pressed(KeyCode::Backspace) && !explorer.focus_back() {
@@ -246,6 +253,30 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     };
     if lens != explorer.lens() {
         explorer.set_lens(lens);
+    }
+    // , and . disclose a level less or more of the journey; V switches between
+    // disclosing by depth and by time.
+    let disclose = explorer.disclose();
+    let disclose = if keys.just_pressed(KeyCode::Comma) {
+        match disclose {
+            Disclose::Depth(depth) => Disclose::Depth(depth.saturating_sub(1).max(1)),
+            Disclose::Time => Disclose::Time,
+        }
+    } else if keys.just_pressed(KeyCode::Period) {
+        match disclose {
+            Disclose::Depth(depth) => Disclose::Depth(depth + 1),
+            Disclose::Time => Disclose::Time,
+        }
+    } else if keys.just_pressed(KeyCode::KeyV) {
+        match disclose {
+            Disclose::Depth(_) => Disclose::Time,
+            Disclose::Time => Disclose::default(),
+        }
+    } else {
+        disclose
+    };
+    if disclose != explorer.disclose() {
+        explorer.set_disclose(disclose);
     }
     if keys.just_pressed(KeyCode::KeyK) {
         let next = match explorer.clustering() {

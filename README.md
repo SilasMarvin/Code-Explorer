@@ -23,9 +23,14 @@ codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
 ```
 
-The codebase floats as a graph, one node per function; the journey through the focused
-function docks over it as a flame graph. Click a node to focus it: what calls it lights
-amber, what it calls blue. Digits walk to its nth call, shift+digit to its nth caller,
+The codebase floats as a graph, one node per function, each module gathered in its own
+faint ring. Click a node and the camera orbits it, and its journey opens docked as a
+flame graph: what it calls directly first, numbered `1`, `2`, … in the flame graph, the
+outline and on the graph's labels alike, so a bar and its node match at a glance.
+`,`/`.` show a level less or more, a bar's `+N` opens the calls folded under it, and
+`V` switches to showing calls only as the cursor reaches them. A closure counts as part
+of the function around it. What calls the focus lights amber, what it calls blue.
+Digits walk to its nth call, shift+digit to its nth caller,
 `-` and `=` reveal less or more around a starting point, the focus, a diff's changes
 or the active journey (`L` switches), measured in calls, distance in the graph, or a
 blend of both (`G` switches); what is out of reach dims, then shrinks to a speck. `Q`

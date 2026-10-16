@@ -5,11 +5,12 @@
 
 use bevy::prelude::*;
 use bevy_egui::egui;
-use codeviz_core::SpanId;
+use codeviz_core::{Change, SpanId};
 use codeviz_ir::ExitKind;
 
 use crate::{
-    diff_view::{DiffView, change_color},
+    diff_view::{DiffView, change_color, sign},
+    disclosure::Disclose,
     explorer::{Confidence, Explorer, SpanRef, is_conditional, is_handoff},
     graph_view::{CALLEE, CALLER, Relation, relation},
     scene::{PALETTE, accent, lane_color},
@@ -57,8 +58,10 @@ const HEADER: f32 = 28.0;
 const PAD: f32 = 8.0;
 const ROW: f32 = 22.0;
 const ROW_GAP: f32 = 5.0;
-/// World units left between consecutive bars on a row.
-const BAR_GAP: f32 = 0.2;
+/// Share of a slot left between consecutive bars on a row.
+const BAR_GAP: f32 = 0.06;
+/// Pixels a slot needs to name its call.
+const NAMED_SLOT: f32 = 110.0;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
@@ -70,14 +73,15 @@ const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 pub(crate) fn split(
     mode: PanelMode,
     area: egui::Rect,
-    rows: usize,
+    (rows, slots): (usize, f32),
 ) -> (egui::Rect, Option<egui::Rect>) {
     match mode {
         PanelMode::Hidden => (area, None),
         PanelMode::Docked => {
             let size = egui::vec2(
-                (area.width() * 0.52)
-                    .clamp(380.0, 960.0)
+                // Wide enough to name each call, up to the whole width.
+                (slots * NAMED_SLOT + PAD * 2.0)
+                    .clamp(380.0, 960.0_f32.max(area.width() * 0.52))
                     .min(area.width() - MARGIN * 2.0),
                 // As tall as the journey needs, up to a share of the screen.
                 (HEADER + PAD * 2.0 + rows.max(2) as f32 * (ROW + ROW_GAP))
@@ -101,25 +105,17 @@ pub(crate) fn split(
 struct Bar {
     span: SpanId,
     rect: egui::Rect,
+    /// Whether it is disclosed; folded bars keep their place but are not drawn.
+    shown: bool,
 }
 
-/// How many rows the active journey takes.
-pub(crate) fn row_count(explorer: &Explorer) -> usize {
-    rows(explorer).len()
-}
-
-/// Rows from top to bottom: each distinct layout height, highest first.
-fn rows(explorer: &Explorer) -> Vec<f32> {
-    let mut heights: Vec<f32> = explorer
-        .track()
-        .scene()
-        .nodes
-        .iter()
-        .map(|n| n.position[1])
-        .collect();
-    heights.sort_by(|a, b| b.total_cmp(a));
-    heights.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
-    heights
+/// How many rows the active journey takes, and how many slots across.
+pub(crate) fn extent(explorer: &Explorer) -> (usize, f32) {
+    let disclosed = explorer.disclosure();
+    let slots = explorer
+        .journey()
+        .map_or(0.0, |j| disclosed.layout(j.root()).1);
+    (disclosed.rows(), slots)
 }
 
 /// Draws the panel and handles its input. Returns the cursor bar's rect, for a
@@ -160,6 +156,45 @@ pub(crate) fn draw(
     cursor_bar
 }
 
+/// How much of the journey shows: levels of calls below the root, or everything up to
+/// the cursor in time.
+fn disclosure(ui: &mut egui::Ui, explorer: &mut Explorer) {
+    let mut disclose = explorer.disclose();
+    let by_time = disclose == Disclose::Time;
+    if ui
+        .selectable_label(by_time, "time")
+        .on_hover_text("Show calls as the cursor reaches them: ] and [ step, Space plays (V)")
+        .clicked()
+    {
+        disclose = if by_time {
+            Disclose::default()
+        } else {
+            Disclose::Time
+        };
+    }
+    if let Disclose::Depth(depth) = disclose {
+        if ui
+            .small_button("+")
+            .on_hover_text("One more level of calls (.)")
+            .clicked()
+        {
+            disclose = Disclose::Depth(depth + 1);
+        }
+        ui.label(egui::RichText::new(format!("{depth}")).small());
+        if ui
+            .small_button("−")
+            .on_hover_text("One level of calls fewer (,)")
+            .clicked()
+        {
+            disclose = Disclose::Depth(depth.saturating_sub(1).max(1));
+        }
+        ui.label(egui::RichText::new("depth").small().color(MUTED));
+    }
+    if disclose != explorer.disclose() {
+        explorer.set_disclose(disclose);
+    }
+}
+
 fn header_bar(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -171,26 +206,7 @@ fn header_bar(
             .max_rect(rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
-            let active = explorer.active();
-            ui.label(
-                egui::RichText::new(format!("■ {}", track_title(explorer, active)))
-                    .color(egui_color(accent(active)))
-                    .strong(),
-            );
-            if let Some(scenario) = explorer
-                .scenario()
-                .and_then(|i| explorer.scenarios().get(i))
-            {
-                let (mark, color) = match scenario.outcome.kind {
-                    ExitKind::Return => ("✔", OK),
-                    _ => ("×", ERROR),
-                };
-                ui.label(
-                    egui::RichText::new(format!("{mark} {}", scenario.outcome.label))
-                        .color(color)
-                        .small(),
-                );
-            }
+            // The controls first, so the title takes what room is left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .small_button("×")
@@ -213,9 +229,43 @@ fn header_bar(
                 {
                     panel.zoom = None;
                 }
+                disclosure(ui, explorer);
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    title(ui, explorer);
+                });
             });
         },
     );
+}
+
+/// The journey's name and, when one is picked, the outcome it follows.
+fn title(ui: &mut egui::Ui, explorer: &Explorer) {
+    let active = explorer.active();
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(format!("■ {}", track_title(explorer, active)))
+                .color(egui_color(accent(active)))
+                .strong(),
+        )
+        .truncate(),
+    );
+    // The outcome only where it fits whole: the outline names it too.
+    if let Some(scenario) = explorer
+        .scenario()
+        .and_then(|i| explorer.scenarios().get(i))
+        .filter(|s| ui.available_width() > 16.0 + 6.0 * s.outcome.label.chars().count() as f32)
+    {
+        let (mark, color) = match scenario.outcome.kind {
+            ExitKind::Return => ("✔", OK),
+            _ => ("×", ERROR),
+        };
+        ui.label(
+            egui::RichText::new(format!("{mark} {}", scenario.outcome.label))
+                .color(color)
+                .small(),
+        );
+    }
 }
 
 #[expect(clippy::too_many_lines, reason = "one pass over the bars")]
@@ -244,19 +294,14 @@ fn canvas(
         );
         return None;
     }
-    let heights = rows(explorer);
-    let row_of = |y: f32| {
-        heights
-            .iter()
-            .position(|h| (h - y).abs() < 1e-3)
-            .unwrap_or_default() as f32
-    };
-    let start = scene.bounds.0[0];
-    let end = scene
-        .nodes
-        .iter()
-        .map(|n| n.position[0] + n.length)
-        .fold(start + 1.0, f32::max);
+    // Only what is disclosed is laid out, a slot per call.
+    let disclosed = explorer.disclosure();
+    let (placed, slots) = track
+        .journey()
+        .map(|j| disclosed.layout(j.root()))
+        .unwrap_or_default();
+    let start = 0.0;
+    let end = slots.max(1.0);
     let fit = content.width() / (end - start);
     let scale = panel.zoom.unwrap_or(fit);
     if panel.zoom.is_none() {
@@ -264,7 +309,7 @@ fn canvas(
     }
     let pitch = ROW + ROW_GAP;
     let visible_rows = (content.height() / pitch).floor().max(1.0);
-    let max_top = (heights.len() as f32 - visible_rows).max(0.0);
+    let max_top = (disclosed.rows() as f32 - visible_rows).max(0.0);
 
     // Zoom about the pointer: scroll or pinch. Drag pans; double-click fits.
     if response.hovered() {
@@ -303,13 +348,12 @@ fn canvas(
     let followed = cursor.map(|c| (explorer.revision(), c));
     if followed != panel.followed {
         panel.followed = followed;
-        if let Some(node) = cursor.and_then(|c| scene.nodes.get(c.span.index())) {
+        if let Some(&(x, _, row)) = cursor.and_then(|c| placed.get(&c.span)) {
             let width = content.width() / scale;
-            let x = node.position[0];
             if x < panel.left || x > panel.left + width * 0.9 {
                 panel.left = x - width * 0.15;
             }
-            let row = row_of(node.position[1]);
+            let row = row as f32;
             if row < panel.top_row || row > panel.top_row + visible_rows - 1.0 {
                 panel.top_row = row - (visible_rows / 3.0).floor();
             }
@@ -321,7 +365,6 @@ fn canvas(
     let y_of = |row: f32| content.min.y + (row - panel.top_row) * pitch;
 
     let map = explorer.map();
-    let tick = explorer.layout.tick_spacing;
     let cursor_enter = cursor
         .and_then(|c| track.span(c.span))
         .map_or(0, |s| s.enter);
@@ -332,20 +375,41 @@ fn canvas(
     let bars: Vec<Bar> = scene
         .nodes
         .iter()
-        .map(|node| {
-            let x = x_of(node.position[0]);
-            let width = ((node.length - BAR_GAP) * scale).max(3.0);
-            let y = y_of(row_of(node.position[1]));
-            Bar {
+        .map(|node| match placed.get(&node.span) {
+            Some(&(left, slots, row)) => Bar {
                 span: node.span,
-                rect: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(width, ROW)),
-            }
+                rect: egui::Rect::from_min_size(
+                    egui::pos2(x_of(left), y_of(row as f32)),
+                    egui::vec2(((slots - BAR_GAP) * scale).max(3.0), ROW),
+                ),
+                shown: true,
+            },
+            None => Bar {
+                span: node.span,
+                rect: egui::Rect::NOTHING,
+                shown: false,
+            },
         })
         .collect();
-    let rect_of = |span: SpanId| bars.get(span.index()).map(|b| b.rect);
+    // A closure has no bar of its own: it is drawn as part of the function around it.
+    let rect_of = |span: SpanId| {
+        let mut at = Some(span);
+        while let Some(span) = at {
+            if let Some(bar) = bars.get(span.index()).filter(|b| b.shown) {
+                return Some(bar.rect);
+            }
+            at = track.span(span).and_then(|s| s.parent);
+        }
+        None
+    };
 
+    // A node hovered in the graph lights its bars here.
+    let graph_hover = explorer.hovered_tile.filter(|_| !panel.lit_node);
     // Caller to callee: a short drop from the caller's row.
     for edge in &scene.edges {
+        if !disclosed.shows(edge.callee) {
+            continue;
+        }
         let (Some(from), Some(to), Some(span)) = (
             rect_of(edge.caller),
             rect_of(edge.callee),
@@ -355,6 +419,10 @@ fn canvas(
         };
         let x = to.min.x + 2.0;
         let points = [egui::pos2(x, from.max.y), egui::pos2(x, to.min.y)];
+        // Dashes along an unbounded line never end.
+        if !points.iter().all(|p| p.is_finite()) {
+            continue;
+        }
         let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(70));
         if is_conditional(span) {
             painter.extend(egui::Shape::dashed_line(&points, stroke, 3.0, 3.0));
@@ -365,11 +433,12 @@ fn canvas(
 
     let mouse = response.hover_pos();
     let mut hovered = None;
+    let mut fold_hit = None;
     for bar in &bars {
         let Some(span) = track.span(bar.span) else {
             continue;
         };
-        if !bar.rect.intersects(content) {
+        if !bar.shown || !bar.rect.intersects(content) {
             continue;
         }
         if mouse.is_some_and(|p| bar.rect.contains(p)) {
@@ -395,8 +464,16 @@ fn canvas(
         let related = tile
             .zip(reach)
             .and_then(|(tile, reach)| relation(reach, tile));
-        // Under a diff, what changed instead, outlined too.
-        let change = diff.zip(tile).and_then(|(diff, tile)| diff.change(tile));
+        // Under a diff, what changed instead, outlined too; a call that is new, though
+        // what it calls is not, counts as added.
+        let new_call = diff
+            .zip(span.parent.and_then(tile_of))
+            .zip(tile)
+            .is_some_and(|((diff, from), to)| diff.call_change(from, to) == Some(Change::Added));
+        let change = diff
+            .zip(tile)
+            .and_then(|(diff, tile)| diff.change(tile))
+            .or(new_call.then_some(Change::Added));
         let underline = match (change, related) {
             (Some(change), _) => Some(change_color(change)),
             _ if diff.is_some() => None,
@@ -420,8 +497,9 @@ fn canvas(
             painter.rect_filled(line, 1.0, egui_color(color));
         }
 
+        // How it can end, marked at its right end: green returns, red fails.
         for exit in &span.exits {
-            let x = content.min.x + (exit.tick as f32 * tick - panel.left) * scale;
+            let x = bar.rect.max.x;
             let mark = egui::Rect::from_min_max(
                 egui::pos2(x - 3.0, bar.rect.min.y),
                 egui::pos2(x, bar.rect.max.y),
@@ -434,22 +512,67 @@ fn canvas(
             painter.rect_filled(mark.intersect(bar.rect), 0.0, color);
         }
 
-        if bar.rect.width() > 26.0 {
-            let mut label = explorer.label_in(track, bar.span);
+        // What is folded under the bar, as a badge that opens it.
+        let folded = disclosed.folded(bar.span);
+        let badge = (folded > 0 && bar.rect.width() > 40.0).then(|| {
+            let badge = egui::Rect::from_min_max(
+                egui::pos2(bar.rect.max.x - 26.0, bar.rect.min.y + 3.0),
+                egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
+            );
+            painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(120));
+            painter.text(
+                badge.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("+{folded}"),
+                egui::FontId::proportional(10.5),
+                egui::Color32::from_rgb(220, 224, 234),
+            );
+            if mouse.is_some_and(|p| badge.contains(p)) {
+                fold_hit = Some(bar.span);
+            }
+            badge
+        });
+        if graph_hover.is_some() && tile == graph_hover {
+            painter.rect_stroke(
+                bar.rect.expand(1.5),
+                3.0,
+                egui::Stroke::new(2.0, egui::Color32::from_white_alpha(200)),
+                egui::StrokeKind::Outside,
+            );
+        }
+        // The same number the graph puts on the node, then what changed and the name;
+        // where the name would not fit, the number alone.
+        let number = disclosed.number(bar.span).unwrap_or_default();
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a small, clamped character count"
+        )]
+        let room = ((bar.rect.width() - if badge.is_some() { 38.0 } else { 10.0 }) / 6.8)
+            .clamp(0.0, 300.0) as usize;
+        let painter = painter.with_clip_rect(bar.rect.intersect(content));
+        if room >= number.len() + 6 {
+            let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
+            let mut label = format!("{sign}{}", explorer.label_in(track, bar.span));
+            if !number.is_empty() {
+                label = format!("{number}  {label}");
+            }
             if let Some(condition) = span.conditions.last() {
                 label = format!("{label}  if {}", condition.arm);
             }
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a small, clamped character count"
-            )]
-            let room = ((bar.rect.width() - 10.0) / 6.8).clamp(1.0, 300.0) as usize;
-            painter.with_clip_rect(bar.rect.intersect(content)).text(
+            painter.text(
                 bar.rect.left_center() + egui::vec2(5.0, 0.0),
                 egui::Align2::LEFT_CENTER,
                 short(&label, room),
                 egui::FontId::proportional(12.5),
+                text,
+            );
+        } else if bar.rect.width() >= 6.5 * number.len() as f32 + 3.0 {
+            painter.text(
+                bar.rect.center(),
+                egui::Align2::CENTER_CENTER,
+                number,
+                egui::FontId::proportional(11.5),
                 text,
             );
         }
@@ -542,7 +665,9 @@ fn canvas(
 
     if response.clicked() {
         let shift = ui.input(|i| i.modifiers.shift);
-        if let Some((scenario, _)) = divergence_hit {
+        if let Some(span) = fold_hit {
+            explorer.toggle_expanded(span);
+        } else if let Some((scenario, _)) = divergence_hit {
             explorer.set_scenario(Some(scenario));
         } else if let Some(at) = hovered_ref {
             explorer.select_in(at);
@@ -552,4 +677,92 @@ fn canvas(
         }
     }
     cursor_rect
+}
+
+#[cfg(test)]
+mod tests {
+    use codeviz_core::{JourneyOptions, System};
+    use codeviz_ir::{Document, UnitId};
+
+    use super::*;
+
+    /// `main` calls `a` from inside a closure: the closure runs on `main`'s node, so it
+    /// has no bar of its own.
+    fn explorer() -> Explorer {
+        let unit = |id: &str, parent: Option<&str>, calls: &[&str]| {
+            let calls: Vec<String> = calls
+                .iter()
+                .map(|c| {
+                    format!(
+                        r#"{{ "key": "{c}#0", "text": "{c}", "targets": [{{ "unit": "{c}", "certainty": "exact" }}] }}"#
+                    )
+                })
+                .collect();
+            let parent = parent.map_or_else(String::new, |p| format!(r#""parent": "{p}","#));
+            format!(
+                r#"{{ "id": "{id}", "name": "{id}", "kind": "fn", "role": "invocable", {parent} "calls": [{}] }}"#,
+                calls.join(",")
+            )
+        };
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}, {}, {}] }}"#,
+            unit("x:main", None, &["x:main::{closure#0}"]),
+            unit("x:main::{closure#0}", Some("x:main"), &["x:a"]),
+            unit("x:a", None, &[]),
+        );
+        let system = System::new([Document::from_json(&json).unwrap()]);
+        Explorer::new(
+            system,
+            Some(UnitId::new("x:main")),
+            JourneyOptions::default(),
+        )
+    }
+
+    #[test]
+    fn a_call_from_a_closure_draws_from_its_function() {
+        let mut explorer = explorer();
+        let journey = explorer.journey().unwrap();
+        let closure = journey.span(journey.root()).unwrap().children[0];
+        let disclosed = explorer.disclosure();
+        assert!(disclosed.shows(closure), "the closure shows with main");
+        assert_eq!(
+            disclosed.number(journey.span(closure).unwrap().children[0]),
+            Some("1"),
+            "a is main's first call"
+        );
+
+        let ctx = egui::Context::default();
+        let mut panel = JourneyPanel::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 300.0));
+        // An area is sized on its first frame and drawn from the second.
+        let mut frame = || {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                },
+                |ui| {
+                    draw(ui.ctx(), screen, &mut explorer, &mut panel, None);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame();
+        let output = frame();
+        let meshes = ctx.tessellate(output.shapes, output.pixels_per_point);
+        let vertices: Vec<egui::Pos2> = meshes
+            .iter()
+            .filter_map(|m| match &m.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => Some(mesh.vertices.iter().map(|v| v.pos)),
+                egui::epaint::Primitive::Callback(_) => None,
+            })
+            .flatten()
+            .collect();
+        assert!(vertices.len() > 4, "the panel draws");
+        assert!(
+            vertices.iter().all(|p| p.is_finite()),
+            "nothing is drawn from a bar the closure does not have"
+        );
+    }
 }

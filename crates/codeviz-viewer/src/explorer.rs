@@ -2,7 +2,10 @@
 //! journeys and their cursors, and the codebase as a graph of calls with the node at
 //! the center of attention and what reaches it.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use bevy::prelude::*;
 use codeviz_core::{
@@ -12,7 +15,14 @@ use codeviz_core::{
 use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
 
-use crate::lens::{self, Lens};
+use crate::{
+    disclosure::{Disclose, Disclosed},
+    lens::{self, Lens},
+};
+
+/// What a disclosure was worked out for: the journeys' revision, the active one, how
+/// it discloses, the spans opened by hand, and the cursor when that matters.
+type DisclosureKey = (u64, usize, Disclose, u64, Option<SpanId>);
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,15 +124,6 @@ impl Track {
         self.journey.as_ref().and_then(|j| {
             j.spans()
                 .find(|(_, s)| s.target == SpanTarget::Unit(unit.clone()))
-                .map(|(id, _)| id)
-        })
-    }
-
-    /// The first span that runs anything drawn as graph node `tile`.
-    pub(crate) fn find_tile(&self, map: &CodebaseMap, tile: usize) -> Option<SpanId> {
-        self.journey.as_ref().and_then(|j| {
-            j.spans()
-                .find(|(id, _)| self.unit_id(*id).and_then(|u| map.tile_of(u)) == Some(tile))
                 .map(|(id, _)| id)
         })
     }
@@ -261,6 +262,13 @@ pub(crate) struct Explorer {
     visibility: Vec<f32>,
     /// A diff's changed nodes, for a lens that starts from them.
     changed_tiles: Vec<usize>,
+    /// How much of the active journey shows.
+    disclose: Disclose,
+    /// Spans opened one level past the disclosed depth, by hand.
+    expanded: HashSet<SpanId>,
+    /// Bumped whenever `expanded` changes.
+    disclosure_epoch: u64,
+    disclosure_cache: Mutex<Option<(DisclosureKey, Arc<Disclosed>)>>,
     /// Nodes focused before the current one, most recent last.
     focus_history: Vec<usize>,
     pub(crate) hovered_tile: Option<usize>,
@@ -313,6 +321,10 @@ impl Explorer {
             visibility: vec![1.0; tiles],
             changed_tiles: Vec::new(),
             focus_history: Vec::new(),
+            disclose: Disclose::default(),
+            expanded: HashSet::new(),
+            disclosure_epoch: 0,
+            disclosure_cache: Mutex::new(None),
             hovered_tile: None,
             lane_colors: HashMap::new(),
             revision: 0,
@@ -619,15 +631,81 @@ impl Explorer {
             .or_else(|| self.graph_focus())
     }
 
-    /// Focuses a node. When the active journey runs it, its cursor moves there too.
-    pub(crate) fn focus_node(&mut self, tile: usize) {
-        if let Some(previous) = self.graph_focus().filter(|&p| p != tile) {
+    /// Centers on a node and opens its journey: the active journey restarts there, with
+    /// what it calls directly disclosed and the rest folded away.
+    pub(crate) fn open_at(&mut self, tile: usize) {
+        if let Some(previous) = self.anchor().filter(|&p| p != tile) {
             self.focus_history.push(previous);
         }
-        match self.track().find_tile(&self.map, tile) {
-            Some(span) => self.select(Some(span)),
-            None => self.graph_focus = Some(tile),
+        self.restart_at(tile);
+    }
+
+    fn restart_at(&mut self, tile: usize) {
+        if let Some(unit) = self.tile_unit(tile).cloned() {
+            self.set_root(unit);
         }
+        self.graph_focus = Some(tile);
+        self.expanded.clear();
+        self.disclosure_epoch += 1;
+        if let Disclose::Depth(_) = self.disclose {
+            self.disclose = Disclose::default();
+        }
+    }
+
+    pub(crate) fn disclose(&self) -> Disclose {
+        self.disclose
+    }
+
+    pub(crate) fn set_disclose(&mut self, disclose: Disclose) {
+        self.disclose = disclose;
+    }
+
+    /// Opens or folds the calls under one span, past the disclosed depth.
+    pub(crate) fn toggle_expanded(&mut self, span: SpanId) {
+        if !self.expanded.remove(&span) {
+            self.expanded.insert(span);
+        }
+        self.disclosure_epoch += 1;
+    }
+
+    /// What the active journey discloses, worked out once per change.
+    pub(crate) fn disclosure(&self) -> Arc<Disclosed> {
+        let key = (
+            self.revision,
+            self.active,
+            self.disclose,
+            self.disclosure_epoch,
+            (self.disclose == Disclose::Time)
+                .then(|| self.selected())
+                .flatten(),
+        );
+        let mut cache = self
+            .disclosure_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((cached, disclosed)) = cache.as_ref()
+            && *cached == key
+        {
+            return Arc::clone(disclosed);
+        }
+        let disclosed = Arc::new(Disclosed::of(
+            self.track(),
+            &self.map,
+            self.disclose,
+            &self.expanded,
+        ));
+        *cache = Some((key, Arc::clone(&disclosed)));
+        disclosed
+    }
+
+    /// Whether a span of the active journey shows.
+    pub(crate) fn disclosed(&self, span: SpanId) -> bool {
+        self.disclosure().shows(span)
+    }
+
+    /// The nodes the disclosed journey runs, each with its numbers in the journey.
+    pub(crate) fn disclosed_tiles(&self) -> HashMap<usize, Vec<String>> {
+        self.disclosure().tiles().clone()
     }
 
     /// The function a node stands for.
@@ -660,15 +738,12 @@ impl Explorer {
         callers
     }
 
-    /// Returns to the node focused before this one. Returns whether there was one.
+    /// Returns to the node opened before this one. Returns whether there was one.
     pub(crate) fn focus_back(&mut self) -> bool {
         let Some(tile) = self.focus_history.pop() else {
             return false;
         };
-        match self.track().find_tile(&self.map, tile) {
-            Some(span) => self.select(Some(span)),
-            None => self.graph_focus = Some(tile),
-        }
+        self.restart_at(tile);
         true
     }
 
@@ -697,11 +772,7 @@ impl Explorer {
         match self.lens.source {
             lens::Source::Focus => self.graph_focus().into_iter().collect(),
             lens::Source::Changes => self.changed_tiles.clone(),
-            lens::Source::Journey => self
-                .journey_tiles
-                .get(self.active)
-                .map(|tiles| tiles.keys().copied().collect())
-                .unwrap_or_default(),
+            lens::Source::Journey => self.disclosed_tiles().into_keys().collect(),
         }
     }
 
@@ -727,6 +798,12 @@ impl Explorer {
         } else {
             self.lens.targets(&self.graph, &self.seeds())?
         };
+        // The disclosed journey always shows: it is what you opened.
+        for tile in self.disclosed_tiles().into_keys() {
+            if let Some(target) = targets.get_mut(tile) {
+                *target = 1.0;
+            }
+        }
         if let Some(cursor) = self.focus().and_then(|u| self.map.tile_of(u))
             && let Some(target) = targets.get_mut(cursor)
         {
@@ -1147,7 +1224,7 @@ mod tests {
         positions[b] = [1.5, 0.0, 0.0];
         positions[c] = [2.0, 0.0, 0.0];
         explorer.place_nodes(&positions);
-        explorer.focus_node(a);
+        explorer.open_at(a);
         let shown = |explorer: &mut Explorer, lens: Lens| {
             explorer.set_lens(lens);
             explorer.settle_visibility();
@@ -1161,7 +1238,8 @@ mod tests {
 
         assert_eq!(
             shown(&mut explorer, lens(Measure::Calls, 0)),
-            [0.3, 1.0, 0.0, 0.3]
+            [0.3, 1.0, 0.0, 1.0],
+            "c is what a calls, disclosed by a's journey"
         );
         assert_eq!(
             shown(&mut explorer, lens(Measure::Space, 0))[2],
@@ -1203,16 +1281,18 @@ mod tests {
             tile(&explorer, "c"),
         );
         explorer.set_changed_tiles(vec![c]);
-        explorer.focus_node(b);
+        explorer.open_at(b);
         explorer.set_lens(Lens {
             changes_only: true,
             ..Lens::default()
         });
         explorer.settle_visibility();
         assert!(explorer.shown(c), "what changed");
-        assert!(explorer.shown(b), "the focus");
-        assert!(explorer.shown(main), "the journey's root");
-        assert!(!explorer.shown(a), "and nothing else");
+        assert!(explorer.shown(b), "the node opened");
+        assert!(
+            !explorer.shown(a) && !explorer.shown(main),
+            "and nothing else"
+        );
     }
 
     #[test]
@@ -1225,7 +1305,7 @@ mod tests {
                 .unwrap()
         };
         let (main, a, b, c) = (tile("main"), tile("a"), tile("b"), tile("c"));
-        explorer.focus_node(a);
+        explorer.open_at(a);
         explorer.refresh_reach();
         explorer.set_lens(Lens {
             reach: Some(0),
@@ -1237,7 +1317,7 @@ mod tests {
             explorer.visibility(main) < 1.0,
             "one call past the reach dims"
         );
-        explorer.focus_node(b);
+        explorer.open_at(b);
         explorer.refresh_reach();
         explorer.settle_visibility();
         assert!(!explorer.shown(c), "c is not on any call chain through b");
@@ -1318,22 +1398,63 @@ mod tests {
     }
 
     #[test]
-    fn focusing_a_node_moves_the_cursor_when_the_journey_runs_it() {
+    fn opening_a_node_discloses_its_journey_a_level_at_a_time() {
         let mut explorer = explorer();
         let tile =
             |explorer: &Explorer, name: &str| explorer.map().tile_of(&UnitId::new(name)).unwrap();
-        let c = tile(&explorer, "x:c");
-        explorer.focus_node(c);
-        assert_eq!(at(&explorer), "c");
-        assert_eq!(explorer.graph_focus(), Some(c));
+        let (main, a, b, c) = (
+            tile(&explorer, "x:main"),
+            tile(&explorer, "x:a"),
+            tile(&explorer, "x:b"),
+            tile(&explorer, "x:c"),
+        );
+        explorer.open_at(a);
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
+        assert_eq!(explorer.anchor(), Some(a));
 
-        explorer.set_root(UnitId::new("x:a"));
-        let main = tile(&explorer, "x:main");
-        explorer.focus_node(main);
-        assert_eq!(at(&explorer), "a", "a's journey never runs main");
-        assert_eq!(explorer.graph_focus(), Some(main));
-        explorer.journey_for_focus();
-        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
-        assert_eq!(at(&explorer), "main");
+        explorer.open_at(main);
+        let numbers = |explorer: &Explorer| {
+            let mut tiles: Vec<(usize, Vec<String>)> =
+                explorer.disclosed_tiles().into_iter().collect();
+            tiles.sort();
+            tiles
+        };
+        let mut expected = vec![
+            (main, vec![]),
+            (a, vec!["1".to_owned()]),
+            (b, vec!["2".to_owned()]),
+        ];
+        expected.sort();
+        assert_eq!(
+            numbers(&explorer),
+            expected,
+            "only what main calls directly"
+        );
+        let a_span = explorer
+            .selected()
+            .and_then(|root| explorer.journey()?.span(root)?.children.first().copied());
+        assert_eq!(
+            a_span.map(|s| explorer.disclosure().folded(s)),
+            Some(1),
+            "c is folded"
+        );
+
+        explorer.toggle_expanded(a_span.unwrap());
+        assert!(numbers(&explorer).contains(&(c, vec!["1.1".to_owned()])));
+        explorer.toggle_expanded(a_span.unwrap());
+        explorer.set_disclose(Disclose::Depth(2));
+        assert!(numbers(&explorer).contains(&(c, vec!["1.1".to_owned()])));
+
+        explorer.set_disclose(Disclose::Time);
+        assert_eq!(numbers(&explorer), vec![(main, vec![])], "nothing yet");
+        explorer.step(Step::Into);
+        assert!(
+            numbers(&explorer).iter().any(|(t, _)| *t == a),
+            "a, once reached"
+        );
+        assert_eq!(explorer.anchor(), Some(main), "the camera stays on main");
+
+        assert!(explorer.focus_back());
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
     }
 }

@@ -4,7 +4,10 @@
 //! it calls turns blue, brightest one call away and fading with each call further;
 //! the rest of the graph fades so that neighborhood reads on its own.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use bevy::prelude::*;
 use codeviz_core::Change;
@@ -13,6 +16,7 @@ use codeviz_layout::{ForceGraph, Reach};
 use crate::{
     camera::{FRONT, OrbitCamera},
     diff_view::{ADDED, DiffView, MODIFIED, MOVED, REMOVED, diff_look, draw_diff_graph},
+    disclosure::{Disclose, Disclosed},
     explorer::Explorer,
     lens::{Lens, SPECK, Source},
     scene::{ACCENTS, PALETTE, Tile, accent, lane_color},
@@ -200,13 +204,23 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     let Some(reach) = explorer.reach() else {
         return NodeLook::Plain(color);
     };
+    // With a journey open, what the focus calls lights as far as the journey is
+    // disclosed, and only its direct callers light above it.
+    let disclosed = explorer.disclosure();
+    let journey = disclosed.tiles();
+    let opened = disclosed.opened();
     match relation(reach, tile) {
-        Some(Relation::Upstream(hops)) => NodeLook::Upstream(hops.min(FARTHEST_SHADE)),
-        Some(Relation::Downstream(hops)) => NodeLook::Downstream(hops.min(FARTHEST_SHADE)),
+        Some(Relation::Upstream(hops)) if !opened || hops == 1 => {
+            NodeLook::Upstream(hops.min(FARTHEST_SHADE))
+        }
+        Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => {
+            NodeLook::Downstream(hops.min(FARTHEST_SHADE))
+        }
+        _ if journey.contains_key(&tile) => NodeLook::Downstream(2),
         None if explorer.journey_lane(tile).is_some() => {
             NodeLook::Journey(explorer.active() % ACCENTS.len())
         }
-        None => NodeLook::Faded(color),
+        _ => NodeLook::Faded(color),
     }
 }
 
@@ -302,12 +316,16 @@ pub(crate) fn draw_graph(
         .scene()
         .edges
         .iter()
+        .filter(|edge| explorer.disclosed(edge.callee))
         .filter_map(|edge| {
             let tile = |span| track.unit_id(span).and_then(|u| map.tile_of(u));
             Some((tile(edge.caller)?, tile(edge.callee)?))
         })
         .collect();
     let path_color = accent(explorer.active());
+    let disclosed = explorer.disclosure();
+    let journey = disclosed.tiles();
+    let opened = disclosed.opened();
     // Calls from the focus, counting the focus itself as zero.
     let hops = |side: &HashMap<usize, u32>, tile: usize| {
         if center == Some(tile) {
@@ -331,10 +349,14 @@ pub(crate) fn draw_graph(
             let up = hops(&reach.upstream, from).zip(hops(&reach.upstream, to));
             let down = hops(&reach.downstream, from).zip(hops(&reach.downstream, to));
             match (up, down) {
-                (Some((outer, inner)), _) if outer == inner + 1 => {
+                (Some((outer, inner)), _) if outer == inner + 1 && (!opened || outer == 1) => {
                     Some(CALLER.with_alpha(fade(outer)))
                 }
-                (_, Some((inner, outer))) if outer == inner + 1 => {
+                (_, Some((inner, outer)))
+                    if outer == inner + 1
+                        && (!opened
+                            || journey.contains_key(&to) && journey.contains_key(&from)) =>
+                {
                     Some(CALLEE.with_alpha(fade(outer)))
                 }
                 _ => None,
@@ -539,23 +561,52 @@ pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut OrbitCamera) {
         .filter(|&t| explorer.shown(t))
         .filter_map(|t| explorer.tile_point(t))
         .map(|p| p.distance(at))
-        .fold(0.0, f32::max);
-    // A 45° view shows about 0.4 of its distance either side of center; leave room.
-    camera.glide_to(at, (reach * 3.4).max(MIN_ORBIT_DISTANCE));
+        .fold(journey_reach(explorer, at), f32::max);
+    camera.glide_to(at, orbit_distance(reach));
+}
+
+/// How far from `at` the disclosed journey reaches.
+fn journey_reach(explorer: &Explorer, at: Vec3) -> f32 {
+    explorer
+        .disclosure()
+        .tiles()
+        .keys()
+        .filter_map(|&t| explorer.tile_point(t))
+        .map(|p| p.distance(at))
+        .fold(0.0, f32::max)
+}
+
+/// How far back to orbit to see `reach` either side of center: a 45° view shows
+/// about 0.4 of its distance either side, and this leaves room.
+fn orbit_distance(reach: f32) -> f32 {
+    (reach * 3.4).max(MIN_ORBIT_DISTANCE)
 }
 
 /// Swings round to a newly focused node, and keeps it centered while the graph moves.
+/// As more of the journey opens, pulls back to take it in.
 pub(crate) fn follow_focus(
     explorer: Res<Explorer>,
     mut followed: Local<Option<usize>>,
+    mut disclosed: Local<Option<Arc<Disclosed>>>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
     let focus = explorer.graph_focus();
     let changed = focus != *followed;
     *followed = focus;
+    let disclosure = explorer.disclosure();
+    let opened = disclosed
+        .as_ref()
+        .is_some_and(|d| !Arc::ptr_eq(d, &disclosure));
+    *disclosed = Some(disclosure);
     for mut camera in &mut cameras {
         if changed {
             orbit_focus(&explorer, &mut camera);
+        } else if opened && let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) {
+            // Stepping through time only ever pulls back, so the view does not pump.
+            let distance = orbit_distance(journey_reach(&explorer, at));
+            if explorer.disclose() != Disclose::Time || distance > camera.distance {
+                camera.glide_to(at, distance);
+            }
         } else if explorer.settling()
             && let Some(at) = focus.and_then(|t| explorer.tile_point(t))
         {

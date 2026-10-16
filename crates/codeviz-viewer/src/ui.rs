@@ -159,7 +159,7 @@ fn draw_ui(
         egui::pos2(screen.max.x - right, screen.max.y - bottom),
     );
     let (graph_area, panel_area) =
-        journey_panel::split(panel.mode, central, journey_panel::row_count(&explorer));
+        journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
     if let Ok((mut camera, transform)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
@@ -184,25 +184,43 @@ fn draw_ui(
         }
         focus_card(ctx, graph_area, &mut explorer);
         if panel.mode != PanelMode::Full {
-            legend(ctx, graph_area, &mut explorer, diff.is_some());
+            legend(
+                ctx,
+                above(graph_area, panel_area),
+                &mut explorer,
+                diff.is_some(),
+            );
         }
         if help.0 {
             key_help(ctx, graph_area, &mut help.0);
         }
         if let Some(area) = panel_area {
             let bar = journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            // From the cursor's bar up to its node.
-            let node = explorer
-                .focus()
-                .and_then(|unit| explorer.map().tile_of(unit))
-                .and_then(|tile| explorer.tile_point(tile))
-                .and_then(to_screen);
-            if let (Some(bar), Some(node)) = (bar, node) {
+            if let (Some(bar), Some(node)) = (bar, cursor_node(&explorer, &to_screen)) {
                 tether(ctx, bar, node);
             }
         }
     }
     Ok(())
+}
+
+/// Where the cursor's node is on screen, for the tether from its bar.
+fn cursor_node(
+    explorer: &Explorer,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) -> Option<egui::Pos2> {
+    explorer
+        .focus()
+        .and_then(|unit| explorer.map().tile_of(unit))
+        .and_then(|tile| explorer.tile_point(tile))
+        .and_then(to_screen)
+}
+
+/// The part of the graph above a docked journey, for what sits at its bottom.
+fn above(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
+    panel.map_or(graph, |p| {
+        egui::Rect::from_min_max(graph.min, egui::pos2(graph.max.x, p.min.y))
+    })
 }
 
 /// A line from the cursor's bar in the journey up to its node in the graph.
@@ -460,19 +478,42 @@ fn outline(ui: &mut egui::Ui, explorer: &mut Explorer) {
     let Some(journey) = explorer.journey() else {
         return;
     };
-    let rows: Vec<(SpanId, u32, String, bool, Option<usize>)> = journey
-        .spans()
-        .map(|(id, span)| {
-            let lane = Some(explorer.track().color(id));
-            (
-                id,
-                span.depth,
-                explorer.label(id),
-                is_conditional(span),
-                lane,
-            )
-        })
-        .collect();
+    // What the journey discloses, in call order, numbered as the flame graph and the
+    // graph number it.
+    let disclosed = explorer.disclosure();
+    let mut rows: Vec<(SpanId, u32, String, bool, Option<usize>)> = Vec::new();
+    let mut stack = vec![journey.root()];
+    while let Some(id) = stack.pop() {
+        let Some(span) = journey.span(id) else {
+            continue;
+        };
+        let number = disclosed.number(id).unwrap_or_default();
+        let label = if number.is_empty() {
+            explorer.label(id)
+        } else {
+            format!("{number}  {}", explorer.label(id))
+        };
+        let folded = disclosed.folded(id);
+        let label = if folded > 0 {
+            format!("{label}  +{folded}")
+        } else {
+            label
+        };
+        rows.push((
+            id,
+            disclosed.level(id).unwrap_or_default(),
+            label,
+            is_conditional(span),
+            Some(explorer.track().color(id)),
+        ));
+        stack.extend(
+            disclosed
+                .children(id)
+                .iter()
+                .rev()
+                .filter(|&&c| disclosed.shows(c)),
+        );
+    }
     let mut chosen = None;
     egui::ScrollArea::vertical()
         .id_salt("outline")
@@ -1138,6 +1179,9 @@ fn draw_graph_labels(
     let center = explorer.attention();
     let reach = explorer.reach();
     let related = |tile: usize| reach.and_then(|r| relation(r, tile));
+    let disclosed = explorer.disclosure();
+    let journey = disclosed.tiles();
+    let opened = disclosed.opened();
     let stack: Vec<usize> = explorer
         .selected()
         .map(|s| explorer.stack(s))
@@ -1168,6 +1212,11 @@ fn draw_graph_labels(
         let tier = match related(tile) {
             _ if center == Some(tile) => 0,
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
+            // What the open journey discloses is named first, with its numbers; with
+            // a journey open, what it folds away and callers further up go unnamed.
+            _ if journey.contains_key(&tile) => 1,
+            Some(Relation::Downstream(_)) if opened => continue,
+            Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             _ if diff_tier(tile).is_some() => diff_tier(tile).unwrap_or(1),
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
             _ if stack.contains(&tile) => 2,
@@ -1303,6 +1352,23 @@ fn draw_graph_labels(
                         )
                     }
                     _ => (None, None),
+                };
+                // A node the journey runs leads with its place in it, as its bar does.
+                let order = journey
+                    .get(&tile)
+                    .filter(|numbers| !numbers.is_empty())
+                    .map(|numbers| match numbers.as_slice() {
+                        [one] => one.clone(),
+                        [first, second] => format!("{first}, {second}"),
+                        [first, .., last] => format!("{first} … {last}"),
+                        [] => String::new(),
+                    });
+                let lead = match (order, change) {
+                    (Some(order), Some(change)) => {
+                        Some((format!("{order} {}", diff_view::sign(change)), color))
+                    }
+                    (Some(order), None) => Some((order, color)),
+                    (None, _) => lead,
                 };
                 let size = match tier {
                     0 => 14.0,
@@ -1448,7 +1514,7 @@ fn focus_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
                 });
         });
     if let Some(tile) = chosen {
-        explorer.focus_node(tile);
+        explorer.open_at(tile);
     }
 }
 
@@ -1546,8 +1612,8 @@ fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer, diffin
         .text(
             egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
-            "click a node to focus · shift-click opens its journey · drag to orbit · \
-             scroll or pinch to zoom · H for keys",
+            "click a node to open its journey · shift-click opens another · , . less or \
+             more of it · drag to orbit · scroll to zoom · H for keys",
             egui::FontId::proportional(12.0),
             MUTED,
         );
@@ -1606,6 +1672,8 @@ const KEYS: [(&str, &[(&str, &str)]); 3] = [
             ("↑", "out to its caller"),
             ("[  ]", "back / forward one call in time"),
             ("Home  End", "first / last call"),
+            (",  .", "show a level less / more of it"),
+            ("V", "show calls by level / as the cursor reaches them"),
             ("Space", "play"),
             ("Tab", "next open journey"),
             ("Enter", "trace a journey from the focus"),

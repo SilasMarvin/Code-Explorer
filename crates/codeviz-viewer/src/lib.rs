@@ -13,6 +13,7 @@
 mod camera;
 mod capture;
 mod diff_view;
+mod disclosure;
 mod explorer;
 mod graph_view;
 mod journey_panel;
@@ -264,7 +265,7 @@ impl Viewer {
             .take()
             .and_then(|unit| explorer.map().tile_of(&unit))
         {
-            explorer.focus_node(tile);
+            explorer.open_at(tile);
         }
         explorer
     }
@@ -295,7 +296,7 @@ impl Viewer {
                 ..explorer.lens()
             });
             if !focused && let Some(tile) = view.hub() {
-                explorer.focus_node(tile);
+                explorer.open_at(tile);
             }
             explorer.refresh_reach();
             view
