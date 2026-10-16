@@ -20,7 +20,7 @@ use crate::{
     graph_view::{self, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{self, Measure, Source},
-    scene::{accent, lane_color},
+    scene::{PALETTE, accent, lane_color},
     source_diff,
 };
 
@@ -1182,24 +1182,25 @@ fn draw_graph_labels(
             Named::Node(tile),
         ));
     }
-    let mut centers: Vec<(Vec3, usize)> = vec![(Vec3::ZERO, 0); map.groups.len()];
-    for tile in 0..map.tiles.len() {
-        // A container counts only the functions showing.
-        if diff.is_some_and(|d| d.presence(tile) < 0.3) || explorer.visibility(tile) < 0.5 {
-            continue;
-        }
-        if let (Some(group), Some(at)) = (graph.group(tile), explorer.tile_point(tile))
-            && let Some(slot) = centers.get_mut(group)
-        {
-            slot.0 += at;
-            slot.1 += 1;
-        }
-    }
+    // Modules are named at the top of their rings, ahead of most function names.
+    let regions = graph_view::regions(explorer);
+    let ring_top = |cluster: usize| {
+        let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
+        to_screen(middle + up * radius)
+    };
     if explorer.lens().reach.is_none() {
-        for (group, &(_, count)) in centers.iter().enumerate() {
-            if count >= 2 {
-                order.push(((7, std::cmp::Reverse(count), group), Named::Group(group)));
-            }
+        for &(cluster, _, radius) in &regions {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a rough size for ordering"
+            )]
+            let size = radius as usize;
+            let tier = if center.is_some() { 4 } else { 1 };
+            order.push((
+                (tier, std::cmp::Reverse(size), cluster),
+                Named::Group(cluster),
+            ));
         }
     }
     order.sort_by_key(|&(key, _)| key);
@@ -1232,16 +1233,13 @@ fn draw_graph_labels(
     for ((tier, _, _), named) in order {
         match named {
             Named::Group(group) => {
-                let (sum, count) = centers[group];
-                let Some(at) = to_screen(sum / count as f32) else {
+                let Some(at) = ring_top(group) else {
                     continue;
                 };
-                let color = explorer
-                    .group_color(group)
-                    .map_or(MUTED, |c| egui_color(lane_color(c)))
+                let color = egui_color(lane_color(group % PALETTE.len()))
                     .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
-                let label = map.groups.get(group).map_or("", |g| g.label.as_str());
-                let job = label_job(None, &label.to_uppercase(), None, color, 11.0);
+                let label = explorer.cluster_name(group);
+                let job = label_job(None, &label.to_uppercase(), None, color, 12.0);
                 placer.place(named, at, 0.0, job, None, false);
             }
             Named::Node(tile) => {
@@ -1307,9 +1305,9 @@ fn draw_graph_labels(
                     _ => (None, None),
                 };
                 let size = match tier {
-                    0 => 16.0,
-                    1 => 14.0,
-                    _ => 12.5,
+                    0 => 14.0,
+                    1 => 12.0,
+                    _ => 11.0,
                 };
                 let stroke = (tier <= 1).then_some(color);
                 placer.place(
@@ -1325,10 +1323,7 @@ fn draw_graph_labels(
     }
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
-        Named::Group(group) => {
-            let &(sum, count) = centers.get(group)?;
-            (count > 0).then(|| to_screen(sum / count as f32)).flatten()
-        }
+        Named::Group(group) => ring_top(group),
     });
 }
 

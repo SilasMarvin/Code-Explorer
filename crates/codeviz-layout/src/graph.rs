@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use codeviz_core::System;
+use codeviz_ir::UnitId;
 
 use crate::CodebaseMap;
 
@@ -20,8 +21,18 @@ pub struct ForceConfig {
     pub link_length: f32,
     /// How hard a node is pulled towards the middle of its container.
     pub cohesion: f32,
+    /// How hard two containers that crowd each other push apart, so each reads as its
+    /// own cluster with space around it; zero lets them mingle.
+    pub separation: f32,
+    /// How hard a link between two containers pulls, as a share of [`Self::spring`]:
+    /// below one, calls across containers bend the clusters towards each other without
+    /// merging them.
+    pub cross_spring: f32,
     /// How hard everything is pulled towards the origin.
     pub gravity: f32,
+    /// How hard everything is pulled towards the plane facing the default view, so
+    /// clusters spread side by side instead of hiding behind each other.
+    pub flatten: f32,
     /// Velocity kept per step.
     pub damping: f32,
 }
@@ -33,7 +44,10 @@ impl Default for ForceConfig {
             spring: 0.06,
             link_length: 6.0,
             cohesion: 0.02,
+            separation: 0.0,
+            cross_spring: 1.0,
             gravity: 0.004,
+            flatten: 0.0,
             damping: 0.82,
         }
     }
@@ -45,6 +59,11 @@ pub struct ForceGraph {
     pub positions: Vec<[f32; 3]>,
     velocities: Vec<[f32; 3]>,
     groups: Vec<usize>,
+    /// The cluster each tile pulls into: its container's module, so a module's types
+    /// and free functions gather as one.
+    clusters: Vec<usize>,
+    /// The module each cluster stands for, by cluster.
+    cluster_units: Vec<Option<UnitId>>,
     /// Links between tiles, each pair once, lower index first.
     pub links: Vec<(usize, usize)>,
     /// The same links with their direction: `(caller, callee)`, sorted.
@@ -127,6 +146,7 @@ impl ForceGraph {
         let mut calls: Vec<(usize, usize)> = calls.into_iter().collect();
         calls.sort_unstable();
 
+        let (clusters, cluster_units) = module_clusters(system, map);
         let radius = (map.tiles.len() as f32).sqrt() * 2.0;
         let positions = map
             .tiles
@@ -136,6 +156,8 @@ impl ForceGraph {
         Self {
             velocities: vec![[0.0; 3]; map.tiles.len()],
             groups: map.tiles.iter().map(|t| t.group).collect(),
+            clusters,
+            cluster_units,
             positions,
             links,
             calls,
@@ -199,6 +221,24 @@ impl ForceGraph {
             }
         }
         found
+    }
+
+    /// The module cluster a tile pulls into.
+    #[must_use]
+    pub fn cluster(&self, tile: usize) -> Option<usize> {
+        self.clusters.get(tile).copied()
+    }
+
+    /// The module a cluster stands for, when it has one.
+    #[must_use]
+    pub fn cluster_unit(&self, cluster: usize) -> Option<&UnitId> {
+        self.cluster_units.get(cluster)?.as_ref()
+    }
+
+    /// How many clusters there are.
+    #[must_use]
+    pub fn cluster_count(&self) -> usize {
+        self.cluster_units.len()
     }
 
     /// The container each tile belongs to, by group index.
@@ -276,15 +316,17 @@ impl ForceGraph {
         for &(a, b) in &self.links {
             let delta = sub(self.positions[b], self.positions[a]);
             let distance = dot(delta, delta).sqrt().max(0.01);
-            let pull = scale(
-                delta,
-                config.spring * (distance - config.link_length) / distance,
-            );
+            let spring = if self.clusters.get(a) == self.clusters.get(b) {
+                config.spring
+            } else {
+                config.spring * config.cross_spring
+            };
+            let pull = scale(delta, spring * (distance - config.link_length) / distance);
             forces[a] = add(forces[a], pull);
             forces[b] = sub(forces[b], pull);
         }
         let mut centers: Vec<([f32; 3], f32)> = Vec::new();
-        for (position, &group) in self.positions.iter().zip(&self.groups) {
+        for (position, &group) in self.positions.iter().zip(&self.clusters) {
             if centers.len() <= group {
                 centers.resize(group + 1, ([0.0; 3], 0.0));
             }
@@ -293,13 +335,57 @@ impl ForceGraph {
                 *n += 1.0;
             }
         }
+        // Containers keep apart as wholes. Each takes up a ball as wide as its
+        // functions spread; two balls closer than their radii plus a gap push apart,
+        // harder the more they overlap, the smaller one moving more. So a cluster
+        // stays whole and clear of its neighbors however many calls cross between.
+        let mut apart = vec![[0.0_f32; 3]; centers.len()];
+        if config.separation > 0.0 {
+            let middles: Vec<[f32; 3]> = centers
+                .iter()
+                .map(|&(sum, n)| scale(sum, 1.0 / n.max(1.0)))
+                .collect();
+            let mut spread = vec![0.0_f32; centers.len()];
+            for (position, &group) in self.positions.iter().zip(&self.clusters) {
+                let offset = sub(*position, middles[group]);
+                spread[group] += dot(offset, offset);
+            }
+            let radii: Vec<f32> = spread
+                .iter()
+                .zip(&centers)
+                .map(|(&sum, &(_, n))| (sum / n.max(1.0)).sqrt() * 1.8 + config.link_length * 0.5)
+                .collect();
+            let gap = config.link_length * 2.0;
+            for a in 0..centers.len() {
+                for b in (a + 1)..centers.len() {
+                    let (n_a, n_b) = (centers[a].1, centers[b].1);
+                    if n_a == 0.0 || n_b == 0.0 {
+                        continue;
+                    }
+                    let delta = sub(middles[a], middles[b]);
+                    let distance = dot(delta, delta).sqrt().max(0.01);
+                    let overlap = radii[a] + radii[b] + gap - distance;
+                    if overlap <= 0.0 {
+                        continue;
+                    }
+                    let push = scale(delta, config.separation * overlap / distance);
+                    let total = n_a + n_b;
+                    apart[a] = add(apart[a], scale(push, n_b / total));
+                    apart[b] = sub(apart[b], scale(push, n_a / total));
+                }
+            }
+        }
         for (i, force) in forces.iter_mut().enumerate() {
             let position = self.positions[i];
-            if let Some(&(sum, n)) = self.groups.get(i).and_then(|&g| centers.get(g)) {
+            if let Some(&push) = self.clusters.get(i).and_then(|&g| apart.get(g)) {
+                *force = add(*force, push);
+            }
+            if let Some(&(sum, n)) = self.clusters.get(i).and_then(|&g| centers.get(g)) {
                 let center = scale(sum, 1.0 / n);
                 *force = add(*force, scale(sub(center, position), config.cohesion));
             }
             *force = sub(*force, scale(position, config.gravity));
+            force[2] -= position[2] * config.flatten;
         }
 
         let mut speed = 0.0;
@@ -349,6 +435,39 @@ fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// For each tile, its cluster: the nearest module (or crate, package or file) holding
+/// its container, numbered in order of first appearance. A tile whose container is not
+/// inside one clusters on its own container.
+fn module_clusters(system: &System, map: &CodebaseMap) -> (Vec<usize>, Vec<Option<UnitId>>) {
+    const MODULES: [&str; 4] = ["module", "crate", "package", "file"];
+    let mut numbers: HashMap<String, usize> = HashMap::new();
+    let mut units = Vec::new();
+    let clusters = map
+        .tiles
+        .iter()
+        .map(|tile| {
+            let container = map.groups.get(tile.group).and_then(|g| g.unit.as_ref());
+            let mut at = container.and_then(|id| system.unit(id));
+            while let Some(unit) = at {
+                if MODULES.contains(&unit.kind.as_str()) {
+                    break;
+                }
+                at = unit.parent.as_ref().and_then(|p| system.unit(p));
+            }
+            let key = at.map_or_else(
+                || format!("group:{}", tile.group),
+                |unit| unit.id.to_string(),
+            );
+            let next = numbers.len();
+            *numbers.entry(key).or_insert_with(|| {
+                units.push(at.map(|unit| unit.id.clone()));
+                next
+            })
+        })
+        .collect();
+    (clusters, units)
 }
 
 #[cfg(test)]

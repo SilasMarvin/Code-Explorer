@@ -17,14 +17,18 @@ pub(crate) struct OrbitCameraPlugin;
 
 impl Plugin for OrbitCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera).add_systems(
-            Update,
-            (
+        // The camera moves last, once everything that aims it has had its say.
+        app.add_systems(Startup, spawn_camera)
+            .add_systems(
+                Update,
                 camera_input.run_if(not(egui_wants_any_pointer_input)),
-                apply_camera,
             )
-                .chain(),
-        );
+            .add_systems(
+                PostUpdate,
+                (crate::graph_view::hold_center, apply_camera)
+                    .chain()
+                    .before(TransformSystems::Propagate),
+            );
     }
 }
 

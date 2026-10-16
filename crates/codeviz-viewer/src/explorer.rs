@@ -193,15 +193,32 @@ pub(crate) enum Clustering {
 
 impl Clustering {
     pub(crate) fn forces(self) -> ForceConfig {
-        ForceConfig {
-            cohesion: match self {
-                Self::Modules => 0.05,
-                Self::Calls => 0.0,
-            },
+        // Spread out, so names have room.
+        let spread = ForceConfig {
+            repulsion: 50.0,
+            link_length: 8.0,
+            // Mostly flat, so clusters sit side by side like regions on a map.
+            flatten: 0.1,
             ..ForceConfig::default()
+        };
+        match self {
+            // Each container a cluster of its own, with clear space between them.
+            Self::Modules => ForceConfig {
+                cohesion: 0.15,
+                separation: SEPARATION,
+                cross_spring: 0.3,
+                ..spread
+            },
+            Self::Calls => ForceConfig {
+                cohesion: 0.0,
+                ..spread
+            },
         }
     }
 }
+
+/// How hard crowding containers push apart when clustered by module.
+const SEPARATION: f32 = 0.4;
 
 /// Simulation steps run before the graph is first shown, so it opens nearly settled.
 const PRESETTLE_STEPS: usize = 200;
@@ -300,6 +317,7 @@ impl Explorer {
             lane_colors: HashMap::new(),
             revision: 0,
         };
+        explorer.color_groups();
         if let Some(root) = root {
             explorer.set_root(root);
             explorer.track_mut().history.clear();
@@ -593,6 +611,14 @@ impl Explorer {
             .or_else(|| self.focus().and_then(|f| self.map.tile_of(f)))
     }
 
+    /// The node the camera orbits: the one focused by hand, else where the active
+    /// journey starts, else its cursor. Stepping through a journey leaves it put.
+    pub(crate) fn anchor(&self) -> Option<usize> {
+        self.graph_focus
+            .or_else(|| self.root().and_then(|u| self.map.tile_of(u)))
+            .or_else(|| self.graph_focus())
+    }
+
     /// Focuses a node. When the active journey runs it, its cursor moves there too.
     pub(crate) fn focus_node(&mut self, tile: usize) {
         if let Some(previous) = self.graph_focus().filter(|&p| p != tile) {
@@ -771,12 +797,17 @@ impl Explorer {
         true
     }
 
-    /// The color index for a node's container, shared with journey bars.
+    /// The color index for a node: its module's, so each module reads as one region.
     pub(crate) fn tile_color(&self, tile: usize) -> usize {
-        self.map
-            .tile(tile)
-            .and_then(|t| self.group_color(t.group))
-            .unwrap_or_default()
+        self.graph.cluster(tile).unwrap_or_default()
+    }
+
+    /// A module cluster's name: the module's own, else its container's.
+    pub(crate) fn cluster_name(&self, cluster: usize) -> String {
+        self.graph
+            .cluster_unit(cluster)
+            .and_then(|id| self.any_unit(id))
+            .map_or_else(String::new, |unit| unit.name.clone())
     }
 
     /// The color index for a container.

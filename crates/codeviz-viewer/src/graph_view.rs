@@ -287,6 +287,7 @@ pub(crate) fn draw_graph(
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
+    draw_regions(&explorer, &mut gizmos);
     if let Some(diff) = diff {
         draw_diff_graph(&explorer, &diff, clock.elapsed_secs(), &mut gizmos);
         return;
@@ -346,7 +347,11 @@ pub(crate) fn draw_graph(
                 true,
             ),
             None if center.is_some() => (Color::srgba(0.6, 0.66, 0.8, 0.04), false),
-            None => (Color::srgba(0.6, 0.66, 0.8, 0.16), false),
+            // Calls between modules step back, so each module's own wiring reads.
+            None if graph.cluster(from) != graph.cluster(to) => {
+                (Color::srgba(0.6, 0.66, 0.8, 0.06), false)
+            }
+            None => (Color::srgba(0.6, 0.66, 0.8, 0.18), false),
         };
         let color = color.with_alpha(color.alpha() * shown);
         if arrow {
@@ -372,6 +377,52 @@ pub(crate) fn draw_graph(
             radius,
             Color::srgba(1.0, 1.0, 1.0, 0.4),
         );
+    }
+}
+
+/// Each module's region, as the functions showing place it: its cluster, middle, and
+/// a radius holding most of them.
+pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
+    let graph = explorer.graph();
+    let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
+    for tile in 0..explorer.map().tiles.len() {
+        if explorer.visibility(tile) < 0.5 {
+            continue;
+        }
+        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.tile_point(tile))
+            && let Some(list) = members.get_mut(cluster)
+        {
+            list.push(at);
+        }
+    }
+    members
+        .iter()
+        .enumerate()
+        .filter(|(_, points)| points.len() >= 3)
+        .map(|(cluster, points)| {
+            let middle = points.iter().copied().sum::<Vec3>() / points.len() as f32;
+            let mut distances: Vec<f32> = points
+                .iter()
+                .map(|p| (p.truncate() - middle.truncate()).length())
+                .collect();
+            distances.sort_by(f32::total_cmp);
+            let radius = distances[(distances.len() * 9 / 10).min(distances.len() - 1)] + 4.0;
+            (cluster, middle, radius)
+        })
+        .collect()
+}
+
+/// A faint ring round each module's region, in its color.
+fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
+    for (cluster, middle, radius) in regions(explorer) {
+        let color = lane_color(cluster % PALETTE.len());
+        gizmos
+            .circle(
+                Isometry3d::from_translation(middle),
+                radius,
+                color.with_alpha(0.22),
+            )
+            .resolution(64);
     }
 }
 
@@ -401,7 +452,7 @@ fn frame_all(explorer: &Explorer, camera: &mut OrbitCamera) {
     let points: Vec<Vec3> = (0..explorer.map().tiles.len())
         .filter_map(|t| explorer.tile_point(t))
         .collect();
-    frame_points(&points, camera);
+    frame_points(&points, None, camera);
 }
 
 /// When the lens changes, or opens limited, refits the view to what it shows in full:
@@ -412,9 +463,17 @@ pub(crate) fn frame_reveal(
     mut cameras: Query<&mut OrbitCamera>,
 ) {
     let lens = explorer.lens();
+    let opening = last.is_none();
     // A reveal set from the start frames what it shows too.
     let changed = last.map_or(lens.reach.is_some(), |l| l != lens);
     *last = Some(lens);
+    if opening && !changed && explorer.anchor().is_none() {
+        // Nothing to center on: open on the whole graph.
+        for mut camera in &mut cameras {
+            frame_all(&explorer, &mut camera);
+        }
+        return;
+    }
     if !changed {
         return;
     }
@@ -433,21 +492,35 @@ pub(crate) fn frame_reveal(
             .filter(|&(_, &shown)| shown >= 0.5)
             .filter_map(|(tile, _)| explorer.tile_point(tile))
             .collect();
-        frame_points(&points, &mut camera);
+        let anchor = explorer.anchor().and_then(|t| explorer.tile_point(t));
+        frame_points(&points, anchor, &mut camera);
     }
 }
 
 /// Looks at the middle of `points` from far enough back to see them all.
-fn frame_points(points: &[Vec3], camera: &mut OrbitCamera) {
+/// Around the anchor when there is one, which the camera never leaves; a few far
+/// outliers do not push the view back.
+fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera) {
     if points.is_empty() {
         return;
     }
-    let middle = points.iter().copied().sum::<Vec3>() / points.len() as f32;
-    let radius = points
-        .iter()
-        .map(|p| p.distance(middle))
-        .fold(0.0, f32::max);
+    let middle =
+        anchor.unwrap_or_else(|| points.iter().copied().sum::<Vec3>() / points.len() as f32);
+    let mut distances: Vec<f32> = points.iter().map(|p| p.distance(middle)).collect();
+    distances.sort_by(f32::total_cmp);
+    let radius = distances[(distances.len() * 9 / 10).min(distances.len() - 1)];
     camera.glide_to(middle, (radius * 2.6).max(MIN_ORBIT_DISTANCE));
+}
+
+/// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
+/// follows it as the graph moves.
+pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
+    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+        return;
+    };
+    for mut camera in &mut cameras {
+        camera.target = at;
+    }
 }
 
 /// Orbits the focused node from far enough back to see everything it calls and
