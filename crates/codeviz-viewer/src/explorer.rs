@@ -789,17 +789,18 @@ impl Explorer {
         self.spotlight
     }
 
-    /// Puts `side` in the spotlight one call out, then widens it a call at a time
-    /// until it goes all the way, then takes it out. Nothing on that side, nothing
-    /// to pick out.
+    /// Puts `side` in the spotlight one call out, then two, then all the way, then
+    /// takes it out: past two calls, every route is what you want, and taking it out
+    /// stays a few presses away. Nothing on that side, nothing to pick out.
     pub(crate) fn widen_spotlight(&mut self, side: Side, now: f32) {
         if self.furthest(side) == 0 {
             return;
         }
         let reach = match self.spotlight {
             Some(on) if on.side == side => match on.reach {
-                Some(reach) if reach < self.furthest(side) => Some(Some(reach + 1)),
-                _ => None,
+                Some(1) => Some(Some(2)),
+                Some(_) => Some(None),
+                None => None,
             },
             _ => Some(Some(1)),
         };
@@ -1502,6 +1503,44 @@ pub(crate) mod tests {
             sorted(vec![place, find, quote]),
             "everything it can run"
         );
+    }
+
+    #[test]
+    fn past_two_calls_the_spotlight_goes_all_the_way() {
+        let unit = |name: &str, callee: Option<&str>| {
+            let calls = callee.map_or_else(String::new, |c| {
+                format!(
+                    r#"{{ "key": "{c}#0", "text": "{c}", "targets": [{{ "unit": "x:{c}", "certainty": "exact" }}] }}"#
+                )
+            });
+            format!(
+                r#"{{ "id": "x:{name}", "name": "{name}", "kind": "fn", "role": "invocable", "calls": [{calls}] }}"#
+            )
+        };
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}, {}, {}, {}, {}] }}"#,
+            unit("a", Some("b")),
+            unit("b", Some("c")),
+            unit("c", Some("d")),
+            unit("d", Some("e")),
+            unit("e", None)
+        );
+        let system = System::new([Document::from_json(&json).unwrap()]);
+        let mut explorer = Explorer::new(system, None, JourneyOptions::default());
+        explorer.open_at(tile_named(&explorer, "e"));
+        let reaches = |explorer: &mut Explorer| {
+            explorer.widen_spotlight(Side::Callers, 0.0);
+            explorer.spotlight().map(|s| s.reach)
+        };
+        assert_eq!(reaches(&mut explorer), Some(Some(1)));
+        assert_eq!(reaches(&mut explorer), Some(Some(2)));
+        assert_eq!(
+            reaches(&mut explorer),
+            Some(None),
+            "then every route, a to e"
+        );
+        assert_eq!(explorer.spotlit().len(), 4);
+        assert_eq!(reaches(&mut explorer), None, "then off");
     }
 
     #[test]

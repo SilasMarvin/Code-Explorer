@@ -1427,12 +1427,12 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
                 .color(egui_color(color));
             let hint = match side {
                 Side::Callers => {
-                    "Pick out what calls it, a call further up each time, and bring it all \
-                     into view (I; Shift I all the way)"
+                    "Pick out what calls it, then two calls up, then every route in, and bring \
+                     it all into view (I; Shift I all the way)"
                 }
                 Side::Callees => {
-                    "Pick out what it calls, a call further down each time, and bring it all \
-                     into view (O; Shift O all the way)"
+                    "Pick out what it calls, then two calls down, then everything it runs, and \
+                     bring it all into view (O; Shift O all the way)"
                 }
             };
             if ui
@@ -1653,7 +1653,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
         &[
             (
                 "I",
-                "pick out what calls the focus, a call further up each time",
+                "what calls the focus, then 2 calls up, then all, then off",
             ),
             (
                 "Shift I",
@@ -1665,7 +1665,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ),
             (
                 "O",
-                "pick out what the focus calls, a call further down each time",
+                "what the focus calls, then 2 calls down, then all, then off",
             ),
             ("Shift O", "everything the focus can run"),
             ("1 – 9", "focus the focus's nth call"),

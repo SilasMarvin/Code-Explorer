@@ -36,8 +36,8 @@ its module, the same color as its ring; under a diff it says what changed instea
 journey bar is filled exactly like its node, and its number sits on a badge of that
 color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
 to it. `I` picks out what calls the focus and `O` what it calls, pulling the camera back
-only as far as it takes to show them all; pressed again, each reaches a call further,
-and shift goes all the way at once. Past the direct callers that draws every route into
+only as far as it takes to show them all; pressed again, each reaches two calls out,
+then all the way, then lets go, and shift goes all the way at once. Past the direct callers that draws every route into
 the focus, from the entry points where requests come in (or the functions nothing calls,
 which a framework or a test runs) down to it, as pale arrows with dots running towards
 it, and steps the rest of the graph out of the way. The top bar says how many entry
