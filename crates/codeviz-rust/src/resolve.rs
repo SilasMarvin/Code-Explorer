@@ -368,6 +368,36 @@ impl<'a> Index<'a> {
         })
     }
 
+    /// For `Trait::method`, a trait of ours (also what `T::method` becomes for a
+    /// `T: Trait`): every implementation of the method, and the trait's own default.
+    fn through_trait(&self, caller: &RawUnit, segments: &[String]) -> Option<Vec<usize>> {
+        let (method, ty) = segments.split_last()?;
+        let trait_name = ty.last()?.as_str();
+        if !self.extraction.traits.contains(trait_name) || self.is_struct_or_enum(trait_name) {
+            return None;
+        }
+        let mut found: Vec<usize> = self
+            .methods_named(method)
+            .filter(|&i| {
+                self.extraction
+                    .units
+                    .get(i)
+                    .and_then(|u| u.owner.as_ref())
+                    .is_some_and(|o| o.trait_name.as_deref() == Some(trait_name))
+            })
+            .filter(|&i| self.visible(caller, i) || self.dispatcher(i) == Some(trait_name))
+            .collect();
+        found.sort_unstable();
+        (!found.is_empty()).then_some(found)
+    }
+
+    /// Whether a struct, enum or union of ours has this name, which a trait shares.
+    fn is_struct_or_enum(&self, name: &str) -> bool {
+        self.extraction.units.iter().any(|unit| {
+            matches!(unit.kind, UnitKind::Type("struct" | "enum" | "union")) && unit.name == name
+        })
+    }
+
     /// The functions one path names. Several are implementations of one generic
     /// trait for different arguments (`From<&str>`, `From<bool>`), and which runs
     /// depends on types: a guess. An inherent function takes precedence.
@@ -656,6 +686,32 @@ impl<'a> Index<'a> {
         }
         match &call.target {
             CallTarget::Path(segments) => {
+                if let Some(units) = self.through_trait(caller, segments) {
+                    // `T::make()` for a generic `T: Factory` may run any implementation;
+                    // which one `Factory::make(x)` runs depends on `x`'s type.
+                    let written = call.text.split("::").next().unwrap_or_default();
+                    let generic = segments.iter().all(|s| s != written);
+                    if generic {
+                        return Found::new(units, Certainty::Exact);
+                    }
+                    // Most often `Trait::method(self, ..)` in another of the caller's
+                    // type's methods: its own implementation.
+                    let own: Vec<usize> = units
+                        .iter()
+                        .copied()
+                        .filter(|&i| {
+                            let owner = self.extraction.units.get(i).and_then(|u| u.owner.as_ref());
+                            owner
+                                .zip(caller.owner.as_ref())
+                                .is_some_and(|(callee, caller)| {
+                                    callee.type_name == caller.type_name
+                                        && callee.trait_name != Some(callee.type_name.clone())
+                                })
+                        })
+                        .collect();
+                    let units = if own.is_empty() { units } else { own };
+                    return Found::new(units, Certainty::Inferred);
+                }
                 let (units, certainty) = self.resolve_path(caller, segments);
                 Found {
                     // `Type::default()` on a type of ours is a derive, not foreign code.

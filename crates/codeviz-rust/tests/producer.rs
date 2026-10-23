@@ -716,6 +716,37 @@ fn elements_of_collections_and_iterators_keep_their_types() {
     );
 }
 
+#[test]
+fn calls_through_a_trait_path() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub trait Factory { fn make() -> Self; fn name(&self) {} }
+         pub struct A; pub struct B;
+         impl Factory for A { fn make() -> Self { A } fn name(&self) { Factory::make(); } }
+         impl Factory for B { fn make() -> Self { B } }
+         fn build<T: Factory>() -> T { T::make() }",
+    )]);
+    let make = |ty: &str| format!("rust:app::{ty}::{{impl#Factory}}::make");
+    assert_eq!(
+        resolved(unit(&document, "app::build")),
+        [(
+            "T::make".to_owned(),
+            vec![make("A"), make("B")],
+            Some(Certainty::Exact)
+        )],
+        "through a generic, any implementation may run"
+    );
+    assert_eq!(
+        resolved(unit(&document, "app::A::{impl#Factory}::name")),
+        [(
+            "Factory::make".to_owned(),
+            vec![make("A")],
+            Some(Certainty::Inferred)
+        )],
+        "named by the trait, the caller's own type's, by a guess"
+    );
+}
+
 /// Writes each `(name, dependencies, lib.rs)` as a crate in one workspace and
 /// analyzes it.
 fn analyze_workspace(crates: &[(&str, &str, &str)]) -> Document {

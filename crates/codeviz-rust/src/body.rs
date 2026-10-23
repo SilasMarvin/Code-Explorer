@@ -690,6 +690,12 @@ impl Builder<'_, '_, '_> {
                     .map_or(CallTarget::Path(segments.clone()), |path| {
                         CallTarget::Closure(path.clone())
                     }),
+                // `T::make()` for a `T: Factory` dispatches through `Factory`.
+                [ty, name] if self.generics.contains_key(ty) => {
+                    let mut path = self.substitute(vec![ty.clone()]);
+                    path.push(name.clone());
+                    CallTarget::Path(path)
+                }
                 _ => CallTarget::Path(segments),
             }),
         };
