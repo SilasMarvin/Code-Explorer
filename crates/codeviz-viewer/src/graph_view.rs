@@ -568,7 +568,7 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 }
 
 /// The closest the orbit comes to the focused node.
-const MIN_ORBIT_DISTANCE: f32 = 25.0;
+const MIN_ORBIT_DISTANCE: f32 = 40.0;
 
 /// F turns to face the graph head-on, framed around the focus again; R pulls back to
 /// take in the whole graph.
