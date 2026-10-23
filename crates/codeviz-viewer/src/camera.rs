@@ -154,6 +154,12 @@ impl OrbitCamera {
         self.framed = Some(Framed { points, nearest });
     }
 
+    /// Whether it is still fitting what it last framed, the viewer not having moved
+    /// it since.
+    pub(crate) fn framing(&self) -> bool {
+        self.framed.is_some()
+    }
+
     /// How far back, orbiting `center` and turned where it is turning to, the camera
     /// must be for every one of `points` to sit inside the room, clear of its edges.
     pub(crate) fn fit_distance(&self, points: &[Vec3], center: Vec3) -> f32 {

@@ -622,10 +622,13 @@ fn ring_points(explorer: &Explorer, tiles: impl Iterator<Item = usize>) -> Vec<V
 
 /// When the lens changes, or opens limited, refits the view to what it shows in full:
 /// around the focus when that is where it starts, else around everything it reveals.
-/// With nothing focused by hand, it opens on the whole graph.
+/// With nothing focused by hand, it opens on the whole graph, and keeps all of it in
+/// view while it settles, until the focus changes or the viewer moves the camera.
 pub(crate) fn frame_reveal(
     explorer: Res<Explorer>,
     mut last: Local<Option<Lens>>,
+    // Whether it is still holding the whole graph, and the focus it opened on.
+    mut whole: Local<(bool, Option<usize>)>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
     let lens = explorer.lens();
@@ -633,12 +636,21 @@ pub(crate) fn frame_reveal(
     // A reveal set from the start frames what it shows too.
     let changed = last.map_or(lens.reach.is_some(), |l| l != lens);
     *last = Some(lens);
+    let focus = explorer.graph_focus();
     if opening && !changed && explorer.focused_by_hand().is_none() {
+        *whole = (true, focus);
         for mut camera in &mut cameras {
             frame_all(&explorer, &mut camera);
         }
         return;
     }
+    if *whole == (true, focus) && explorer.settling() && !changed {
+        for mut camera in cameras.iter_mut().filter(|c| c.framing()) {
+            frame_all(&explorer, &mut camera);
+        }
+        return;
+    }
+    whole.0 = false;
     if !changed {
         return;
     }
