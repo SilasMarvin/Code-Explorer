@@ -42,8 +42,9 @@ the focus, from the entry points where requests come in (or the functions nothin
 which a framework or a test runs) down to it, as pale arrows with dots running towards
 it, and steps the rest of the graph out of the way. The top bar says how many entry
 points reach the focus; with its callers picked out, a card lists them, and picking one
-opens that entry's journey with the cursor on the focus and every call on the way
-disclosed. A route stops at an entry point rather than climbing past it, and a router
+(or `E` for the next, `Shift E` the one before) opens that entry's journey with the
+cursor on the focus and every call on the way disclosed, the route it follows drawn
+brighter than the rest. A route stops at an entry point rather than climbing past it, and a router
 registering a handler is wiring, not a call.
 
 Digits walk to the focus's nth call, shift+digit to its nth caller, `-` and `=` reveal

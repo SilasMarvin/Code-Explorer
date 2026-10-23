@@ -544,6 +544,7 @@ pub(crate) fn draw_diff_graph(
         })
         .collect();
     let routes = graph_view::Routes::of(explorer);
+    let following = explorer.followed_start().is_some();
     for (index, &(from, to)) in graph.calls.iter().chain(&graph.ghosts).enumerate() {
         let (Some(a), Some(b)) = (explorer.tile_point(from), explorer.tile_point(to)) else {
             continue;
@@ -580,7 +581,9 @@ pub(crate) fn draw_diff_graph(
                 dashed(gizmos, a, b - back, REMOVED.with_alpha(0.85 * presence));
             }
             _ if let Some(hops) = routes.as_ref().and_then(|r| r.call(from, to)) => {
-                graph_view::draw_route(gizmos, (a, b - back), hops, shown, time, index);
+                let followed = following.then(|| path.contains(&(from, to)));
+                let alpha = graph_view::route_strength(hops, shown, followed);
+                graph_view::draw_route(gizmos, (a, b - back), alpha, time, index);
             }
             _ => {
                 let carries = view.style == DiffStyle::Impact

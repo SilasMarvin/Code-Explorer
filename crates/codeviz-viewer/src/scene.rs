@@ -326,6 +326,14 @@ fn keyboard(
             }
         }
     }
+    // E follows the next route into the focus from where it starts; with shift, the
+    // one before.
+    if keys.just_pressed(KeyCode::KeyE) && explorer.follow_next_route(!shift, time.elapsed_secs()) {
+        autoplay.playing = false;
+        if panel.mode == PanelMode::Hidden {
+            panel.mode = PanelMode::Docked;
+        }
+    }
     if keys.just_pressed(KeyCode::Space) {
         autoplay.playing = !autoplay.playing;
     }

@@ -1403,8 +1403,8 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
             if ui
                 .add(egui::Button::selectable(all, text))
                 .on_hover_text(
-                    "Every route into it, from the entry points down; pick one to follow it \
-                     (Shift I)",
+                    "Every route into it, from the entry points down; pick one, or E, to \
+                     follow it (Shift I)",
                 )
                 .clicked()
             {
@@ -1512,7 +1512,7 @@ fn routes_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
                         .unwrap_or_default();
                     ui.label(egui::RichText::new(title).strong().size(14.0));
                     ui.label(
-                        egui::RichText::new("pick one to follow its journey here")
+                        egui::RichText::new("pick one, or E, to follow its journey here")
                             .small()
                             .color(MUTED),
                     );
@@ -1658,6 +1658,10 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             (
                 "Shift I",
                 "every route into the focus, from its entry points",
+            ),
+            (
+                "E  Shift E",
+                "follow the next / previous route into the focus",
             ),
             (
                 "O",

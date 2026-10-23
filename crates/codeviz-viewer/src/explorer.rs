@@ -895,6 +895,44 @@ impl Explorer {
         &self.entries
     }
 
+    /// Follows the next route into the focus, or the one before, in the order
+    /// [`Self::starts`] lists them, picking out every route as it does. Returns
+    /// whether there was one to follow.
+    pub(crate) fn follow_next_route(&mut self, forward: bool, now: f32) -> bool {
+        let Some(focus) = self.graph_focus() else {
+            return false;
+        };
+        let starts = self.starts(focus);
+        if starts.is_empty() {
+            return false;
+        }
+        let root = self.root().and_then(|unit| self.map.tile_of(unit));
+        let next = match starts.iter().position(|s| Some(s.tile) == root) {
+            Some(at) if forward => (at + 1) % starts.len(),
+            Some(at) => (at + starts.len() - 1) % starts.len(),
+            None if forward => 0,
+            None => starts.len() - 1,
+        };
+        if !self
+            .spotlight
+            .is_some_and(|s| s.side == Side::Callers && s.reach.is_none())
+        {
+            self.spotlight_all(Side::Callers, now);
+        }
+        self.follow_route(starts[next].tile);
+        true
+    }
+
+    /// The route start the active journey begins at, while it follows a route into
+    /// the focus.
+    pub(crate) fn followed_start(&self) -> Option<usize> {
+        if !self.spotlight.is_some_and(|s| s.side == Side::Callers) {
+            return None;
+        }
+        let root = self.root().and_then(|unit| self.map.tile_of(unit))?;
+        (Some(root) != self.graph_focus() && self.spotlight_hops(root).is_some()).then_some(root)
+    }
+
     /// Opens the journey from `start`, keeping the focus, with the cursor on the focus
     /// and every call on the way there disclosed: one route into it, followed.
     pub(crate) fn follow_route(&mut self, start: usize) {
@@ -1487,6 +1525,19 @@ pub(crate) mod tests {
             explorer.spotlight().is_some(),
             "the other routes stay picked out"
         );
+        assert_eq!(explorer.followed_start(), Some(post));
+
+        let get = tile_named(&explorer, "get");
+        assert!(explorer.follow_next_route(true, 1.0));
+        assert_eq!(
+            explorer.root().map(UnitId::as_str),
+            Some("x:get"),
+            "round to the first"
+        );
+        assert_eq!(explorer.followed_start(), Some(get));
+        assert!(explorer.follow_next_route(false, 2.0));
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:post"));
+        assert_eq!(at(&explorer), "find");
     }
 
     fn at(explorer: &Explorer) -> String {

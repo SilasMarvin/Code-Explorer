@@ -372,19 +372,30 @@ impl Routes {
     }
 }
 
+/// How strongly to draw a call on one of the spotlight's routes, `hops` calls from the
+/// focus at its far end: steady out to the end of the route so the whole of it reads.
+/// While the journey follows one route, `followed` says whether the call is on it, and
+/// the others step back.
+pub(crate) fn route_strength(hops: u32, shown: f32, followed: Option<bool>) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "a small count of calls")]
+    let strength = (0.95 - 0.08 * hops as f32).max(0.55);
+    let followed = match followed {
+        Some(true) => 1.0 / strength,
+        Some(false) => 0.35,
+        None => 1.0,
+    };
+    strength * followed * shown
+}
+
 /// A call on one of the spotlight's routes that does not touch the focus: a pale
-/// arrow, steady out to the end of the route so the whole of it reads, with dots
-/// running the way the call does.
+/// arrow at `alpha`, with dots running the way the call does.
 pub(crate) fn draw_route(
     gizmos: &mut Gizmos,
     (a, b): (Vec3, Vec3),
-    hops: u32,
-    shown: f32,
+    alpha: f32,
     time: f32,
     seed: usize,
 ) {
-    #[expect(clippy::cast_precision_loss, reason = "a small count of calls")]
-    let alpha = (0.95 - 0.08 * hops as f32).max(0.55) * shown;
     let color = FURTHER.with_alpha(alpha);
     gizmos.arrow(a, b, color).with_tip_length(0.9);
     flow(gizmos, a, b, color.with_alpha(alpha * 0.7), time, seed);
@@ -416,6 +427,7 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let opened = disclosed.opened();
     let spotlit = explorer.spotlit();
     let routes = Routes::of(explorer);
+    let following = explorer.followed_start().is_some();
     // Calls from the focus, counting the focus itself as zero.
     let hops = |side: &HashMap<usize, u32>, tile: usize| {
         if center == Some(tile) {
@@ -438,7 +450,9 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             && center != Some(to)
             && let Some(hops) = routes.as_ref().and_then(|r| r.call(from, to))
         {
-            draw_route(gizmos, (a, b - back), hops, shown, time, index);
+            let followed = following.then(|| path.contains(&(from, to)));
+            let alpha = route_strength(hops, shown, followed);
+            draw_route(gizmos, (a, b - back), alpha, time, index);
             continue;
         }
         // A link lights up when it takes one step nearer the focus (violet) or one
