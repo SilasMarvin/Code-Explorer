@@ -722,7 +722,9 @@ fn fitted(names: &[String], room: f32, width: impl Fn(&str) -> f32) -> Option<St
     if let Some(name) = names.iter().find(|name| width(name) <= room) {
         return Some(name.clone());
     }
-    let name = names.last()?;
+    let name = names
+        .last()
+        .filter(|n| n.chars().count() > FEWEST_LETTERS)?;
     // The most letters that fit, found by halving.
     let (mut fits, mut over) = (FEWEST_LETTERS - 1, name.chars().count());
     while over - fits > 1 {
@@ -821,6 +823,8 @@ mod tests {
         );
         assert_eq!(fitted(&names, 80.0, width).as_deref(), Some("inse…der"));
         assert_eq!(fitted(&names, 40.0, width), None, "too few letters to say");
+        let short = ["quote".to_owned()];
+        assert_eq!(fitted(&short, 40.0, width), None, "too short to cut");
     }
 
     #[test]
