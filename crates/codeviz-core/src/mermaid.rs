@@ -11,8 +11,8 @@ use std::fmt::Write as _;
 use codeviz_ir::{ExitKind, Mode};
 
 use crate::{
-    Change, Condition, StopReason,
-    markdown::{otherwise, when},
+    Condition, StopReason,
+    markdown::{change_word, otherwise, when},
     story::{Beat, Ending, Story},
 };
 
@@ -290,14 +290,12 @@ fn has_sibling(rest: &[Beat], want: &[Block], level: usize) -> bool {
 
 /// ` (new, +2 calls)`: what the message alone cannot show.
 fn remarks(beat: &Beat) -> String {
-    let mut remarks = Vec::new();
-    match beat.change {
-        Some(Change::Added) => remarks.push("new".to_owned()),
-        Some(Change::Modified) => remarks.push("rewritten".to_owned()),
-        Some(Change::Moved) => remarks.push("moved".to_owned()),
-        Some(Change::Removed) => remarks.push("removed".to_owned()),
-        None => {}
-    }
+    let mut remarks: Vec<String> = beat
+        .change
+        .map(change_word)
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
     match beat.mode {
         Mode::Spawn => remarks.push("in the background".to_owned()),
         Mode::Register => remarks.push("runs later".to_owned()),

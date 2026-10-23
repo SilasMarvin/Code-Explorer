@@ -9,7 +9,7 @@ use std::{
 
 use codeviz_ir::{Role, UnitId};
 
-use crate::{Change, Diff, System, display_name, upstream};
+use crate::{Change, Diff, System, display_name, markdown::change_word, upstream};
 
 /// Lists longer than this end with how many more there are.
 const MAX_ITEMS: usize = 20;
@@ -26,26 +26,10 @@ impl Diff {
         }
         let mut out = format!("{}\n", self.totals(before, after));
         self.functions(before, after, &mut out);
-        let calls = |calls: &std::collections::HashSet<crate::Call>, system: &System| {
-            let mut lines: Vec<String> = calls
-                .iter()
-                .map(|(from, to)| {
-                    format!(
-                        "`{}` → `{}`",
-                        display_name(system, from),
-                        display_name(system, to)
-                    )
-                })
-                .collect();
-            lines.sort();
-            lines
-        };
-        list(&mut out, "Calls added", &calls(&self.added_calls, after));
-        list(
-            &mut out,
-            "Calls removed",
-            &calls(&self.removed_calls, before),
-        );
+        let added = self.calls(&self.added_calls, after, Change::Added);
+        list(&mut out, "Calls added", &added);
+        let removed = self.calls(&self.removed_calls, before, Change::Removed);
+        list(&mut out, "Calls removed", &removed);
         list(
             &mut out,
             "Entry points affected",
@@ -100,9 +84,9 @@ impl Diff {
             let home = unit.parent.as_ref().map_or_else(String::new, path);
             // A module or type is named as one; a function by its name alone.
             let what = if unit.role == Role::Invocable {
-                format!("{} `{}`", word(change), unit.name)
+                format!("{} `{}`", change_word(change), unit.name)
             } else {
-                format!("{} {} `{}`", word(change), unit.kind, unit.name)
+                format!("{} {} `{}`", change_word(change), unit.kind, unit.name)
             };
             let line = match self.moved.get(id) {
                 Some(was) => format!("{what}, from `{}`", path(was)),
@@ -124,6 +108,48 @@ impl Diff {
                 let _ = writeln!(out, "  - {line}");
             }
         }
+    }
+
+    /// Calls by caller, as `` `a` → `b`, `c` ``. Those made inside a function that is
+    /// itself `inside` (new, or removed) come with it, so they are counted last rather
+    /// than listed.
+    fn calls(
+        &self,
+        calls: &std::collections::HashSet<crate::Call>,
+        system: &System,
+        inside: Change,
+    ) -> Vec<String> {
+        let mut within = 0;
+        let mut by_caller: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (from, to) in calls {
+            if self.change(system.owner(from)) == Some(inside) {
+                within += 1;
+                continue;
+            }
+            by_caller
+                .entry(display_name(system, from))
+                .or_default()
+                .push(format!("`{}`", display_name(system, to)));
+        }
+        let lines: Vec<String> = by_caller
+            .into_iter()
+            .map(|(caller, mut callees)| {
+                callees.sort();
+                format!("`{caller}` → {}", callees.join(", "))
+            })
+            .collect();
+        let mut lines = cut(lines, "callers");
+        let what = if inside == Change::Added {
+            "new"
+        } else {
+            "removed"
+        };
+        match within {
+            0 => {}
+            1 => lines.push(format!("and 1 inside {what} functions")),
+            n => lines.push(format!("and {n} inside {what} functions")),
+        }
+        lines
     }
 
     /// Each entry point that can reach a change, nearest first, with the changes it
@@ -189,7 +215,10 @@ impl Diff {
             })
             .collect();
         lines.sort();
-        lines.into_iter().map(|(_, line)| line).collect()
+        cut(
+            lines.into_iter().map(|(_, line)| line).collect(),
+            "entry points",
+        )
     }
 }
 
@@ -210,15 +239,6 @@ fn is_root(system: &System, unit: &UnitId) -> bool {
         && system.callers(unit).is_empty()
 }
 
-fn word(change: Change) -> &'static str {
-    match change {
-        Change::Added => "new",
-        Change::Modified => "rewritten",
-        Change::Moved => "moved",
-        Change::Removed => "removed",
-    }
-}
-
 /// An id without its scheme: `axum_server::orders::place`.
 fn path(id: &UnitId) -> String {
     id.as_str()
@@ -227,16 +247,23 @@ fn path(id: &UnitId) -> String {
         .to_owned()
 }
 
-/// A titled list, cut at [`MAX_ITEMS`]; nothing when it is empty.
+/// A titled list; nothing when it is empty.
 fn list(out: &mut String, title: &str, items: &[String]) {
     if items.is_empty() {
         return;
     }
     let _ = writeln!(out, "\n{title}:");
-    for item in items.iter().take(MAX_ITEMS) {
+    for item in items {
         let _ = writeln!(out, "- {item}");
     }
-    if items.len() > MAX_ITEMS {
-        let _ = writeln!(out, "- … and {} more", items.len() - MAX_ITEMS);
+}
+
+/// `lines` cut at [`MAX_ITEMS`], ending with how many more `what` there are.
+fn cut(mut lines: Vec<String>, what: &str) -> Vec<String> {
+    if lines.len() > MAX_ITEMS {
+        let rest = lines.len() - MAX_ITEMS;
+        lines.truncate(MAX_ITEMS);
+        lines.push(format!("… and {rest} more {what}"));
     }
+    lines
 }

@@ -16,7 +16,12 @@ impl Story {
     #[must_use]
     pub fn markdown(&self) -> String {
         let mut out = format!("{}:\n\n", self.title());
-        let notes = notes(&self.root);
+        // How the root changed is in the title.
+        let notes = notes(&Beat {
+            change: None,
+            calls: Vec::new(),
+            ..self.root.clone()
+        });
         if !notes.is_empty() {
             let _ = writeln!(out, "- `{}` itself: {notes}", self.root.name);
         }
@@ -40,12 +45,17 @@ impl Story {
         out
     }
 
-    /// `` `POST /users` → `handlers.create_user`, when it completes ``.
+    /// `` `POST /users` → `handlers.create_user`, when it completes ``, with how the
+    /// root changed under a diff: `` `orders.place` (rewritten), every path ``.
     #[must_use]
     pub fn title(&self) -> String {
         let root = match &self.entry {
             Some(entry) => format!("`{entry}` → `{}`", self.root.name),
             None => format!("`{}`", self.root.name),
+        };
+        let root = match self.root.change {
+            Some(change) => format!("{root} ({})", change_word(change)),
+            None => root,
         };
         let path = match &self.told {
             None => "every path".to_owned(),
@@ -78,14 +88,12 @@ fn line(beat: &Beat, depth: usize, out: &mut String) {
 /// What is worth saying about a call, most telling first, as in ``only if `bulk`, can
 /// fail: `unknown sku` ``.
 fn notes(beat: &Beat) -> String {
-    let mut notes: Vec<String> = Vec::new();
-    match beat.change {
-        Some(Change::Added) => notes.push("new".to_owned()),
-        Some(Change::Modified) => notes.push("rewritten".to_owned()),
-        Some(Change::Moved) => notes.push("moved".to_owned()),
-        Some(Change::Removed) => notes.push("removed".to_owned()),
-        None => {}
-    }
+    let mut notes: Vec<String> = beat
+        .change
+        .map(change_word)
+        .map(str::to_owned)
+        .into_iter()
+        .collect();
     match beat.mode {
         Mode::Spawn => notes.push("in the background".to_owned()),
         Mode::Register => notes.push("handed off, runs later".to_owned()),
@@ -128,6 +136,16 @@ fn notes(beat: &Beat) -> String {
         n => notes.push(format!("+{n} calls")),
     }
     notes.join(", ")
+}
+
+/// How a diff changed a call, in a word.
+pub(crate) fn change_word(change: Change) -> &'static str {
+    match change {
+        Change::Added => "new",
+        Change::Modified => "rewritten",
+        Change::Moved => "moved",
+        Change::Removed => "removed",
+    }
 }
 
 /// ``can fail: `unknown sku` ``, or ``can fail in `pricing.price` `` for a failure in
