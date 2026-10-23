@@ -422,7 +422,7 @@ impl ForceGraph {
         let before = modules.middles.clone();
         if self.crates_apart() {
             let tops = self.tops_of(&modules);
-            let districts = self.districts(&rooms);
+            let districts = self.districts(&modules, &tops, &rooms);
             let shifts = separate(&tops, &districts, spacing * 2.0);
             for (cluster, middle) in modules.middles.iter_mut().enumerate() {
                 *middle = add(*middle, shifts[self.tops[cluster]]);
@@ -484,15 +484,25 @@ impl ForceGraph {
         Regions { middles, counts }
     }
 
-    /// How wide each crate's district is: room for its modules' rooms, loosely packed.
-    fn districts(&self, rooms: &[f32]) -> Vec<f32> {
+    /// How wide each crate's district is: room for its modules' rooms loosely packed,
+    /// or as far as they actually reach from its middle, whichever is wider.
+    fn districts(&self, modules: &Regions, tops: &Regions, rooms: &[f32]) -> Vec<f32> {
         let gap = self.config.link_length;
         let mut area = vec![0.0_f32; self.top_count()];
+        let mut reach = vec![0.0_f32; self.top_count()];
         for (cluster, &top) in self.tops.iter().enumerate() {
+            if modules.counts[cluster] == 0 {
+                continue;
+            }
             area[top] += (rooms[cluster] + gap / 2.0).powi(2);
+            let [x, y, _] = sub(modules.middles[cluster], tops.middles[top]);
+            reach[top] = reach[top].max(x.hypot(y) + rooms[cluster]);
         }
         // Discs packed loosely fill about three fifths of the disc round them.
-        area.iter().map(|&a| (a / 0.6).sqrt()).collect()
+        area.iter()
+            .zip(&reach)
+            .map(|(&a, &r)| (a / 0.6).sqrt().max(r))
+            .collect()
     }
 
     /// Keeps each module together in a room of its own, clear of the others, and
@@ -515,7 +525,8 @@ impl ForceGraph {
         };
         if self.crates_apart() {
             let tops = self.tops_of(&modules);
-            let apart = keep_apart(&tops, &self.districts(&rooms), gap * 2.0, config.separation);
+            let districts = self.districts(&modules, &tops, &rooms);
+            let apart = keep_apart(&tops, &districts, gap * 2.0, config.separation);
             for (cluster, (slot, &middle)) in moves.iter_mut().zip(&modules.middles).enumerate() {
                 let top = self.tops[cluster];
                 let inward = scale(sub(tops.middles[top], middle), config.crate_cohesion);

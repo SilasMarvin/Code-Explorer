@@ -19,6 +19,7 @@ use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConf
 use crate::{
     disclosure::{Disclose, Disclosed},
     lens::{self, Lens},
+    starts::{self, Start},
 };
 
 /// What a disclosure was worked out for: the journeys' revision, the active one, how
@@ -210,7 +211,7 @@ impl Clustering {
                 separation: SEPARATION,
                 rooms: true,
                 containment: 0.3,
-                crate_cohesion: 0.05,
+                crate_cohesion: 0.15,
                 cross_spring: 0.3,
                 ..spread
             },
@@ -297,6 +298,12 @@ pub(crate) struct Explorer {
     revision: u64,
     /// How long the graph took to lay out before it was first shown.
     laid_out: Duration,
+    /// Where to start exploring, best first.
+    starts: Vec<Start>,
+    /// The nodes of declared entry points.
+    entry_tiles: HashSet<usize>,
+    /// Every node, the most calls in and out first.
+    busiest: Vec<usize>,
 }
 
 impl Explorer {
@@ -313,7 +320,6 @@ impl Explorer {
         root: Option<UnitId>,
         options: JourneyOptions,
     ) -> Self {
-        let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
         let placed = layout.as_ref().unwrap_or(&system);
         let map = codeviz_layout::map(placed, &MapConfig::default());
         let clustering = Clustering::default();
@@ -326,6 +332,14 @@ impl Explorer {
             }
         }
         let laid_out = started.elapsed();
+        let starts = starts::starts(placed, &map, &graph);
+        let entry_tiles = placed
+            .entries()
+            .iter()
+            .filter_map(|e| map.tile_of(&e.unit))
+            .collect();
+        let mut busiest: Vec<usize> = (0..map.tiles.len()).collect();
+        busiest.sort_by_key(|&t| (std::cmp::Reverse(graph.degree(t)), t));
         let tiles = map.tiles.len();
         let mut explorer = Self {
             system,
@@ -356,6 +370,9 @@ impl Explorer {
             lane_colors: HashMap::new(),
             revision: 0,
             laid_out,
+            starts,
+            entry_tiles,
+            busiest,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -561,6 +578,43 @@ impl Explorer {
     /// How long the graph took to lay out before it was first shown.
     pub(crate) fn laid_out(&self) -> Duration {
         self.laid_out
+    }
+
+    /// Where to start exploring, best first.
+    pub(crate) fn starts(&self) -> &[Start] {
+        &self.starts
+    }
+
+    /// Whether a node is a declared entry point.
+    pub(crate) fn is_entry(&self, tile: usize) -> bool {
+        self.entry_tiles.contains(&tile)
+    }
+
+    /// Every node, the most calls in and out first.
+    pub(crate) fn busiest(&self) -> &[usize] {
+        &self.busiest
+    }
+
+    /// Opens the best place to start, if there is one. Returns whether there was.
+    pub(crate) fn open_best_start(&mut self) -> bool {
+        let Some(tile) = self.starts.first().map(|s| s.tile) else {
+            return false;
+        };
+        self.open_at(tile);
+        true
+    }
+
+    /// Starts the active journey at the best place to start, without focusing it.
+    pub(crate) fn root_at_best_start(&mut self) {
+        if let Some(unit) = self
+            .starts
+            .first()
+            .and_then(|s| self.tile_unit(s.tile))
+            .cloned()
+        {
+            self.set_root(unit);
+            self.track_mut().history.clear();
+        }
     }
 
     /// Whether the graph is still moving.
@@ -952,6 +1006,14 @@ impl Explorer {
     pub(crate) fn cluster_name(&self, cluster: usize) -> String {
         self.graph
             .cluster_unit(cluster)
+            .and_then(|id| self.any_unit(id))
+            .map_or_else(String::new, |unit| unit.name.clone())
+    }
+
+    /// A crate's (or top-level package's) name.
+    pub(crate) fn crate_name(&self, top: usize) -> String {
+        self.graph
+            .top_unit(top)
             .and_then(|id| self.any_unit(id))
             .map_or_else(String::new, |unit| unit.name.clone())
     }

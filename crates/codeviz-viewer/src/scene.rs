@@ -12,7 +12,7 @@ use crate::{
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
-    ui::{Chrome, KeyHelp},
+    ui::{Chrome, KeyHelp, StartCard},
 };
 
 pub(crate) struct ScenePlugin;
@@ -130,6 +130,7 @@ fn on_node_click(
     keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
     mut panel: ResMut<JourneyPanel>,
+    mut start: ResMut<StartCard>,
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -146,6 +147,7 @@ fn on_node_click(
         }
     } else {
         explorer.open_at(tile.0);
+        start.0 = false;
         // Clicking a node is asking what it does: its journey opens with it.
         if panel.mode == PanelMode::Hidden {
             panel.mode = PanelMode::Docked;
@@ -305,6 +307,7 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -313,6 +316,7 @@ fn keyboard(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
+    mut start: ResMut<StartCard>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     if let Some(step) = journey_step(&keys, shift) {
@@ -335,9 +339,20 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Enter) {
         if shift {
             explorer.pull_out_selected();
+        } else if explorer.graph_focus().is_none() {
+            // Nothing open yet: start at the best place to.
+            if explorer.open_best_start() {
+                start.0 = false;
+                if panel.mode == PanelMode::Hidden {
+                    panel.mode = PanelMode::Docked;
+                }
+            }
         } else {
             explorer.trace_from_focus();
         }
+    }
+    if keys.just_pressed(KeyCode::KeyE) {
+        start.0 = !start.0;
     }
     if keys.just_pressed(KeyCode::Tab) {
         let next = (explorer.active() + 1) % explorer.tracks().len().max(1);

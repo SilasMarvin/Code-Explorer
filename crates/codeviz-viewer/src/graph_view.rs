@@ -21,7 +21,7 @@ use crate::{
         ADDED, DiffView, MODIFIED, MOVED, REMOVED, change_color, diff_look, draw_diff_graph,
     },
     disclosure::{Disclose, Disclosed},
-    explorer::{Explorer, Side},
+    explorer::{Clustering, Explorer, Side},
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
 };
@@ -328,6 +328,8 @@ pub(crate) fn draw_graph(
     mut gizmos: Gizmos,
 ) {
     draw_regions(&explorer, &mut gizmos);
+    draw_districts(&explorer, &mut gizmos);
+    draw_entries(&explorer, &mut gizmos);
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
@@ -370,6 +372,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
         }
     };
 
+    // The more calls there are, the fainter each, so a big graph is not a hairball.
+    let crowd = (CROWD / graph.calls.len().max(1) as f32).sqrt().min(1.0);
     for (index, &(from, to)) in graph.calls.iter().enumerate() {
         let (Some(a), Some(b)) = (point(from), point(to)) else {
             continue;
@@ -422,16 +426,19 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                 let alpha = if center.is_some() {
                     0.04
                 } else if graph.cluster(from) == graph.cluster(to) {
-                    0.18
+                    0.18 * crowd
                 } else {
                     // Calls between modules step back, so each module's own wiring reads.
-                    0.06
+                    0.06 * crowd
                 };
                 gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, alpha * shown));
             }
         }
     }
 }
+
+/// How many calls the graph can draw at full strength before each fades.
+const CROWD: f32 = 1500.0;
 
 /// Dots running along a call from caller to callee, so which way it goes reads
 /// without a legend.
@@ -562,6 +569,82 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
     }
 }
 
+/// Each crate's district when there are several and modules gather by crate: its
+/// top-level container, middle, and a radius holding all of its modules' rings.
+pub(crate) fn districts(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
+    let graph = explorer.graph();
+    if graph.top_count() < 2 || explorer.clustering() != Clustering::Modules {
+        return Vec::new();
+    }
+    let rings = regions(explorer);
+    let mut members: Vec<Vec<(Vec3, f32, usize)>> = vec![Vec::new(); graph.top_count()];
+    for (cluster, middle, radius) in &rings {
+        if let Some(list) = graph.top(*cluster).and_then(|t| members.get_mut(t)) {
+            list.push((*middle, *radius, *cluster));
+        }
+    }
+    members
+        .iter()
+        .enumerate()
+        .filter(|(_, rings)| rings.len() > 1)
+        .map(|(top, rings)| {
+            let middle = rings.iter().map(|r| r.0).sum::<Vec3>() / rings.len() as f32;
+            let radius = rings
+                .iter()
+                .map(|&(at, radius, _)| (at.truncate() - middle.truncate()).length() + radius)
+                .fold(0.0, f32::max);
+            (top, middle, radius + DISTRICT_PAD)
+        })
+        .collect()
+}
+
+/// Room between a crate's outermost module ring and its own.
+const DISTRICT_PAD: f32 = 3.0;
+
+/// A wide, faint, neutral ring round each crate, so crates read as districts without
+/// taking a color that means a module.
+fn draw_districts(explorer: &Explorer, gizmos: &mut Gizmos) {
+    for (_, middle, radius) in districts(explorer) {
+        for (grow, alpha) in [(0.0, 0.16), (0.8, 0.08)] {
+            gizmos
+                .circle(
+                    Isometry3d::from_translation(middle),
+                    radius + grow,
+                    FURTHER.with_alpha(alpha),
+                )
+                .resolution(128);
+        }
+    }
+}
+
+/// A small flag above each entry point, so where a codebase starts stands out.
+fn draw_entries(explorer: &Explorer, gizmos: &mut Gizmos) {
+    let graph = explorer.graph();
+    for start in explorer.starts() {
+        let tile = start.tile;
+        if !explorer.is_entry(tile) || !explorer.shown(tile) {
+            continue;
+        }
+        let Some(at) = explorer.tile_point(tile) else {
+            continue;
+        };
+        let size = node_size(graph, tile) * 0.5;
+        // Faint on what the focus leaves aside, as its node is.
+        let strength = match node_look(explorer, tile) {
+            NodeLook::Faded(_) => 0.25,
+            _ => 0.75,
+        };
+        let color = Color::WHITE.with_alpha(strength * explorer.visibility(tile));
+        let foot = at + Vec3::Y * size;
+        let top = foot + Vec3::Y * 2.2;
+        gizmos.line(foot, top, color);
+        gizmos.linestrip(
+            [top, top + Vec3::new(1.3, -0.45, 0.0), top - Vec3::Y * 0.9],
+            color,
+        );
+    }
+}
+
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
@@ -598,6 +681,7 @@ fn frame_all(explorer: &Explorer, camera: &mut OrbitCamera) {
 pub(crate) fn frame_reveal(
     explorer: Res<Explorer>,
     mut last: Local<Option<Lens>>,
+    mut overview: Local<bool>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
     let lens = explorer.lens();
@@ -606,11 +690,23 @@ pub(crate) fn frame_reveal(
     let changed = last.map_or(lens.reach.is_some(), |l| l != lens);
     *last = Some(lens);
     if opening && !changed && explorer.anchor().is_none() {
-        // Nothing to center on: open on the whole graph.
+        // Nothing to center on: open on the whole graph, head-on, like a map.
+        *overview = true;
         for mut camera in &mut cameras {
-            frame_all(&explorer, &mut camera);
+            camera.turn_to(FRONT);
         }
-        return;
+    }
+    if *overview {
+        // Keep the whole graph in view as it settles, until the viewer takes over.
+        *overview = explorer.anchor().is_none()
+            && explorer.settling()
+            && cameras.iter().all(|c| !c.by_hand);
+        if *overview {
+            for mut camera in &mut cameras {
+                frame_all(&explorer, &mut camera);
+            }
+            return;
+        }
     }
     if !changed {
         return;
