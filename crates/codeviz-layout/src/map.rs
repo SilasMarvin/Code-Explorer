@@ -1,5 +1,6 @@
-//! A stable map of the whole codebase: one tile per function, grouped into boxes by
-//! container, with the groups ordered from entry points towards what they call.
+//! A stable map of the whole codebase: one tile per function (or per external unit or
+//! channel it calls), grouped into boxes by container, with the groups ordered from
+//! entry points towards what they call.
 //!
 //! Closures and other units nested in a function share its tile. The map grows up from
 //! `y = 0`, so it can sit on top of a journey.
@@ -174,14 +175,17 @@ pub fn map(system: &System, config: &MapConfig) -> CodebaseMap {
 /// A container, its label and its tiles.
 type Group<'s> = (Option<UnitId>, String, Vec<&'s Unit>);
 
-/// Which tile each invocable is drawn on, and the tiles grouped by their nearest
-/// non-invocable container, ordered by how close they are to an entry.
+/// Which tile each unit that can be invoked is drawn on, and the tiles grouped by
+/// their nearest non-invocable container, ordered by how close they are to an entry.
 fn groups(system: &System) -> (HashMap<UnitId, UnitId>, Vec<Group<'_>>) {
-    // Tiles are invocables not nested in another invocable.
+    // Tiles are what calls can reach, not nested in an invocable: functions, and what
+    // runs or carries calls without being analyzed here (a script, a service, a queue).
     let is_invocable = |id: &UnitId| system.unit(id).is_some_and(|u| u.role == Role::Invocable);
+    let invoked =
+        |unit: &&Unit| matches!(unit.role, Role::Invocable | Role::External | Role::Channel);
     let mut owner_unit: HashMap<UnitId, UnitId> = HashMap::new();
     let mut tile_units: Vec<&Unit> = Vec::new();
-    for unit in system.units().filter(|u| u.role == Role::Invocable) {
+    for unit in system.units().filter(invoked) {
         let mut top = &unit.id;
         while let Some(parent) = system
             .unit(top)
@@ -340,6 +344,36 @@ mod tests {
             map.tiles
                 .iter()
                 .all(|t| t.position[1] > 0.0 && t.position[1] < max[1])
+        );
+    }
+
+    #[test]
+    fn what_calls_reach_has_a_tile_though_it_is_not_analyzed() {
+        let json = r#"{
+          "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" },
+          "units": [
+            { "id": "ci:deploy", "name": "deploy", "kind": "pipeline", "role": "invocable", "calls": [
+              { "key": "build#0", "text": "build", "targets": [{ "unit": "ci:deploy/build", "certainty": "declared" }] } ] },
+            { "id": "ci:deploy/build", "name": "build", "kind": "step", "role": "invocable",
+              "parent": "ci:deploy", "calls": [
+              { "key": "build.sh#0", "text": "build.sh", "targets": [{ "unit": "script:build.sh", "certainty": "declared" }] } ] },
+            { "id": "script:build.sh", "name": "build.sh", "kind": "script", "role": "external" },
+            { "id": "q:events", "name": "events", "kind": "topic", "role": "channel" },
+            { "id": "q:group", "name": "group", "kind": "module", "role": "group" }
+          ]
+        }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let map = map(&system, &MapConfig::default());
+        let mut units: Vec<&str> = map.tiles.iter().map(|t| t.unit.as_str()).collect();
+        units.sort_unstable();
+        assert_eq!(
+            units,
+            ["ci:deploy", "q:events", "script:build.sh"],
+            "the step is the pipeline's; the script and the topic have their own"
+        );
+        assert_eq!(
+            map.tile_of(&UnitId::new("ci:deploy/build")),
+            map.tile_of(&UnitId::new("ci:deploy"))
         );
     }
 }

@@ -439,7 +439,7 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 /// For each tile, its cluster: the nearest module (or crate, package or file) holding
 /// its container, numbered in order of first appearance. A tile whose container is not
-/// inside one clusters on its own container.
+/// inside one clusters on its own container, and stands for it.
 fn module_clusters(system: &System, map: &CodebaseMap) -> (Vec<usize>, Vec<Option<UnitId>>) {
     const MODULES: [&str; 4] = ["module", "crate", "package", "file"];
     let mut numbers: HashMap<String, usize> = HashMap::new();
@@ -462,7 +462,10 @@ fn module_clusters(system: &System, map: &CodebaseMap) -> (Vec<usize>, Vec<Optio
             );
             let next = numbers.len();
             *numbers.entry(key).or_insert_with(|| {
-                units.push(at.map(|unit| unit.id.clone()));
+                units.push(
+                    at.map(|unit| unit.id.clone())
+                        .or_else(|| container.cloned()),
+                );
                 next
             })
         })
