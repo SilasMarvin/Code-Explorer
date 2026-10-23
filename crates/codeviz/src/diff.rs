@@ -7,6 +7,7 @@ use std::{
     io::Write as _,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Instant,
 };
 
 use anyhow::{Context, bail};
@@ -48,18 +49,30 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     // The checkouts have no build of their own: rust-analyzer builds their build
     // scripts and proc macros where the working tree's are, not from scratch.
     let target_dir = crate::ir::target_dir(&path);
-    let analyze = |root: &Path| {
-        crate::ir::analyze_dir(root, &args.source, target_dir.as_deref())
-            .with_context(|| format!("cannot analyze {}", root.display()))
+    let analyze = |root: &Path, step: &str, label: &str| {
+        progress(step, &format!("analyzing {label}"));
+        let started = Instant::now();
+        let document = crate::ir::analyze_dir(root, &args.source, target_dir.as_deref())
+            .with_context(|| format!("cannot analyze {}", root.display()))?;
+        progress(
+            step,
+            &format!(
+                "{label}: {} units in {:.1}s",
+                document.units.len(),
+                started.elapsed().as_secs_f32()
+            ),
+        );
+        anyhow::Ok(document)
     };
     let old = Checkout::new(&top, &base)?;
-    let before = analyze(&old.dir.join(&prefix))?;
+    let before = analyze(&old.dir.join(&prefix), "1/2", &old.label)?;
     let (after, new) = match &head {
         Some(head) => {
             let new = Checkout::new(&top, head)?;
-            (analyze(&new.dir.join(&prefix))?, Some(new))
+            let label = new.label.clone();
+            (analyze(&new.dir.join(&prefix), "2/2", &label)?, Some(new))
         }
-        None => (analyze(&path)?, None),
+        None => (analyze(&path, "2/2", "the working tree")?, None),
     };
     if let Some(dir) = &args.save {
         save(dir, &before, &after)?;
@@ -84,6 +97,11 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
         eprintln!("{title}: nothing changed");
     }
     crate::view::open(vec![after], vec![before], &args.display, &title)
+}
+
+/// One line on how far the diff has got, on stderr: each analysis can take a while.
+fn progress(step: &str, what: &str) {
+    eprintln!("codeviz diff [{step}]: {what}");
 }
 
 /// The revision to compare from, and the one to compare to (the working tree if none).
