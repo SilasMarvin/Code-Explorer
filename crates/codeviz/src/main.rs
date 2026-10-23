@@ -3,6 +3,7 @@
 mod diff;
 mod ir;
 mod journey;
+mod links;
 mod view;
 
 use std::process::ExitCode;

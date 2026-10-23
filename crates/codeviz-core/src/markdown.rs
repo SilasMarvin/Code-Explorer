@@ -56,8 +56,8 @@ impl Story {
     #[must_use]
     pub fn title(&self) -> String {
         let root = match &self.entry {
-            Some(entry) => format!("{} → {}", code(entry), code(&self.root.name)),
-            None => code(&self.root.name),
+            Some(entry) => format!("{} → {}", code(entry), name(&self.root)),
+            None => name(&self.root),
         };
         let root = match self.root.change {
             Some(change) => format!("{root} ({})", change_word(change)),
@@ -79,7 +79,7 @@ fn line(beat: &Beat, depth: usize, out: &mut String) {
         "{}- {} {}{}",
         "  ".repeat(depth),
         beat.number,
-        code(&beat.name),
+        name(beat),
         if notes.is_empty() {
             String::new()
         } else {
@@ -146,6 +146,14 @@ fn notes(beat: &Beat) -> String {
         n => notes.push(format!("+{n} calls")),
     }
     notes.join(", ")
+}
+
+/// A call's function as code, linked to its source when there is a link.
+fn name(beat: &Beat) -> String {
+    match &beat.link {
+        Some(link) => format!("[{}]({link})", code(&beat.name)),
+        None => code(&beat.name),
+    }
 }
 
 /// Code longer than this is cut: a guard or an error can be a whole expression.

@@ -380,6 +380,7 @@ mod tests {
             home: home.to_owned(),
             change: None,
             dropped: Vec::new(),
+            link: None,
             conditions: Vec::new(),
             repeats: false,
             mode: Mode::Call,

@@ -44,6 +44,11 @@ pub(crate) struct JourneyArgs {
     /// changed since, and `md` begins with what changed.
     #[arg(long, value_name = "DOCUMENT")]
     before: Vec<PathBuf>,
+    /// Link each function `md` names to its source: under BASE
+    /// (`--links=https://github.com/org/repo/blob/main`), or by default on GitHub at
+    /// the commit the analyzed code's repository is at.
+    #[arg(long, value_name = "BASE", num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    links: Option<String>,
 }
 
 /// Calls a told journey shows when no depth is asked for: about what a reader takes in.
@@ -136,7 +141,12 @@ fn tell(
         .depth
         .unwrap_or_else(|| depth_to_fit(system, &journey, TOLD_CALLS));
     let numbers = number_calls(system, &journey, depth);
-    let story = Story::new(system, &journey, scenarios, Some(index), &numbers);
+    let mut story = Story::new(system, &journey, scenarios, Some(index), &numbers);
+    if let Some(base) = &args.links {
+        let units: Vec<&UnitId> = story.all_beats().filter_map(|b| b.unit.as_ref()).collect();
+        let links = crate::links::source_links(system, units, base)?;
+        story = story.with_links(&links);
+    }
     let Some((diff, old)) = changes(system, &args.before)? else {
         return Ok(match args.format {
             Format::Mermaid => story.mermaid(),

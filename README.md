@@ -99,6 +99,10 @@ Outcomes:
 - error `AppError::Invalid(format!("unknown sku {other}"))` in `pricing.unit_price`
 ```
 
+`--links` links each function to its source on GitHub, at the commit the analyzed
+repository's `HEAD` is at (push it before you share), and `--links=BASE` under any other
+base, such as `https://gitlab.com/org/repo/-/blob/main`.
+
 Each call says when it only sometimes runs (`only if`, `repeats`), whether it runs `in
 the background` or is `handed off, runs later`, where another outcome splits off (`can
 fail`, at the nearest call shown, or `can fail in` the call it is folded under), and how

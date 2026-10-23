@@ -171,7 +171,7 @@ impl Drop for Checkout {
     }
 }
 
-fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)

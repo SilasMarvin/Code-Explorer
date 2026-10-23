@@ -46,6 +46,8 @@ pub struct Beat {
     pub change: Option<Change>,
     /// Calls the function made before a diff and no longer makes.
     pub dropped: Vec<String>,
+    /// Where to read the function's source, on the web.
+    pub link: Option<String>,
     /// Branch arms that must be taken in the caller for this call to happen.
     pub conditions: Vec<Condition>,
     /// The call sits in a loop.
@@ -175,6 +177,24 @@ impl Story {
         }
         mark(&mut self.root, diff, before);
         self
+    }
+
+    /// Links each call, and the root, to its function's source, by unit.
+    #[must_use]
+    pub fn with_links(mut self, links: &HashMap<UnitId, String>) -> Self {
+        fn link(beat: &mut Beat, links: &HashMap<UnitId, String>) {
+            beat.link = beat.unit.as_ref().and_then(|u| links.get(u)).cloned();
+            for call in &mut beat.calls {
+                link(call, links);
+            }
+        }
+        link(&mut self.root, links);
+        self
+    }
+
+    /// The root and every shown call under it, in order, depth first.
+    pub fn all_beats(&self) -> impl Iterator<Item = &Beat> {
+        std::iter::once(&self.root).chain(self.beats())
     }
 
     /// Every shown call under the root, in order, depth first.
@@ -379,6 +399,7 @@ impl Teller<'_> {
             home,
             change: None,
             dropped: Vec::new(),
+            link: None,
             conditions: self.conditions(id),
             repeats: self.through(id).any(|s| s.repeats),
             mode: span.map_or(Mode::Call, |s| s.mode),
