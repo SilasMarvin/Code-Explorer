@@ -18,6 +18,7 @@ codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
+codeviz view app.json --at src/orders.rs:42   # open on the function at that line
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -47,6 +48,24 @@ caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a
 `S` opens the side panel (the view's settings, outcomes, source and details), `H`
 lists every key.
 
+## From the graph to the code
+
+`B` shows the focused function's source in a card over the graph's corner, colored by
+syntax; each line that makes one of the journey's calls carries that call's number on
+a badge filled like its node. Its location is a link: clicking it, or pressing `E`,
+opens the function in your editor. The editor is `$CODEVIZ_EDITOR`, a command with
+`{file}`, `{line}` and `{column}` in it (`code -g {file}:{line}` by default), else
+`$VISUAL` or `$EDITOR` when it is an editor with a window of its own (Zed, Sublime,
+Cursor, a JetBrains IDE…), else VS Code, else a terminal editor in the terminal
+codeviz was started from. The card and the side panel copy a function's id or its
+`path:line`. `P` saves a picture of the view to the desktop (`$XDG_PICTURES_DIR` or
+`~/Pictures` elsewhere) and copies it. A line at the top says what each did.
+
+`--at FILE:LINE` opens on the function whose source spans that line. A document
+remembers the directory it was analyzed in; opened somewhere else, on a teammate's
+machine say, it looks for that directory around the document and the working
+directory, and `--root DIR` says where it is.
+
 ## Diffs
 
 `codeviz diff` checks out each revision with `git archive`, analyzes both, and draws
@@ -62,7 +81,9 @@ callees) is one node, not a removal and an addition. `D` cycles three views:
 - **Morph**: each version laid out alone, animating between them; `T` pauses.
 
 A diff opens showing only what changed, the focus and the journey's root; `C` (or
-`--show-unchanged`) brings back everything else. Focusing a node shows its old and new source as a line diff.
+`--show-unchanged`) brings back everything else. Clicking a node opens its old and new
+source as a line diff. `--save DIR` keeps both documents, with a copy of the source
+each checked-out revision points at, to open later with `codeviz view`.
 
 ## Readability
 

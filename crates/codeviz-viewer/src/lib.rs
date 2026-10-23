@@ -10,20 +10,23 @@
     reason = "Bevy system parameters are taken by value"
 )]
 
+mod actions;
 mod camera;
 mod capture;
 mod diff_view;
 mod disclosure;
+mod editor;
 mod explorer;
 mod graph_view;
 mod journey_panel;
 mod lens;
+mod peek;
 mod scene;
 mod source_diff;
 mod truth;
 mod ui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bevy::{prelude::*, window::WindowPlugin};
 use bevy_egui::EguiPlugin;
@@ -63,6 +66,8 @@ pub struct Viewer {
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
     diff: Option<Comparison>,
+    /// Directories whose files the editor opens elsewhere.
+    edit_roots: Vec<(PathBuf, PathBuf)>,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -97,6 +102,7 @@ impl Viewer {
             depth: None,
             bare: false,
             diff: None,
+            edit_roots: Vec::new(),
         }
     }
 
@@ -242,6 +248,14 @@ impl Viewer {
         self
     }
 
+    /// Opens files under `from` in the editor from under `to` instead: a scratch
+    /// checkout's in the working tree.
+    #[must_use]
+    pub fn with_edit_root(mut self, from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> Self {
+        self.edit_roots.push((from.into(), to.into()));
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -358,6 +372,7 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
+            actions::ActionsPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
@@ -366,7 +381,17 @@ impl Viewer {
             bare: self.bare,
             ..default()
         })
-        .init_resource::<Autoplay>();
+        .init_resource::<Autoplay>()
+        .insert_resource(actions::EditRoots(self.edit_roots))
+        .insert_resource(match &self.screenshot {
+            // A screenshot run reaches nothing outside: its pictures go beside it.
+            Some(path) => actions::Effects::Render {
+                dir: path
+                    .parent()
+                    .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
+            },
+            None => actions::Effects::Live,
+        });
         if let Some(diff) = diff {
             app.insert_resource(diff);
         }

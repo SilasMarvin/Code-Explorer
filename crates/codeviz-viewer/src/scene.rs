@@ -5,11 +5,13 @@ use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
 
 use crate::{
+    diff_view::DiffView,
     disclosure::Disclose,
     explorer::{Autoplay, Clustering, Explorer, Side, SpanRef, Step, Track},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
+    peek::Peek,
     ui::{Chrome, KeyHelp},
 };
 
@@ -122,6 +124,7 @@ fn on_node_click(
     keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
     mut panel: ResMut<JourneyPanel>,
+    (diff, mut peek): (Option<Res<DiffView>>, ResMut<Peek>),
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -141,6 +144,10 @@ fn on_node_click(
         // Clicking a node is asking what it does: its journey opens with it.
         if panel.mode == PanelMode::Hidden {
             panel.mode = PanelMode::Docked;
+        }
+        // In a diff, it is also asking how it changed.
+        if diff.is_some() {
+            peek.0 = true;
         }
     }
 }

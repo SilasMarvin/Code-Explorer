@@ -195,16 +195,18 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .map(|s| s.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" + ");
-    open(documents, before, &args.display, &title)
+    open(documents, before, &args.display, &title, None)
 }
 
 /// Opens `documents`, diffed against `before` unless it is empty, and blocks until the
-/// window closes.
+/// window closes. Files under the first of `edit_root` open in the editor from under
+/// the second.
 pub(crate) fn open(
     documents: Vec<Document>,
     before: Vec<Document>,
     args: &Display,
     title: &str,
+    edit_root: Option<(PathBuf, PathBuf)>,
 ) -> anyhow::Result<()> {
     let system = System::new(documents.clone());
     let root = match &args.entry {
@@ -286,6 +288,9 @@ pub(crate) fn open(
     }
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some((from, to)) = edit_root {
+        viewer = viewer.with_edit_root(from, to);
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

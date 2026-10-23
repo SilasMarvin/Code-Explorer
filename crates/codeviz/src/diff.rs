@@ -84,7 +84,12 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     if diff.is_empty() {
         eprintln!("{title}: nothing changed");
     }
-    crate::view::open(vec![after], vec![before], &args.display, &title)
+    // The newer revision's functions open in the editor from the working tree, not
+    // from a checkout gone once this exits.
+    let edit_root = new
+        .as_ref()
+        .map(|new| (new.dir.join(&prefix), path.clone()));
+    crate::view::open(vec![after], vec![before], &args.display, &title, edit_root)
 }
 
 /// The revision to compare from, and the one to compare to (the working tree if none).
