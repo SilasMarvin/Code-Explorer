@@ -634,6 +634,12 @@ impl Explorer {
             .or_else(|| self.focus().and_then(|f| self.map.tile_of(f)))
     }
 
+    /// A node focused by hand, by clicking it or with `--focus`, rather than by the
+    /// journey's cursor.
+    pub(crate) fn focused_by_hand(&self) -> Option<usize> {
+        self.graph_focus
+    }
+
     /// The node the camera orbits: the one focused by hand, else where the active
     /// journey starts, else its cursor. Stepping through a journey leaves it put.
     pub(crate) fn anchor(&self) -> Option<usize> {

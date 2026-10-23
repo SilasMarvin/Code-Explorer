@@ -6,13 +6,13 @@
 
 use bevy::prelude::*;
 use bevy_egui::egui;
-use codeviz_core::{Change, SpanId};
+use codeviz_core::{Change, Span, SpanId};
 use codeviz_ir::ExitKind;
 
 use crate::{
     diff_view::{DiffView, change_color, sign},
     disclosure::Disclose,
-    explorer::{Confidence, Explorer, SpanRef, is_conditional, is_handoff},
+    explorer::{Confidence, Explorer, SpanRef, Track, is_conditional, is_handoff},
     graph_view::node_color,
     scene::{PALETTE, lane_color},
     ui::{egui_color, short, track_title},
@@ -52,8 +52,11 @@ impl JourneyPanel {
     }
 }
 
-/// Share of the screen's height the graph keeps above a full-size journey.
-const GRAPH_STRIP: f32 = 0.34;
+/// The most of the screen's height a full-size journey takes from the graph.
+const FULL_SHARE: f32 = 0.62;
+/// The most of the screen's width and height a docked journey covers.
+const DOCKED_WIDTH: f32 = 0.6;
+const DOCKED_HEIGHT: f32 = 0.45;
 const MARGIN: f32 = 12.0;
 const HEADER: f32 = 28.0;
 const PAD: f32 = 8.0;
@@ -61,8 +64,14 @@ const ROW: f32 = 22.0;
 const ROW_GAP: f32 = 5.0;
 /// Share of a slot left between consecutive bars on a row.
 const BAR_GAP: f32 = 0.06;
-/// Pixels a slot needs to name its call.
-const NAMED_SLOT: f32 = 110.0;
+/// Pixels a slot takes at the least, and at the most to name its call.
+const MIN_SLOT: f32 = 40.0;
+const MAX_SLOT: f32 = 240.0;
+/// Roughly how wide a character of a bar's name is, what a bar leaves either side of
+/// it, and what a badge of folded calls takes.
+const CHAR: f32 = 6.8;
+const LABEL_PAD: f32 = 10.0;
+const BADGE: f32 = 38.0;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
@@ -70,33 +79,34 @@ const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 
 /// Where the graph renders and where the panel sits, within the space between the
-/// side panels.
+/// side panels: each as big as the journey needs, `rows` deep and `width` wide, up to
+/// a share of the screen. Docked, it floats in the bottom-right corner; full, it
+/// takes the bottom across the whole width and the graph renders above it.
 pub(crate) fn split(
     mode: PanelMode,
     area: egui::Rect,
-    (rows, slots): (usize, f32),
+    (rows, width): (usize, f32),
 ) -> (egui::Rect, Option<egui::Rect>) {
+    let height = HEADER + PAD * 2.0 + rows.max(2) as f32 * (ROW + ROW_GAP);
     match mode {
         PanelMode::Hidden => (area, None),
         PanelMode::Docked => {
             let size = egui::vec2(
-                // Wide enough to name each call, up to the whole width.
-                (slots * NAMED_SLOT + PAD * 2.0)
-                    .clamp(380.0, 960.0_f32.max(area.width() * 0.52))
+                (width + PAD * 2.0)
+                    .clamp(380.0, (area.width() * DOCKED_WIDTH).max(380.0))
                     .min(area.width() - MARGIN * 2.0),
-                // As tall as the journey needs, up to a share of the screen.
-                (HEADER + PAD * 2.0 + rows.max(2) as f32 * (ROW + ROW_GAP))
-                    .min((area.height() * 0.45).max(200.0))
+                height
+                    .min((area.height() * DOCKED_HEIGHT).max(200.0))
                     .min(area.height() - MARGIN * 2.0),
             );
             let min = area.max - size - egui::vec2(MARGIN, MARGIN);
             (area, Some(egui::Rect::from_min_size(min, size)))
         }
         PanelMode::Full => {
-            let strip = area.height() * GRAPH_STRIP;
-            let graph =
-                egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, area.min.y + strip));
-            let panel = egui::Rect::from_min_max(egui::pos2(area.min.x, graph.max.y), area.max);
+            let height = height.clamp(160.0, area.height() * FULL_SHARE);
+            let top = area.max.y - height;
+            let graph = egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, top));
+            let panel = egui::Rect::from_min_max(egui::pos2(area.min.x, top), area.max);
             (graph, Some(panel))
         }
     }
@@ -110,32 +120,64 @@ struct Bar {
     shown: bool,
 }
 
-/// How many rows the active journey takes, and how many slots across.
+/// How many rows the active journey takes, and how wide it wants to be: wide enough
+/// that each bar names its call, as far as a slot may grow.
 pub(crate) fn extent(explorer: &Explorer) -> (usize, f32) {
     let disclosed = explorer.disclosure();
-    let slots = explorer
-        .journey()
-        .map_or(0.0, |j| disclosed.layout(j.root()).1);
-    (disclosed.rows(), slots)
+    let track = explorer.track();
+    let Some(journey) = explorer.journey() else {
+        return (disclosed.rows(), 0.0);
+    };
+    let (placed, slots) = disclosed.layout(journey.root());
+    let slot = placed
+        .iter()
+        .filter_map(|(&span, &(_, width, _))| {
+            let span_data = track.span(span)?;
+            let number = disclosed.number(span).unwrap_or_default();
+            let label = bar_label(explorer, track, span_data, span, number, None);
+            let badge = if disclosed.folded(span) > 0 {
+                BADGE
+            } else {
+                0.0
+            };
+            let wanted = label.chars().count() as f32 * CHAR + LABEL_PAD + badge;
+            Some(wanted / (width - BAR_GAP).max(0.5))
+        })
+        .fold(MIN_SLOT, f32::max)
+        .min(MAX_SLOT);
+    (disclosed.rows(), slot * slots)
 }
 
-/// The bars a tether runs from: the cursor's, and the one under the pointer.
-#[derive(Default)]
-pub(crate) struct Tethers {
-    pub(crate) cursor: Option<egui::Rect>,
-    pub(crate) hovered: Option<egui::Rect>,
+/// What a bar says: its number, what changed, its name and the condition it runs on.
+fn bar_label(
+    explorer: &Explorer,
+    track: &Track,
+    span: &Span,
+    id: SpanId,
+    number: &str,
+    change: Option<Change>,
+) -> String {
+    let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
+    let mut label = format!("{sign}{}", explorer.label_in(track, id));
+    if !number.is_empty() {
+        label = format!("{number}  {label}");
+    }
+    if let Some(condition) = span.conditions.last() {
+        label = format!("{label}  if {}", condition.arm);
+    }
+    label
 }
 
-/// Draws the panel and handles its input. Returns the bars to tether to their nodes
-/// in the graph.
+/// Draws the panel and handles its input. Returns the bar under the pointer, to
+/// tether to its node in the graph.
 pub(crate) fn draw(
     ctx: &egui::Context,
     rect: egui::Rect,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
     diff: Option<&DiffView>,
-) -> Tethers {
-    let mut tethers = Tethers::default();
+) -> Option<egui::Rect> {
+    let mut hovered = None;
     egui::Area::new("journey_panel".into())
         .fixed_pos(rect.min)
         .order(egui::Order::Middle)
@@ -159,9 +201,9 @@ pub(crate) fn draw(
             let content =
                 egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.min.y + HEADER), rect.max)
                     .shrink(PAD);
-            tethers = canvas(ui, content, explorer, panel, diff);
+            hovered = canvas(ui, content, explorer, panel, diff);
         });
-    tethers
+    hovered
 }
 
 /// How much of the journey shows: levels of calls below the root, or everything up to
@@ -283,7 +325,7 @@ fn canvas(
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
     diff: Option<&DiffView>,
-) -> Tethers {
+) -> Option<egui::Rect> {
     let response = ui.interact(
         content,
         ui.id().with("journey_canvas"),
@@ -300,7 +342,7 @@ fn canvas(
             egui::FontId::proportional(13.0),
             MUTED,
         );
-        return Tethers::default();
+        return None;
     }
     // Only what is disclosed is laid out, a slot per call.
     let disclosed = explorer.disclosure();
@@ -461,16 +503,7 @@ fn canvas(
         // What runs after the cursor dims once you step through it; at the start,
         // everything shows in full.
         let future = stepping && span.enter > cursor_enter;
-        let (fill, text) = if faint {
-            (base.gamma_multiply(0.22), MUTED)
-        } else if future {
-            (
-                base.gamma_multiply(0.38),
-                egui::Color32::from_rgb(200, 205, 216),
-            )
-        } else {
-            (base, egui::Color32::from_rgb(14, 16, 22))
-        };
+        let (fill, text) = bar_colors(base, faint, future);
         painter.rect_filled(bar.rect, 3.0, fill);
 
         // Under a diff, what changed is outlined too; a call that is new, though what
@@ -512,18 +545,7 @@ fn canvas(
         // What is folded under the bar, as a badge that opens it.
         let folded = disclosed.folded(bar.span);
         let badge = (folded > 0 && bar.rect.width() > 40.0).then(|| {
-            let badge = egui::Rect::from_min_max(
-                egui::pos2(bar.rect.max.x - 26.0, bar.rect.min.y + 3.0),
-                egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
-            );
-            painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(120));
-            painter.text(
-                badge.center(),
-                egui::Align2::CENTER_CENTER,
-                format!("+{folded}"),
-                egui::FontId::proportional(10.5),
-                egui::Color32::from_rgb(220, 224, 234),
-            );
+            let badge = fold_badge(&painter, bar.rect, folded);
             if mouse.is_some_and(|p| badge.contains(p)) {
                 fold_hit = Some(bar.span);
             }
@@ -545,25 +567,12 @@ fn canvas(
             clippy::cast_sign_loss,
             reason = "a small, clamped character count"
         )]
-        let room = ((bar.rect.width() - if badge.is_some() { 38.0 } else { 10.0 }) / 6.8)
+        let room = ((bar.rect.width() - if badge.is_some() { BADGE } else { LABEL_PAD }) / CHAR)
             .clamp(0.0, 300.0) as usize;
         let painter = painter.with_clip_rect(bar.rect.intersect(content));
         if room >= number.len() + 6 {
-            let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
-            let mut label = format!("{sign}{}", explorer.label_in(track, bar.span));
-            if !number.is_empty() {
-                label = format!("{number}  {label}");
-            }
-            if let Some(condition) = span.conditions.last() {
-                label = format!("{label}  if {}", condition.arm);
-            }
-            painter.text(
-                bar.rect.left_center() + egui::vec2(5.0, 0.0),
-                egui::Align2::LEFT_CENTER,
-                short(&label, room),
-                egui::FontId::proportional(12.5),
-                text,
-            );
+            let label = bar_label(explorer, track, span, bar.span, number, change);
+            bar_name(&painter, bar.rect, &short(&label, room), text);
         } else {
             // Beside the badge, not under it.
             let free = badge.map_or(bar.rect, |badge| {
@@ -597,14 +606,12 @@ fn canvas(
         let Some(rect) = rect_of(divergence.span) else {
             continue;
         };
-        let mark = egui::Rect::from_min_max(egui::pos2(rect.max.x - 5.0, rect.min.y), rect.max);
-        painter.rect_filled(mark, 2.0, ERROR);
+        let mark = fail_end(&painter, rect);
         if mouse.is_some_and(|p| mark.expand(3.0).contains(p)) {
             divergence_hit = Some((divergence.scenario, divergence.label.clone()));
         }
     }
 
-    let mut cursor_rect = None;
     if let Some(rect) = cursor.and_then(|c| rect_of(c.span)) {
         painter.line_segment(
             [
@@ -619,7 +626,6 @@ fn canvas(
             egui::Stroke::new(2.0, egui::Color32::WHITE),
             egui::StrokeKind::Outside,
         );
-        cursor_rect = content.intersects(rect).then_some(rect);
     }
 
     if let Some((_, label)) = &divergence_hit {
@@ -684,10 +690,138 @@ fn canvas(
             }
         }
     }
-    Tethers {
-        cursor: cursor_rect,
-        hovered: hovered_rect,
+    hovered_rect
+}
+
+/// A bar's fill and the color of its name: faint for a guess or a handoff, dimmed
+/// when it runs after the cursor.
+fn bar_colors(base: egui::Color32, faint: bool, future: bool) -> (egui::Color32, egui::Color32) {
+    if faint {
+        (base.gamma_multiply(0.22), MUTED)
+    } else if future {
+        (
+            base.gamma_multiply(0.38),
+            egui::Color32::from_rgb(200, 205, 216),
+        )
+    } else {
+        (base, egui::Color32::from_rgb(14, 16, 22))
     }
+}
+
+/// A bar's name, from its left end.
+fn bar_name(painter: &egui::Painter, bar: egui::Rect, name: &str, color: egui::Color32) {
+    painter.text(
+        bar.left_center() + egui::vec2(5.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        name,
+        egui::FontId::proportional(12.5),
+        color,
+    );
+}
+
+/// The badge at a bar's right end counting the calls folded under it.
+fn fold_badge(painter: &egui::Painter, bar: egui::Rect, folded: usize) -> egui::Rect {
+    let badge = egui::Rect::from_min_max(
+        egui::pos2(bar.max.x - 26.0, bar.min.y + 3.0),
+        egui::pos2(bar.max.x - 3.0, bar.max.y - 3.0),
+    );
+    painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(120));
+    painter.text(
+        badge.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("+{folded}"),
+        egui::FontId::proportional(10.5),
+        egui::Color32::from_rgb(220, 224, 234),
+    );
+    badge
+}
+
+/// The red end of a bar where another outcome splits off, inside the bar.
+fn fail_end(painter: &egui::Painter, bar: egui::Rect) -> egui::Rect {
+    let mark = egui::Rect::from_min_max(egui::pos2(bar.max.x - 5.0, bar.min.y), bar.max);
+    painter.rect_filled(mark, 2.0, ERROR);
+    mark
+}
+
+/// What the marks on a bar mean, each drawn as the journey draws it: for the key.
+pub(crate) fn bar_key(ui: &mut egui::Ui) {
+    let sample = |ui: &mut egui::Ui, draw: &dyn Fn(&egui::Painter, egui::Rect), meaning: &str| {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(170.0, ROW), egui::Sense::hover());
+            draw(ui.painter(), rect);
+            ui.label(egui::RichText::new(meaning).color(MUTED));
+        });
+    };
+    let color = |index: usize| egui_color(lane_color(index % PALETTE.len()));
+    let plain = |painter: &egui::Painter, rect: egui::Rect, index: usize, name: &str| {
+        let (fill, text) = bar_colors(color(index), false, false);
+        painter.rect_filled(rect, 3.0, fill);
+        bar_name(painter, rect, name, text);
+    };
+    sample(
+        ui,
+        &|p, r| {
+            plain(p, r, 0, "2  check_quantity");
+            fail_end(p, r);
+        },
+        "red end: can fail here (click it to follow that outcome)",
+    );
+    sample(
+        ui,
+        &|p, r| {
+            plain(p, r, 1, "3  quote");
+            fold_badge(p, r, 2);
+        },
+        "+N: calls folded under it (click to open)",
+    );
+    sample(
+        ui,
+        &|p, r| {
+            plain(p, r, 2, "3.2.1  discount  if bulk");
+            dashed_outline(
+                p,
+                r.shrink(0.75),
+                egui::Stroke::new(1.2, egui::Color32::from_white_alpha(190)),
+            );
+        },
+        "dashed: only runs sometimes, on the condition named",
+    );
+    sample(
+        ui,
+        &|p, r| {
+            let (fill, text) = bar_colors(color(3), true, false);
+            p.rect_filled(r, 3.0, fill);
+            bar_name(p, r, "→ on_message", text);
+        },
+        "faint: handed off to run later (→), or a guessed call",
+    );
+    sample(
+        ui,
+        &|p, r| {
+            let (fill, text) = bar_colors(color(4), false, true);
+            p.rect_filled(r, 3.0, fill);
+            bar_name(p, r, "4  insert_order", text);
+        },
+        "dimmed: runs after the cursor",
+    );
+    sample(
+        ui,
+        &|p, r| {
+            plain(p, r, 5, "1  find_user");
+            p.rect_stroke(
+                r.expand(1.5),
+                3.0,
+                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                egui::StrokeKind::Outside,
+            );
+        },
+        "white outline: the cursor, or the node focused in the graph",
+    );
+    sample(
+        ui,
+        &|p, r| plain(p, r, 6, "walk ↻   visit …"),
+        "↻ calls itself again; … goes deeper than the journey follows",
+    );
 }
 
 /// A rectangle's outline in dashes.
@@ -712,6 +846,33 @@ mod tests {
     use codeviz_ir::{Document, UnitId};
 
     use super::*;
+
+    #[test]
+    fn the_panel_is_as_big_as_the_journey_up_to_a_share_of_the_screen() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+        let (graph, docked) = split(PanelMode::Docked, screen, (3, 500.0));
+        let docked = docked.unwrap();
+        assert_eq!(graph, screen, "docked, it floats over the graph");
+        assert_eq!(docked.max, screen.max - egui::vec2(MARGIN, MARGIN));
+        assert!((docked.width() - (500.0 + PAD * 2.0)).abs() < 1e-3);
+        assert!((docked.height() - (HEADER + PAD * 2.0 + 3.0 * (ROW + ROW_GAP))).abs() < 1e-3);
+        let (_, wide) = split(PanelMode::Docked, screen, (40, 5000.0));
+        let wide = wide.unwrap();
+        assert!(wide.width() <= screen.width() * DOCKED_WIDTH + 1e-3);
+        assert!(wide.height() <= screen.height() * DOCKED_HEIGHT + 1e-3);
+
+        // Full, it takes the bottom as deep as its rows, and the graph the rest.
+        let (graph, full) = split(PanelMode::Full, screen, (4, 500.0));
+        let full = full.unwrap();
+        assert_eq!(full.width(), screen.width());
+        assert_eq!(graph.max.y, full.min.y);
+        assert!(
+            full.height() < 200.0,
+            "four rows leave the graph most of it"
+        );
+        let (graph, _) = split(PanelMode::Full, screen, (60, 500.0));
+        assert!(graph.height() >= screen.height() * (1.0 - FULL_SHARE) - 1e-3);
+    }
 
     /// `main` calls `a` from inside a closure: the closure runs on `main`'s node, so it
     /// has no bar of its own.

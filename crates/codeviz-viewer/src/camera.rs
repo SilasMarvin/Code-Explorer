@@ -4,7 +4,8 @@
 //! orbits and right- or shift-drag pans. Zoom goes towards the pointer, so you can
 //! zoom into any part of the graph. Panning or zooming away lets go of the focused
 //! node until you click one or press F. Moves to a new point, distance or angle ease
-//! in.
+//! in. What floats over the graph (the docked journey, the legend, cards) leaves it a
+//! smaller room: the camera centers on the middle of that room and frames to fit it.
 
 use bevy::{
     camera::{CameraOutputMode, visibility::RenderLayers},
@@ -59,6 +60,56 @@ pub(crate) struct OrbitCamera {
     /// Whether the viewer has panned or zoomed away from the focused node, so the
     /// camera stops holding it in the middle.
     pub(crate) free: bool,
+    /// The part of the view left clear of what floats over it.
+    room: Room,
+    /// Where on screen the point orbited sits, easing towards the room's middle.
+    shift: Vec2,
+    /// What was last framed, refitted when the room changes until the viewer zooms or
+    /// pans.
+    framed: Option<Framed>,
+    /// The vertical field of view and the view's width over its height.
+    fov: f32,
+    aspect: f32,
+}
+
+/// The part of the view clear of overlays: its middle and half its size, in the
+/// view's normalized coordinates (-1 to 1 across, y up).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Room {
+    pub(crate) middle: Vec2,
+    pub(crate) half: Vec2,
+}
+
+impl Default for Room {
+    fn default() -> Self {
+        Self {
+            middle: Vec2::ZERO,
+            half: Vec2::ONE,
+        }
+    }
+}
+
+impl Room {
+    /// The room `clear` leaves within a view filling `view`, both in pixels with y
+    /// down.
+    pub(crate) fn within(view: Rect, clear: Rect) -> Self {
+        let size = view.size().max(Vec2::ONE);
+        let to_ndc = |p: Vec2| {
+            let share = (p - view.min) / size;
+            Vec2::new(share.x * 2.0 - 1.0, 1.0 - share.y * 2.0)
+        };
+        Self {
+            middle: to_ndc(clear.center()),
+            half: (clear.size() / size).clamp(Vec2::splat(0.05), Vec2::ONE),
+        }
+    }
+}
+
+/// Points framed, and the closest the camera may come while framing them.
+#[derive(Debug, Clone)]
+struct Framed {
+    points: Vec<Vec3>,
+    nearest: f32,
 }
 
 impl Default for OrbitCamera {
@@ -72,6 +123,11 @@ impl Default for OrbitCamera {
             goal_distance: None,
             goal_angles: None,
             free: false,
+            room: Room::default(),
+            shift: Vec2::ZERO,
+            framed: None,
+            fov: PerspectiveProjection::default().fov,
+            aspect: 1.6,
         }
     }
 }
@@ -84,11 +140,88 @@ impl OrbitCamera {
         self.free = false;
     }
 
+    /// Eases towards looking at `target` from just far enough back to show all of
+    /// `points` in the room, and no nearer than `nearest`. Refits them if the room
+    /// changes, until the viewer zooms or pans.
+    pub(crate) fn frame(&mut self, target: Vec3, points: Vec<Vec3>, nearest: f32) {
+        let distance = self.fit_distance(&points, target).max(nearest);
+        self.glide_to(target, distance);
+        self.framed = Some(Framed { points, nearest });
+    }
+
+    /// How far back, looking at `center` and turned where it is turning to, the camera
+    /// must be for every one of `points` to sit inside the room, clear of its edges.
+    pub(crate) fn fit_distance(&self, points: &[Vec3], center: Vec3) -> f32 {
+        // The share of the room a point may use: the rest is room for its name.
+        const MARGIN: f32 = 0.8;
+        let tan = self.tangents();
+        let shift = self.room.middle * tan;
+        let half = self.room.half * tan * MARGIN;
+        let rotation = self.heading();
+        let (right, up, back) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
+        points
+            .iter()
+            .map(|&p| {
+                let offset = p - center;
+                // A point this far towards the camera needs the camera that much further,
+                // and sits that much off the room's middle.
+                let toward = offset.dot(back);
+                let across = (offset.dot(right) + shift.x * toward).abs() / half.x;
+                let along = (offset.dot(up) + shift.y * toward).abs() / half.y;
+                across.max(along) + toward
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// The middle of `points` as the camera sees them, turned where it is turning to:
+    /// halfway between their extremes across and up the view, at their average depth.
+    pub(crate) fn view_middle(&self, points: &[Vec3]) -> Option<Vec3> {
+        if points.is_empty() {
+            return None;
+        }
+        let rotation = self.heading();
+        let inverse = rotation.inverse();
+        let local: Vec<Vec3> = points.iter().map(|&p| inverse * p).collect();
+        let min = local.iter().copied().fold(Vec3::INFINITY, Vec3::min);
+        let max = local.iter().copied().fold(Vec3::NEG_INFINITY, Vec3::max);
+        let depth = local.iter().map(|p| p.z).sum::<f32>() / local.len() as f32;
+        let middle = (min + max) / 2.0;
+        Some(rotation * middle.with_z(depth))
+    }
+
+    /// Takes the room left clear of overlays, refitting what was framed when it
+    /// changes.
+    pub(crate) fn set_room(&mut self, room: Room) {
+        let moved = (room.middle - self.room.middle).abs().max_element();
+        let grew = (room.half - self.room.half).abs().max_element();
+        if moved.max(grew) < 0.01 {
+            return;
+        }
+        self.room = room;
+        if let Some(framed) = &self.framed {
+            let distance = self.fit_distance(&framed.points, self.target);
+            self.goal_distance = Some(distance.max(framed.nearest));
+        }
+    }
+
+    /// Where the camera faces once it has turned where it is turning.
+    fn heading(&self) -> Quat {
+        let (yaw, pitch) = self.goal_angles.unwrap_or((self.yaw, self.pitch));
+        Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)
+    }
+
+    /// The tangents of half the field of view, across and up.
+    fn tangents(&self) -> Vec2 {
+        let up = (self.fov / 2.0).tan();
+        Vec2::new(up * self.aspect, up)
+    }
+
     /// Moves the point orbited by `offset` at once, letting go of the focus.
     fn pan(&mut self, offset: Vec3) {
         self.target += offset;
         self.focus += offset;
         self.free = true;
+        self.framed = None;
     }
 
     /// Zooms by `factor` (below 1 is nearer), towards `toward` when given: the whole
@@ -100,6 +233,7 @@ impl OrbitCamera {
         }
         self.distance = distance;
         self.goal_distance = None;
+        self.framed = None;
     }
 
     /// Turns by a drag of `delta` pixels.
@@ -233,10 +367,18 @@ fn camera_input(
     }
 }
 
-fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Transform)>) {
+fn apply_camera(
+    time: Res<Time>,
+    mut cameras: Query<(&mut OrbitCamera, &mut Transform, &Projection)>,
+) {
     let ease = 1.0 - (-EASING * time.delta_secs()).exp();
-    for (mut camera, mut transform) in &mut cameras {
+    for (mut camera, mut transform, projection) in &mut cameras {
+        if let Projection::Perspective(perspective) = projection {
+            camera.fov = perspective.fov;
+            camera.aspect = perspective.aspect_ratio;
+        }
         camera.focus = camera.focus.lerp(camera.target, ease);
+        camera.shift = camera.shift.lerp(camera.room.middle, ease);
         if let Some(goal) = camera.goal_distance {
             camera.distance += (goal - camera.distance) * ease;
             if (goal - camera.distance).abs() < 0.01 {
@@ -251,7 +393,83 @@ fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Tran
             }
         }
         let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
-        transform.translation = camera.focus + rotation * Vec3::Z * camera.distance;
+        // Stepping sideways, not turning, puts the point orbited in the room's middle:
+        // it stays put on screen as the camera orbits or zooms.
+        let off_middle = -camera.shift * camera.tangents();
+        transform.translation = camera.focus + rotation * off_middle.extend(1.0) * camera.distance;
         transform.rotation = rotation;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn head_on() -> OrbitCamera {
+        OrbitCamera {
+            yaw: 0.0,
+            pitch: 0.0,
+            ..default()
+        }
+    }
+
+    #[test]
+    fn pulls_back_only_as_far_as_what_it_must_show() {
+        let camera = head_on();
+        let tall = [Vec3::new(0.0, 40.0, 0.0)];
+        let needed = camera.fit_distance(&tall, Vec3::ZERO);
+        let half_height = needed * (camera.fov / 2.0).tan();
+        assert!(
+            half_height > 40.0,
+            "far enough back that it shows, with room: {needed}"
+        );
+        let wide = [Vec3::new(40.0, 0.0, 0.0)];
+        assert!(
+            camera.fit_distance(&wide, Vec3::ZERO) < needed,
+            "the view is wider than it is tall"
+        );
+    }
+
+    #[test]
+    fn a_smaller_room_needs_the_camera_further_back() {
+        let mut camera = head_on();
+        let points = [Vec3::new(30.0, 20.0, 0.0), Vec3::new(-30.0, -20.0, 0.0)];
+        let whole = camera.fit_distance(&points, Vec3::ZERO);
+        // The top half of the view, as when the journey docks across the bottom.
+        camera.set_room(Room::within(
+            Rect::new(0.0, 0.0, 1600.0, 1000.0),
+            Rect::new(0.0, 0.0, 1600.0, 500.0),
+        ));
+        assert_eq!(camera.room.middle, Vec2::new(0.0, 0.5));
+        assert!(camera.fit_distance(&points, Vec3::ZERO) > whole * 1.4);
+    }
+
+    #[test]
+    fn refits_what_it_framed_when_the_room_changes() {
+        let mut camera = head_on();
+        let points = vec![Vec3::new(0.0, 40.0, 0.0), Vec3::new(0.0, -40.0, 0.0)];
+        camera.frame(Vec3::ZERO, points, 1.0);
+        let before = camera.goal_distance.unwrap();
+        camera.set_room(Room {
+            middle: Vec2::ZERO,
+            half: Vec2::new(1.0, 0.5),
+        });
+        assert!(camera.goal_distance.unwrap() > before * 1.9);
+        // Once the viewer zooms by hand, the room no longer moves the camera.
+        camera.zoom(0.9, None);
+        camera.set_room(Room::default());
+        assert!(camera.goal_distance.is_none());
+    }
+
+    #[test]
+    fn the_middle_is_between_the_extremes() {
+        let camera = head_on();
+        let points = [
+            Vec3::new(-10.0, 0.0, 0.0),
+            Vec3::new(-8.0, 0.0, 0.0),
+            Vec3::new(30.0, 4.0, 0.0),
+        ];
+        let middle = camera.view_middle(&points).unwrap();
+        assert!((middle - Vec3::new(10.0, 2.0, 0.0)).length() < 1e-4);
     }
 }

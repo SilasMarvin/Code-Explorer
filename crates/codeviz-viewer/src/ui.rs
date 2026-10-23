@@ -14,7 +14,7 @@ use codeviz_core::{Change, Level, SpanTarget};
 use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
-    camera::OrbitCamera,
+    camera::{OrbitCamera, Room},
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side, SpanRef, Track},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
@@ -108,7 +108,7 @@ fn draw_ui(
     mut chrome: ResMut<Chrome>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
-    mut cameras: Query<(&mut Camera, &GlobalTransform), With<OrbitCamera>>,
+    mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -141,7 +141,7 @@ fn draw_ui(
     );
     let (graph_area, panel_area) =
         journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
-    if let Ok((mut camera, transform)) = cameras.single_mut() {
+    if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
             camera
@@ -173,28 +173,90 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            legend(ctx, legend_area(graph_area, panel_area), diff.is_some());
         }
         if help.0 {
             key_help(ctx, graph_area, &mut help.0);
         }
         if let Some(area) = panel_area {
-            let tethers =
+            let hovered_bar =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(&explorer, &to_screen)) {
-                tether(ctx, bar, node, false);
-            }
             // The bar under the pointer, to the node it stands for.
             let hovered = explorer
                 .hovered_tile
                 .and_then(|tile| explorer.tile_point(tile))
                 .and_then(to_screen);
-            if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
-                tether(ctx, bar, node, true);
+            if let (Some(bar), Some(node)) = (hovered_bar, hovered) {
+                tether(ctx, bar, node);
+            }
+        }
+        let docked = panel_area.filter(|_| panel.mode == PanelMode::Docked);
+        orbit.set_room(room(ctx, graph_area, docked));
+    }
+    Ok(())
+}
+
+/// Cards over the graph that the camera frames around, and labels keep off.
+const CARDS: [&str; 2] = ["diff_card", "legend"];
+
+/// Where a card floating over the graph was laid out, while it shows.
+fn card_rect(ctx: &egui::Context, id: &str) -> Option<egui::Rect> {
+    let id = egui::Id::new(id);
+    ctx.memory(|m| {
+        let shown = m.areas().visible_layer_ids().iter().any(|l| l.id == id);
+        shown.then(|| m.area_rect(id)).flatten()
+    })
+}
+
+/// The room the graph has to frame what it shows in: the largest part of it clear of
+/// the docked journey and the cards over it.
+fn room(ctx: &egui::Context, graph: egui::Rect, docked: Option<egui::Rect>) -> Room {
+    let taken: Vec<egui::Rect> = CARDS
+        .iter()
+        .filter_map(|id| card_rect(ctx, id))
+        .chain(docked)
+        .map(|rect| rect.expand(8.0))
+        .collect();
+    let rect = |r: egui::Rect| Rect::new(r.min.x, r.min.y, r.max.x, r.max.y);
+    Room::within(rect(graph), rect(clear_rect(graph, &taken)))
+}
+
+/// The largest part of `area` that none of `taken` covers, preferring one not much
+/// wider than it is tall, as a graph's modules spread about as far each way.
+fn clear_rect(area: egui::Rect, taken: &[egui::Rect]) -> egui::Rect {
+    // How wide a part the graph can use fully, over its height.
+    const SHAPE: f32 = 1.4;
+    let edges = |pick: fn(&egui::Rect) -> [f32; 2], low: f32, high: f32| {
+        let mut edges: Vec<f32> = taken
+            .iter()
+            .flat_map(pick)
+            .map(|e| e.clamp(low, high))
+            .chain([low, high])
+            .collect();
+        edges.sort_by(f32::total_cmp);
+        edges.dedup();
+        edges
+    };
+    let xs = edges(|r| [r.min.x, r.max.x], area.min.x, area.max.x);
+    let ys = edges(|r| [r.min.y, r.max.y], area.min.y, area.max.y);
+    let usable =
+        |r: &egui::Rect| r.width().min(r.height() * SHAPE) * r.height().min(r.width() / SHAPE);
+    let mut best = (0.0, area);
+    for (i, &left) in xs.iter().enumerate() {
+        for &right in &xs[i + 1..] {
+            for (j, &top) in ys.iter().enumerate() {
+                for &bottom in &ys[j + 1..] {
+                    let candidate =
+                        egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
+                    let clear = !taken.iter().any(|t| overlaps(*t, candidate));
+                    if clear && usable(&candidate) > best.0 {
+                        best = (usable(&candidate), candidate);
+                    }
+                }
             }
         }
     }
-    Ok(())
+    best.1
 }
 
 /// The panels around the graph, and how much of each edge they take: top, bottom, left
@@ -287,49 +349,41 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     }
 }
 
-/// Where the cursor's node is on screen, for the tether from its bar.
-fn cursor_node(
-    explorer: &Explorer,
-    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
-) -> Option<egui::Pos2> {
-    explorer
-        .focus()
-        .and_then(|unit| explorer.map().tile_of(unit))
-        .and_then(|tile| explorer.tile_point(tile))
-        .and_then(to_screen)
+/// Whether two rectangles share more than an edge.
+fn overlaps(a: egui::Rect, b: egui::Rect) -> bool {
+    a.min.x < b.max.x && b.min.x < a.max.x && a.min.y < b.max.y && b.min.y < a.max.y
 }
 
-/// The part of the graph above a docked journey, for what sits at its bottom.
-fn above(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
-    panel.map_or(graph, |p| {
-        egui::Rect::from_min_max(graph.min, egui::pos2(graph.max.x, p.min.y))
-    })
+/// Where the legend sits: the graph's bottom left, or above a docked journey that
+/// reaches that far.
+fn legend_area(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
+    // About as wide as the legend.
+    const LEGEND: f32 = 560.0;
+    match panel {
+        Some(p) if p.min.x < graph.min.x + LEGEND && p.min.y > graph.min.y => {
+            egui::Rect::from_min_max(graph.min, egui::pos2(graph.max.x, p.min.y))
+        }
+        _ => graph,
+    }
 }
 
-/// A line from a bar in the journey up to its node in the graph: faint for the
-/// cursor's, bright for the one under the pointer.
-fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2, bright: bool) {
+/// A dotted line from the bar under the pointer up to its node in the graph, ringing
+/// the node: dotted, so it is never read as a call.
+fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::new("tether"),
     ));
-    let from = if bright {
-        egui::pos2(bar.center().x, bar.min.y)
-    } else {
-        egui::pos2(bar.min.x + 2.0, bar.min.y)
-    };
-    let alpha = if bright { 220 } else { 90 };
-    painter.line_segment(
-        [from, node],
-        egui::Stroke::new(
-            if bright { 1.5 } else { 1.0 },
-            egui::Color32::from_white_alpha(alpha),
-        ),
-    );
-    painter.circle_filled(from, 2.5, egui::Color32::WHITE);
-    if bright {
-        painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+    let from = egui::pos2(bar.center().x, bar.min.y);
+    let color = egui::Color32::from_white_alpha(200);
+    let length = from.distance(node);
+    if length > 12.0 {
+        // Stop at the ring, not under it.
+        let end = node + (from - node) * (9.0 / length);
+        painter.extend(egui::Shape::dotted_line(&[from, end], color, 7.0, 1.3));
     }
+    painter.circle_filled(from, 2.5, egui::Color32::WHITE);
+    painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
 }
 
 fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPanel) {
@@ -1089,18 +1143,28 @@ impl<'a> Placer<'a> {
             node + shown.offset,
             painter.pixels_per_point(),
         );
-        let pill = egui::Rect::from_min_size(min, shown.galley.size()).expand2(PILL_PAD);
-        painter.rect_filled(pill, 4.0, PILL);
-        if let Some(color) = shown.stroke {
-            painter.rect_stroke(
-                pill,
-                4.0,
-                egui::Stroke::new(1.5, color),
-                egui::StrokeKind::Inside,
-            );
-        }
-        painter.galley(min, shown.galley.clone(), egui::Color32::WHITE);
+        paint_pill(&painter, min, shown.galley.clone(), shown.stroke);
     }
+}
+
+/// A label on its pill with `min` its text's top left, bordered in `stroke`'s color.
+fn paint_pill(
+    painter: &egui::Painter,
+    min: egui::Pos2,
+    galley: std::sync::Arc<egui::Galley>,
+    stroke: Option<egui::Color32>,
+) {
+    let pill = egui::Rect::from_min_size(min, galley.size()).expand2(PILL_PAD);
+    painter.rect_filled(pill, 4.0, PILL);
+    if let Some(color) = stroke {
+        painter.rect_stroke(
+            pill,
+            4.0,
+            egui::Stroke::new(1.5, color),
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.galley(min, galley, egui::Color32::WHITE);
 }
 
 /// What leads a label: text in a color, on a fill when it is a badge.
@@ -1319,9 +1383,10 @@ fn draw_graph_labels(
     order.sort_by_key(|&(key, _)| key);
 
     // Labels keep off the cards over the graph, as last laid out.
-    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search"]
+    let cards: Vec<egui::Rect> = CARDS
         .into_iter()
-        .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
+        .chain(["search", "journey_panel"])
+        .filter_map(|id| card_rect(painter.ctx(), id))
         .collect();
     // And off the nodes that matter, so they never hide a neighbor.
     let mut placer = Placer::new(
@@ -1529,69 +1594,82 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
 }
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
-/// link runs. A hint at the keys below.
+/// link runs; then a hint at the keys. A click folds it down to the hint and opens it
+/// again.
 fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
-    egui::Area::new("legend".into())
+    let id = egui::Id::new("legend");
+    let folded = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    let response = egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
-        .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
+        .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 12.0))
         .order(egui::Order::Middle)
+        .sense(egui::Sense::click())
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 215))
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
+                    if !folded {
+                        legend_lines(ui, diffing);
+                    }
+                    let fold = if folded { "▸ colors" } else { "▾" };
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let swatch = |ui: &mut egui::Ui, mark: &str, color: Color, text: &str| {
-                            ui.label(egui::RichText::new(mark).color(egui_color(color)));
-                            ui.label(egui::RichText::new(text).size(12.5));
-                            ui.add_space(6.0);
-                        };
-                        if diffing {
-                            swatch(ui, "●", diff_view::ADDED, "added");
-                            swatch(ui, "●", diff_view::MODIFIED, "rewritten");
-                            swatch(ui, "●", diff_view::REMOVED, "removed");
-                            swatch(ui, "●", diff_view::MOVED, "moved");
-                            swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
-                        } else {
-                            ui.label(
-                                egui::RichText::new("node color = its module, as its ring")
-                                    .size(12.5),
-                            );
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for (color, text) in [
-                            (CALLER, "calls into the focus"),
-                            (CALLEE, "calls out of it"),
-                        ] {
-                            ui.label(egui::RichText::new("→").color(egui_color(color)));
-                            ui.label(egui::RichText::new(text).size(12.5));
-                            ui.add_space(6.0);
-                        }
-                        ui.label(egui::RichText::new("→").color(egui_color(graph_view::FURTHER)));
-                        ui.label(egui::RichText::new("further along").size(12.5));
-                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(fold).size(12.0).color(MUTED));
                         ui.label(
-                            egui::RichText::new("journey bars match their nodes")
-                                .size(12.5)
-                                .color(MUTED),
+                            egui::RichText::new(
+                                "click a node to open it · I callers · O calls · , . less or \
+                                 more of the journey · / search · S panel · H keys",
+                            )
+                            .size(12.0)
+                            .color(MUTED),
                         );
                     });
                 });
-        });
-    ctx.layer_painter(egui::LayerId::background())
-        .with_clip_rect(area)
-        .text(
-            egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
-            egui::Align2::LEFT_BOTTOM,
-            "click a node to open it · I callers · O calls · , . less or more of the journey \
-             · / search · S panel · H keys",
-            egui::FontId::proportional(12.0),
-            MUTED,
+        })
+        .response;
+    if response
+        .on_hover_text(if folded {
+            "Show what the colors mean"
+        } else {
+            "Fold the legend away"
+        })
+        .clicked()
+    {
+        ctx.data_mut(|d| d.insert_temp(id, !folded));
+    }
+}
+
+/// The legend's two lines: what a node's fill says, then which way a link runs.
+fn legend_lines(ui: &mut egui::Ui, diffing: bool) {
+    let swatch = |ui: &mut egui::Ui, mark: &str, color: Color, text: &str| {
+        ui.label(egui::RichText::new(mark).color(egui_color(color)));
+        ui.label(egui::RichText::new(text).size(12.5));
+        ui.add_space(6.0);
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if diffing {
+            swatch(ui, "●", diff_view::ADDED, "added");
+            swatch(ui, "●", diff_view::MODIFIED, "rewritten");
+            swatch(ui, "●", diff_view::REMOVED, "removed");
+            swatch(ui, "●", diff_view::MOVED, "moved");
+            swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+        } else {
+            ui.label(egui::RichText::new("node color = its module, as its ring").size(12.5));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        swatch(ui, "→", CALLER, "calls into the focus");
+        swatch(ui, "→", CALLEE, "calls out of it");
+        swatch(ui, "→", graph_view::FURTHER, "further along");
+        ui.label(
+            egui::RichText::new("journey bars match their nodes")
+                .size(12.5)
+                .color(MUTED),
         );
+    });
 }
 
 /// Every key, grouped by what it moves.
@@ -1662,6 +1740,8 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
     ),
 ];
 
+/// Every key, and a key to the marks on the graph's labels and the journey's bars,
+/// each drawn as the view draws it. Opaque, so nothing behind shows through.
 fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
     egui::Area::new("key_help".into())
         .pivot(egui::Align2::CENTER_CENTER)
@@ -1669,17 +1749,41 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 240))
+                .fill(egui::Color32::from_rgb(14, 16, 22))
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
                 .corner_radius(10.0)
                 .inner_margin(egui::Margin::symmetric(18, 14))
                 .show(ui, |ui| {
                     ui.horizontal_top(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("Names in the graph")
+                                    .strong()
+                                    .size(14.0),
+                            );
+                            ui.add_space(4.0);
+                            label_key(ui);
+                        });
+                        ui.add_space(24.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("Bars in the journey")
+                                    .strong()
+                                    .size(14.0),
+                            );
+                            ui.add_space(4.0);
+                            journey_panel::bar_key(ui);
+                        });
+                    });
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.horizontal_top(|ui| {
                         for (title, keys) in KEYS {
                             ui.vertical(|ui| {
                                 ui.label(egui::RichText::new(title).strong().size(14.0));
                                 ui.add_space(4.0);
-                                egui::Grid::new(title).spacing(egui::vec2(12.0, 4.0)).show(
+                                egui::Grid::new(title).spacing(egui::vec2(12.0, 3.0)).show(
                                     ui,
                                     |ui| {
                                         for (key, what) in keys {
@@ -1697,11 +1801,82 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
                             ui.add_space(16.0);
                         }
                     });
-                    if ui.small_button("close").clicked() {
+                    if ui.small_button("close (H)").clicked() {
                         *open = false;
                     }
                 });
         });
+}
+
+/// What the marks on the graph's names mean, each drawn as the graph draws it.
+fn label_key(ui: &mut egui::Ui) {
+    let module = egui_color(lane_color(1));
+    // A name with its number in the journey, if any, its note, and which side of the
+    // focus it is on.
+    let sample = |ui: &mut egui::Ui,
+                  number: Option<&str>,
+                  name: &str,
+                  note: Option<&str>,
+                  side: Option<Side>,
+                  meaning: &str| {
+        let (color, stroke) = match side {
+            Some(Side::Callers) => (CALLER_TEXT, Some(egui_color(CALLER))),
+            Some(Side::Callees) => (CALLEE_TEXT, Some(egui_color(CALLEE))),
+            None => (egui::Color32::from_rgb(200, 205, 216), None),
+        };
+        let lead = number.map(|n| (format!(" {n} "), ON_FILL, Some(module)));
+        let job = label_job(lead, name, note.map(str::to_owned), color, 12.0, false);
+        ui.horizontal(|ui| {
+            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(220.0, 22.0), egui::Sense::hover());
+            let min = egui::pos2(
+                rect.min.x + PILL_PAD.x,
+                rect.center().y - galley.size().y / 2.0,
+            );
+            paint_pill(ui.painter(), min, galley, stroke);
+            ui.label(egui::RichText::new(meaning).color(MUTED));
+        });
+    };
+    sample(
+        ui,
+        Some("3.1"),
+        "unit_price",
+        None,
+        None,
+        "its place in the journey, on its bar's color",
+    );
+    sample(
+        ui,
+        Some("2"),
+        "check_quantity",
+        None,
+        Some(Side::Callees),
+        "blue: the focus calls it",
+    );
+    sample(
+        ui,
+        None,
+        "router",
+        Some("calls it #2 of 5"),
+        Some(Side::Callers),
+        "violet: it calls the focus, as its 2nd of 5 calls",
+    );
+    sample(
+        ui,
+        None,
+        "bulk_discount",
+        Some("sometimes"),
+        None,
+        "only some runs of the journey reach it",
+    );
+    sample(
+        ui,
+        None,
+        "find_user",
+        Some("can fail"),
+        None,
+        "another outcome splits off at it, or under it",
+    );
 }
 
 /// The last two segments of a path: `orders::Order::total` is `Order.total`.
@@ -1725,6 +1900,26 @@ pub(crate) fn egui_color(color: Color) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frames_in_the_largest_part_clear_of_what_floats_over_the_graph() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+        assert_eq!(clear_rect(screen, &[]), screen);
+        // A journey docked along the bottom right and a legend along the bottom left:
+        // the graph has everything above them.
+        let docked = egui::Rect::from_min_max(egui::pos2(700.0, 840.0), screen.max);
+        let legend = egui::Rect::from_min_max(egui::pos2(0.0, 900.0), egui::pos2(560.0, 1000.0));
+        assert_eq!(
+            clear_rect(screen, &[docked, legend]),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1600.0, 840.0))
+        );
+        // A tall card down the right: beside it, not a sliver above or below.
+        let card = egui::Rect::from_min_max(egui::pos2(1300.0, 0.0), egui::pos2(1600.0, 700.0));
+        assert_eq!(
+            clear_rect(screen, &[docked, legend, card]),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1300.0, 840.0))
+        );
+    }
 
     /// Runs one frame that places a label for `key` at `node` with `blocked` taken,
     /// and returns the side it took and where its text was drawn from the node.

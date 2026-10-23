@@ -24,8 +24,8 @@ codeviz diff v1..v2 --summary        # print the changes instead
 ```
 
 The codebase floats as a graph, one node per function, each module gathered in its own
-ring. Click a node and the camera orbits it, and its journey opens docked as a flame
-graph: what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
+ring. It opens on the whole graph. Click a node and the camera orbits it, and its
+journey opens docked as a flame graph, as big as it needs to be: what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
 labels alike. `,`/`.` show a level less or more, a bar's `+N` opens the calls folded
 under it, and `V` switches to showing calls only as the cursor reaches them. A closure
 counts as part of the function around it.
@@ -34,8 +34,10 @@ Each color says one thing. A link's color says which way a call runs: violet int
 focus, blue out of it, with dots flowing along it. A node's fill says where it lives,
 its module, the same color as its ring; under a diff it says what changed instead. A
 journey bar is filled exactly like its node, and its number sits on a badge of that
-color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
-to it. `I` picks out everything that calls the focus and `O` everything it calls,
+color beside the node, so a bar finds its node at a glance; hovering a bar draws a
+dotted line to it. The camera frames what it shows in the room the docked journey, the
+legend and any cards leave clear, so nothing that matters sits under them; a click
+folds the legend down to one line. `I` picks out everything that calls the focus and `O` everything it calls,
 pulling the camera back only as far as it takes to show them all.
 
 Digits walk to the focus's nth call, shift+digit to its nth caller, `-` and `=` reveal
@@ -45,7 +47,7 @@ journey (`L` switches), measured in calls, distance in the graph, or a blend of 
 everything, two steps and one. In the journey, `←`/`→` move between calls by the same
 caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a function,
 `S` opens the side panel (the view's settings, outcomes, source and details), `H`
-lists every key.
+lists every key and draws each mark on a name or a bar beside what it means.
 
 ## Diffs
 

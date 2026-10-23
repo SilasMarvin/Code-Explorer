@@ -519,12 +519,17 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// Each module's region, as the functions showing place it: its cluster, middle, and
 /// a radius holding most of them.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
+    regions_of(
+        explorer,
+        (0..explorer.map().tiles.len()).filter(|&t| explorer.visibility(t) >= 0.5),
+    )
+}
+
+/// Each module's region as `tiles` place it.
+fn regions_of(explorer: &Explorer, tiles: impl Iterator<Item = usize>) -> Vec<(usize, Vec3, f32)> {
     let graph = explorer.graph();
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
-    for tile in 0..explorer.map().tiles.len() {
-        if explorer.visibility(tile) < 0.5 {
-            continue;
-        }
+    for tile in tiles {
         if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.tile_point(tile))
             && let Some(list) = members.get_mut(cluster)
         {
@@ -583,18 +588,41 @@ pub(crate) fn graph_keys(
     }
 }
 
-/// Looks at the middle of the graph from far enough back to see all of it.
+/// Looks at the middle of the graph from far enough back to see all of it, rings
+/// and all.
 fn frame_all(explorer: &Explorer, camera: &mut OrbitCamera) {
-    let points: Vec<Vec3> = (0..explorer.map().tiles.len())
+    let tiles = 0..explorer.map().tiles.len();
+    let points: Vec<Vec3> = tiles
+        .clone()
         .filter_map(|t| explorer.tile_point(t))
+        .chain(ring_points(explorer, tiles))
         .collect();
-    frame_points(&points, None, camera);
+    if let Some(middle) = camera.view_middle(&points) {
+        camera.frame(middle, points, MIN_ORBIT_DISTANCE);
+    }
     // Away from the focus, so it stays where it was put.
     camera.free = true;
 }
 
+/// Points round the ring of each module `tiles` are in, so framing takes in the
+/// rings as well as their nodes.
+fn ring_points(explorer: &Explorer, tiles: impl Iterator<Item = usize>) -> Vec<Vec3> {
+    const AROUND: usize = 12;
+    regions_of(explorer, tiles)
+        .into_iter()
+        .flat_map(|(_, middle, radius)| {
+            (0..AROUND).map(move |step| {
+                #[expect(clippy::cast_precision_loss, reason = "a small count")]
+                let angle = step as f32 / AROUND as f32 * std::f32::consts::TAU;
+                middle + Vec3::new(angle.cos(), angle.sin(), 0.0) * radius
+            })
+        })
+        .collect()
+}
+
 /// When the lens changes, or opens limited, refits the view to what it shows in full:
 /// around the focus when that is where it starts, else around everything it reveals.
+/// With nothing focused by hand, it opens on the whole graph.
 pub(crate) fn frame_reveal(
     explorer: Res<Explorer>,
     mut last: Local<Option<Lens>>,
@@ -605,8 +633,7 @@ pub(crate) fn frame_reveal(
     // A reveal set from the start frames what it shows too.
     let changed = last.map_or(lens.reach.is_some(), |l| l != lens);
     *last = Some(lens);
-    if opening && !changed && explorer.anchor().is_none() {
-        // Nothing to center on: open on the whole graph.
+    if opening && !changed && explorer.focused_by_hand().is_none() {
         for mut camera in &mut cameras {
             frame_all(&explorer, &mut camera);
         }
@@ -624,14 +651,23 @@ pub(crate) fn frame_reveal(
             frame_all(&explorer, &mut camera);
             continue;
         };
-        let points: Vec<Vec3> = targets
-            .iter()
-            .enumerate()
-            .filter(|&(_, &shown)| shown >= 0.5)
-            .filter_map(|(tile, _)| explorer.tile_point(tile))
+        let revealed = || {
+            targets
+                .iter()
+                .enumerate()
+                .filter(|&(_, &shown)| shown >= 0.5)
+                .map(|(tile, _)| tile)
+        };
+        let points: Vec<Vec3> = revealed()
+            .filter_map(|tile| explorer.tile_point(tile))
             .collect();
         let anchor = explorer.anchor().and_then(|t| explorer.tile_point(t));
-        frame_points(&points, anchor, &mut camera);
+        frame_points(
+            points,
+            ring_points(&explorer, revealed()),
+            anchor,
+            &mut camera,
+        );
     }
 }
 
@@ -641,7 +677,7 @@ pub(crate) fn frame_reveal(
 pub(crate) fn frame_spotlight(
     explorer: Res<Explorer>,
     mut last: Local<Option<(Side, f32)>>,
-    mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
+    mut cameras: Query<&mut OrbitCamera>,
 ) {
     let spotlight = explorer.spotlight();
     if spotlight == *last {
@@ -659,55 +695,35 @@ pub(crate) fn frame_spotlight(
         .into_iter()
         .filter_map(|t| explorer.tile_point(t))
         .collect();
-    for (mut camera, transform, projection) in &mut cameras {
-        let Projection::Perspective(perspective) = projection else {
-            continue;
-        };
-        let needed = fit_distance(&points, center, transform.rotation, perspective);
+    for mut camera in &mut cameras {
+        let needed = camera.fit_distance(&points, center).max(MIN_ORBIT_DISTANCE);
         if needed > camera.distance {
-            camera.glide_to(center, needed);
+            camera.frame(center, points.clone(), MIN_ORBIT_DISTANCE);
         }
     }
 }
 
-/// How far back a camera turned to `rotation` and looking at `center` must be for
-/// every one of `points` to sit inside the middle of its view, clear of the edges.
-fn fit_distance(
-    points: &[Vec3],
-    center: Vec3,
-    rotation: Quat,
-    perspective: &PerspectiveProjection,
-) -> f32 {
-    // The share of the half-view a point may use: the rest is room for its name, and
-    // for the journey docked over the bottom right.
-    const ROOM: f32 = 0.72;
-    let tan_y = (perspective.fov / 2.0).tan() * ROOM;
-    let tan_x = tan_y * perspective.aspect_ratio;
-    let (right, up, back) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
-    points
-        .iter()
-        .map(|&p| {
-            let offset = p - center;
-            // A point this far towards the camera needs the camera that much further.
-            let toward = offset.dot(back);
-            (offset.dot(right).abs() / tan_x).max(offset.dot(up).abs() / tan_y) + toward
-        })
-        .fold(MIN_ORBIT_DISTANCE, f32::max)
-}
-
-/// Looks at the middle of `points` from far enough back to see them all.
-/// Around the anchor when there is one, which the camera never leaves; a few far
-/// outliers do not push the view back.
-fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera) {
-    if points.is_empty() {
+/// Looks at the middle of `points` and their modules' `rings` from far enough back to
+/// see them all. Around the anchor when there is one, which the camera never leaves;
+/// among many, the farthest few points do not push the view back.
+fn frame_points(
+    mut points: Vec<Vec3>,
+    rings: Vec<Vec3>,
+    anchor: Option<Vec3>,
+    camera: &mut OrbitCamera,
+) {
+    /// Points enough that the farthest tenth count as outliers.
+    const MANY: usize = 30;
+    let Some(middle) = anchor.or_else(|| camera.view_middle(&points)) else {
         return;
+    };
+    if points.len() >= MANY {
+        points.sort_by(|a, b| a.distance(middle).total_cmp(&b.distance(middle)));
+        points.truncate((points.len() * 9).div_ceil(10));
+    } else {
+        points.extend(rings);
     }
-    let middle =
-        anchor.unwrap_or_else(|| points.iter().copied().sum::<Vec3>() / points.len() as f32);
-    let mut distances: Vec<f32> = points.iter().map(|p| p.distance(middle)).collect();
-    distances.sort_by(f32::total_cmp);
-    let radius = distances[(distances.len() * 9 / 10).min(distances.len() - 1)];
-    camera.glide_to(middle, (radius * 2.6).max(MIN_ORBIT_DISTANCE));
+    camera.frame(middle, points, MIN_ORBIT_DISTANCE);
 }
 
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
@@ -724,41 +740,29 @@ pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut Orbit
     }
 }
 
-/// Orbits the focused node from far enough back to see everything it calls and
-/// everything that calls it.
+/// Orbits the focused node from far enough back to see everything it calls,
+/// everything that calls it and the journey disclosed from it.
 pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut OrbitCamera) {
-    let graph = explorer.graph();
     let Some(focus) = explorer.graph_focus() else {
         return;
     };
     let Some(at) = explorer.tile_point(focus) else {
         return;
     };
-    let reach = graph
+    camera.frame(at, orbit_points(explorer, focus), MIN_ORBIT_DISTANCE);
+}
+
+/// What orbiting `focus` keeps in view: what calls it and what it calls, as far as
+/// they show, and what its journey discloses.
+fn orbit_points(explorer: &Explorer, focus: usize) -> Vec<Vec3> {
+    let graph = explorer.graph();
+    graph
         .callers(focus)
         .chain(graph.callees(focus))
         .filter(|&t| explorer.shown(t))
+        .chain(explorer.disclosure().tiles().keys().copied())
         .filter_map(|t| explorer.tile_point(t))
-        .map(|p| p.distance(at))
-        .fold(journey_reach(explorer, at), f32::max);
-    camera.glide_to(at, orbit_distance(reach));
-}
-
-/// How far from `at` the disclosed journey reaches.
-fn journey_reach(explorer: &Explorer, at: Vec3) -> f32 {
-    explorer
-        .disclosure()
-        .tiles()
-        .keys()
-        .filter_map(|&t| explorer.tile_point(t))
-        .map(|p| p.distance(at))
-        .fold(0.0, f32::max)
-}
-
-/// How far back to orbit to see `reach` either side of center: a 45° view shows
-/// about 0.4 of its distance either side, and this leaves room.
-fn orbit_distance(reach: f32) -> f32 {
-    (reach * 3.4).max(MIN_ORBIT_DISTANCE)
+        .collect()
 }
 
 /// Swings round to a newly focused node, and keeps it centered while the graph moves.
@@ -780,11 +784,15 @@ pub(crate) fn follow_focus(
     for mut camera in &mut cameras {
         if changed {
             orbit_focus(&explorer, &mut camera);
-        } else if opened && let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) {
+        } else if opened
+            && let Some(anchor) = explorer.anchor()
+            && let Some(at) = explorer.tile_point(anchor)
+        {
             // Stepping through time only ever pulls back, so the view does not pump.
-            let distance = orbit_distance(journey_reach(&explorer, at));
+            let points = orbit_points(&explorer, anchor);
+            let distance = camera.fit_distance(&points, at).max(MIN_ORBIT_DISTANCE);
             if explorer.disclose() != Disclose::Time || distance > camera.distance {
-                camera.glide_to(at, distance);
+                camera.frame(at, points, MIN_ORBIT_DISTANCE);
             }
         } else if explorer.settling()
             && !camera.free
@@ -792,36 +800,5 @@ pub(crate) fn follow_focus(
         {
             camera.target = at;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pulls_back_only_as_far_as_what_it_must_show() {
-        let view = PerspectiveProjection {
-            aspect_ratio: 1.6,
-            ..default()
-        };
-        let head_on = Quat::IDENTITY;
-        let near = [Vec3::new(3.0, 2.0, 0.0), Vec3::new(-4.0, -1.0, 0.0)];
-        assert!(
-            (fit_distance(&near, Vec3::ZERO, head_on, &view) - MIN_ORBIT_DISTANCE).abs() < 1e-3,
-            "what is close needs no more than the closest orbit"
-        );
-        let far = [Vec3::new(0.0, 40.0, 0.0)];
-        let needed = fit_distance(&far, Vec3::ZERO, head_on, &view);
-        let half_height = needed * (view.fov / 2.0).tan();
-        assert!(
-            needed > MIN_ORBIT_DISTANCE && half_height > 40.0,
-            "far enough back that it shows, with room: {needed}"
-        );
-        let wide = [Vec3::new(40.0, 0.0, 0.0)];
-        assert!(
-            fit_distance(&wide, Vec3::ZERO, head_on, &view) < needed,
-            "the view is wider than it is tall"
-        );
     }
 }
