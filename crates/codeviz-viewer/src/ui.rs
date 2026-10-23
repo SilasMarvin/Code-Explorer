@@ -1548,9 +1548,9 @@ fn draw_graph_labels(
     }
     order.sort_by_key(|&(key, _)| key);
 
-    // Labels keep off the cards over the graph and the hint under them, as last laid
-    // out.
-    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search"]
+    // Labels keep off the cards and the journey over the graph and the hint under
+    // them, as last laid out.
+    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search", "journey_panel"]
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .chain(painter.ctx().data(|d| d.get_temp::<egui::Rect>(hint_id())))
