@@ -35,17 +35,20 @@ focus, blue out of it, with dots flowing along it. A node's fill says where it l
 its module, the same color as its ring; under a diff it says what changed instead. A
 journey bar is filled exactly like its node, and its number sits on a badge of that
 color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
-to it. `I` picks out what calls the focus and `O` what it calls, pulling the camera back
-only as far as it takes to show them all; pressed again, each reaches two calls out,
-then all the way, then lets go, and shift goes all the way at once. Past the direct callers that draws every route into
-the focus, from the entry points where requests come in (or the functions nothing calls,
-which a framework or a test runs) down to it, as pale arrows with dots running towards
-it, and steps the rest of the graph out of the way. The top bar says how many entry
+to it.
+
+`I` picks out what calls the focus and `O` what it calls, pulling the camera back only
+as far as it takes to show them all. Pressed again, each reaches two calls out, then
+all the way, then lets go; shift goes all the way at once. All the way up is every
+route into the focus: from the entry points where requests come in, or the functions
+nothing calls (which a framework or a test runs), down to it, drawn as pale arrows with
+dots running towards it, with the rest of the graph stepped out of the way. A route
+stops at the first entry point it meets, and a router that registers a handler counts
+as depending on it without leading anywhere above. The top bar says how many entry
 points reach the focus; with its callers picked out, a card lists them, and picking one
 (or `E` for the next, `Shift E` the one before) opens that entry's journey with the
 cursor on the focus and every call on the way disclosed, the route it follows drawn
-brighter than the rest. A route stops at an entry point rather than climbing past it, and a router
-registering a handler is wiring, not a call.
+brighter than the rest.
 
 Digits walk to the focus's nth call, shift+digit to its nth caller, `-` and `=` reveal
 less or more around a starting point, the focus, a diff's changes or the active
