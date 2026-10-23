@@ -68,7 +68,7 @@ const LEAST_SLOT: f32 = 64.0;
 /// Room between a bar's edge and its text.
 const BAR_INSET: f32 = 5.0;
 /// Fewest letters of a name worth showing, either side of the ellipsis together.
-const FEWEST_LETTERS: usize = 5;
+const FEWEST_LETTERS: usize = 6;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
