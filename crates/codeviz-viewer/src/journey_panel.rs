@@ -15,7 +15,7 @@ use crate::{
     explorer::{Confidence, Explorer, SpanRef, is_conditional, is_handoff},
     graph_view::node_color,
     scene::{PALETTE, lane_color},
-    ui::{egui_color, short, track_title},
+    ui::{egui_color, track_title},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -62,7 +62,13 @@ const ROW_GAP: f32 = 5.0;
 /// Share of a slot left between consecutive bars on a row.
 const BAR_GAP: f32 = 0.06;
 /// Pixels a slot needs to name its call.
-const NAMED_SLOT: f32 = 110.0;
+const NAMED_SLOT: f32 = 120.0;
+/// Pixels a slot keeps however many there are: past that, the journey pans.
+const LEAST_SLOT: f32 = 64.0;
+/// Room between a bar's edge and its text.
+const BAR_INSET: f32 = 5.0;
+/// Fewest letters of a name worth showing, either side of the ellipsis together.
+const FEWEST_LETTERS: usize = 5;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
@@ -82,7 +88,7 @@ pub(crate) fn split(
             let size = egui::vec2(
                 // Wide enough to name each call, up to the whole width.
                 (slots * NAMED_SLOT + PAD * 2.0)
-                    .clamp(380.0, 960.0_f32.max(area.width() * 0.52))
+                    .clamp(380.0, 960.0_f32.max(area.width() * 0.6))
                     .min(area.width() - MARGIN * 2.0),
                 // As tall as the journey needs, up to a share of the screen.
                 (HEADER + PAD * 2.0 + rows.max(2) as f32 * (ROW + ROW_GAP))
@@ -310,7 +316,9 @@ fn canvas(
         .unwrap_or_default();
     let start = 0.0;
     let end = slots.max(1.0);
-    let fit = content.width() / (end - start);
+    // Fitting the whole journey across, unless that leaves its bars too narrow to
+    // name anything.
+    let fit = (content.width() / (end - start)).max(LEAST_SLOT);
     let scale = panel.zoom.unwrap_or(fit);
     if panel.zoom.is_none() {
         panel.left = start;
@@ -461,7 +469,7 @@ fn canvas(
         // What runs after the cursor dims once you step through it; at the start,
         // everything shows in full.
         let future = stepping && span.enter > cursor_enter;
-        let (fill, text) = if faint {
+        let (fill, text_color) = if faint {
             (base.gamma_multiply(0.22), MUTED)
         } else if future {
             (
@@ -537,38 +545,49 @@ fn canvas(
                 egui::StrokeKind::Outside,
             );
         }
-        // The same number the graph puts on the node, then what changed and the name;
-        // where the name would not fit, the number alone.
+        // The same number the graph puts on the node, then what changed and the name
+        // the graph gives it; where the name would not fit, the number alone.
         let number = disclosed.number(bar.span).unwrap_or_default();
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a small, clamped character count"
-        )]
-        let room = ((bar.rect.width() - if badge.is_some() { 38.0 } else { 10.0 }) / 6.8)
-            .clamp(0.0, 300.0) as usize;
+        // Beside the badge, not under it.
+        let free = badge.map_or(bar.rect, |badge| {
+            egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x, bar.rect.max.y))
+        });
         let painter = painter.with_clip_rect(bar.rect.intersect(content));
-        if room >= number.len() + 6 {
-            let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
-            let mut label = format!("{sign}{}", explorer.label_in(track, bar.span));
-            if !number.is_empty() {
-                label = format!("{number}  {label}");
-            }
-            if let Some(condition) = span.conditions.last() {
-                label = format!("{label}  if {}", condition.arm);
-            }
+        let font = egui::FontId::proportional(12.5);
+        let width = |text: &str| {
+            painter
+                .layout_no_wrap(text.to_owned(), font.clone(), text_color)
+                .size()
+                .x
+        };
+        let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
+        let lead = if number.is_empty() {
+            sign
+        } else {
+            format!("{number}  {sign}")
+        };
+        let condition = span
+            .conditions
+            .last()
+            .map(|condition| format!("  if {}", condition.arm));
+        let room = free.width() - BAR_INSET * 2.0 - width(&lead);
+        let names = [
+            explorer.label_in(track, bar.span),
+            explorer.short_label_in(track, bar.span),
+        ];
+        let fitting = condition
+            .map(|condition| format!("{}{condition}", names[0]))
+            .filter(|whole| width(whole) <= room)
+            .or_else(|| fitted(&names, room, width));
+        if let Some(name) = fitting {
             painter.text(
-                bar.rect.left_center() + egui::vec2(5.0, 0.0),
+                bar.rect.left_center() + egui::vec2(BAR_INSET, 0.0),
                 egui::Align2::LEFT_CENTER,
-                short(&label, room),
-                egui::FontId::proportional(12.5),
-                text,
+                format!("{lead}{name}"),
+                font,
+                text_color,
             );
         } else {
-            // Beside the badge, not under it.
-            let free = badge.map_or(bar.rect, |badge| {
-                egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x, bar.rect.max.y))
-            });
             if free.width() < 6.5 * number.len() as f32 + 3.0 {
                 continue;
             }
@@ -577,7 +596,7 @@ fn canvas(
                 egui::Align2::CENTER_CENTER,
                 number,
                 egui::FontId::proportional(11.5),
-                text,
+                text_color,
             );
         }
         if tile.is_some() && tile == graph_focus && Some(bar.span) != cursor.map(|c| c.span) {
@@ -636,6 +655,13 @@ fn canvas(
             );
         }
         let mut tip = explorer.label_in(track, span);
+        // The whole path, which the bar leaves out.
+        if let Some(unit) = track.unit_id(span) {
+            let full = explorer.unit_path(unit).full();
+            if !tip.contains(&full) {
+                tip = format!("{tip}\n{full}");
+            }
+        }
         if let Some(span) = track.span(span) {
             for condition in &span.conditions {
                 let guard = condition.guard.as_deref().unwrap_or("?");
@@ -688,6 +714,38 @@ fn canvas(
         cursor: cursor_rect,
         hovered: hovered_rect,
     }
+}
+
+/// The first of `names` that fits in `room` whole, else the last with its middle
+/// elided as little as it takes; `None` when not even a few letters of it fit.
+fn fitted(names: &[String], room: f32, width: impl Fn(&str) -> f32) -> Option<String> {
+    if let Some(name) = names.iter().find(|name| width(name) <= room) {
+        return Some(name.clone());
+    }
+    let name = names.last()?;
+    // The most letters that fit, found by halving.
+    let (mut fits, mut over) = (FEWEST_LETTERS - 1, name.chars().count());
+    while over - fits > 1 {
+        let middle = usize::midpoint(fits, over);
+        if width(&elide_middle(name, middle)) <= room {
+            fits = middle;
+        } else {
+            over = middle;
+        }
+    }
+    (fits >= FEWEST_LETTERS).then(|| elide_middle(name, fits))
+}
+
+/// `text` with its middle cut so `keep` of its letters remain: `unit_price` keeping
+/// six is `uni…ice`. The start and the end are what tell names apart.
+fn elide_middle(text: &str, keep: usize) -> String {
+    let count = text.chars().count();
+    if keep >= count {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(keep.div_ceil(2)).collect();
+    let tail: String = text.chars().skip(count - keep / 2).collect();
+    format!("{head}…{tail}")
 }
 
 /// A rectangle's outline in dashes.
@@ -743,6 +801,26 @@ mod tests {
             Some(UnitId::new("x:main")),
             JourneyOptions::default(),
         )
+    }
+
+    #[test]
+    fn a_name_too_long_for_its_bar_loses_its_middle() {
+        assert_eq!(elide_middle("unit_price", 6), "uni…ice");
+        assert_eq!(elide_middle("quote", 9), "quote");
+        // A letter is ten points wide here.
+        let width = |text: &str| text.chars().count() as f32 * 10.0;
+        let names = ["Store.insert_order".to_owned(), "insert_order".to_owned()];
+        assert_eq!(
+            fitted(&names, 200.0, width).as_deref(),
+            Some("Store.insert_order")
+        );
+        assert_eq!(
+            fitted(&names, 120.0, width).as_deref(),
+            Some("insert_order"),
+            "what tells it apart goes first"
+        );
+        assert_eq!(fitted(&names, 80.0, width).as_deref(), Some("inse…der"));
+        assert_eq!(fitted(&names, 40.0, width), None, "too few letters to say");
     }
 
     #[test]

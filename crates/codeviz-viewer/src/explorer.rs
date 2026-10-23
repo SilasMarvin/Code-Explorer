@@ -10,19 +10,37 @@ use std::{
 use bevy::prelude::*;
 use codeviz_core::{
     Journey, JourneyOptions, Level, Scenario, Span, SpanId, SpanTarget, StopReason, System,
-    display_name, scenarios,
+    scenarios,
 };
-use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
+use codeviz_ir::{Certainty, ExitKind, Location, Mode, Role, Unit, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
 
 use crate::{
     disclosure::{Disclose, Disclosed},
     lens::{self, Lens},
+    names::{Names, Path},
 };
 
 /// What a disclosure was worked out for: the journeys' revision, the active one, how
 /// it discloses, the spans opened by hand, and the cursor when that matters.
 type DisclosureKey = (u64, usize, Disclose, u64, Option<SpanId>);
+
+/// What the names in view were worked out for: the nodes the lens shows, the calls
+/// the journey discloses, and what a diff changed.
+#[derive(Debug)]
+struct NamesKey {
+    shown: Vec<usize>,
+    disclosed: Arc<Disclosed>,
+    changed: Vec<usize>,
+}
+
+impl NamesKey {
+    fn same(&self, other: &Self) -> bool {
+        self.shown == other.shown
+            && Arc::ptr_eq(&self.disclosed, &other.disclosed)
+            && self.changed == other.changed
+    }
+}
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +304,14 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever a journey is rebuilt.
     revision: u64,
+    /// What each unit in view is called, told apart from the rest in view.
+    names: Names,
+    names_for: Option<NamesKey>,
+    /// What each function is called told apart from every other, for what is not in
+    /// view.
+    every_name: Names,
+    /// Each module cluster's name, told apart from the other clusters'.
+    cluster_names: Vec<String>,
 }
 
 impl Explorer {
@@ -339,7 +365,12 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            names: Names::default(),
+            names_for: None,
+            every_name: Names::default(),
+            cluster_names: Vec::new(),
         };
+        explorer.name_everything();
         explorer.color_groups();
         if let Some(root) = root {
             explorer.set_root(root);
@@ -921,12 +952,78 @@ impl Explorer {
         self.graph.cluster(tile).unwrap_or_default()
     }
 
-    /// A module cluster's name: the module's own, else its container's.
+    /// A module cluster's name: the module's own, with its parent modules and crate in
+    /// front as far as it takes to tell it from the others.
     pub(crate) fn cluster_name(&self, cluster: usize) -> String {
-        self.graph
-            .cluster_unit(cluster)
-            .and_then(|id| self.any_unit(id))
-            .map_or_else(String::new, |unit| unit.name.clone())
+        self.cluster_names.get(cluster).cloned().unwrap_or_default()
+    }
+
+    /// Names every function apart from all the others, and every module cluster
+    /// apart from the other clusters.
+    fn name_everything(&mut self) {
+        let placed = self.layout_system.as_ref().unwrap_or(&self.system);
+        self.every_name = Names::apart(
+            placed
+                .units()
+                .filter(|u| u.role == Role::Invocable)
+                .map(|u| (u.id.clone(), self.unit_path(&u.id))),
+        );
+        let clusters: Vec<Option<&UnitId>> = (0..self.graph.cluster_count())
+            .map(|cluster| self.graph.cluster_unit(cluster))
+            .collect();
+        let names = Names::apart(
+            clusters
+                .iter()
+                .flatten()
+                .map(|&id| (id.clone(), self.unit_path(id))),
+        );
+        self.cluster_names = clusters
+            .iter()
+            .map(|id| {
+                id.and_then(|id| names.get(id))
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+    }
+
+    /// Names what is in view apart from each other: every node the lens shows and
+    /// every call the journey discloses, so a node and its bar read the same. What a
+    /// diff changed carries its type or module at least: `new` alone could be any
+    /// type's.
+    pub(crate) fn refresh_names(&mut self) {
+        let key = NamesKey {
+            shown: (0..self.map.tiles.len())
+                .filter(|&tile| self.visibility(tile) >= 0.5)
+                .collect(),
+            disclosed: self.disclosure(),
+            changed: self.changed_tiles.clone(),
+        };
+        if self.names_for.as_ref().is_some_and(|k| k.same(&key)) {
+            return;
+        }
+        let track = self.track();
+        let changed: HashSet<&UnitId> = key
+            .changed
+            .iter()
+            .filter_map(|&tile| self.tile_unit(tile))
+            .collect();
+        let paths: Vec<(UnitId, Path)> = key
+            .shown
+            .iter()
+            .filter_map(|&tile| self.tile_unit(tile))
+            .chain(
+                key.disclosed
+                    .numbered()
+                    .filter_map(|(span, _)| track.unit_id(span)),
+            )
+            .map(|id| {
+                let least = usize::from(changed.contains(id));
+                (id.clone(), self.unit_path(id).at_least(least))
+            })
+            .collect();
+        self.names = Names::apart(paths);
+        self.names_for = Some(key);
     }
 
     /// Gives every container a color, after those the journeys use.
@@ -1001,11 +1098,22 @@ impl Explorer {
     }
 
     pub(crate) fn label_in(&self, track: &Track, id: SpanId) -> String {
+        Self::label_named(track, id, |unit| self.unit_name(unit))
+    }
+
+    /// A span's label with its function's name alone, nothing in front that tells it
+    /// apart, for where the whole label does not fit.
+    pub(crate) fn short_label_in(&self, track: &Track, id: SpanId) -> String {
+        Self::label_named(track, id, |unit| self.unit_path(unit).short())
+    }
+
+    /// A span's label, its function called by `name`.
+    fn label_named(track: &Track, id: SpanId, name: impl Fn(&UnitId) -> String) -> String {
         let Some(span) = track.span(id) else {
             return String::new();
         };
         let name = match &span.target {
-            SpanTarget::Unit(unit) => self.unit_name(unit),
+            SpanTarget::Unit(unit) => name(unit),
             SpanTarget::Ambiguous(ids) => format!(
                 "{} → one of {}",
                 span.text.as_deref().unwrap_or("?"),
@@ -1026,11 +1134,18 @@ impl Explorer {
         }
     }
 
+    /// What a unit is called on screen: told apart from what else is in view, or,
+    /// when it is not in view, from everything.
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
-        match &self.layout_system {
-            Some(layout) if self.system.unit(id).is_none() => display_name(layout, id),
-            _ => display_name(&self.system, id),
-        }
+        self.names
+            .get(id)
+            .or_else(|| self.every_name.get(id))
+            .map_or_else(|| self.unit_path(id).short(), str::to_owned)
+    }
+
+    /// A unit's path, for naming it.
+    pub(crate) fn unit_path(&self, id: &UnitId) -> Path {
+        Path::of(|id| self.any_unit(id), id)
     }
 
     /// The call stack at a span of the active journey, outermost first.

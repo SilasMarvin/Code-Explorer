@@ -18,6 +18,7 @@ mod explorer;
 mod graph_view;
 mod journey_panel;
 mod lens;
+mod names;
 mod scene;
 mod source_diff;
 mod truth;

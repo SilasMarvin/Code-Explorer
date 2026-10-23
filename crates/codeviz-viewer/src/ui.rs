@@ -111,6 +111,7 @@ fn draw_ui(
     mut cameras: Query<(&mut Camera, &GlobalTransform), With<OrbitCamera>>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
+    explorer.bypass_change_detection().refresh_names();
     let ctx = contexts.ctx_mut()?;
     let mut root_ui = egui::Ui::new(
         ctx.clone(),
@@ -882,24 +883,23 @@ fn numbered(steps: &[usize]) -> String {
         .join(", ")
 }
 
-/// A function's name, or the route of an entry point.
+/// What a node is called on screen: its function's name, told apart from the others
+/// in view.
 pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
-    let Some(unit) = explorer.tile_unit(tile) else {
-        return String::new();
-    };
+    explorer
+        .tile_unit(tile)
+        .map_or_else(String::new, |unit| explorer.unit_name(unit))
+}
+
+/// The route or command an entry point is reached by: `POST /users`.
+fn entry_label(explorer: &Explorer, tile: usize) -> Option<&str> {
+    let unit = explorer.tile_unit(tile)?;
     explorer
         .system()
         .entries()
         .iter()
         .find(|e| &e.unit == unit)
-        .map_or_else(
-            || {
-                explorer
-                    .any_unit(unit)
-                    .map_or_else(|| unit.to_string(), |u| u.name.clone())
-            },
-            |e| e.label.clone(),
-        )
+        .map(|e| e.label.as_str())
 }
 
 /// What a graph label names.
@@ -1360,11 +1360,7 @@ fn draw_graph_labels(
                     continue;
                 };
                 let change = diff.and_then(|d| d.change(tile));
-                // A change is named in full: `new` alone could be any type's.
-                let name = match (change, explorer.tile_unit(tile)) {
-                    (Some(_), Some(unit)) => explorer.unit_name(unit),
-                    _ => node_name(explorer, tile),
-                };
+                let name = node_name(explorer, tile);
                 let relation = related(tile);
                 let color = match (tier, relation) {
                     (0, _) => egui::Color32::WHITE,
@@ -1427,7 +1423,12 @@ fn draw_graph_labels(
                 .into_iter()
                 .filter_map(|(on, mark)| on.then_some(mark))
                 .collect();
-                let aside = [aside, (!marks.is_empty()).then(|| marks.join(" · "))]
+                // An entry point says how it is reached, after its name, unless that
+                // only says its name again.
+                let route = entry_label(explorer, tile)
+                    .filter(|route| !route.to_lowercase().contains(&name.to_lowercase()))
+                    .map(str::to_owned);
+                let aside = [route, aside, (!marks.is_empty()).then(|| marks.join(" · "))]
                     .into_iter()
                     .flatten()
                     .reduce(|a, b| format!("{a} · {b}"));
@@ -1708,13 +1709,6 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
 fn tail(path: &str) -> String {
     let segments: Vec<&str> = path.split("::").collect();
     segments[segments.len().saturating_sub(2)..].join(".")
-}
-
-pub(crate) fn short(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((cut, _)) => format!("{}…", &text[..cut]),
-        None => text.to_owned(),
-    }
 }
 
 pub(crate) fn egui_color(color: Color) -> egui::Color32 {
