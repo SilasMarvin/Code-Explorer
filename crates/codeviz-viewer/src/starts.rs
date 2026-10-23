@@ -13,6 +13,10 @@ const ASIDE: [&str; 12] = [
     "fixtures", "spike", "testdata",
 ];
 
+/// Functions nothing calls weighed at most as places to start, when there are no
+/// entries.
+const MAX_ROOTS: usize = 200;
+
 /// A place to start exploring.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Start {
@@ -43,8 +47,14 @@ pub(crate) fn starts(system: &System, map: &CodebaseMap, graph: &ForceGraph) -> 
         .filter(|(tile, _)| seen.insert(*tile))
         .collect();
     let candidates = if entries.is_empty() {
-        (0..map.tiles.len())
+        let mut roots: Vec<usize> = (0..map.tiles.len())
             .filter(|&t| graph.callers(t).next().is_none() && graph.callees(t).next().is_some())
+            .collect();
+        // Each costs a walk of the graph: in a big one, only the busiest are weighed.
+        roots.sort_by_key(|&t| (std::cmp::Reverse(graph.degree(t)), t));
+        roots.truncate(MAX_ROOTS);
+        roots
+            .into_iter()
             .filter_map(|t| Some((t, display_name(system, &map.tile(t)?.unit))))
             .collect()
     } else {

@@ -1015,11 +1015,17 @@ enum Named {
 /// What the spotlight picks out that is named come what may; past this many, the rest
 /// are named where there is room and listed on the spotlight's card.
 const SPOTLIGHT_NAMES: usize = 15;
+/// Entry points named first while nothing is in focus, those reaching the most.
+const ENTRY_NAMES: usize = 12;
 /// Function names shown at most while nothing is in focus.
 const OVERVIEW_NAMES: usize = 40;
 /// Function names placed at most, past those that must show, so a hub's whole
 /// neighborhood cannot stall the frame.
 const MAX_NAMES: usize = 120;
+/// How wide on screen a crate's ring must be before it is named, in points, and how
+/// many crates are named at most, the biggest first.
+const CRATE_NAME_RING: f32 = 40.0;
+const MAX_CRATE_NAMES: usize = 24;
 /// Under several crates, how wide on screen a module's ring must be before it is
 /// named, in points.
 const MODULE_NAME_RING: f32 = 28.0;
@@ -1438,6 +1444,13 @@ fn draw_graph_labels(
     } else {
         HashSet::new()
     };
+    let first_entries: HashSet<usize> = explorer
+        .starts()
+        .iter()
+        .filter(|s| explorer.is_entry(s.tile))
+        .take(ENTRY_NAMES)
+        .map(|s| s.tile)
+        .collect();
     // Lower ranks are placed first and win any overlap.
     let mut order: Vec<(LabelRank, Named)> = Vec::new();
     for (tile, disc) in discs.iter().enumerate() {
@@ -1446,8 +1459,9 @@ fn draw_graph_labels(
         }
         let tier = match related(tile) {
             _ if center == Some(tile) => 0,
-            // Where the codebase starts is named while nothing is in focus.
-            _ if center.is_none() && explorer.is_entry(tile) => 1,
+            // Where the codebase starts is named while nothing is in focus, the
+            // entries that reach the most at least.
+            _ if center.is_none() && first_entries.contains(&tile) => 1,
             // What the spotlight picks out is named, whatever else would be.
             _ if spotlit.contains(&tile) => 1,
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
@@ -1493,8 +1507,13 @@ fn draw_graph_labels(
     if explorer.lens().reach.is_none() {
         // Crates are named ahead of their modules, which are named once their rings
         // are big enough on screen to tell apart.
-        for &(top, _, radius) in &districts {
-            let tier = if center.is_some() { 3 } else { 1 };
+        let mut crates: Vec<&(usize, Vec3, f32)> = districts
+            .iter()
+            .filter(|&&(_, middle, radius)| on_screen(middle, radius) >= CRATE_NAME_RING)
+            .collect();
+        crates.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+        for &&(top, _, radius) in crates.iter().take(MAX_CRATE_NAMES) {
+            let tier = if center.is_some() { 5 } else { 1 };
             order.push((
                 (tier, std::cmp::Reverse(rough(radius)), top),
                 Named::Crate(top),
@@ -1549,9 +1568,14 @@ fn draw_graph_labels(
                 if label.is_empty() {
                     continue;
                 }
-                let color = egui::Color32::from_rgb(214, 219, 230)
-                    .gamma_multiply(if center.is_some() { 0.6 } else { 1.0 });
-                let job = label_job(None, &label, None, color, 15.0, false);
+                // With something in focus, crates step back behind what it touches.
+                let (strength, size) = if center.is_some() {
+                    (0.45, 12.5)
+                } else {
+                    (1.0, 15.0)
+                };
+                let color = egui::Color32::from_rgb(214, 219, 230).gamma_multiply(strength);
+                let job = label_job(None, &label, None, color, size, false);
                 placer.place(named, at, 0.0, job, None, Insist::No);
             }
             Named::Group(group) => {

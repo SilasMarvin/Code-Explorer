@@ -590,27 +590,48 @@ pub(crate) fn room(count: usize, spacing: f32) -> f32 {
 fn keep_apart(regions: &Regions, radii: &[f32], gap: f32, strength: f32) -> Vec<[f32; 3]> {
     let count = regions.middles.len();
     let mut moves = vec![[0.0_f32; 3]; count];
-    for a in 0..count {
-        for b in (a + 1)..count {
-            let (n_a, n_b) = (regions.counts[a] as f32, regions.counts[b] as f32);
-            if n_a == 0.0 || n_b == 0.0 {
-                continue;
-            }
-            // Apart in the plane facing the view, so no region hides behind another.
-            let [x, y, _] = sub(regions.middles[a], regions.middles[b]);
-            let delta = [x, y, 0.0];
-            let distance = dot(delta, delta).sqrt().max(0.01);
-            let overlap = radii[a] + radii[b] + gap - distance;
-            if overlap <= 0.0 {
-                continue;
-            }
-            let push = scale(delta, strength * overlap / distance);
-            let total = n_a + n_b;
-            moves[a] = add(moves[a], scale(push, n_b / total));
-            moves[b] = sub(moves[b], scale(push, n_a / total));
+    for (a, b) in crowding(&regions.middles, &regions.counts, radii, gap) {
+        let (n_a, n_b) = (regions.counts[a] as f32, regions.counts[b] as f32);
+        // Apart in the plane facing the view, so no region hides behind another.
+        let [x, y, _] = sub(regions.middles[a], regions.middles[b]);
+        let delta = [x, y, 0.0];
+        let distance = dot(delta, delta).sqrt().max(0.01);
+        let overlap = radii[a] + radii[b] + gap - distance;
+        if overlap <= 0.0 {
+            continue;
         }
+        let push = scale(delta, strength * overlap / distance);
+        let total = n_a + n_b;
+        moves[a] = add(moves[a], scale(push, n_b / total));
+        moves[b] = sub(moves[b], scale(push, n_a / total));
     }
     moves
+}
+
+/// Pairs of regions whose discs, `radii` wide, might come within `gap` of each other:
+/// every pair that does, and few that do not. Sorted by left edge and swept, so a big
+/// graph's hundreds of modules are not each checked against all the others.
+fn crowding(
+    middles: &[[f32; 3]],
+    counts: &[usize],
+    radii: &[f32],
+    gap: f32,
+) -> Vec<(usize, usize)> {
+    let mut order: Vec<usize> = (0..middles.len()).filter(|&r| counts[r] > 0).collect();
+    let left = |r: usize| middles[r][0] - radii[r];
+    order.sort_by(|&a, &b| left(a).total_cmp(&left(b)).then(a.cmp(&b)));
+    let mut pairs = Vec::new();
+    for (index, &a) in order.iter().enumerate() {
+        let right = middles[a][0] + radii[a] + gap;
+        for &b in order[index + 1..].iter().take_while(|&&b| left(b) <= right) {
+            let reach = radii[a] + radii[b] + gap;
+            if (middles[a][1] - middles[b][1]).abs() < reach {
+                pairs.push((a.min(b), a.max(b)));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    pairs
 }
 
 /// How far each region must move, in the plane facing the view, so no two of their
@@ -625,30 +646,25 @@ fn separate(regions: &Regions, radii: &[f32], gap: f32) -> Vec<[f32; 3]> {
     for _ in 0..ROUNDS {
         let mut moves = vec![[0.0_f32; 3]; count];
         let mut any = false;
-        for a in 0..count {
-            for b in (a + 1)..count {
-                let (n_a, n_b) = (regions.counts[a] as f32, regions.counts[b] as f32);
-                if n_a == 0.0 || n_b == 0.0 {
-                    continue;
-                }
-                let [x, y, _] = sub(middles[a], middles[b]);
-                let distance = x.hypot(y);
-                let overlap = radii[a] + radii[b] + gap - distance;
-                if overlap <= 0.0 {
-                    continue;
-                }
-                // Two on one spot part along a direction fixed by which they are.
-                let along = if distance > 1e-3 {
-                    [x / distance, y / distance, 0.0]
-                } else {
-                    let angle = (a * 7 + b * 13) as f32;
-                    [angle.cos(), angle.sin(), 0.0]
-                };
-                let total = n_a + n_b;
-                moves[a] = add(moves[a], scale(along, overlap * n_b / total));
-                moves[b] = sub(moves[b], scale(along, overlap * n_a / total));
-                any = true;
+        for (a, b) in crowding(&middles, &regions.counts, radii, gap) {
+            let (n_a, n_b) = (regions.counts[a] as f32, regions.counts[b] as f32);
+            let [x, y, _] = sub(middles[a], middles[b]);
+            let distance = x.hypot(y);
+            let overlap = radii[a] + radii[b] + gap - distance;
+            if overlap <= 0.0 {
+                continue;
             }
+            // Two on one spot part along a direction fixed by which they are.
+            let along = if distance > 1e-3 {
+                [x / distance, y / distance, 0.0]
+            } else {
+                let angle = (a * 7 + b * 13) as f32;
+                [angle.cos(), angle.sin(), 0.0]
+            };
+            let total = n_a + n_b;
+            moves[a] = add(moves[a], scale(along, overlap * n_b / total));
+            moves[b] = sub(moves[b], scale(along, overlap * n_a / total));
+            any = true;
         }
         if !any {
             break;
@@ -994,6 +1010,24 @@ mod tests {
             "however much they call each other, the modules stay apart"
         );
         assert!(spread(0) <= room(12, config.link_length));
+    }
+
+    #[test]
+    fn the_sweep_finds_every_pair_that_crowds() {
+        let middles: Vec<[f32; 3]> = (0..60)
+            .map(|i| seed(&format!("region {i}"), 80.0))
+            .collect();
+        let counts = vec![1; middles.len()];
+        let radii: Vec<f32> = (0..middles.len()).map(|i| 2.0 + (i % 7) as f32).collect();
+        let found = crowding(&middles, &counts, &radii, 3.0);
+        for a in 0..middles.len() {
+            for b in (a + 1)..middles.len() {
+                let [x, y, _] = sub(middles[a], middles[b]);
+                if x.hypot(y) < radii[a] + radii[b] + 3.0 {
+                    assert!(found.contains(&(a, b)), "missed {a} and {b}");
+                }
+            }
+        }
     }
 
     #[test]
