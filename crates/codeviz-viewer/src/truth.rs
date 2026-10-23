@@ -106,7 +106,7 @@ fn spotlight(explorer: &Explorer) -> Value {
     let starts: Vec<Value> = match (spotlight.side, explorer.graph_focus()) {
         (Side::Callers, Some(focus)) => explorer
             .starts(focus)
-            .into_iter()
+            .iter()
             .filter(|start| spotlight.holds(start.hops))
             .map(|start| json!({ "name": start.label, "calls": start.hops, "entry": start.declared }))
             .collect(),

@@ -388,17 +388,21 @@ pub(crate) fn route_strength(hops: u32, shown: f32, followed: Option<bool>) -> f
 }
 
 /// A call on one of the spotlight's routes that does not touch the focus: a pale
-/// arrow at `alpha`, with dots running the way the call does.
+/// arrow at `alpha`, with dots running the way the call does when it `runs` its
+/// callee rather than only registering it.
 pub(crate) fn draw_route(
     gizmos: &mut Gizmos,
     (a, b): (Vec3, Vec3),
     alpha: f32,
+    runs: bool,
     time: f32,
     seed: usize,
 ) {
     let color = FURTHER.with_alpha(alpha);
     gizmos.arrow(a, b, color).with_tip_length(0.9);
-    flow(gizmos, a, b, color.with_alpha(alpha * 0.7), time, seed);
+    if runs {
+        flow(gizmos, a, b, color.with_alpha(alpha * 0.7), time, seed);
+    }
 }
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
@@ -452,7 +456,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
         {
             let followed = following.then(|| path.contains(&(from, to)));
             let alpha = route_strength(hops, shown, followed);
-            draw_route(gizmos, (a, b - back), alpha, time, index);
+            let runs = !graph.registers(from, to);
+            draw_route(gizmos, (a, b - back), alpha, runs, time, index);
             continue;
         }
         // A link lights up when it takes one step nearer the focus (violet) or one

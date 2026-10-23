@@ -152,7 +152,7 @@ impl DiffView {
         // Out from every change along its callers, nearest first.
         let graph = explorer.graph();
         let starts: Vec<usize> = changes.keys().copied().collect();
-        let impact = routes::walk(graph, &starts, Side::Callers, None, |_| false);
+        let impact = graph.walk(&starts, Side::Callers, None, |_| false);
         let (entries, roots) = entry_points(explorer, &changes);
         let mut affected: Vec<Affected> = entries
             .iter()
@@ -307,14 +307,15 @@ fn entry_points(
     if !declared.is_empty() {
         let mut entries: Vec<(usize, String)> = declared
             .iter()
-            .map(|(&t, label)| (t, label.clone()))
+            .flat_map(|(&t, labels)| labels.iter().map(move |label| (t, label.clone())))
             .collect();
         entries.sort();
         return (entries, false);
     }
-    let graph = explorer.graph();
+    // A handler a router registers is where a request starts, not the router.
+    let called = routes::called(explorer.graph());
     let roots = (0..explorer.map().tiles.len())
-        .filter(|&t| graph.callers(t).next().is_none())
+        .filter(|t| !called.contains(t))
         .filter(|&t| changes.get(&t) != Some(&Change::Removed))
         .filter_map(|t| Some((t, explorer.unit_name(explorer.tile_unit(t)?))))
         .collect();
@@ -583,7 +584,8 @@ pub(crate) fn draw_diff_graph(
             _ if let Some(hops) = routes.as_ref().and_then(|r| r.call(from, to)) => {
                 let followed = following.then(|| path.contains(&(from, to)));
                 let alpha = graph_view::route_strength(hops, shown, followed);
-                graph_view::draw_route(gizmos, (a, b - back), alpha, time, index);
+                let runs = !graph.registers(from, to);
+                graph_view::draw_route(gizmos, (a, b - back), alpha, runs, time, index);
             }
             _ => {
                 let carries = view.style == DiffStyle::Impact

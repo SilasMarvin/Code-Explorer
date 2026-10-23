@@ -230,11 +230,7 @@ const SETTLE_NOW_STEPS: usize = 600;
 const SETTLED_SPEED: f32 = 0.002;
 
 /// Either side of the focus: what calls it, or what it calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Side {
-    Callers,
-    Callees,
-}
+pub(crate) use codeviz_layout::Toward as Side;
 
 /// One side of the focus picked out and brought into view: what calls it, out to the
 /// entry points, or what it calls, as many calls away as `reach` says.
@@ -255,8 +251,23 @@ impl Spotlight {
     }
 }
 
-/// Walks from a node along one side, each kept until the graph's calls change.
-type RouteCache = HashMap<(usize, Side), Arc<HashMap<usize, u32>>>;
+/// Walks from a node along one side, and where the routes into a node start, each
+/// kept until the graph's calls change.
+#[derive(Debug, Default)]
+struct RouteCache {
+    walks: HashMap<(usize, Side), Arc<HashMap<usize, u32>>>,
+    starts: HashMap<usize, Arc<Vec<Start>>>,
+}
+
+impl RouteCache {
+    /// Forgets everything once it holds this much, so it never grows without end.
+    const MOST: usize = 64;
+
+    fn clear(&mut self) {
+        self.walks.clear();
+        self.starts.clear();
+    }
+}
 
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
@@ -305,7 +316,7 @@ pub(crate) struct Explorer {
     /// What calls the focus, or what it calls, picked out and brought into view.
     spotlight: Option<Spotlight>,
     /// Declared entry points, by node, with their labels.
-    entries: HashMap<usize, String>,
+    entries: HashMap<usize, Vec<String>>,
     routes: Mutex<RouteCache>,
     /// Lane label to color index, in order of first appearance across journeys.
     lane_colors: HashMap<String, usize>,
@@ -336,10 +347,10 @@ impl Explorer {
             graph.step();
         }
         let tiles = map.tiles.len();
-        let mut entries = HashMap::new();
+        let mut entries: HashMap<usize, Vec<String>> = HashMap::new();
         for entry in system.entries() {
             if let Some(tile) = map.tile_of(&entry.unit) {
-                entries.entry(tile).or_insert_with(|| entry.label.clone());
+                entries.entry(tile).or_default().push(entry.label.clone());
             }
         }
         let mut explorer = Self {
@@ -369,7 +380,7 @@ impl Explorer {
             hovered_tile: None,
             spotlight: None,
             entries,
-            routes: Mutex::new(HashMap::new()),
+            routes: Mutex::new(RouteCache::default()),
             lane_colors: HashMap::new(),
             revision: 0,
         };
@@ -868,12 +879,12 @@ impl Explorer {
     /// as the entry points, or down everything it calls. `tile` itself is zero.
     pub(crate) fn walk(&self, tile: usize, side: Side) -> Arc<HashMap<usize, u32>> {
         let mut cache = self.routes_cache();
-        if cache.len() > 64 {
-            cache.clear();
+        if cache.walks.len() > RouteCache::MOST {
+            cache.walks.clear();
         }
-        Arc::clone(cache.entry((tile, side)).or_insert_with(|| {
+        Arc::clone(cache.walks.entry((tile, side)).or_insert_with(|| {
             let stop = |t: usize| side == Side::Callers && self.entries.contains_key(&t);
-            Arc::new(routes::walk(&self.graph, &[tile], side, None, stop))
+            Arc::new(self.graph.walk(&[tile], side, None, stop))
         }))
     }
 
@@ -883,16 +894,26 @@ impl Explorer {
 
     /// Where the routes into `tile` start: the entry points that reach it, then what
     /// nothing calls, nearest first.
-    pub(crate) fn starts(&self, tile: usize) -> Vec<Start> {
+    pub(crate) fn starts(&self, tile: usize) -> Arc<Vec<Start>> {
+        if let Some(starts) = self.routes_cache().starts.get(&tile) {
+            return Arc::clone(starts);
+        }
         let upstream = self.walk(tile, Side::Callers);
-        routes::starts(&self.graph, &upstream, &self.entries, |t| {
+        let starts = Arc::new(routes::starts(&self.graph, &upstream, &self.entries, |t| {
             self.tile_unit(t)
                 .map_or_else(String::new, |unit| self.unit_name(unit))
-        })
+        }));
+        let mut cache = self.routes_cache();
+        if cache.starts.len() > RouteCache::MOST {
+            cache.starts.clear();
+        }
+        cache.starts.insert(tile, Arc::clone(&starts));
+        starts
     }
 
-    /// Declared entry points, by node, with their labels.
-    pub(crate) fn entries(&self) -> &HashMap<usize, String> {
+    /// Declared entry points, by node, with the label of each route it is declared
+    /// under.
+    pub(crate) fn entries(&self) -> &HashMap<usize, Vec<String>> {
         &self.entries
     }
 
@@ -946,7 +967,14 @@ impl Explorer {
         ) else {
             return;
         };
-        self.set_root(root);
+        // Following one route after another keeps one place in the history: Back
+        // returns to before the first.
+        if self.followed_start().is_some() {
+            self.track_mut().root = Some(root);
+            self.reroot();
+        } else {
+            self.set_root(root);
+        }
         // A function reached only on the way to a failure is not on the happy path.
         if self.track().find(&target).is_none() && self.scenario().is_some() {
             self.set_scenario(None);
@@ -1480,8 +1508,8 @@ pub(crate) mod tests {
         );
         let starts: Vec<(String, u32)> = explorer
             .starts(find)
-            .into_iter()
-            .map(|s| (s.label, s.hops))
+            .iter()
+            .map(|s| (s.label.clone(), s.hops))
             .collect();
         assert_eq!(
             starts,
@@ -1577,6 +1605,12 @@ pub(crate) mod tests {
         assert!(explorer.follow_next_route(false, 2.0));
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:post"));
         assert_eq!(at(&explorer), "find");
+        explorer.back();
+        assert_eq!(
+            explorer.root().map(UnitId::as_str),
+            Some("x:find"),
+            "back past every route followed"
+        );
     }
 
     fn at(explorer: &Explorer) -> String {

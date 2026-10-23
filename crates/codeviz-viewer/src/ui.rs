@@ -6,6 +6,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
@@ -1115,7 +1116,7 @@ fn draw_graph_labels(
     // Where the spotlight's routes start, and what reaches the focus from there.
     let starts = match (explorer.spotlight(), explorer.graph_focus()) {
         (Some(spotlight), Some(focus)) if spotlight.side == Side::Callers => explorer.starts(focus),
-        _ => Vec::new(),
+        _ => Arc::default(),
     };
     let route_starts: Vec<usize> = starts
         .iter()
@@ -1519,7 +1520,7 @@ fn routes_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
                     egui::ScrollArea::vertical()
                         .max_height(area.height() * 0.4)
                         .show(ui, |ui| {
-                            for start in &starts {
+                            for start in starts.iter() {
                                 let shown = spotlight.holds(start.hops);
                                 let calls = if start.hops == 1 { "call" } else { "calls" };
                                 let mut job = egui::text::LayoutJob::default();

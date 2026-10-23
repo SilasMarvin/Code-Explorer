@@ -95,6 +95,15 @@ pub struct GroupStats {
     pub incoming: usize,
 }
 
+/// Which way a walk along calls runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Toward {
+    /// Up, to what calls.
+    Callers,
+    /// Down, to what is called.
+    Callees,
+}
+
 /// Fewest calls between a node and the tiles that reach it, or that it reaches.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reach {
@@ -208,30 +217,65 @@ impl ForceGraph {
     /// Everything that reaches `tile` and everything it reaches, by fewest calls.
     #[must_use]
     pub fn reach(&self, tile: usize) -> Reach {
+        let without_tile = |mut found: HashMap<usize, u32>| {
+            found.remove(&tile);
+            found
+        };
         Reach {
-            upstream: self.walk(tile, |(caller, callee)| (callee, caller)),
-            downstream: self.walk(tile, |call| call),
+            upstream: without_tile(self.walk(&[tile], Toward::Callers, None, |_| false)),
+            downstream: without_tile(self.walk(&[tile], Toward::Callees, None, |_| false)),
         }
     }
 
-    /// Breadth-first from `start` along calls turned `(from, to)` by `direction`.
-    fn walk(
+    /// Fewest calls between each tile and the nearest of `starts`, which count as zero,
+    /// walking `toward` their callers or their callees, breadth-first. Goes no further
+    /// than `limit` calls when given, and not past a tile `stop` holds, as a route
+    /// starts at an entry point and does not climb above it. A registration is wiring,
+    /// not a call: a router that registers a handler depends on it and is found, but
+    /// the walk goes no further through it, so neither what calls the router nor what
+    /// the handler runs is reached by way of it.
+    pub fn walk(
         &self,
-        start: usize,
-        direction: impl Fn((usize, usize)) -> (usize, usize),
+        starts: &[usize],
+        toward: Toward,
+        limit: Option<u32>,
+        stop: impl Fn(usize) -> bool,
     ) -> HashMap<usize, u32> {
-        let mut next: HashMap<usize, Vec<usize>> = HashMap::new();
-        for &call in &self.calls {
-            let (from, to) = direction(call);
-            next.entry(from).or_default().push(to);
+        // Each step, and whether it only registers.
+        let mut next: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
+        for &(caller, callee) in &self.calls {
+            let (from, to) = match toward {
+                Toward::Callers => (callee, caller),
+                Toward::Callees => (caller, callee),
+            };
+            next.entry(from)
+                .or_default()
+                .push((to, self.registers(caller, callee)));
         }
-        let mut found = HashMap::new();
-        let mut queue = VecDeque::from([(start, 0)]);
-        while let Some((tile, hops)) = queue.pop_front() {
-            for &to in next.get(&tile).into_iter().flatten() {
-                if to != start && !found.contains_key(&to) {
-                    found.insert(to, hops + 1);
-                    queue.push_back((to, hops + 1));
+        let mut found: HashMap<usize, u32> = starts.iter().map(|&tile| (tile, 0)).collect();
+        // Found by registrations alone so far: the end of the line.
+        let mut wired = HashSet::new();
+        let mut queue: VecDeque<usize> = starts.iter().copied().collect();
+        while let Some(at) = queue.pop_front() {
+            let hops = found[&at];
+            if limit.is_some_and(|limit| hops >= limit)
+                || (hops > 0 && stop(at))
+                || wired.contains(&at)
+            {
+                continue;
+            }
+            for &(to, registers) in next.get(&at).into_iter().flatten() {
+                match found.get(&to) {
+                    None => {
+                        found.insert(to, hops + 1);
+                        if registers {
+                            wired.insert(to);
+                        }
+                        queue.push_back(to);
+                    }
+                    // A call that runs what was only wired so far goes on through it.
+                    Some(_) if !registers && wired.remove(&to) => queue.push_back(to),
+                    Some(_) => {}
                 }
             }
         }
@@ -517,6 +561,105 @@ mod tests {
             call("c")
         );
         System::new([Document::from_json(&json).unwrap()])
+    }
+
+    /// `main -> router`, which registers `get` and `post` as handlers; `get -> find`,
+    /// `post -> place -> (find, quote)`; and `orphan -> quote`, which `main` registers
+    /// as a callback and `helper` calls.
+    fn routed() -> (ForceGraph, impl Fn(&str) -> usize) {
+        // `&name` registers it rather than calling it.
+        let unit = |name: &str, calls: &[&str]| {
+            let calls: Vec<String> = calls
+                .iter()
+                .map(|c| {
+                    let (c, mode) = c
+                        .strip_prefix('&')
+                        .map_or((*c, "call"), |c| (c, "register"));
+                    format!(
+                        r#"{{ "key": "{c}#0", "text": "{c}", "mode": "{mode}", "targets": [{{ "unit": "x:{c}", "certainty": "exact" }}] }}"#
+                    )
+                })
+                .collect();
+            format!(
+                r#"{{ "id": "x:{name}", "name": "{name}", "kind": "fn", "role": "invocable", "calls": [{}] }}"#,
+                calls.join(",")
+            )
+        };
+        let units = [
+            unit("main", &["router", "&orphan", "helper"]),
+            unit("router", &["&get", "&post"]),
+            unit("get", &["find"]),
+            unit("post", &["place"]),
+            unit("place", &["find", "quote"]),
+            unit("find", &[]),
+            unit("quote", &[]),
+            unit("orphan", &["quote"]),
+            unit("helper", &["orphan"]),
+        ];
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        let system = System::new([Document::from_json(&json).unwrap()]);
+        let map = map(&system, &MapConfig::default());
+        let graph = ForceGraph::new(&system, &map, ForceConfig::default());
+        let tile = move |name: &str| map.tile_of(&UnitId::new(format!("x:{name}"))).unwrap();
+        (graph, tile)
+    }
+
+    #[test]
+    fn walks_every_route_up_to_where_it_stops() {
+        let (graph, tile) = routed();
+        let entries = |t: usize| t == tile("get") || t == tile("post");
+        let up = graph.walk(&[tile("find")], Toward::Callers, None, entries);
+        let hops = |name: &str| up.get(&tile(name)).copied();
+        assert_eq!(hops("find"), Some(0), "the start itself");
+        assert_eq!(hops("get"), Some(1));
+        assert_eq!(hops("place"), Some(1));
+        assert_eq!(hops("post"), Some(2), "through place");
+        assert_eq!(hops("router"), None, "not past the entries");
+        assert_eq!(hops("quote"), None, "a callee is not a caller");
+
+        let near = graph.walk(&[tile("find")], Toward::Callers, Some(1), entries);
+        assert_eq!(near.len(), 3, "find and its direct callers");
+
+        let open = graph.walk(&[tile("find")], Toward::Callers, None, |_| false);
+        assert_eq!(
+            open.get(&tile("router")),
+            Some(&2),
+            "the router depends on the handler it registers"
+        );
+        assert_eq!(
+            open.get(&tile("main")),
+            None,
+            "but registering it is not calling it"
+        );
+    }
+
+    #[test]
+    fn walks_down_past_what_is_both_registered_and_called() {
+        let (graph, tile) = routed();
+        let down = graph.walk(&[tile("main")], Toward::Callees, None, |_| false);
+        assert_eq!(
+            down.get(&tile("get")),
+            Some(&2),
+            "what the router hands over"
+        );
+        assert_eq!(down.get(&tile("find")), None, "but not what that runs");
+        assert_eq!(
+            down.get(&tile("quote")),
+            Some(&2),
+            "orphan is registered, but helper also calls it, so it runs"
+        );
+
+        let both = graph.walk(
+            &[tile("find"), tile("quote")],
+            Toward::Callers,
+            None,
+            |_| false,
+        );
+        assert_eq!(both.get(&tile("orphan")), Some(&1), "nearest of either");
+        assert_eq!(both.get(&tile("place")), Some(&1));
     }
 
     #[test]

@@ -882,14 +882,19 @@ struct Adapted {
 }
 
 /// `user.ok_or(AppError::NotFound("user"))` → `user is None` fails with
-/// `AppError::NotFound("user")`. `None` for any other call.
+/// `AppError::NotFound("user")`. `None` for any other call, and for an adapter that
+/// takes a function rather than the error itself, as `map_err(AppError::from)` does:
+/// that names a conversion, not an error.
 fn error_adapter(call: Node<'_>, source: &[u8]) -> Option<Adapted> {
     let function = call
         .child_by_field_name("function")
         .filter(|f| f.kind() == "field_expression")?;
-    let failing = match text(function.child_by_field_name("field")?, source) {
-        "ok_or" | "ok_or_else" => "is None",
-        "map_err" | "context" | "with_context" => "fails",
+    let method = text(function.child_by_field_name("field")?, source);
+    let (failing, takes_closure) = match method {
+        "ok_or" => ("is None", false),
+        "ok_or_else" => ("is None", true),
+        "context" => ("fails", false),
+        "map_err" | "with_context" => ("fails", true),
         _ => return None,
     };
     let receiver = function.child_by_field_name("value")?;
@@ -897,6 +902,7 @@ fn error_adapter(call: Node<'_>, source: &[u8]) -> Option<Adapted> {
     // What a closure gives back is the error.
     let value = match argument.kind() {
         "closure_expression" => argument.child_by_field_name("body")?,
+        _ if takes_closure => return None,
         _ => argument,
     };
     // A chain written over several lines reads as one.

@@ -122,7 +122,8 @@ impl Index {
     /// they say at an equal match, shorter before longer.
     pub(crate) fn find(&self, query: &str, limit: usize) -> Vec<&Item> {
         let query = normal(query.trim());
-        if query.is_empty() {
+        // Punctuation alone, `.` or `::`, would match everything.
+        if !query.chars().any(char::is_alphanumeric) {
             return Vec::new();
         }
         let mut ranked: Vec<(u8, &Item)> = self
@@ -562,6 +563,10 @@ mod tests {
             found(&index, "then").is_empty(),
             "but not one that does not"
         );
+        assert!(
+            found(&index, "::").is_empty(),
+            "punctuation alone finds nothing"
+        );
         assert_eq!(found(&index, "ok_or"), [(Found::Call, ".ok_or".to_owned())]);
         assert_eq!(
             found(&index, "quote")[0],
@@ -627,8 +632,8 @@ mod tests {
         let quote = explorer.map().tile_of(&item.unit).unwrap();
         let starts: Vec<String> = explorer
             .starts(quote)
-            .into_iter()
-            .map(|s| s.label)
+            .iter()
+            .map(|s| s.label.clone())
             .collect();
         assert_eq!(starts, ["POST /orders"]);
     }
