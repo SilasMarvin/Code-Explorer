@@ -60,6 +60,8 @@ pub(crate) struct Live {
     pub(crate) last: Option<(Note, f32)>,
     /// Functions the last versions changed, how, and when.
     pulses: HashMap<UnitId, (Change, f32)>,
+    /// Where functions the last versions removed stood, how big, and when they went.
+    ghosts: Vec<(Vec3, f32, f32)>,
     /// Whether the view must be rebuilt though no new version came.
     stale: bool,
     /// How many versions the watcher has sent, read or not.
@@ -78,15 +80,15 @@ pub(crate) enum Status {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Note {
     /// Changed functions by name, with how, in name order.
-    pub(crate) changed: Vec<(String, Change)>,
+    pub(crate) changed: Vec<(String, Change, UnitId)>,
 }
 
 impl Note {
     fn of(diff: &Diff, name: impl Fn(&UnitId) -> String) -> Self {
-        let mut changed: Vec<(String, Change)> = diff
+        let mut changed: Vec<(String, Change, UnitId)> = diff
             .units
             .iter()
-            .map(|(unit, &change)| (name(unit), change))
+            .map(|(unit, &change)| (name(unit), change, unit.clone()))
             .collect();
         changed.sort();
         Self { changed }
@@ -101,7 +103,7 @@ impl Note {
             let named: Vec<String> = self
                 .changed
                 .iter()
-                .map(|(name, change)| format!("{name} {}", past(*change)))
+                .map(|(name, change, _)| format!("{name} {}", past(*change)))
                 .collect();
             return format!("updated · {}", named.join(", "));
         }
@@ -113,7 +115,7 @@ impl Note {
         ]
         .into_iter()
         .filter_map(|change| {
-            let n = self.changed.iter().filter(|(_, c)| *c == change).count();
+            let n = self.changed.iter().filter(|(_, c, _)| *c == change).count();
             (n > 0).then(|| format!("{n} {}", past(change)))
         })
         .collect();
@@ -149,6 +151,7 @@ impl Live {
             status: Status::Watching,
             last: None,
             pulses: HashMap::new(),
+            ghosts: Vec::new(),
             stale: false,
             heard: 0,
         }
@@ -263,6 +266,7 @@ fn take_updates(
         return;
     }
     live.stale = false;
+    let started = std::time::Instant::now();
     let now = time.elapsed_secs();
     let documents = newest.clone().unwrap_or_else(|| live.current.clone());
     let system = System::new(documents.clone());
@@ -278,9 +282,15 @@ fn take_updates(
             }
         });
         live.pulses.retain(|_, (_, since)| now - *since < PULSE);
+        live.ghosts.retain(|(_, _, since)| now - *since < PULSE);
         for (unit, &change) in &changes.units {
             if change != Change::Removed {
                 live.pulses.insert(unit.clone(), (change, now));
+            } else if let Some(tile) = explorer.map().tile_of(unit)
+                && let Some(at) = explorer.tile_point(tile)
+            {
+                let size = graph_view::node_size(explorer.graph(), tile) * 0.5;
+                live.ghosts.push((at, size, now));
             }
         }
         live.last = Some((note, now));
@@ -306,6 +316,10 @@ fn take_updates(
         None
     };
     live.current = documents;
+    info!(
+        "took in a new version in {} ms",
+        started.elapsed().as_millis()
+    );
     match (rebuilt, view) {
         (Some(rebuilt), Some(mut view)) => *view = rebuilt,
         (Some(rebuilt), None) => commands.insert_resource(rebuilt),
@@ -314,9 +328,20 @@ fn take_updates(
     }
 }
 
-/// Rings ripple out from each function that just changed, in its change's color.
+/// Rings ripple out from each function that just changed, in its change's color, and
+/// where one was removed a red ring closes in on the empty place.
 fn draw_pulses(explorer: Res<Explorer>, live: Res<Live>, time: Res<Time>, mut gizmos: Gizmos) {
     let now = time.elapsed_secs();
+    for &(at, size, since) in &live.ghosts {
+        let age = (now - since) / PULSE;
+        if (0.0..1.0).contains(&age) {
+            gizmos.sphere(
+                Isometry3d::from_translation(at),
+                (size + 0.45) * (1.0 - age),
+                diff_view::REMOVED.with_alpha(0.9 * (1.0 - age)),
+            );
+        }
+    }
     for tile in 0..explorer.map().tiles.len() {
         let Some((change, age)) = explorer
             .tile_unit(tile)
@@ -352,13 +377,21 @@ fn draw_pulses(explorer: Res<Explorer>, live: Res<Live>, time: Res<Time>, mut gi
 /// A small note over the graph's top edge: live, reading, what the last version
 /// changed, or why the newest could not be read. With no fixed version to compare
 /// with, a switch for the diff since the viewer opened.
-pub(crate) fn status_chip(ctx: &egui::Context, area: egui::Rect, live: &mut Live, now: f32) {
+/// Names in the note open their function.
+pub(crate) fn status_chip(
+    ctx: &egui::Context,
+    area: egui::Rect,
+    live: &mut Live,
+    explorer: &mut Explorer,
+    now: f32,
+) {
     let recent = live
         .last
         .as_ref()
         .filter(|(_, at)| now - at < NOTE)
-        .map(|(note, at)| (note.text(), now - at));
+        .map(|(note, at)| (note, now - at));
     let mut toggled = false;
+    let mut chosen = None;
     egui::Area::new("live".into())
         .pivot(egui::Align2::CENTER_TOP)
         .fixed_pos(egui::pos2(area.center().x, area.min.y + 10.0))
@@ -387,11 +420,11 @@ pub(crate) fn status_chip(ctx: &egui::Context, area: egui::Rect, live: &mut Live
                             (Status::Reading, _) => {
                                 ui.label(egui::RichText::new("● reading…").size(12.5).color(MUTED));
                             }
-                            (Status::Watching, Some((text, age))) => {
+                            (Status::Watching, Some((note, age))) => {
                                 // Bright as it lands, settling to muted.
                                 let fade = (age / NOTE).clamp(0.0, 1.0);
                                 let color = egui_color(Color::WHITE).lerp_to_gamma(MUTED, fade);
-                                ui.label(egui::RichText::new(text).size(12.5).color(color));
+                                chosen = note_line(ui, note, explorer, color);
                             }
                             (Status::Watching, None) => {
                                 ui.label(egui::RichText::new("● live").size(12.5).color(MUTED));
@@ -413,6 +446,56 @@ pub(crate) fn status_chip(ctx: &egui::Context, area: egui::Rect, live: &mut Live
     if toggled {
         live.toggle_since_opened();
     }
+    if let Some(tile) = chosen {
+        explorer.open_at(tile);
+    }
+}
+
+/// The note in `color`, each function it names clickable while it is in the graph.
+/// Returns the node of a name clicked.
+fn note_line(
+    ui: &mut egui::Ui,
+    note: &Note,
+    explorer: &Explorer,
+    color: egui::Color32,
+) -> Option<usize> {
+    let text = |text: String| egui::RichText::new(text).size(12.5).color(color);
+    if note.changed.is_empty() || note.changed.len() > NAMED {
+        ui.label(text(note.text()));
+        return None;
+    }
+    let mut chosen = None;
+    ui.spacing_mut().item_spacing.x = 4.0;
+    ui.label(text("updated ·".to_owned()));
+    for (index, (name, change, unit)) in note.changed.iter().enumerate() {
+        let tile = explorer
+            .map()
+            .tile_of(unit)
+            .filter(|_| *change != Change::Removed);
+        let name = text(name.clone()).color(egui_color(diff_view::change_color(*change)));
+        match tile {
+            Some(tile) => {
+                if ui
+                    .add(egui::Label::new(name).sense(egui::Sense::click()))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Open it")
+                    .clicked()
+                {
+                    chosen = Some(tile);
+                }
+            }
+            None => {
+                ui.label(name);
+            }
+        }
+        let comma = if index + 1 < note.changed.len() {
+            ","
+        } else {
+            ""
+        };
+        ui.label(text(format!("{}{comma}", past(*change))));
+    }
+    chosen
 }
 
 /// Quiet: a note that the newest version is not showing, not an alarm.
@@ -424,7 +507,10 @@ mod tests {
 
     fn note(changed: &[(&str, Change)]) -> Note {
         Note {
-            changed: changed.iter().map(|(n, c)| ((*n).to_owned(), *c)).collect(),
+            changed: changed
+                .iter()
+                .map(|(n, c)| ((*n).to_owned(), *c, UnitId::new(format!("x:{n}"))))
+                .collect(),
         }
     }
 

@@ -173,7 +173,7 @@ fn draw_ui(
             diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
         }
         if let Some(live) = live.as_deref_mut().filter(|_| !chrome.bare) {
-            live::status_chip(ctx, graph_area, live, time.elapsed_secs());
+            live::status_chip(ctx, graph_area, live, &mut explorer, time.elapsed_secs());
         }
         if chrome.search && !chrome.bare {
             search_box(

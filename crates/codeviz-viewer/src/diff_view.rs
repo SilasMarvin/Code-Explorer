@@ -491,12 +491,21 @@ fn animate(
     }
 }
 
-/// Opens looking at everything that changed, wherever either version puts it.
-fn frame_changes(view: Res<DiffView>, mut cameras: Query<&mut OrbitCamera>, mut done: Local<bool>) {
+/// Opens looking at everything that changed, wherever either version puts it; a diff
+/// that comes in later, from a live view, leaves the camera where it is.
+fn frame_changes(
+    view: Res<DiffView>,
+    explorer: Res<Explorer>,
+    mut cameras: Query<&mut OrbitCamera>,
+    mut done: Local<bool>,
+) {
     if *done {
         return;
     }
     *done = true;
+    if explorer.reloads() > 0 {
+        return;
+    }
     let points: Vec<Vec3> = view
         .changes
         .keys()
