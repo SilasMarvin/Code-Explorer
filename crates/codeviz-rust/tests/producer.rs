@@ -392,3 +392,382 @@ fn rust_analyzer_resolves_what_names_alone_cannot() {
         "a parameter is not a function of the same name"
     );
 }
+
+/// `(call text, target ids, certainty of the first target)` for each call site.
+fn resolved(unit: &Unit) -> Vec<(String, Vec<String>, Option<Certainty>)> {
+    unit.calls
+        .iter()
+        .map(|c| {
+            (
+                c.text.clone(),
+                c.targets.iter().map(|t| t.unit.to_string()).collect(),
+                c.targets.first().map(|t| t.certainty),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn names_alone_match_only_distinctive_methods() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Store; pub struct Lane; pub struct Tile;
+         impl Store { pub fn map(&self) {} pub fn tally(&self) {} pub fn label(&self) {} }
+         impl Lane { pub fn label(&self) {} }
+         impl Tile { pub fn label(&self) {} }
+         fn run() {
+             unknown.map();
+             unknown.tally();
+             unknown.label();
+         }",
+    )]);
+    assert_eq!(
+        resolved(unit(&document, "app::run")),
+        [
+            // A std name on a value of unknown type is std's.
+            (".map".to_owned(), vec![], None),
+            // Only `Store` has a `tally`: a guess, marked so.
+            (
+                ".tally".to_owned(),
+                vec!["rust:app::Store::tally".to_owned()],
+                Some(Certainty::Inferred)
+            ),
+            // Three types have a `label`: no telling which.
+            (".label".to_owned(), vec![], None),
+        ]
+    );
+}
+
+#[test]
+fn names_alone_match_only_in_crates_the_caller_depends_on() {
+    let document = analyze_workspace(&[
+        (
+            "base",
+            "",
+            "pub struct Base; impl Base { pub fn from_base(&self) {} }",
+        ),
+        (
+            "app",
+            "base = { path = \"../base\" }",
+            "pub struct App; impl App { pub fn from_app(&self) {} }
+             pub fn run() { x.from_base(); x.from_app(); }",
+        ),
+        ("other", "", "pub fn run() { x.from_base(); x.from_app(); }"),
+    ]);
+    assert_eq!(
+        calls(unit(&document, "app::run")),
+        [
+            (
+                ".from_base".to_owned(),
+                vec!["rust:base::Base::from_base".to_owned()]
+            ),
+            (
+                ".from_app".to_owned(),
+                vec!["rust:app::App::from_app".to_owned()]
+            ),
+        ]
+    );
+    assert_eq!(
+        calls(unit(&document, "other::run")),
+        [
+            (".from_base".to_owned(), vec![]),
+            (".from_app".to_owned(), vec![]),
+        ],
+        "`other` depends on neither"
+    );
+}
+
+#[test]
+fn closures_and_unwrapped_values_keep_their_types() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Journey; pub struct Track;
+         impl Journey { pub fn root(&self) {} }
+         impl Track {
+             pub fn journey(&self) -> Option<&Journey> { None }
+             pub fn root(&self) {}
+         }
+         fn show(track: &Track) {
+             let Some(journey) = track.journey() else { return };
+             journey.root();
+             let again = || journey.root();
+             track.journey().map(|j| j.root());
+             if let Some(found) = track.journey() { found.root(); }
+             let later = || track.root();
+         }",
+    )]);
+    let journey_root = |text: &str| {
+        (
+            text.to_owned(),
+            vec!["rust:app::Journey::root".to_owned()],
+            Some(Certainty::Exact),
+        )
+    };
+    let show = resolved(unit(&document, "app::show"));
+    assert!(show.contains(&journey_root(".root")), "{show:#?}");
+    assert_eq!(
+        resolved(unit(&document, "app::show::{closure#0}")),
+        [journey_root(".root")],
+        "a closure sees what it captures"
+    );
+    assert_eq!(
+        resolved(unit(&document, "app::show::{closure#1}")),
+        [journey_root(".root")],
+        "`map` hands the closure what the option holds"
+    );
+    assert_eq!(
+        calls(unit(&document, "app::show::{closure#2}")),
+        [(".root".to_owned(), vec!["rust:app::Track::root".to_owned()])]
+    );
+    let if_let = show.iter().filter(|c| **c == journey_root(".root")).count();
+    assert_eq!(
+        if_let, 2,
+        "`if let Some(found)` binds what the option holds"
+    );
+}
+
+#[test]
+fn reexports_resolve_exactly_and_overloads_are_guesses() {
+    let document = analyze_files(&[
+        (
+            "lib.rs",
+            "mod store; pub use store::Store;
+             pub struct Scalar;
+             impl From<bool> for Scalar { fn from(_: bool) -> Self { Scalar } }
+             impl From<u8> for Scalar { fn from(_: u8) -> Self { Scalar } }
+             fn run() { crate::Store::open(); Scalar::from(true); }",
+        ),
+        (
+            "store.rs",
+            "pub struct Store; impl Store { pub fn open() {} }",
+        ),
+    ]);
+    let run = resolved(unit(&document, "app::run"));
+    assert_eq!(
+        run[0],
+        (
+            "crate::Store::open".to_owned(),
+            vec!["rust:app::store::Store::open".to_owned()],
+            Some(Certainty::Exact)
+        )
+    );
+    assert_eq!(
+        (run[1].1.len(), run[1].2),
+        (2, Some(Certainty::Inferred)),
+        "which `From` runs depends on the argument's type"
+    );
+}
+
+#[test]
+fn foreign_values_and_wrappers() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Explorer; pub struct Lane;
+         impl Explorer { pub fn tile(&self) {} }
+         impl Lane { pub fn tile(&self) {} pub fn color(&self) {} }
+         #[derive(Default)] pub struct Diagnostics;
+         impl Diagnostics { pub fn push(&mut self, _: u8) {} }
+         fn system(explorer: Res<Explorer>) {
+             explorer.tile();
+             egui::RichText::new(\"x\").color();
+             let mut out = Diagnostics::default();
+             out.push(1);
+         }",
+    )]);
+    assert_eq!(
+        resolved(unit(&document, "app::system")),
+        [
+            // Bevy's `Res` derefs to what it holds.
+            (
+                ".tile".to_owned(),
+                vec!["rust:app::Explorer::tile".to_owned()],
+                Some(Certainty::Exact)
+            ),
+            ("egui::RichText::new".to_owned(), vec![], None),
+            // What a dependency's function returns has the dependency's methods.
+            (".color".to_owned(), vec![], None),
+            ("Diagnostics::default".to_owned(), vec![], None),
+            // A derived `default` makes a `Diagnostics`.
+            (
+                ".push".to_owned(),
+                vec!["rust:app::Diagnostics::push".to_owned()],
+                Some(Certainty::Inferred)
+            ),
+        ]
+    );
+}
+
+#[test]
+fn methods_through_deref_traits_and_cfg_twins() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "use std::ops::Deref;
+         pub struct Context; pub struct Ui { ctx: Context } pub struct Plain;
+         impl Context { pub fn input(&self) {} }
+         impl Deref for Ui { type Target = Context; fn deref(&self) -> &Context { &self.ctx } }
+         pub trait Parser { fn parse(&self); fn map(&self) {} }
+         impl Parser for Plain { fn parse(&self) {} }
+         pub struct Printer;
+         impl Printer {
+             #[cfg(unix)] pub fn print(&self) {}
+             #[cfg(not(unix))] pub fn print(&self) {}
+         }
+         fn run(ui: &Ui, plain: &Plain, option: Option<u8>, printer: &Printer) {
+             ui.input();
+             plain.map();
+             option.map();
+             printer.print();
+         }",
+    )]);
+    let run = resolved(unit(&document, "app::run"));
+    assert_eq!(
+        run[0],
+        (
+            ".input".to_owned(),
+            vec!["rust:app::Context::input".to_owned()],
+            Some(Certainty::Exact)
+        ),
+        "`Ui` derefs to `Context`"
+    );
+    assert_eq!(
+        run[1],
+        (
+            ".map".to_owned(),
+            vec!["rust:app::Parser::map".to_owned()],
+            Some(Certainty::Inferred)
+        ),
+        "`Plain` implements `Parser`, so has its provided `map`"
+    );
+    assert_eq!(run[2], (".map".to_owned(), vec![], None), "`Option::map`");
+    assert_eq!(
+        (run[3].1.len(), run[3].2),
+        (2, Some(Certainty::Inferred)),
+        "which `print` builds depends on the target"
+    );
+}
+
+#[test]
+fn closures_take_the_types_their_callee_declares() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Memory; pub struct Data; pub struct Context;
+         impl Memory { pub fn focus(&self) {} }
+         impl Data { pub fn focus(&self) {} }
+         impl Context {
+             pub fn memory_mut<R>(&self, writer: impl FnOnce(&mut Memory) -> R) -> R { todo!() }
+             pub fn data<F: Fn(u8, &Data)>(&self, reader: F) {}
+         }
+         fn run(ctx: &Context) {
+             ctx.memory_mut(|mem| mem.focus());
+             ctx.data(|_, data| data.focus());
+         }",
+    )]);
+    let focus = |ty: &str| {
+        vec![(
+            ".focus".to_owned(),
+            vec![format!("rust:app::{ty}::focus")],
+            Some(Certainty::Exact),
+        )]
+    };
+    assert_eq!(
+        resolved(unit(&document, "app::run::{closure#0}")),
+        focus("Memory")
+    );
+    assert_eq!(
+        resolved(unit(&document, "app::run::{closure#1}")),
+        focus("Data")
+    );
+}
+
+#[test]
+fn elements_of_collections_and_iterators_keep_their_types() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Arg; pub struct Group; pub struct Command { args: Vec<Arg> }
+         impl Arg { pub fn get_id(&self) {} }
+         impl Group { pub fn get_id(&self) {} }
+         impl Command {
+             pub fn get_arguments(&self) -> impl Iterator<Item = &Arg> { self.args.iter() }
+             fn run(&self, groups: &[Group]) {
+                 for arg in self.get_arguments() { arg.get_id(); }
+                 self.args.iter().filter(|a| a.get_id() == ()).count();
+                 groups.first().unwrap().get_id();
+                 if let Some(last) = self.args.last() { last.get_id(); }
+             }
+         }",
+    )]);
+    let get_id = |ty: &str| format!("rust:app::{ty}::get_id");
+    let targets = |id: &str| -> Vec<String> {
+        resolved(unit(&document, id))
+            .into_iter()
+            .filter(|(text, ..)| text == ".get_id")
+            .flat_map(|(_, targets, _)| targets)
+            .collect()
+    };
+    assert_eq!(
+        targets("app::Command::run"),
+        [get_id("Arg"), get_id("Group"), get_id("Arg")],
+        "a `for` loop's binding, `first().unwrap()`, `if let Some(..) = last()`"
+    );
+    assert_eq!(
+        targets("app::Command::run::{closure#0}"),
+        [get_id("Arg")],
+        "`filter` hands its closure an element"
+    );
+}
+
+#[test]
+fn calls_through_a_trait_path() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub trait Factory { fn make() -> Self; fn name(&self) {} }
+         pub struct A; pub struct B;
+         impl Factory for A { fn make() -> Self { A } fn name(&self) { Factory::make(); } }
+         impl Factory for B { fn make() -> Self { B } }
+         fn build<T: Factory>() -> T { T::make() }",
+    )]);
+    let make = |ty: &str| format!("rust:app::{ty}::{{impl#Factory}}::make");
+    assert_eq!(
+        resolved(unit(&document, "app::build")),
+        [(
+            "T::make".to_owned(),
+            vec![make("A"), make("B")],
+            Some(Certainty::Exact)
+        )],
+        "through a generic, any implementation may run"
+    );
+    assert_eq!(
+        resolved(unit(&document, "app::A::{impl#Factory}::name")),
+        [(
+            "Factory::make".to_owned(),
+            vec![make("A")],
+            Some(Certainty::Inferred)
+        )],
+        "named by the trait, the caller's own type's, by a guess"
+    );
+}
+
+/// Writes each `(name, dependencies, lib.rs)` as a crate in one workspace and
+/// analyzes it.
+fn analyze_workspace(crates: &[(&str, &str, &str)]) -> Document {
+    let root = std::env::temp_dir().join(format!(
+        "codeviz-rust-workspace-{}-{}",
+        std::process::id(),
+        crates.len()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    for (name, dependencies, source) in crates {
+        fs::create_dir_all(root.join(name).join("src")).unwrap();
+        fs::write(
+            root.join(name).join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n{dependencies}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(root.join(name).join("src/lib.rs"), source).unwrap();
+    }
+    let analysis = analyze(&root, &AnalyzeOptions::default());
+    fs::remove_dir_all(&root).unwrap();
+    analysis.unwrap().document
+}

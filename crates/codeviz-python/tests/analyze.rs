@@ -425,3 +425,35 @@ fn demo_service_validates_cleanly() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn names_alone_match_only_distinctive_methods() -> anyhow::Result<()> {
+    let document = analyze(
+        "by-name",
+        &[
+            ("app/__init__.py", ""),
+            (
+                "app/main.py",
+                "class Cache:\n    def get(self, key): pass\n    def evict(self): pass\n    def size(self): pass\n\
+             class Queue:\n    def size(self): pass\n\
+             def run(thing):\n    thing.get(1)\n    thing.evict()\n    thing.size()\n",
+            ),
+        ],
+    )?;
+    let run = unit(&document, "python:app.main.run");
+    assert_eq!(
+        targets(call(run, "thing.get#0")),
+        [],
+        "a dict's `get` as likely"
+    );
+    assert_eq!(
+        targets(call(run, "thing.evict#0")),
+        [("python:app.main.Cache.evict", Certainty::Inferred)]
+    );
+    assert_eq!(
+        targets(call(run, "thing.size#0")),
+        [],
+        "two unrelated classes"
+    );
+    Ok(())
+}

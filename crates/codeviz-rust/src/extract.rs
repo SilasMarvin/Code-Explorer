@@ -13,8 +13,8 @@ use crate::{
     Error, body,
     hash::content_hash,
     syntax::{
-        collect_use, compact, doc_comment, is_test_only, location, receiver_type_path, start, text,
-        type_name, unwrapped_type_path,
+        closure_arguments, collect_use, compact, doc_comment, held_type_path, is_test_only,
+        location, receiver_type_path, start, text, type_name,
     },
 };
 
@@ -27,8 +27,19 @@ pub(crate) struct Owner {
     pub(crate) trait_text: Option<String>,
 }
 
-/// Field name → field type path as written.
-pub(crate) type Fields = HashMap<String, Vec<String>>;
+/// A field's type path as written, and what a value of it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Field {
+    pub(crate) ty: Vec<String>,
+    pub(crate) holds: Option<Vec<String>>,
+}
+
+/// Field name → its type.
+pub(crate) type Fields = HashMap<String, Field>;
+
+/// Per parameter of a function, `self` first if it takes one: when the parameter takes
+/// a closure, the types the closure is called with, as written.
+pub(crate) type Callbacks = Vec<Option<Vec<Option<Vec<String>>>>>;
 
 /// What a method is called on, as far as declarations reveal it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,16 +53,37 @@ pub(crate) struct Receiver {
 pub(crate) enum ReceiverRoot {
     SelfValue,
     /// A binding whose type was written down (`declared`) or guessed from a
-    /// `Type::constructor(..)` initializer.
+    /// `Type::constructor(..)` initializer; `holds` is what a value of it holds, as
+    /// [`crate::syntax::held_type_path`] says.
     Typed {
         path: Vec<String>,
         declared: bool,
+        holds: Option<Vec<String>>,
     },
+    /// What the receiver holds: the value in an option or result, an element of a
+    /// collection or iterator.
+    Held(Box<Receiver>),
     /// The value returned by an earlier call in the same unit; `tried` when `?`
     /// unwrapped it.
     Returned {
         call: usize,
         tried: bool,
+    },
+    /// The `parameter`th argument a closure is called with, the closure being the
+    /// `argument`th argument of the call whose name starts `at` in the unit at `from`.
+    /// Failing that, it is what `otherwise` says.
+    Callback {
+        from: Vec<String>,
+        at: (u32, u32),
+        argument: usize,
+        parameter: usize,
+        otherwise: Option<Box<ReceiverRoot>>,
+    },
+    /// A binding a closure captured from the unit at `from`, where `root` means what
+    /// it says.
+    Captured {
+        from: Vec<String>,
+        root: Box<ReceiverRoot>,
     },
 }
 
@@ -135,9 +167,15 @@ pub(crate) struct RawUnit {
     pub(crate) attributes: BTreeMap<String, Scalar>,
     pub(crate) calls: Vec<RawCall>,
     pub(crate) body: Option<Vec<Step>>,
-    /// The declared return type, and the `T` of a returned `Result<T, _>` or `Option<T>`.
+    /// The declared return type, and what a value of it holds: the `T` of a returned
+    /// `Result<T, _>` or `Option<T>`, an element of a collection or iterator.
     pub(crate) returns: Option<Vec<String>>,
     pub(crate) returns_ok: Option<Vec<String>>,
+    /// What closures its parameters take are called with.
+    pub(crate) callbacks: Callbacks,
+    /// Whether it takes `self`, so a method call's arguments start at its second
+    /// parameter.
+    pub(crate) takes_self: bool,
 }
 
 impl RawUnit {
@@ -162,6 +200,8 @@ impl RawUnit {
             body: None,
             returns: None,
             returns_ok: None,
+            callbacks: Vec::new(),
+            takes_self: false,
         }
     }
 
@@ -201,6 +241,9 @@ pub(crate) struct Extraction {
     pub(crate) routes: Vec<RouteHint>,
     /// Struct path → its fields.
     pub(crate) fields: HashMap<Vec<String>, Fields>,
+    /// Type path → what its `Deref` impl derefs it to, as written in `module`:
+    /// `(module, target)`.
+    pub(crate) derefs: HashMap<Vec<String>, (Vec<String>, Vec<String>)>,
     groups: HashSet<Vec<String>>,
 }
 
@@ -313,6 +356,9 @@ impl Extractor {
                     trait_text: trait_node.map(|tr| trait_label(tr, source)),
                 });
                 if let (Some(owner), Some(body)) = (owner, node.child_by_field_name("body")) {
+                    if owner.trait_name.as_deref() == Some("Deref") {
+                        self.deref(module, &owner.type_name, body, source);
+                    }
                     self.type_unit(module, &owner.type_name, "type");
                     self.items(file, body, module, Some(&owner));
                 }
@@ -413,10 +459,18 @@ impl Extractor {
         let return_type = node.child_by_field_name("return_type");
         let returns_result = return_type.is_some_and(|ty| text(ty, source).contains("Result"));
         let returns = return_type.and_then(|ty| receiver_type_path(ty, source));
-        let returns_ok = return_type.and_then(|ty| unwrapped_type_path(ty, source));
+        let returns_ok = return_type.and_then(|ty| held_type_path(ty, source));
         let where_clause = node
             .named_children(&mut node.walk())
             .find(|c| c.kind() == "where_clause");
+        let parameters = node.child_by_field_name("parameters");
+        let (callbacks, takes_self) = parameters.map_or_else(Default::default, |parameters| {
+            callbacks(
+                parameters,
+                [node.child_by_field_name("type_parameters"), where_clause],
+                source,
+            )
+        });
 
         let built = body::build(
             self,
@@ -428,6 +482,9 @@ impl Extractor {
                 returns_result,
                 parameters: node.child_by_field_name("parameters"),
                 generics: [node.child_by_field_name("type_parameters"), where_clause],
+                captures: HashMap::new(),
+                argument: None,
+                callback: None,
             },
             block,
         );
@@ -456,7 +513,27 @@ impl Extractor {
             body: Some(built.steps),
             returns,
             returns_ok,
+            callbacks,
+            takes_self,
         });
+    }
+
+    /// Records the `type Target = ..` of a `Deref` impl for `name`.
+    fn deref(&mut self, module: &[String], name: &str, body: Node<'_>, source: &[u8]) {
+        let mut cursor = body.walk();
+        let target = body
+            .named_children(&mut cursor)
+            .filter(|item| item.kind() == "type_item")
+            .filter(|item| {
+                item.child_by_field_name("name")
+                    .is_some_and(|n| text(n, source) == "Target")
+            })
+            .find_map(|item| receiver_type_path(item.child_by_field_name("type")?, source));
+        if let Some(target) = target {
+            let mut path = module.to_vec();
+            path.push(name.to_owned());
+            self.out.derefs.insert(path, (module.to_vec(), target));
+        }
     }
 
     fn struct_fields(&mut self, module: &[String], name: &str, node: Node<'_>, source: &[u8]) {
@@ -484,9 +561,12 @@ impl Extractor {
                 }
                 _ => continue,
             };
-            if let (Some(field), Some(ty)) = (field, ty.and_then(|t| receiver_type_path(t, source)))
-            {
-                fields.insert(field, ty);
+            let (Some(field), Some(node)) = (field, ty) else {
+                continue;
+            };
+            if let Some(ty) = receiver_type_path(node, source) {
+                let holds = held_type_path(node, source);
+                fields.insert(field, Field { ty, holds });
             }
         }
         let mut path = module.to_vec();
@@ -501,6 +581,53 @@ impl Extractor {
     pub(crate) fn push_route(&mut self, route: RouteHint) {
         self.out.routes.push(route);
     }
+}
+
+/// What each parameter's closure, if it takes one, is called with; and whether the
+/// first parameter is `self`.
+fn callbacks(
+    parameters: Node<'_>,
+    generics: [Option<Node<'_>>; 2],
+    source: &[u8],
+) -> (Callbacks, bool) {
+    let mut bounds = HashMap::new();
+    for node in generics.into_iter().flatten() {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let (name, bound) = match child.kind() {
+                "type_parameter" => (
+                    child.child_by_field_name("name"),
+                    child.child_by_field_name("bounds"),
+                ),
+                "where_predicate" => (
+                    child.child_by_field_name("left"),
+                    child.child_by_field_name("bounds"),
+                ),
+                _ => continue,
+            };
+            if let (Some(name), Some(bound)) = (name, bound) {
+                bounds.insert(text(name, source).to_owned(), bound);
+            }
+        }
+    }
+    let mut cursor = parameters.walk();
+    let mut takes_self = false;
+    let callbacks = parameters
+        .named_children(&mut cursor)
+        .filter_map(|parameter| match parameter.kind() {
+            "self_parameter" => {
+                takes_self = true;
+                Some(None)
+            }
+            "parameter" => Some(
+                parameter
+                    .child_by_field_name("type")
+                    .and_then(|ty| closure_arguments(ty, &bounds, source)),
+            ),
+            _ => None,
+        })
+        .collect();
+    (callbacks, takes_self)
 }
 
 /// A trait's own name with its generic arguments: `std::convert::From<&str>` → `From<&str>`.

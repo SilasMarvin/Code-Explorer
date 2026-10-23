@@ -3,10 +3,12 @@
 use std::{
     io::Write as _,
     path::{Path, PathBuf},
+    sync::Once,
+    time::Instant,
 };
 
 use anyhow::{Context, bail};
-use codeviz_ir::{Document, Severity};
+use codeviz_ir::{Certainty, Document, Severity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum Language {
@@ -83,24 +85,99 @@ pub(crate) fn analyze(args: &AnalyzeArgs) -> anyhow::Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot open {}", args.path.display()))?;
-    let document = analyze_dir(&root, &args.source, None)?;
-    write(&document, args.output.as_ref())
+    let label = root.display().to_string();
+    let analysis = analyze_dir(&root, &args.source, None, &label)?;
+    eprintln!("{}", analysis.summary(&label));
+    write(&analysis.document, args.output.as_ref())
+}
+
+/// How an analysis resolved calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resolved {
+    RustAnalyzer,
+    /// From the syntax alone, where some calls are matched by name.
+    Syntax,
+}
+
+/// A document, how its calls were resolved, and how long it took.
+#[derive(Debug)]
+pub(crate) struct Analysis {
+    pub(crate) document: Document,
+    pub(crate) resolved: Resolved,
+    pub(crate) seconds: f32,
+}
+
+impl Analysis {
+    /// One line on how well calls resolved: how many call sites name what they call
+    /// for sure, how many only by a guess, and how many name nothing analyzed here.
+    pub(crate) fn summary(&self, label: &str) -> String {
+        let (mut resolved, mut guessed, mut unresolved) = (0, 0, 0);
+        for call in self.document.units.iter().flat_map(|unit| &unit.calls) {
+            if call.targets.is_empty() {
+                unresolved += 1;
+            } else if call
+                .targets
+                .iter()
+                .any(|t| t.certainty == Certainty::Inferred)
+            {
+                guessed += 1;
+            } else {
+                resolved += 1;
+            }
+        }
+        let how = match self.resolved {
+            Resolved::RustAnalyzer => "by rust-analyzer",
+            Resolved::Syntax => "from the syntax",
+        };
+        format!(
+            "{label}: {} call sites resolved {how} in {:.1}s: {resolved} exact, {guessed} \
+             guessed by name, {unresolved} unresolved (std, dependencies or unknown)",
+            resolved + guessed + unresolved,
+            self.seconds,
+        )
+    }
+}
+
+/// Said once, however many analyses fall back.
+const NO_RUST_ANALYZER: &str = "warning: rust-analyzer is not installed, so Rust calls are \
+    resolved from the syntax alone\n         and method calls on values of unknown type are \
+    guessed by name or left out.\n         Install it with `rustup component add \
+    rust-analyzer` (or `mise install` in a repository that pins it),\n         or pass \
+    `--resolve syntax` to choose this.";
+
+/// Whether analyzing with these options may run rust-analyzer.
+pub(crate) fn uses_rust_analyzer(source: &Source) -> bool {
+    source.lang != Some(Language::Python)
+        && match source.resolve {
+            Resolve::Syntax => false,
+            Resolve::RustAnalyzer => true,
+            Resolve::Auto => codeviz_rust::rust_analyzer_available(),
+        }
 }
 
 /// Analyzes the source under `root`, in the language asked for or the one its files
-/// suggest. rust-analyzer builds into `target_dir` when one is given.
+/// suggest, saying what it does under `label`. rust-analyzer builds into `target_dir`
+/// when one is given.
 pub(crate) fn analyze_dir(
     root: &Path,
     source: &Source,
     target_dir: Option<&Path>,
-) -> anyhow::Result<Document> {
+    label: &str,
+) -> anyhow::Result<Analysis> {
+    static WARNED: Once = Once::new();
+    let started = Instant::now();
+    let done = |document: Document, resolved: Resolved| Analysis {
+        document,
+        resolved,
+        seconds: started.elapsed().as_secs_f32(),
+    };
     let language = match source.lang {
         Some(language) => language,
         None if root.join("Cargo.toml").exists() => Language::Rust,
         None => Language::Python,
     };
     if language == Language::Python {
-        return Ok(codeviz_python::analyze(root)?);
+        return Ok(done(codeviz_python::analyze(root)?, Resolved::Syntax));
     }
     let mut options = codeviz_rust::AnalyzeOptions {
         include_tests: source.include_tests,
@@ -109,21 +186,32 @@ pub(crate) fn analyze_dir(
     let use_rust_analyzer = match source.resolve {
         Resolve::Syntax => false,
         Resolve::RustAnalyzer => true,
-        Resolve::Auto => codeviz_rust::rust_analyzer_available(),
+        Resolve::Auto => {
+            let available = codeviz_rust::rust_analyzer_available();
+            if !available {
+                WARNED.call_once(|| eprintln!("{NO_RUST_ANALYZER}"));
+            }
+            available
+        }
     };
     if !use_rust_analyzer {
-        return Ok(codeviz_rust::analyze(root, &options)?.document);
+        let document = codeviz_rust::analyze(root, &options)?.document;
+        return Ok(done(document, Resolved::Syntax));
     }
-    eprintln!("rust-analyzer: resolving calls in {}", root.display());
+    eprintln!("{label}: resolving calls with rust-analyzer…");
     let syntax = options.clone();
     options.resolver = codeviz_rust::Resolver::RustAnalyzer {
         target_dir: target_dir.map(Path::to_path_buf),
     };
     match codeviz_rust::analyze(root, &options) {
-        Ok(analysis) => Ok(analysis.document),
+        Ok(analysis) => Ok(done(analysis.document, Resolved::RustAnalyzer)),
         Err(error) if source.resolve == Resolve::Auto => {
-            eprintln!("rust-analyzer: {error:#}; resolving from the syntax instead");
-            Ok(codeviz_rust::analyze(root, &syntax)?.document)
+            eprintln!(
+                "warning: {label}: rust-analyzer failed, so calls are resolved from the syntax \
+                 alone and method calls are guessed by name or left out:\n{error:#}"
+            );
+            let document = codeviz_rust::analyze(root, &syntax)?.document;
+            Ok(done(document, Resolved::Syntax))
         }
         Err(error) => Err(error.into()),
     }
@@ -356,5 +444,33 @@ mod tests {
             "only where the files are"
         );
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn summary_counts_call_sites_by_how_they_resolved() {
+        let target = |unit: &str, certainty: &str| {
+            format!(r#"{{ "unit": "x:{unit}", "certainty": "{certainty}" }}"#)
+        };
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }},
+              "units": [{{ "id": "x:a", "name": "a", "kind": "fn", "role": "invocable", "calls": [
+                {{ "key": "b#0", "text": "b", "targets": [{}] }},
+                {{ "key": "c#0", "text": "c", "targets": [{}, {}] }},
+                {{ "key": "len#0", "text": "len", "targets": [] }}
+              ] }}] }}"#,
+            target("b", "exact"),
+            target("c", "exact"),
+            target("d", "inferred"),
+        );
+        let analysis = Analysis {
+            document: Document::from_json(&json).unwrap_or_else(|e| panic!("{e}")),
+            resolved: Resolved::Syntax,
+            seconds: 0.25,
+        };
+        assert_eq!(
+            analysis.summary("app"),
+            "app: 3 call sites resolved from the syntax in 0.2s: 1 exact, 1 guessed by name, \
+             1 unresolved (std, dependencies or unknown)"
+        );
     }
 }

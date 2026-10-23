@@ -84,19 +84,47 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     // The checkouts have no build of their own: rust-analyzer builds their build
     // scripts and proc macros where the working tree's are, not from scratch.
     let target_dir = crate::ir::target_dir(&path);
-    let analyze = |root: &Path| {
-        crate::ir::analyze_dir(root, &args.source, target_dir.as_deref())
-            .with_context(|| format!("cannot analyze {}", root.display()))
-    };
     let old = Checkout::new(&top, &base)?;
-    let before = analyze(&old.dir.join(&prefix))?;
-    let (after, new) = match &head {
-        Some(head) => {
-            let new = Checkout::new(&top, head)?;
-            (analyze(&new.dir.join(&prefix))?, Some(new))
-        }
-        None => (analyze(&path)?, None),
+    let new = head
+        .as_ref()
+        .map(|head| Checkout::new(&top, head))
+        .transpose()?;
+    let sides = [
+        (old.dir.join(&prefix), format!("before ({})", old.label)),
+        match &new {
+            Some(new) => (new.dir.join(&prefix), format!("after ({})", new.label)),
+            None => (path.clone(), "after (working tree)".to_owned()),
+        },
+    ];
+    let analyze = |(root, label): &(PathBuf, String)| {
+        let analysis = crate::ir::analyze_dir(root, &args.source, target_dir.as_deref(), label)
+            .with_context(|| format!("cannot analyze {label}"))?;
+        eprintln!("{}", analysis.summary(label));
+        anyhow::Ok(analysis)
     };
+    let [before, after] = &sides;
+    // rust-analyzer already keeps most cores busy, so two at once save little (20s
+    // against 24s on this repository) for over a gigabyte more at the peak; the syntax
+    // costs next to nothing either way.
+    let (before, after) = if crate::ir::uses_rust_analyzer(&args.source) {
+        (analyze(before)?, analyze(after)?)
+    } else {
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| analyze(before));
+            let second = analyze(after);
+            let first = first
+                .join()
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("analyzing {} panicked", before.1)));
+            anyhow::Ok((first?, second?))
+        })?
+    };
+    if before.resolved != after.resolved {
+        eprintln!(
+            "warning: the two sides were resolved differently, so some call changes are \
+             only differences in resolution"
+        );
+    }
+    let (before, after) = (before.document, after.document);
     if let Some(dir) = &args.save {
         save(dir, &before, &after, head.is_some())?;
     }

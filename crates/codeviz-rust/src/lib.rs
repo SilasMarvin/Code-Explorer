@@ -3,8 +3,10 @@
 //! [`analyze`] discovers every Cargo package under a directory and parses its `src/`
 //! tree. With [`Resolver::RustAnalyzer`], call sites resolve to what rust-analyzer says
 //! they call. Otherwise, and for any call it leaves unresolved, they resolve
-//! syntactically: module paths, `use` imports, `Self`, `self` and declared types are
-//! followed, and method calls on other receivers are matched by name and marked
+//! syntactically: module paths, `use` imports and re-exports, `Self`, `self`, declared
+//! types, return types and closure captures are followed. A method call on a receiver
+//! of unknown type is matched by name only if the name is not a common std method and
+//! one type in a crate the caller depends on has it; the match is marked
 //! [`Certainty::Inferred`]. Calls whose final segment is capitalized are treated as
 //! tuple-struct or enum constructors and dropped.
 //!
@@ -22,6 +24,7 @@ mod extract;
 mod hash;
 mod resolve;
 mod scip;
+mod std_methods;
 mod syntax;
 
 use std::path::{Path, PathBuf};
@@ -128,10 +131,10 @@ pub fn analyze(root: &Path, options: &AnalyzeOptions) -> Result<Analysis, Error>
         version: env!("CARGO_PKG_VERSION").to_owned(),
     });
     document.root = Some(format!("file://{}", root.display()));
-    let crate_names = packages.iter().map(|p| p.crate_name.clone()).collect();
+    let crates = discover::visible_crates(&packages, options.include_tests);
     resolve::assemble(
         &mut extractor.finish(),
-        &crate_names,
+        &crates,
         scip.as_ref(),
         &mut document,
     );

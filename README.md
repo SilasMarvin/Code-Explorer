@@ -58,6 +58,12 @@ pulling the camera back only as far as it takes to show them all. When that is m
 than fifteen, a card lists every one, grouped by module, and the graph names the first
 where it finds room.
 
+A dotted, fainter link is a guess: the analyzer matched the call by name without
+knowing the type (an `inferred` target in the IR). Guesses keep their direction color
+but are left out of the caller and call counts, of `I` and `O`, and of what lights up
+around the focus; `U` (or the side panel's checkbox) counts them too. The legend shows
+the dotted line only when the view has guesses.
+
 The focus is the node under the journey's cursor, ringed in white and named in the top
 bar beside how many calls it makes and takes; `I`, `O` and `Enter` (start the journey
 there) act on it. Hovering a node rings and names it without moving the focus, so the
@@ -182,7 +188,23 @@ so it takes seconds where the syntax takes a fraction of one; `codeviz diff` poi
 checkouts at the working tree's target directory so they are not built from scratch.
 `mise install` installs it. Without it, or with `--resolve syntax`, and for any call it
 leaves unresolved (code outside the Cargo workspace, or in a crate that does not build),
-calls are resolved from the syntax alone: module paths, `use` imports, `self` and
-declared types are followed, and a method call on a value of unknown type is matched by
-name and marked `inferred`. Capitalized call targets are treated as constructors and
-dropped either way.
+calls are resolved from the syntax alone: module paths, `use` imports and re-exports,
+`self`, declared types, `Deref` impls, the types functions return, what options,
+collections and iterators hold (through `iter`, `filter`, `get`, `unwrap`, `for` and
+`if let`), the bindings closures capture and the arguments a function declares its
+closure parameters are called with are followed. A method call on a value of unknown type is matched by name only when the
+name is distinctive: not a common standard library method (`map`, `push`, `len`, …), and
+defined by one type (or one trait's implementations) in a crate the caller depends on.
+Such a match is marked `inferred`, as is a call that could be any of several overloads
+(`From<bool>` or `From<u8>`). Capitalized call targets are treated as constructors and
+dropped either way. `analyze` and `diff` print how many call sites resolved exactly, how
+many by a guess, and how many not at all, and warn when rust-analyzer is missing or
+fails. `diff` analyzes its two sides one after the other under rust-analyzer (two at
+once save little and need over a gigabyte more), side by side otherwise.
+
+`eval/resolution/compare.py` measures one resolution against another, per call site:
+analyze the same source with `--resolve syntax` and `--resolve rust-analyzer` and it
+prints the syntax's precision and recall, by certainty, and the functions with the most
+callers in each. On this repository the syntax gets 99.4% of its edges right and finds
+99.1% of rust-analyzer's; on egui and clap_builder, 98.6% and 95% right, finding 95%
+and 90%.

@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 use walkdir::{DirEntry, WalkDir};
@@ -11,6 +14,9 @@ pub struct Package {
     /// The package name as a Rust identifier (`-` replaced by `_`).
     pub crate_name: String,
     pub src_dir: PathBuf,
+    /// The packages it depends on, as crate names; `dev_dependencies` only in tests.
+    pub dependencies: Vec<String>,
+    pub dev_dependencies: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -24,6 +30,31 @@ pub(crate) struct SourceFile {
 struct Manifest {
     package: Option<ManifestPackage>,
     workspace: Option<ManifestWorkspace>,
+    #[serde(flatten)]
+    dependencies: Dependencies,
+    /// `[target.'cfg(..)'.dependencies]`, by platform.
+    #[serde(default)]
+    target: BTreeMap<String, Dependencies>,
+}
+
+/// Dependency tables, by the name each dependency is used under. An entry's details
+/// are read leniently: only a `package = ".."` rename matters here.
+#[derive(Deserialize, Default)]
+struct Dependencies {
+    #[serde(default)]
+    dependencies: BTreeMap<String, toml::Value>,
+    #[serde(default, rename = "dev-dependencies")]
+    dev_dependencies: BTreeMap<String, toml::Value>,
+}
+
+impl Dependencies {
+    /// The crate names of the packages a table names.
+    fn crate_names(table: &BTreeMap<String, toml::Value>) -> impl Iterator<Item = String> + '_ {
+        table.iter().map(|(name, details)| {
+            let package = details.get("package").and_then(toml::Value::as_str);
+            package.unwrap_or(name).replace('-', "_")
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -68,15 +99,60 @@ pub(crate) fn packages(root: &Path) -> Result<Vec<Package>, Error> {
         if let Some(package) = manifest.package
             && src_dir.is_dir()
         {
+            let tables = std::iter::once(&manifest.dependencies).chain(manifest.target.values());
+            let (mut dependencies, mut dev_dependencies) = (Vec::new(), Vec::new());
+            for table in tables {
+                dependencies.extend(Dependencies::crate_names(&table.dependencies));
+                dev_dependencies.extend(Dependencies::crate_names(&table.dev_dependencies));
+            }
             packages.push(Package {
                 crate_name: package.name.replace('-', "_"),
                 src_dir,
+                dependencies,
+                dev_dependencies,
             });
         }
     }
     packages.retain(|p| !excluded.iter().any(|dir| p.src_dir.starts_with(dir)));
     packages.sort_by(|a, b| a.crate_name.cmp(&b.crate_name));
     Ok(packages)
+}
+
+/// Each analyzed crate, to the analyzed crates its code can name: itself and what it
+/// depends on, directly or through other analyzed crates.
+pub(crate) fn visible_crates(
+    packages: &[Package],
+    include_tests: bool,
+) -> HashMap<String, HashSet<String>> {
+    let direct: HashMap<&str, Vec<&str>> = packages
+        .iter()
+        .map(|package| {
+            let dev = include_tests.then_some(&package.dev_dependencies);
+            let dependencies = package.dependencies.iter().chain(dev.into_iter().flatten());
+            (
+                package.crate_name.as_str(),
+                dependencies.map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    direct
+        .keys()
+        .map(|&name| {
+            let mut seen = HashSet::from([name]);
+            let mut stack = vec![name];
+            while let Some(next) = stack.pop() {
+                for &dependency in direct.get(next).into_iter().flatten() {
+                    if direct.contains_key(dependency) && seen.insert(dependency) {
+                        stack.push(dependency);
+                    }
+                }
+            }
+            (
+                name.to_owned(),
+                seen.into_iter().map(str::to_owned).collect(),
+            )
+        })
+        .collect()
 }
 
 /// Every `.rs` file under the package's `src/`. Directories named `tests` hold

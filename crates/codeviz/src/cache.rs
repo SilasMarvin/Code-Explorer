@@ -23,7 +23,7 @@ pub(crate) fn analyze(dir: &Path, source: &Source) -> anyhow::Result<Document> {
         let key = format!("{}\n{version}\n{flags}", env!("CARGO_PKG_VERSION"));
         file(dir, &key)
     }) else {
-        return crate::ir::analyze_dir(dir, source, None);
+        return fresh(dir, source);
     };
     if let Some(document) = std::fs::read_to_string(&path)
         .ok()
@@ -32,11 +32,19 @@ pub(crate) fn analyze(dir: &Path, source: &Source) -> anyhow::Result<Document> {
         eprintln!("{}: analyzed before, at this version", dir.display());
         return Ok(document);
     }
-    let document = crate::ir::analyze_dir(dir, source, None)?;
+    let document = fresh(dir, source)?;
     if let Err(error) = keep(&path, &document) {
         eprintln!("cannot keep the analysis in {}: {error:#}", path.display());
     }
     Ok(document)
+}
+
+/// Analyzes `dir` now, saying how its calls resolved.
+fn fresh(dir: &Path, source: &Source) -> anyhow::Result<Document> {
+    let label = dir.display().to_string();
+    let analysis = crate::ir::analyze_dir(dir, source, None, &label)?;
+    eprintln!("{}", analysis.summary(&label));
+    Ok(analysis.document)
 }
 
 /// What version of its source `dir` holds: the commit, and a hash of any changes on

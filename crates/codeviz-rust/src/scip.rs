@@ -7,6 +7,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use prost::Message;
@@ -34,7 +35,11 @@ impl Scip {
     /// # Errors
     /// Fails if rust-analyzer cannot be run, fails, or writes an index this cannot read.
     pub(crate) fn index(root: &Path, target_dir: Option<&Path>) -> Result<Self, Error> {
-        let output = std::env::temp_dir().join(format!("codeviz-{}.scip", std::process::id()));
+        // Unique per run, so analyses running side by side keep their own index.
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+        let run = RUNS.fetch_add(1, Ordering::Relaxed);
+        let output =
+            std::env::temp_dir().join(format!("codeviz-{}-{run}.scip", std::process::id()));
         let mut command = Command::new(rust_analyzer());
         command.arg("scip").arg(root).arg("--output").arg(&output);
         if let Some(dir) = target_dir {

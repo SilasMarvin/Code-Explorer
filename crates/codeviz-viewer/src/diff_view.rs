@@ -531,7 +531,7 @@ pub(crate) fn diff_look(explorer: &Explorer, view: &DiffView, tile: usize) -> No
 /// way they run, violet in and blue out, with dots flowing along them; otherwise added
 /// calls are green and removed ones red and dashed; under Impact, calls that carry a
 /// change towards an entry point are gold, with pulses running out along them; the
-/// journey's path is pale arrows; the rest are faint.
+/// journey's path is pale arrows; the rest are faint. Guessed calls are dotted.
 pub(crate) fn draw_diff_graph(
     explorer: &Explorer,
     view: &DiffView,
@@ -552,7 +552,8 @@ pub(crate) fn draw_diff_graph(
             Some((node(edge.caller)?, node(edge.callee)?))
         })
         .collect();
-    for (index, &(from, to)) in graph.calls.iter().chain(&graph.ghosts).enumerate() {
+    let calls = graph_view::drawn_calls(graph).chain(graph.ghosts.iter().copied());
+    for (index, (from, to)) in calls.enumerate() {
         let (Some(a), Some(b)) = (explorer.tile_point(from), explorer.tile_point(to)) else {
             continue;
         };
@@ -570,7 +571,18 @@ pub(crate) fn draw_diff_graph(
             Some(c) if c == from => Some(graph_view::CALLEE),
             _ => None,
         };
-        match view.call_change(from, to) {
+        let change = view.call_change(from, to);
+        if graph.guessed(from, to) && change != Some(Change::Removed) {
+            // A guess is dotted and fainter, in the color it would have.
+            let color = match (side, change) {
+                (Some(color), _) => color.with_alpha(0.6 * presence),
+                (None, Some(Change::Added)) => ADDED.with_alpha(0.55 * presence),
+                (None, _) => Color::srgba(0.6, 0.66, 0.8, 0.12 * presence),
+            };
+            graph_view::dotted(gizmos, a, b - back, color);
+            continue;
+        }
+        match change {
             Some(Change::Removed) if let Some(color) = side => {
                 dashed(gizmos, a, b - back, color.with_alpha(0.85 * presence));
             }
