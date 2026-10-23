@@ -71,6 +71,8 @@ pub(crate) struct Track {
     scene: Scene,
     divergences: Vec<Divergence>,
     selected: Option<SpanId>,
+    /// Spans opened one level past the disclosed depth, by hand or by the cursor.
+    expanded: HashSet<SpanId>,
     /// The color of each of the scene's lanes, shared with the other journeys.
     colors: Vec<usize>,
 }
@@ -151,6 +153,8 @@ impl Track {
             .unwrap_or_default();
         self.divergences = self.find_divergences();
         self.selected = self.journey.as_ref().map(Journey::root);
+        // A rebuilt journey numbers its spans afresh.
+        self.expanded.clear();
     }
 
     /// On the happy path, where each failing outcome splits off: the deepest unit on
@@ -266,9 +270,7 @@ pub(crate) struct Explorer {
     changed_tiles: Vec<usize>,
     /// How much of the active journey shows.
     disclose: Disclose,
-    /// Spans opened one level past the disclosed depth, by hand.
-    expanded: HashSet<SpanId>,
-    /// Bumped whenever `expanded` changes.
+    /// Bumped whenever a journey's opened spans change.
     disclosure_epoch: u64,
     disclosure_cache: Mutex<Option<(DisclosureKey, Arc<Disclosed>)>>,
     /// Where the view has been, to go back and forward.
@@ -330,7 +332,6 @@ impl Explorer {
             history: History::default(),
             aim: 0,
             disclose: Disclose::default(),
-            expanded: HashSet::new(),
             disclosure_epoch: 0,
             disclosure_cache: Mutex::new(None),
             hovered_tile: None,
@@ -421,7 +422,7 @@ impl Explorer {
             scenario: self.scenario(),
             cursor: self.selected(),
             disclose: self.disclose,
-            expanded: self.expanded.clone(),
+            expanded: self.track().expanded.clone(),
             spotlight: self.spotlight,
         }
     }
@@ -445,8 +446,8 @@ impl Explorer {
             .cursor
             .filter(|&span| track.span(span).is_some())
             .or_else(|| track.journey().map(Journey::root));
+        track.expanded = view.expanded;
         self.disclose = view.disclose;
-        self.expanded = view.expanded;
         self.disclosure_epoch += 1;
         self.spotlight = view.spotlight;
         self.aim += 1;
@@ -543,7 +544,7 @@ impl Explorer {
             else {
                 return;
             };
-            if !self.expanded.insert(folding) {
+            if !self.track_mut().expanded.insert(folding) {
                 return;
             }
             self.disclosure_epoch += 1;
@@ -776,8 +777,6 @@ impl Explorer {
         }
         self.replace_root(unit);
         self.spotlight = None;
-        self.expanded.clear();
-        self.disclosure_epoch += 1;
         if let Disclose::Depth(_) = self.disclose {
             self.disclose = Disclose::default();
         }
@@ -793,8 +792,9 @@ impl Explorer {
 
     /// Opens or folds the calls under one span, past the disclosed depth.
     pub(crate) fn toggle_expanded(&mut self, span: SpanId) {
-        if !self.expanded.remove(&span) {
-            self.expanded.insert(span);
+        let expanded = &mut self.track_mut().expanded;
+        if !expanded.remove(&span) {
+            expanded.insert(span);
         }
         self.disclosure_epoch += 1;
     }
@@ -823,7 +823,7 @@ impl Explorer {
             self.track(),
             &self.map,
             self.disclose,
-            &self.expanded,
+            &self.track().expanded,
         ));
         *cache = Some((key, Arc::clone(&disclosed)));
         disclosed
@@ -1694,6 +1694,27 @@ pub(crate) mod tests {
             !explorer.disclosed(explorer.selected().unwrap()),
             "folding it again by hand still folds it"
         );
+    }
+
+    #[test]
+    fn each_journey_keeps_its_own_opened_calls() {
+        let mut explorer = explorer();
+        let main = explorer.journey().unwrap().root();
+        let a = explorer.journey().unwrap().span(main).unwrap().children[0];
+        let c = explorer.journey().unwrap().span(a).unwrap().children[0];
+        explorer.toggle_expanded(a);
+        assert!(explorer.disclosed(c));
+
+        explorer.add_track(UnitId::new("x:main"));
+        assert!(
+            !explorer.disclosed(c),
+            "the same journey opened again starts folded"
+        );
+        explorer.select_in(SpanRef {
+            track: 0,
+            span: main,
+        });
+        assert!(explorer.disclosed(c), "and the first keeps what it opened");
     }
 
     #[test]
