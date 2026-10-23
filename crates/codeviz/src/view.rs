@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::bail;
 use codeviz_core::{JourneyOptions, System};
-use codeviz_ir::Document;
+use codeviz_ir::{Document, UnitId};
 use codeviz_viewer::Viewer;
 
 #[derive(Debug, clap::Args)]
@@ -16,6 +16,11 @@ pub(crate) struct ViewArgs {
     /// what changed over the graph.
     #[arg(long, value_name = "PATH", num_args = 1..)]
     before: Vec<PathBuf>,
+    /// Read the documents' source from this directory instead of the root they were
+    /// made in. Without it, a root that no longer exists is looked for around the
+    /// document and the working directory.
+    #[arg(long, value_name = "DIR")]
+    root: Option<PathBuf>,
     #[command(flatten)]
     display: Display,
 }
@@ -69,6 +74,9 @@ pub(crate) struct Display {
     /// Open with this function (entry label or unit id suffix) focused in the graph.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
+    /// Open with the function at this place in the source focused: `src/orders.rs:42`.
+    #[arg(long, value_name = "FILE:LINE", conflicts_with = "focus")]
+    at: Option<String>,
     /// Open the journey this many levels deep instead of one.
     #[arg(long, value_name = "LEVELS")]
     depth: Option<u32>,
@@ -132,16 +140,53 @@ enum ClusterArg {
     Calls,
 }
 
+/// The function whose source spans `place`, written `FILE:LINE`; a closure stands for
+/// the function around it.
+fn find_at(system: &System, place: &str) -> anyhow::Result<UnitId> {
+    let Some((file, line)) = place
+        .rsplit_once(':')
+        .and_then(|(file, line)| Some((file, line.parse::<u32>().ok()?)))
+    else {
+        bail!("`{place}` is not FILE:LINE");
+    };
+    let found = system.containing(file, line);
+    let mut files: Vec<String> = found
+        .iter()
+        .filter_map(|u| {
+            let uri = &u.location.as_ref()?.uri;
+            Some(
+                system
+                    .local_path(&u.id, uri)
+                    .map_or_else(|| uri.clone(), |path| path.display().to_string()),
+            )
+        })
+        .collect();
+    files.sort_unstable();
+    files.dedup();
+    match (found.first(), files.as_slice()) {
+        (None, _) => bail!("no function spans {place}"),
+        (Some(unit), [_]) => Ok(system.owner(&unit.id).clone()),
+        (Some(_), _) => bail!(
+            "`{file}` is ambiguous:\n{}",
+            files
+                .iter()
+                .map(|f| format!("  {f}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
+}
+
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     let documents = args
         .documents
         .iter()
-        .map(crate::ir::read)
+        .map(|path| crate::ir::read_rooted(path, args.root.as_deref()))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let before = args
         .before
         .iter()
-        .map(crate::ir::read)
+        .map(|path| crate::ir::read_rooted(path, None))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let title = args
         .documents
@@ -171,11 +216,11 @@ pub(crate) fn open(
         .iter()
         .map(|query| crate::journey::find_one(&system, query))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let focus = args
-        .focus
-        .as_ref()
-        .map(|query| crate::journey::find_one(&system, query))
-        .transpose()?;
+    let focus = match (&args.focus, &args.at) {
+        (Some(query), _) => Some(crate::journey::find_one(&system, query)?),
+        (None, Some(place)) => Some(find_at(&system, place)?),
+        (None, None) => None,
+    };
     let title = format!("codeviz — {title}");
 
     let viewer = if before.is_empty() {

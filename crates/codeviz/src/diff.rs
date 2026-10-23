@@ -29,7 +29,8 @@ pub(crate) struct DiffArgs {
     /// Print what changed and exit instead of opening the viewer.
     #[arg(long)]
     summary: bool,
-    /// Also write the two documents to this directory, as `before.json` and `after.json`.
+    /// Also write the two documents to this directory, as `before.json` and
+    /// `after.json`, with a copy of the source each checked-out revision points at.
     #[arg(long, value_name = "DIR")]
     save: Option<PathBuf>,
     #[command(flatten)]
@@ -62,7 +63,7 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
         None => (analyze(&path)?, None),
     };
     if let Some(dir) = &args.save {
-        save(dir, &before, &after)?;
+        save(dir, &before, &after, head.is_some())?;
     }
 
     let name = path.file_name().map_or_else(
@@ -164,13 +165,58 @@ fn git(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn save(dir: &Path, before: &Document, after: &Document) -> anyhow::Result<()> {
+/// Writes both documents to `dir`. A side analyzed in a scratch checkout takes a copy
+/// of the files it points at, in `before/` or `after/` beside it, since the checkout
+/// goes when this exits; a side analyzed in the working tree points there.
+fn save(
+    dir: &Path,
+    before: &Document,
+    after: &Document,
+    after_checked_out: bool,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    for (name, document) in [("before.json", before), ("after.json", after)] {
-        let path = dir.join(name);
+    let dir = dir.canonicalize()?;
+    for (name, document, checked_out) in [
+        ("before", before, true),
+        ("after", after, after_checked_out),
+    ] {
+        let mut document = document.clone();
+        if checked_out {
+            keep_source(&mut document, &dir.join(name))?;
+        }
+        let path = dir.join(format!("{name}.json"));
         std::fs::write(&path, document.to_json()? + "\n")
             .with_context(|| format!("cannot write {}", path.display()))?;
     }
+    Ok(())
+}
+
+/// Copies the files `document` points at under its root to `to`, and roots it there.
+fn keep_source(document: &mut Document, to: &Path) -> anyhow::Result<()> {
+    let Some(from) = document
+        .root
+        .as_deref()
+        .and_then(|r| r.strip_prefix("file://"))
+        .map(PathBuf::from)
+    else {
+        return Ok(());
+    };
+    for file in crate::ir::relative_files(document) {
+        let inside = Path::new(&file)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !inside {
+            continue;
+        }
+        let target = to.join(&file);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("cannot create {}", parent.display()))?;
+        }
+        std::fs::copy(from.join(&file), &target)
+            .with_context(|| format!("cannot copy {file} to {}", to.display()))?;
+    }
+    document.root = Some(crate::ir::file_uri(to));
     Ok(())
 }
 

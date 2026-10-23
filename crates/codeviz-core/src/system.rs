@@ -138,6 +138,40 @@ impl System {
         Some(PathBuf::from(root).join(uri))
     }
 
+    /// Invocable units whose source in `file` spans `line`, innermost first. `file`
+    /// matches a location when either path ends with the other, whole components at
+    /// a time, so `src/foo.rs`, `crates/a/src/foo.rs` and an absolute path all find a
+    /// unit in `crates/a/src/foo.rs`.
+    #[must_use]
+    pub fn containing(&self, file: &str, line: u32) -> Vec<&Unit> {
+        let mut found: Vec<&Unit> = self
+            .units
+            .iter()
+            .filter(|unit| unit.role == Role::Invocable)
+            .filter(|unit| {
+                let Some(location) = &unit.location else {
+                    return false;
+                };
+                let path = self.local_path(&unit.id, &location.uri);
+                let path = path
+                    .as_deref()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or(&location.uri);
+                location
+                    .range
+                    .is_some_and(|r| (r.start_line..=r.end_line).contains(&line))
+                    && (same_file(path, file) || same_file(&location.uri, file))
+            })
+            .collect();
+        found.sort_by_key(|unit| {
+            unit.location
+                .as_ref()
+                .and_then(|l| l.range)
+                .map_or(u32::MAX, |r| r.end_line - r.start_line)
+        });
+        found
+    }
+
     /// Finer units `id` summarizes, in order, from `refines` links.
     #[must_use]
     pub fn refinements(&self, id: &UnitId) -> &[(UnitId, Certainty)] {
@@ -216,5 +250,72 @@ impl System {
                         && id[..id.len() - query.len()].ends_with([':', '.', '/'])
             })
             .collect()
+    }
+}
+
+/// Whether two paths name the same file: one ends with the other, on a `/`.
+fn same_file(a: &str, b: &str) -> bool {
+    let clean = |path: &str| {
+        let path = path.strip_prefix("file://").unwrap_or(path);
+        path.strip_prefix("./").unwrap_or(path).to_owned()
+    };
+    let (a, b) = (clean(a), clean(b));
+    let (long, short) = if a.len() >= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    !short.is_empty()
+        && long.ends_with(short.as_str())
+        && (long.len() == short.len() || long[..long.len() - short.len()].ends_with('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use codeviz_ir::Document;
+
+    use super::*;
+
+    /// `place` with a closure inside it, and another file's `main`.
+    fn system() -> System {
+        let json = r#"{
+          "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" },
+          "root": "file:///work/shop",
+          "units": [
+            { "id": "x:place", "name": "place", "kind": "fn", "role": "invocable",
+              "location": { "uri": "src/orders.rs",
+                "range": { "start_line": 10, "start_col": 1, "end_line": 30, "end_col": 2 } } },
+            { "id": "x:place::{closure#0}", "name": "{closure#0}", "kind": "closure",
+              "role": "invocable", "parent": "x:place",
+              "location": { "uri": "src/orders.rs",
+                "range": { "start_line": 14, "start_col": 9, "end_line": 16, "end_col": 10 } } },
+            { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable",
+              "location": { "uri": "src/main.rs",
+                "range": { "start_line": 1, "start_col": 1, "end_line": 40, "end_col": 2 } } }
+          ]
+        }"#;
+        System::new([Document::from_json(json).unwrap_or_else(|e| panic!("{e}"))])
+    }
+
+    #[test]
+    fn finds_what_a_line_is_in_innermost_first() {
+        let system = system();
+        let ids = |file, line| -> Vec<&str> {
+            system
+                .containing(file, line)
+                .iter()
+                .map(|u| u.id.as_str())
+                .collect()
+        };
+        assert_eq!(
+            ids("src/orders.rs", 15),
+            ["x:place::{closure#0}", "x:place"]
+        );
+        assert_eq!(ids("src/orders.rs", 20), ["x:place"]);
+        assert_eq!(ids("orders.rs", 20), ["x:place"], "a shorter path");
+        assert_eq!(ids("/work/shop/src/orders.rs", 20), ["x:place"], "absolute");
+        assert_eq!(ids("./src/orders.rs", 20), ["x:place"]);
+        assert!(ids("src/orders.rs", 31).is_empty(), "past its end");
+        assert!(ids("rders.rs", 20).is_empty(), "only whole components");
     }
 }
