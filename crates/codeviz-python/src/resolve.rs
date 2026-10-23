@@ -3,7 +3,7 @@
 //! Resolution is syntactic. It follows scopes, imports (absolute, relative and
 //! re-exported), class bodies and bases, `self`, `cls` and `super()`, but tracks no
 //! values: a method called on anything other than `self`, `cls`, a class or a module is
-//! matched by name and marked [`Certainty::Inferred`].
+//! matched by name, when the name is distinctive, and marked [`Certainty::Inferred`].
 
 use std::collections::HashMap;
 
@@ -16,6 +16,57 @@ use crate::{
     index::{Binding, Index, ScopeId, ScopeKind},
     syntax::{field, named_children, text},
 };
+
+/// Methods of `str`, `list`, `dict`, `set`, files and `object` that code calls all the
+/// time: on a value of unknown type, far more likely these than a method of ours.
+const BUILTIN_METHODS: [&str; 46] = [
+    "add",
+    "append",
+    "clear",
+    "close",
+    "copy",
+    "count",
+    "decode",
+    "discard",
+    "encode",
+    "endswith",
+    "extend",
+    "find",
+    "format",
+    "get",
+    "index",
+    "insert",
+    "items",
+    "join",
+    "keys",
+    "lower",
+    "lstrip",
+    "pop",
+    "popitem",
+    "read",
+    "readline",
+    "readlines",
+    "remove",
+    "replace",
+    "reverse",
+    "rsplit",
+    "rstrip",
+    "setdefault",
+    "sort",
+    "split",
+    "splitlines",
+    "startswith",
+    "strip",
+    "title",
+    "union",
+    "update",
+    "upper",
+    "values",
+    "write",
+    "writelines",
+    "difference",
+    "intersection",
+];
 
 /// Imports may re-export imports; this bounds the chain (and breaks cycles).
 const MAX_IMPORT_HOPS: usize = 16;
@@ -233,8 +284,24 @@ impl<'i, 't> Resolver<'i, 't> {
         targets
     }
 
+    /// Methods called `name`, for a receiver of unknown value: only when the name is
+    /// distinctive, neither a dunder nor a builtin type's method (`get`, `append`), and
+    /// only one class defines it, or one class and its subclasses' overrides.
     fn by_name(&self, name: &str) -> Vec<Target> {
-        if name.starts_with("__") {
+        if name.starts_with("__") || BUILTIN_METHODS.contains(&name) {
+            return Vec::new();
+        }
+        let owners: Vec<&UnitId> = self
+            .index
+            .classes
+            .iter()
+            .filter(|(_, class)| class.methods.contains_key(name))
+            .map(|(id, _)| id)
+            .collect();
+        let one_family = owners
+            .iter()
+            .any(|root| owners.iter().all(|owner| self.mro(owner).contains(root)));
+        if !one_family {
             return Vec::new();
         }
         self.index
