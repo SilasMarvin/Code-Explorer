@@ -208,7 +208,7 @@ fn draw_ui(
             legend(ctx, above(graph_area, panel_area), diff.is_some());
         }
         if help.0 {
-            key_help(ctx, graph_area, &mut help.0);
+            key_help(ctx, ctx.viewport_rect(), &mut help.0);
         }
         if let Some(area) = panel_area {
             let tethers =
@@ -1701,6 +1701,9 @@ const KEYS: [(&str, &[(&str, &str)]); 5] = [
     ),
 ];
 
+/// How the groups of [`KEYS`] stand in columns, so the list fits across the window.
+const KEY_COLUMNS: [&[usize]; 4] = [&[0], &[1], &[2, 4], &[3]];
+
 fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
     egui::Area::new("key_help".into())
         .pivot(egui::Align2::CENTER_CENTER)
@@ -1714,24 +1717,12 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
                 .inner_margin(egui::Margin::symmetric(18, 14))
                 .show(ui, |ui| {
                     ui.horizontal_top(|ui| {
-                        for (title, keys) in KEYS {
+                        for column in KEY_COLUMNS {
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(title).strong().size(14.0));
-                                ui.add_space(4.0);
-                                egui::Grid::new(title).spacing(egui::vec2(12.0, 4.0)).show(
-                                    ui,
-                                    |ui| {
-                                        for (key, what) in keys {
-                                            ui.label(
-                                                egui::RichText::new(*key)
-                                                    .monospace()
-                                                    .color(egui::Color32::WHITE),
-                                            );
-                                            ui.label(egui::RichText::new(*what).color(MUTED));
-                                            ui.end_row();
-                                        }
-                                    },
-                                );
+                                for &(title, keys) in column.iter().filter_map(|&i| KEYS.get(i)) {
+                                    key_group(ui, title, keys);
+                                    ui.add_space(10.0);
+                                }
                             });
                             ui.add_space(16.0);
                         }
@@ -1740,6 +1731,25 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
                         *open = false;
                     }
                 });
+        });
+}
+
+/// One group of keys under its title.
+fn key_group(ui: &mut egui::Ui, title: &str, keys: &[(&str, &str)]) {
+    ui.label(egui::RichText::new(title).strong().size(14.0));
+    ui.add_space(4.0);
+    egui::Grid::new(title)
+        .spacing(egui::vec2(12.0, 4.0))
+        .show(ui, |ui| {
+            for (key, what) in keys {
+                ui.label(
+                    egui::RichText::new(*key)
+                        .monospace()
+                        .color(egui::Color32::WHITE),
+                );
+                ui.label(egui::RichText::new(*what).color(MUTED));
+                ui.end_row();
+            }
         });
 }
 
