@@ -16,11 +16,14 @@ codeviz import pipeline.yml -o ci.json
 codeviz validate app.json
 codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
+codeviz journey app.json -e 'POST /users/{id}/orders' --format md --depth 2   # to paste
+codeviz journey app.json -e 'POST /users/{id}/orders' --format mermaid        # a diagram
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
+codeviz diff main...HEAD --summary md   # the changes, as Markdown for the pull request
 ```
 
 The codebase floats as a graph, one node per function, each module gathered in its own
@@ -44,8 +47,8 @@ journey (`L` switches), measured in calls, distance in the graph, or a blend of 
 (`G` switches); what is out of reach dims, then shrinks to a speck. `Q` jumps between
 everything, two steps and one. In the journey, `←`/`→` move between calls by the same
 caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a function,
-`S` opens the side panel (the view's settings, outcomes, source and details), `H`
-lists every key.
+`S` opens the side panel (the view's settings, outcomes, source and details), `W`
+copies the journey as Markdown (see [Sharing](#sharing)), `H` lists every key.
 
 ## Diffs
 
@@ -63,6 +66,44 @@ callees) is one node, not a removal and an addition. `D` cycles three views:
 
 A diff opens showing only what changed, the focus and the journey's root; `C` (or
 `--show-unchanged`) brings back everything else. Focusing a node shows its old and new source as a line diff.
+
+## Sharing
+
+To explain a flow to a teammate, `W` copies the active journey to the clipboard as
+Markdown, told as far as it is disclosed, in the outcome chosen, and numbered as on
+screen; under a diff, what the diff changes comes first and the journey's changed calls
+are marked. `codeviz journey --format md` prints the same from the command line
+(`--depth N` shows N levels; all by default), and `--format mermaid` a sequence diagram
+that GitHub draws from a ` ```mermaid ` block: one participant per module or type, calls
+that need a branch in `opt`/`alt` blocks, loops in `loop`, failures as crossed arrows.
+
+```markdown
+`POST /users/{id}/orders` → `handlers.place_order`, when it completes:
+
+- 1 `orders.place`
+  - 1.1 `users.find_user` — can fail: `.ok_or` fails
+    - 1.1.1 `Store.user`
+  - 1.2 `validation.check_quantity` — can fail: `AppError::Invalid(…)`
+  - 1.3 `pricing.quote`
+    - 1.3.1 `pricing.unit_price` — can fail: `AppError::Invalid(…)`
+    - 1.3.2 `pricing.apply_discount`
+      - 1.3.2.1 `pricing.bulk_discount` — only if `quantity >= BULK_THRESHOLD`
+  - 1.4 `Store.insert_order`
+    - 1.4.1 `Store.next_id`
+
+Outcomes:
+- completes (this path)
+- error `.ok_or` fails in `users.find_user`
+- …
+```
+
+A call says when it only sometimes runs (`only if`, `unless`, `repeats`), whether it runs
+`in the background` or is `handed off, runs later`, where another outcome splits off
+(`can fail`, at the nearest call shown), and how many calls under it are not shown
+(`+3 calls`). `codeviz diff --summary md` writes what a pull request changes,
+structurally: the changed functions grouped by module, the calls added and removed, and
+the entry points that can reach a change. A screenshot run never touches the clipboard:
+`W` logs the text and writes it beside the image as `shot.copied.md`.
 
 ## Readability
 

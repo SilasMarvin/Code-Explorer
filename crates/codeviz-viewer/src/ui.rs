@@ -1616,6 +1616,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
                 "pull the cursor's call out as its own journey",
             ),
             ("X", "close the journey"),
+            ("W", "copy it as Markdown (under a diff, the changes too)"),
         ],
     ),
     (

@@ -164,12 +164,7 @@ impl Track {
             .enumerate()
             .skip(1)
             .filter_map(|(index, scenario)| {
-                let span = scenario.chain.iter().rev().find_map(|site| {
-                    journey
-                        .spans()
-                        .find(|(_, s)| s.target == SpanTarget::Unit(site.unit.clone()))
-                        .map(|(id, _)| id)
-                })?;
+                let span = codeviz_core::divergence(journey, scenario)?;
                 Some(Divergence {
                     span,
                     scenario: index,

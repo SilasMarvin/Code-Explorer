@@ -93,6 +93,8 @@ pub(crate) struct DiffView {
     pub(crate) roots: bool,
     /// The old version, with moved functions under their new ids.
     old: System,
+    /// What changed, by unit, for telling it in words.
+    diff: Diff,
     /// What each moved node was called before.
     moved: HashMap<usize, String>,
     /// Where each node sits in the old version, the new one, and both together.
@@ -200,6 +202,7 @@ impl DiffView {
                 })
                 .collect(),
             old: before,
+            diff: diff.clone(),
             before: before_at,
             after: after_at,
             shared: graph.positions.clone(),
@@ -229,6 +232,11 @@ impl DiffView {
                 )
             })
             .map(|(&tile, _)| tile)
+    }
+
+    /// What changed, by unit.
+    pub(crate) fn diff(&self) -> &Diff {
+        &self.diff
     }
 
     /// What a moved node was called before.

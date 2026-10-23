@@ -4,7 +4,8 @@ use std::{fmt::Write as _, io::Write as _, path::PathBuf};
 
 use anyhow::{Context, bail};
 use codeviz_core::{
-    Journey, JourneyOptions, Level, System, Zoom, describe_scenario, outline, scenarios,
+    Journey, JourneyOptions, Level, Scenario, Story, System, Zoom, describe_scenario, number_calls,
+    outline, scenarios,
 };
 use codeviz_ir::UnitId;
 
@@ -31,6 +32,20 @@ pub(crate) struct JourneyArgs {
     /// Merge every span inside this container (repeatable; a unit id or id suffix).
     #[arg(long, value_name = "UNIT")]
     collapse: Vec<String>,
+    /// How to print the journey: `text`, every span on the clock; `md`, a numbered
+    /// outline to paste into a pull request, doc or chat; `mermaid`, a sequence diagram.
+    #[arg(long, value_enum, default_value_t = Format::Text)]
+    format: Format,
+    /// Levels of calls below the entry that `md` and `mermaid` show; all by default.
+    #[arg(long)]
+    depth: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum Format {
+    Text,
+    Md,
+    Mermaid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -69,6 +84,9 @@ pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
     let entry = find_one(&system, query)?;
     let zoom = Zoom::from(args.zoom);
     let scenarios = scenarios(&system, &entry, &zoom);
+    if args.format != Format::Text {
+        return print(&tell(&system, &entry, &scenarios, args, zoom)?);
+    }
     let _ = writeln!(out, "scenarios for {entry}:");
     for (index, scenario) in scenarios.iter().enumerate() {
         let _ = writeln!(out, "  [{index}] {}", describe_scenario(&system, scenario));
@@ -77,22 +95,7 @@ pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
         .scenario
         .map(|i| scenarios.get(i).with_context(|| format!("no scenario {i}")))
         .transpose()?;
-    let options = JourneyOptions {
-        include_unresolved: args.unresolved,
-        follow_registrations: args.follow,
-        zoom,
-        ..JourneyOptions::default()
-    };
-    let mut journey =
-        Journey::unroll(&system, &entry, scenario, options).context("entry not loaded")?;
-    if !args.collapse.is_empty() {
-        let containers = args
-            .collapse
-            .iter()
-            .map(|query| find_one(&system, query))
-            .collect::<anyhow::Result<_>>()?;
-        journey = journey.collapse(&system, &containers);
-    }
+    let journey = unroll(&system, &entry, scenario, args, zoom)?;
     let _ = writeln!(
         out,
         "\njourney{}: {} spans, {} ticks, depth {}",
@@ -105,6 +108,54 @@ pub(crate) fn run(args: &JourneyArgs) -> anyhow::Result<()> {
     );
     out.push_str(&outline(&system, &journey));
     print(&out)
+}
+
+/// The journey as Markdown or Mermaid. Without a scenario it tells the one that
+/// completes, as the viewer opens on, with where the others split off.
+fn tell(
+    system: &System,
+    entry: &UnitId,
+    scenarios: &[Scenario],
+    args: &JourneyArgs,
+    zoom: Zoom,
+) -> anyhow::Result<String> {
+    let index = args.scenario.unwrap_or(0);
+    let scenario = scenarios
+        .get(index)
+        .with_context(|| format!("no scenario {index}"))?;
+    let journey = unroll(system, entry, Some(scenario), args, zoom)?;
+    let numbers = number_calls(system, &journey, args.depth.unwrap_or(u32::MAX));
+    let story = Story::new(system, &journey, scenarios, Some(index), &numbers);
+    Ok(match args.format {
+        Format::Mermaid => story.mermaid(),
+        Format::Md | Format::Text => story.markdown(),
+    })
+}
+
+/// The journey from `entry` the arguments ask for.
+fn unroll(
+    system: &System,
+    entry: &UnitId,
+    scenario: Option<&Scenario>,
+    args: &JourneyArgs,
+    zoom: Zoom,
+) -> anyhow::Result<Journey> {
+    let options = JourneyOptions {
+        include_unresolved: args.unresolved,
+        follow_registrations: args.follow,
+        zoom,
+        ..JourneyOptions::default()
+    };
+    let journey = Journey::unroll(system, entry, scenario, options).context("entry not loaded")?;
+    if args.collapse.is_empty() {
+        return Ok(journey);
+    }
+    let containers = args
+        .collapse
+        .iter()
+        .map(|query| find_one(system, query))
+        .collect::<anyhow::Result<_>>()?;
+    Ok(journey.collapse(system, &containers))
 }
 
 pub(crate) fn find_one(system: &System, query: &str) -> anyhow::Result<UnitId> {

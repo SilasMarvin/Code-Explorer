@@ -19,6 +19,7 @@ mod graph_view;
 mod journey_panel;
 mod lens;
 mod scene;
+mod share;
 mod source_diff;
 mod truth;
 mod ui;
@@ -358,6 +359,7 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
+            share::SharePlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)

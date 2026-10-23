@@ -26,14 +26,27 @@ pub(crate) struct DiffArgs {
     path: PathBuf,
     #[command(flatten)]
     source: Source,
-    /// Print what changed and exit instead of opening the viewer.
-    #[arg(long)]
-    summary: bool,
+    /// Print what changed and exit instead of opening the viewer: as a list (`text`),
+    /// or as Markdown to paste into the pull request (`md`).
+    #[arg(
+        long,
+        value_enum,
+        value_name = "FORMAT",
+        num_args = 0..=1,
+        default_missing_value = "text"
+    )]
+    summary: Option<Summary>,
     /// Also write the two documents to this directory, as `before.json` and `after.json`.
     #[arg(long, value_name = "DIR")]
     save: Option<PathBuf>,
     #[command(flatten)]
     display: Display,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum Summary {
+    Text,
+    Md,
 }
 
 pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
@@ -69,16 +82,27 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
         || "repository".to_owned(),
         |n| n.to_string_lossy().into_owned(),
     );
-    let title = format!(
-        "{name}  {} → {}",
+    let range = format!(
+        "{} → {}",
         old.label,
         new.as_ref().map_or("working tree", |c| c.label.as_str())
     );
+    let title = format!("{name}  {range}");
     let new_system = System::new(vec![after.clone()]);
     let (aligned, moved) = align(vec![before.clone()], &new_system);
-    let diff = Diff::between(&System::new(aligned), &new_system).with_moves(moved);
-    if args.summary {
-        return print(&title, &diff);
+    let old_system = System::new(aligned);
+    let diff = Diff::between(&old_system, &new_system).with_moves(moved);
+    match args.summary {
+        Some(Summary::Text) => return print(&title, &diff),
+        Some(Summary::Md) => {
+            let text = format!(
+                "What `{name}` changes, {range}, structurally:\n\n{}",
+                diff.markdown(&old_system, &new_system)
+            );
+            write!(std::io::stdout().lock(), "{text}")?;
+            return Ok(());
+        }
+        None => {}
     }
     if diff.is_empty() {
         eprintln!("{title}: nothing changed");

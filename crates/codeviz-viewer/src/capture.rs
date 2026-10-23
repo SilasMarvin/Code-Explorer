@@ -143,8 +143,9 @@ impl Plugin for CapturePlugin {
     }
 }
 
+/// A screenshot run: present only when the viewer renders once and exits.
 #[derive(Resource)]
-struct Capture {
+pub(crate) struct Capture {
     path: PathBuf,
     keys: Vec<Press>,
     frame: u32,
@@ -159,6 +160,11 @@ struct Capture {
 }
 
 impl Capture {
+    /// Where the screenshot goes.
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Whether the scene has had time to settle since it started.
     fn settled(&self, now: Duration) -> bool {
         self.started.is_some_and(|started| {
