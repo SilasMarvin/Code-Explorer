@@ -284,6 +284,9 @@ fn save(dir: &Path, before: &Document, after: &Document) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The most entry points the summary names.
+const LISTED: usize = 20;
+
 /// What changed, as text: the totals, the entry points the changes reach, the changed
 /// functions in the order to read them, and what changed outside functions.
 fn summary(title: &str, diff: &Diff, review: &Review, offstage: &[Offstage]) -> String {
@@ -315,8 +318,12 @@ fn summary(title: &str, diff: &Diff, review: &Review, offstage: &[Offstage]) -> 
         affected.len(),
         review.starts.len()
     );
-    for &start in &affected {
+    // Those most changes reach, as many as stay readable.
+    for &start in affected.iter().take(LISTED) {
         let _ = writeln!(out, "  {}", review.starts[start].label);
+    }
+    if affected.len() > LISTED {
+        let _ = writeln!(out, "  and {} more", affected.len() - LISTED);
     }
     let _ = writeln!(
         out,
