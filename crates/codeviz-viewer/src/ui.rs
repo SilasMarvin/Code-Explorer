@@ -9,7 +9,10 @@ use std::{
 };
 
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use bevy_egui::{
+    EguiContext, EguiContexts, EguiInput, EguiPreUpdateSet, EguiPrimaryContextPass,
+    PrimaryEguiContext, egui,
+};
 use codeviz_core::{Change, Level, SpanTarget};
 use codeviz_ir::{ExitKind, Role, UnitId};
 
@@ -32,7 +35,42 @@ impl Plugin for UiPlugin {
             .init_resource::<KeyHelp>()
             .init_resource::<Chrome>()
             .init_resource::<Sources>()
+            .add_systems(
+                PreUpdate,
+                keys_to_the_graph
+                    .after(EguiPreUpdateSet::ProcessInput)
+                    .before(EguiPreUpdateSet::BeginPass),
+            )
             .add_systems(EguiPrimaryContextPass, (fallback_fonts, draw_ui).chain());
+    }
+}
+
+/// The keyboard belongs to the graph unless a text box is being typed in. egui would
+/// otherwise move keyboard focus onto the first button on Tab, after which it takes
+/// every key: the graph's shortcuts go dead and Space or Enter press that button. So
+/// Tab is kept from egui, and any other widget holding focus lets go of it.
+fn keys_to_the_graph(
+    mut contexts: Query<(&mut EguiContext, &mut EguiInput), With<PrimaryEguiContext>>,
+) {
+    for (mut context, mut input) in &mut contexts {
+        let ctx = context.get_mut();
+        if ctx.text_edit_focused() {
+            continue;
+        }
+        input.events.retain(|event| {
+            !matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Tab,
+                    ..
+                }
+            )
+        });
+        ctx.memory_mut(|memory| {
+            if let Some(id) = memory.focused() {
+                memory.surrender_focus(id);
+            }
+        });
     }
 }
 
