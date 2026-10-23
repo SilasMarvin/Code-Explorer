@@ -27,7 +27,7 @@ The codebase floats as a graph, one node per function, each module gathered in i
 ring. Click a node and the camera orbits it, and its journey opens docked as a flame
 graph: what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
 labels alike. `,`/`.` show a level less or more, a bar's `+N` opens the calls folded
-under it, and `V` switches to showing calls only as the cursor reaches them. A closure
+under it, as does the cursor wherever it lands, and `V` switches to showing calls only as the cursor reaches them. A closure
 counts as part of the function around it.
 
 Each color says one thing. A link's color says which way a call runs: violet into the
@@ -38,14 +38,25 @@ color beside the node, so a bar finds its node at a glance; hovering a bar draws
 to it. `I` picks out everything that calls the focus and `O` everything it calls,
 pulling the camera back only as far as it takes to show them all.
 
-Digits walk to the focus's nth call, shift+digit to its nth caller, `-` and `=` reveal
-less or more around a starting point, the focus, a diff's changes or the active
-journey (`L` switches), measured in calls, distance in the graph, or a blend of both
-(`G` switches); what is out of reach dims, then shrinks to a speck. `Q` jumps between
-everything, two steps and one. In the journey, `←`/`→` move between calls by the same
-caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a function,
-`S` opens the side panel (the view's settings, outcomes, source and details), `H`
-lists every key.
+The focus is the node under the journey's cursor, ringed in white and named in the top
+bar beside how many calls it makes and takes; `I`, `O` and `Enter` (start the journey
+there) act on it. Hovering a node rings and names it without moving the focus, so the
+colors stay put. Digits open the call with that number on its badge and bar, `-` and
+`=` reveal less or more around a starting point, the focus, a diff's changes or the
+active journey (`L` switches), measured in calls, distance in the graph, or a blend of
+both (`G` switches); what is out of reach dims, then shrinks to a speck. `Q` jumps
+between everything, two steps and one. In the journey, `←`/`→` move between calls by
+the same caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a
+function, `S` opens the side panel (the view's settings, outcomes, source and details),
+`H` lists every key, and `Esc` closes whichever of those is on top, or the spotlight.
+
+Every move, opening a node, a numbered call, a search result, a change, an outcome or
+a new start, is remembered: `Backspace` or `Alt+←` (or `‹` in the top bar) goes back
+to the view before it, cursor, outcome, depth, opened calls and spotlight included, and
+`Alt+→` forward again. The camera orbits where the journey starts and turns only when
+you move somewhere; stepping through the journey at most pulls it back to keep the
+cursor's node in sight. Pan or zoom and it stays where you put it, saying `camera free
+· F to follow` until `F` brings it back.
 
 ## Diffs
 

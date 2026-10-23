@@ -17,6 +17,7 @@ use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConf
 
 use crate::{
     disclosure::{Disclose, Disclosed},
+    history::{History, View},
     lens::{self, Lens},
 };
 
@@ -64,13 +65,14 @@ pub(crate) struct SpanRef {
 #[derive(Debug, Default)]
 pub(crate) struct Track {
     root: Option<UnitId>,
-    history: Vec<UnitId>,
     scenarios: Vec<Scenario>,
     scenario: Option<usize>,
     journey: Option<Journey>,
     scene: Scene,
     divergences: Vec<Divergence>,
     selected: Option<SpanId>,
+    /// Spans opened one level past the disclosed depth, by hand or by the cursor.
+    expanded: HashSet<SpanId>,
     /// The color of each of the scene's lanes, shared with the other journeys.
     colors: Vec<usize>,
 }
@@ -151,6 +153,8 @@ impl Track {
             .unwrap_or_default();
         self.divergences = self.find_divergences();
         self.selected = self.journey.as_ref().map(Journey::root);
+        // A rebuilt journey numbers its spans afresh.
+        self.expanded.clear();
     }
 
     /// On the happy path, where each failing outcome splits off: the deepest unit on
@@ -254,15 +258,10 @@ pub(crate) struct Explorer {
     clustering: Clustering,
     /// Whether the graph is still moving.
     settling: bool,
-    /// A node focused in the graph that the active journey does not run, until the
-    /// cursor moves.
-    graph_focus: Option<usize>,
     /// Map tiles each journey runs, with the color each is drawn in there.
     journey_tiles: Vec<HashMap<usize, usize>>,
-    /// What reaches the node at the center of attention, and what it reaches.
+    /// What reaches the focus, and what it reaches.
     reach: Option<(usize, Reach)>,
-    /// The same for the focused node.
-    focus_reach: Option<(usize, Reach)>,
     /// How much of the graph shows.
     lens: Lens,
     /// How fully each node shows, by tile, eased towards what the lens says.
@@ -271,17 +270,19 @@ pub(crate) struct Explorer {
     changed_tiles: Vec<usize>,
     /// How much of the active journey shows.
     disclose: Disclose,
-    /// Spans opened one level past the disclosed depth, by hand.
-    expanded: HashSet<SpanId>,
-    /// Bumped whenever `expanded` changes.
+    /// Bumped whenever a journey's opened spans change.
     disclosure_epoch: u64,
     disclosure_cache: Mutex<Option<(DisclosureKey, Arc<Disclosed>)>>,
-    /// Nodes focused before the current one, most recent last.
-    focus_history: Vec<usize>,
+    /// Where the view has been, to go back and forward.
+    history: History<View>,
+    /// Bumped whenever the view is pointed somewhere by hand, so the camera turns to
+    /// it even when that is where it already was.
+    aim: u64,
+    /// The node under the pointer, in the graph or as a bar in the journey.
     pub(crate) hovered_tile: Option<usize>,
-    /// What calls the focus, or what it calls, picked out and brought into view, and
-    /// when, in seconds of app time.
-    spotlight: Option<(Side, f32)>,
+    /// What calls the focus, or what it calls, picked out and brought into view: when,
+    /// in seconds of app time, and for which node.
+    spotlight: Option<(Side, f32, usize)>,
     /// Lane label to color index, in order of first appearance across journeys.
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever a journey is rebuilt.
@@ -323,16 +324,14 @@ impl Explorer {
             graph,
             clustering,
             settling: true,
-            graph_focus: None,
             journey_tiles: Vec::new(),
             reach: None,
-            focus_reach: None,
             lens: Lens::default(),
             visibility: vec![1.0; tiles],
             changed_tiles: Vec::new(),
-            focus_history: Vec::new(),
+            history: History::default(),
+            aim: 0,
             disclose: Disclose::default(),
-            expanded: HashSet::new(),
             disclosure_epoch: 0,
             disclosure_cache: Mutex::new(None),
             hovered_tile: None,
@@ -342,8 +341,7 @@ impl Explorer {
         };
         explorer.color_groups();
         if let Some(root) = root {
-            explorer.set_root(root);
-            explorer.track_mut().history.clear();
+            explorer.replace_root(root);
         }
         explorer
     }
@@ -370,7 +368,6 @@ impl Explorer {
     pub(crate) fn retire_calls(&mut self, gone: &HashSet<(usize, usize)>) {
         self.graph.retire(gone);
         self.reach = None;
-        self.focus_reach = None;
     }
 
     pub(crate) fn tracks(&self) -> &[Track] {
@@ -417,8 +414,96 @@ impl Explorer {
         self.revision
     }
 
+    /// The view as it is now, to come back to.
+    fn view(&self) -> View {
+        View {
+            track: self.active,
+            root: self.root().cloned(),
+            scenario: self.scenario(),
+            cursor: self.selected(),
+            disclose: self.disclose,
+            expanded: self.track().expanded.clone(),
+            spotlight: self.spotlight,
+        }
+    }
+
+    /// Puts the view back as it was, all of it: the journey, its outcome and cursor,
+    /// how much of it shows, and the spotlight.
+    fn restore(&mut self, view: View) {
+        self.active = view.track.min(self.tracks.len() - 1);
+        let index = self.active;
+        let track = &mut self.tracks[index];
+        if track.root != view.root {
+            track.root = view.root;
+            track.reroot(&self.system, &self.options, &self.layout);
+        }
+        if track.scenario != view.scenario {
+            track.scenario = view.scenario;
+            track.rebuild(&self.system, &self.options, &self.layout);
+        }
+        // A journey rebuilt since may no longer have the span.
+        track.selected = view
+            .cursor
+            .filter(|&span| track.span(span).is_some())
+            .or_else(|| track.journey().map(Journey::root));
+        track.expanded = view.expanded;
+        self.disclose = view.disclose;
+        self.disclosure_epoch += 1;
+        self.spotlight = view.spotlight;
+        self.aim += 1;
+        self.recolor();
+    }
+
+    /// Goes somewhere: whatever `go` changes, the view before it is remembered, so
+    /// Back returns to it. A move that changes nothing is not remembered.
+    fn navigate(&mut self, go: impl FnOnce(&mut Self)) {
+        let before = self.view();
+        go(self);
+        if self.view() != before {
+            self.history.leave(before);
+        }
+    }
+
+    /// Returns to the view before the last move. Returns whether there was one.
+    pub(crate) fn go_back(&mut self) -> bool {
+        let current = self.view();
+        match self.history.back(current) {
+            Some(view) => {
+                self.restore(view);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Returns to the view gone back from. Returns whether there was one.
+    pub(crate) fn go_forward(&mut self) -> bool {
+        let current = self.view();
+        match self.history.forward(current) {
+            Some(view) => {
+                self.restore(view);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub(crate) fn can_go_back(&self) -> bool {
-        !self.track().history.is_empty()
+        self.history.can_go_back()
+    }
+
+    pub(crate) fn can_go_forward(&self) -> bool {
+        self.history.can_go_forward()
+    }
+
+    /// Forgets where the view has been, so it starts from how it opened.
+    pub(crate) fn forget_history(&mut self) {
+        self.history.clear();
+    }
+
+    /// Bumped whenever the view is pointed somewhere by hand.
+    pub(crate) fn aim(&self) -> u64 {
+        self.aim
     }
 
     /// The span the active journey's cursor is on.
@@ -426,10 +511,44 @@ impl Explorer {
         self.track().selected
     }
 
-    /// Moves the active cursor. The graph's focus follows it again.
+    /// Moves the active cursor, and the focus with it. The spotlight was on the focus
+    /// it leaves, so it goes out; the calls folded over where it lands open, so its bar
+    /// shows.
     pub(crate) fn select(&mut self, span: Option<SpanId>) {
+        let before = self.graph_focus();
         self.track_mut().selected = span;
-        self.graph_focus = None;
+        if self.graph_focus() != before {
+            self.spotlight = None;
+        }
+        self.reveal_cursor();
+    }
+
+    /// Opens the calls the cursor is folded under, a level at a time, as a click on
+    /// each `+N` would: wherever the cursor goes, its bar shows, and the graph numbers
+    /// its node.
+    fn reveal_cursor(&mut self) {
+        let Some(cursor) = self.selected() else {
+            return;
+        };
+        let stack = self.stack(cursor);
+        for _ in 0..stack.len() {
+            let disclosed = self.disclosure();
+            if disclosed.shows(cursor) {
+                return;
+            }
+            // The deepest numbered call above it is shown, and folds what is below.
+            let Some(&folding) = stack
+                .iter()
+                .rev()
+                .find(|&&span| disclosed.number(span).is_some())
+            else {
+                return;
+            };
+            if !self.track_mut().expanded.insert(folding) {
+                return;
+            }
+            self.disclosure_epoch += 1;
+        }
     }
 
     /// Makes `track` active with its cursor on `span`.
@@ -443,36 +562,36 @@ impl Explorer {
         }
     }
 
+    /// Starts the active journey at `root`, remembering where it was.
     pub(crate) fn set_root(&mut self, root: UnitId) {
+        self.navigate(|explorer| explorer.replace_root(root));
+    }
+
+    /// Starts the active journey at `root` on its happy path, with the cursor on it.
+    fn replace_root(&mut self, root: UnitId) {
         if self.root() == Some(&root) {
             return;
         }
-        let track = self.track_mut();
-        if let Some(previous) = track.root.replace(root) {
-            track.history.push(previous);
-        }
+        self.track_mut().root = Some(root);
         self.reroot();
     }
 
-    pub(crate) fn back(&mut self) {
-        if let Some(previous) = self.track_mut().history.pop() {
-            self.track_mut().root = Some(previous);
-            self.reroot();
-        }
-    }
-
     /// Recomputes outcomes for the active journey's root and opens on the happy path,
-    /// with the cursor and the graph's focus on the root.
-    pub(crate) fn reroot(&mut self) {
+    /// with the cursor on the root.
+    fn reroot(&mut self) {
         let index = self.active.min(self.tracks.len() - 1);
         if let Some(track) = self.tracks.get_mut(index) {
             track.reroot(&self.system, &self.options, &self.layout);
         }
-        self.graph_focus = None;
         self.recolor();
     }
 
+    /// Follows another outcome, landing on the exit it ends at.
     pub(crate) fn set_scenario(&mut self, scenario: Option<usize>) {
+        self.navigate(|explorer| explorer.choose_scenario(scenario));
+    }
+
+    fn choose_scenario(&mut self, scenario: Option<usize>) {
         if self.scenario() != scenario {
             self.track_mut().scenario = scenario;
             self.rebuild();
@@ -490,10 +609,11 @@ impl Explorer {
         }
     }
 
-    /// Re-roots the active journey at the selected span's unit.
-    pub(crate) fn trace_from_selected(&mut self) {
-        if let Some(id) = self.focus().cloned() {
-            self.set_root(id);
+    /// Starts the active journey at the focus: from where the cursor is, as its own
+    /// journey.
+    pub(crate) fn trace_from_focus(&mut self) {
+        if let Some(unit) = self.graph_focus().and_then(|t| self.tile_unit(t)).cloned() {
+            self.set_root(unit);
         }
     }
 
@@ -539,11 +659,6 @@ impl Explorer {
             self.graph.set_config(clustering.forces());
             self.settling = true;
         }
-    }
-
-    /// Whether the graph is still moving.
-    pub(crate) fn settling(&self) -> bool {
-        self.settling
     }
 
     /// Runs the graph simulation a few steps while it is still moving. Returns whether
@@ -605,7 +720,6 @@ impl Explorer {
         }
         self.tracks.push(track);
         self.active = self.tracks.len() - 1;
-        self.graph_focus = None;
         self.recolor();
     }
 
@@ -627,38 +741,42 @@ impl Explorer {
         }
     }
 
-    /// The node the graph centers on and lights up around: one clicked in the graph,
-    /// else the function under the cursor.
+    /// The focus: the node the graph lights up around, and what I, O and Enter act on.
+    /// It is the cursor's node, or the root's when the journey could not be traced.
     pub(crate) fn graph_focus(&self) -> Option<usize> {
-        self.graph_focus
-            .or_else(|| self.focus().and_then(|f| self.map.tile_of(f)))
+        self.focus()
+            .and_then(|f| self.map.tile_of(f))
+            .or_else(|| self.root_tile())
     }
 
-    /// The node the camera orbits: the one focused by hand, else where the active
-    /// journey starts, else its cursor. Stepping through a journey leaves it put.
+    fn root_tile(&self) -> Option<usize> {
+        self.root().and_then(|u| self.map.tile_of(u))
+    }
+
+    /// The node the camera orbits: where the active journey starts. Stepping through
+    /// the journey leaves it put.
     pub(crate) fn anchor(&self) -> Option<usize> {
-        self.graph_focus
-            .or_else(|| self.root().and_then(|u| self.map.tile_of(u)))
-            .or_else(|| self.graph_focus())
+        self.root_tile().or_else(|| self.graph_focus())
     }
 
     /// Centers on a node and opens its journey: the active journey restarts there, with
-    /// what it calls directly disclosed and the rest folded away.
+    /// what it calls directly disclosed and the rest folded away. Opening the node the
+    /// journey already starts at puts the cursor back on it.
     pub(crate) fn open_at(&mut self, tile: usize) {
-        if let Some(previous) = self.anchor().filter(|&p| p != tile) {
-            self.focus_history.push(previous);
-        }
-        self.restart_at(tile);
+        self.navigate(|explorer| explorer.restart_at(tile));
+        self.aim += 1;
     }
 
     fn restart_at(&mut self, tile: usize) {
-        if let Some(unit) = self.tile_unit(tile).cloned() {
-            self.set_root(unit);
+        let Some(unit) = self.tile_unit(tile).cloned() else {
+            return;
+        };
+        if self.root() == Some(&unit) {
+            self.select(self.journey().map(Journey::root));
+            return;
         }
-        self.graph_focus = Some(tile);
+        self.replace_root(unit);
         self.spotlight = None;
-        self.expanded.clear();
-        self.disclosure_epoch += 1;
         if let Disclose::Depth(_) = self.disclose {
             self.disclose = Disclose::default();
         }
@@ -674,8 +792,9 @@ impl Explorer {
 
     /// Opens or folds the calls under one span, past the disclosed depth.
     pub(crate) fn toggle_expanded(&mut self, span: SpanId) {
-        if !self.expanded.remove(&span) {
-            self.expanded.insert(span);
+        let expanded = &mut self.track_mut().expanded;
+        if !expanded.remove(&span) {
+            expanded.insert(span);
         }
         self.disclosure_epoch += 1;
     }
@@ -704,7 +823,7 @@ impl Explorer {
             self.track(),
             &self.map,
             self.disclose,
-            &self.expanded,
+            &self.track().expanded,
         ));
         *cache = Some((key, Arc::clone(&disclosed)));
         disclosed
@@ -725,24 +844,39 @@ impl Explorer {
         self.map.tile(tile).map(|t| &t.unit)
     }
 
-    /// Starts the active journey at the focused node.
-    pub(crate) fn trace_from_focus(&mut self) {
-        if let Some(unit) = self.graph_focus.and_then(|t| self.tile_unit(t)).cloned() {
-            self.start_from(unit);
-        } else {
-            self.trace_from_selected();
+    /// Opens the call numbered `number` on screen: by the journey's own numbering, as
+    /// its bars and its nodes' badges show it, or with nothing of the journey disclosed,
+    /// the focus's calls in the order it makes them, as `#1`, `#2` beside them. A call
+    /// that could run any of several functions has no one node to open, so the cursor
+    /// goes to its bar instead.
+    pub(crate) fn open_numbered(&mut self, number: usize) {
+        let Some(index) = number.checked_sub(1) else {
+            return;
+        };
+        let disclosed = self.disclosure();
+        if !disclosed.opened() {
+            if let Some(&tile) = self
+                .graph_focus()
+                .and_then(|focus| self.graph.sequence(focus).get(index))
+            {
+                self.open_at(tile);
+            }
+            return;
+        }
+        let Some(&call) = self
+            .journey()
+            .and_then(|journey| disclosed.children(journey.root()).get(index))
+            .filter(|&&call| disclosed.number(call).is_some())
+        else {
+            return;
+        };
+        match self.unit_id(call).and_then(|unit| self.map.tile_of(unit)) {
+            Some(tile) => self.open_at(tile),
+            None => self.select(Some(call)),
         }
     }
 
-    /// Brings up a journey through the focused node: the active one when it runs the
-    /// node, else one traced from it.
-    pub(crate) fn journey_for_focus(&mut self) {
-        if let Some(unit) = self.graph_focus.and_then(|t| self.tile_unit(t)).cloned() {
-            self.set_root(unit);
-        }
-    }
-
-    /// What calls `tile`, each once, in the order the focus card numbers them.
+    /// What calls `tile`, each once.
     pub(crate) fn callers_of(&self, tile: usize) -> Vec<usize> {
         let mut callers: Vec<usize> = self.graph.callers(tile).collect();
         callers.sort_unstable();
@@ -750,22 +884,33 @@ impl Explorer {
         callers
     }
 
-    /// Which side of the focus is in the spotlight, and since when.
+    /// Which side of the focus is in the spotlight, and since when. Only ever on the
+    /// focus: once the focus moves, it is out.
     pub(crate) fn spotlight(&self) -> Option<(Side, f32)> {
         self.spotlight
+            .filter(|&(_, _, tile)| Some(tile) == self.graph_focus())
+            .map(|(side, since, _)| (side, since))
     }
 
     /// Puts `side` in the spotlight at `now`, or takes it out when it already is.
     pub(crate) fn toggle_spotlight(&mut self, side: Side, now: f32) {
-        self.spotlight = match self.spotlight {
-            Some((on, _)) if on == side => None,
-            _ => Some((side, now)),
+        let Some(focus) = self.graph_focus() else {
+            return;
         };
+        self.spotlight = match self.spotlight() {
+            Some((on, _)) if on == side => None,
+            _ => Some((side, now, focus)),
+        };
+    }
+
+    /// Takes the spotlight out.
+    pub(crate) fn clear_spotlight(&mut self) {
+        self.spotlight = None;
     }
 
     /// The nodes in the spotlight: the focus's callers or its callees, each once.
     pub(crate) fn spotlit(&self) -> Vec<usize> {
-        let (Some((side, _)), Some(focus)) = (self.spotlight, self.graph_focus()) else {
+        let (Some((side, _)), Some(focus)) = (self.spotlight(), self.graph_focus()) else {
             return Vec::new();
         };
         let mut tiles: Vec<usize> = match side {
@@ -776,23 +921,6 @@ impl Explorer {
         tiles.dedup();
         tiles.retain(|&t| t != focus);
         tiles
-    }
-
-    /// Returns to the node opened before this one. Returns whether there was one.
-    pub(crate) fn focus_back(&mut self) -> bool {
-        let Some(tile) = self.focus_history.pop() else {
-            return false;
-        };
-        self.restart_at(tile);
-        true
-    }
-
-    /// Lets the focus follow the journey's cursor again.
-    pub(crate) fn unfocus(&mut self) {
-        self.spotlight = None;
-        if let Some(previous) = self.graph_focus.take() {
-            self.focus_history.push(previous);
-        }
     }
 
     pub(crate) fn lens(&self) -> Lens {
@@ -883,36 +1011,22 @@ impl Explorer {
         self.visibility(tile) >= lens::SPECK
     }
 
-    /// The node at the center of attention: under the pointer, else focused.
-    pub(crate) fn attention(&self) -> Option<usize> {
-        self.hovered_tile.or_else(|| self.graph_focus())
-    }
-
-    /// What reaches the node at the center of attention and what it reaches, once
-    /// [`Self::refresh_reach`] has run.
+    /// What reaches the focus and what it reaches, once [`Self::refresh_reach`] has
+    /// run.
     pub(crate) fn reach(&self) -> Option<&Reach> {
         self.reach
             .as_ref()
-            .filter(|(tile, _)| Some(*tile) == self.attention())
+            .filter(|(tile, _)| Some(*tile) == self.graph_focus())
             .map(|(_, reach)| reach)
     }
 
-    /// Recomputes [`Self::reach`] when attention moved. Returns whether it did.
+    /// Recomputes [`Self::reach`] when the focus moved. Returns whether it did.
     pub(crate) fn refresh_reach(&mut self) -> bool {
         let focus = self.graph_focus();
-        let mut moved = false;
-        if self.focus_reach.as_ref().map(|(tile, _)| *tile) != focus {
-            self.focus_reach = focus.map(|tile| (tile, self.graph.reach(tile)));
-            moved = true;
+        if self.reach.as_ref().map(|(tile, _)| *tile) == focus {
+            return false;
         }
-        let attention = self.attention();
-        if self.reach.as_ref().map(|(tile, _)| *tile) == attention {
-            return moved;
-        }
-        self.reach = match (attention, &self.focus_reach) {
-            (Some(tile), Some((focus, reach))) if tile == *focus => Some((tile, reach.clone())),
-            (attention, _) => attention.map(|tile| (tile, self.graph.reach(tile))),
-        };
+        self.reach = focus.map(|tile| (tile, self.graph.reach(tile)));
         true
     }
 
@@ -970,17 +1084,6 @@ impl Explorer {
     pub(crate) fn focus(&self) -> Option<&UnitId> {
         let track = self.track();
         track.selected.and_then(|id| track.unit_id(id))
-    }
-
-    /// Starts the active journey at `unit`, with the cursor on the unit it was on
-    /// before when the new journey reaches it: from a caller, straight to the call
-    /// that led here.
-    pub(crate) fn start_from(&mut self, unit: UnitId) {
-        let focus = self.focus().cloned();
-        self.set_root(unit);
-        if let Some(landing) = focus.and_then(|f| self.track().find(&f)) {
-            self.select(Some(landing));
-        }
     }
 
     pub(crate) fn span(&self, id: SpanId) -> Option<&Span> {
@@ -1361,13 +1464,13 @@ pub(crate) mod tests {
             !explorer.shown(a),
             "siblings only meet through their caller"
         );
-        assert!(explorer.focus_back());
+        assert!(explorer.go_back());
         explorer.refresh_reach();
         assert_eq!(explorer.graph_focus(), Some(a));
     }
 
     #[test]
-    fn starting_from_a_caller_keeps_the_cursor_on_the_callee() {
+    fn the_focus_reaches_up_its_callers() {
         let mut explorer = explorer();
         explorer.step(Step::Into);
         explorer.step(Step::Into);
@@ -1378,10 +1481,6 @@ pub(crate) mod tests {
         let reach = explorer.reach().unwrap();
         assert_eq!(reach.upstream.get(&tile("x:a")), Some(&1));
         assert_eq!(reach.upstream.get(&tile("x:main")), Some(&2));
-
-        explorer.start_from(UnitId::new("x:a"));
-        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
-        assert_eq!(at(&explorer), "c");
     }
 
     #[test]
@@ -1424,13 +1523,214 @@ pub(crate) mod tests {
     fn rerooting_keeps_history() {
         let mut explorer = explorer();
         explorer.step(Step::Into);
-        explorer.trace_from_selected();
+        explorer.trace_from_focus();
         assert_eq!(explorer.journey().map(Journey::len), Some(2));
         assert!(explorer.can_go_back());
 
-        explorer.back();
+        explorer.go_back();
         assert_eq!(explorer.journey().map(Journey::len), Some(4));
+        assert_eq!(at(&explorer), "a", "back where the cursor was");
         assert!(!explorer.can_go_back());
+        assert!(explorer.can_go_forward());
+
+        explorer.go_forward();
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
+        assert!(!explorer.can_go_forward());
+    }
+
+    fn tile(explorer: &Explorer, name: &str) -> usize {
+        explorer
+            .map()
+            .tile_of(&UnitId::new(format!("x:{name}")))
+            .unwrap()
+    }
+
+    #[test]
+    fn going_back_puts_the_whole_view_back() {
+        let mut explorer = explorer();
+        let main = explorer.journey().unwrap().root();
+        let a_span = explorer.journey().unwrap().span(main).unwrap().children[0];
+        explorer.set_disclose(Disclose::Depth(2));
+        explorer.toggle_expanded(a_span);
+        explorer.step(Step::Into);
+        explorer.step(Step::Into);
+        explorer.toggle_spotlight(Side::Callers, 1.0);
+        let before = explorer.view();
+
+        explorer.open_at(tile(&explorer, "b"));
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:b"));
+        assert_eq!(explorer.disclose(), Disclose::default(), "b opens fresh");
+        assert!(explorer.spotlight().is_none());
+
+        assert!(explorer.go_back());
+        assert_eq!(explorer.view(), before);
+        assert_eq!(at(&explorer), "c", "the cursor where it was");
+        assert_eq!(explorer.disclose(), Disclose::Depth(2));
+        assert!(explorer.disclosed(a_span), "a still opened by hand");
+        assert_eq!(
+            explorer.spotlight().map(|(side, _)| side),
+            Some(Side::Callers),
+            "the spotlight back on"
+        );
+        assert!(!explorer.go_back(), "and that was the first place");
+    }
+
+    #[test]
+    fn back_and_forward_never_loop() {
+        let mut explorer = explorer();
+        for name in ["a", "c", "b"] {
+            explorer.open_at(tile(&explorer, name));
+        }
+        let root = |explorer: &Explorer| explorer.root().map(|u| u.as_str().to_owned());
+        let mut seen = Vec::new();
+        while explorer.go_back() {
+            seen.push(root(&explorer));
+        }
+        assert_eq!(
+            seen,
+            ["x:c", "x:a", "x:main"].map(|r| Some(r.to_owned())),
+            "each place once, newest first"
+        );
+        let mut ahead = Vec::new();
+        while explorer.go_forward() {
+            ahead.push(root(&explorer));
+        }
+        assert_eq!(ahead, ["x:a", "x:c", "x:b"].map(|r| Some(r.to_owned())));
+    }
+
+    #[test]
+    fn only_moves_are_remembered() {
+        let mut explorer = explorer();
+        explorer.step(Step::Into);
+        explorer.set_disclose(Disclose::Depth(3));
+        explorer.toggle_spotlight(Side::Callees, 0.0);
+        assert!(
+            !explorer.can_go_back(),
+            "stepping and showing more are not moves"
+        );
+
+        let main = tile(&explorer, "main");
+        explorer.open_at(main);
+        assert!(
+            explorer.can_go_back(),
+            "opening the root again takes the cursor back to it"
+        );
+        explorer.go_back();
+        explorer.open_at(tile(&explorer, "a"));
+        explorer.open_at(tile(&explorer, "a"));
+        explorer.go_back();
+        assert_eq!(
+            explorer.root().map(UnitId::as_str),
+            Some("x:main"),
+            "opening the same node twice is one move"
+        );
+    }
+
+    #[test]
+    fn digits_open_the_calls_as_numbered_on_screen() {
+        // main's first call could run either b or c; its second runs d.
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
+            { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "dyn#0", "text": "handler.run", "targets": [
+                    { "unit": "x:b", "certainty": "exact" }, { "unit": "x:c", "certainty": "exact" } ] },
+                { "key": "d#0", "text": "d", "targets": [ { "unit": "x:d", "certainty": "exact" } ] } ] },
+            { "id": "x:b", "name": "b", "kind": "fn", "role": "invocable" },
+            { "id": "x:c", "name": "c", "kind": "fn", "role": "invocable" },
+            { "id": "x:d", "name": "d", "kind": "fn", "role": "invocable" } ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let mut explorer = Explorer::new(
+            system,
+            Some(UnitId::new("x:main")),
+            JourneyOptions::default(),
+        );
+        let badge = |explorer: &Explorer, name: &str| {
+            explorer
+                .disclosed_tiles()
+                .get(&tile(explorer, name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(badge(&explorer, "d"), ["2"]);
+
+        explorer.open_numbered(2);
+        assert_eq!(
+            explorer.root().map(UnitId::as_str),
+            Some("x:d"),
+            "2 opens the node badged 2, not the second function written"
+        );
+        explorer.go_back();
+        explorer.open_numbered(1);
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
+        assert!(
+            explorer
+                .label(explorer.selected().unwrap())
+                .contains("one of 2"),
+            "a call to one of several functions has no node, so the cursor goes to its bar"
+        );
+        explorer.open_numbered(9);
+        assert!(
+            explorer
+                .label(explorer.selected().unwrap())
+                .contains("one of 2"),
+            "no 9th call"
+        );
+    }
+
+    #[test]
+    fn the_cursor_opens_what_it_is_folded_under() {
+        let mut explorer = explorer();
+        explorer.step(Step::Into);
+        let a = explorer.selected().unwrap();
+        assert_eq!(explorer.disclosure().folded(a), 1, "c is folded under a");
+        explorer.step(Step::Child);
+        assert_eq!(at(&explorer), "c");
+        assert_eq!(
+            explorer.disclosure().number(explorer.selected().unwrap()),
+            Some("1.1"),
+            "and shows, numbered, once the cursor is on it"
+        );
+        explorer.toggle_expanded(a);
+        assert!(
+            !explorer.disclosed(explorer.selected().unwrap()),
+            "folding it again by hand still folds it"
+        );
+    }
+
+    #[test]
+    fn each_journey_keeps_its_own_opened_calls() {
+        let mut explorer = explorer();
+        let main = explorer.journey().unwrap().root();
+        let a = explorer.journey().unwrap().span(main).unwrap().children[0];
+        let c = explorer.journey().unwrap().span(a).unwrap().children[0];
+        explorer.toggle_expanded(a);
+        assert!(explorer.disclosed(c));
+
+        explorer.add_track(UnitId::new("x:main"));
+        assert!(
+            !explorer.disclosed(c),
+            "the same journey opened again starts folded"
+        );
+        explorer.select_in(SpanRef {
+            track: 0,
+            span: main,
+        });
+        assert!(explorer.disclosed(c), "and the first keeps what it opened");
+    }
+
+    #[test]
+    fn the_spotlight_goes_out_when_the_focus_moves() {
+        let mut explorer = explorer();
+        explorer.toggle_spotlight(Side::Callees, 0.0);
+        let mut callees = vec![tile(&explorer, "a"), tile(&explorer, "b")];
+        callees.sort_unstable();
+        assert_eq!(explorer.spotlit(), callees);
+        explorer.step(Step::Into);
+        assert!(explorer.spotlight().is_none());
+        explorer.step(Step::Back);
+        assert!(
+            explorer.spotlight().is_none(),
+            "and stays out on coming back"
+        );
     }
 
     #[test]
@@ -1490,7 +1790,7 @@ pub(crate) mod tests {
         );
         assert_eq!(explorer.anchor(), Some(main), "the camera stays on main");
 
-        assert!(explorer.focus_back());
+        assert!(explorer.go_back());
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
     }
 }

@@ -16,6 +16,7 @@ mod diff_view;
 mod disclosure;
 mod explorer;
 mod graph_view;
+mod history;
 mod journey_panel;
 mod lens;
 mod scene;
@@ -342,6 +343,8 @@ impl Viewer {
         if let Some(depth) = self.depth {
             explorer.set_disclose(disclosure::Disclose::Depth(depth));
         }
+        // Back starts from the view as it opens.
+        explorer.forget_history();
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {

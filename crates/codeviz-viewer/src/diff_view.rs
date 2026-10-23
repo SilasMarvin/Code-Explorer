@@ -508,7 +508,7 @@ pub(crate) fn diff_look(explorer: &Explorer, view: &DiffView, tile: usize) -> No
     if !explorer.shown(tile) {
         return NodeLook::Hidden;
     }
-    if explorer.attention() == Some(tile) {
+    if explorer.graph_focus() == Some(tile) {
         return NodeLook::Focus;
     }
     if let Some(change) = view.change(tile) {
@@ -539,7 +539,7 @@ pub(crate) fn draw_diff_graph(
     gizmos: &mut Gizmos,
 ) {
     let graph = explorer.graph();
-    let center = explorer.attention();
+    let center = explorer.graph_focus();
     // The calls the open journey discloses, drawn as arrows so it reads as a path.
     let track = explorer.track();
     let path: HashSet<(usize, usize)> = track
