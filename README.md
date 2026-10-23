@@ -24,11 +24,24 @@ codeviz diff v1..v2 --summary        # print the changes instead
 ```
 
 The codebase floats as a graph, one node per function, each module gathered in its own
-ring. Click a node and the camera orbits it, and its journey opens docked as a flame
-graph: what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
-labels alike. `,`/`.` show a level less or more, a bar's `+N` opens the calls folded
-under it, and `V` switches to showing calls only as the cursor reaches them. A closure
-counts as part of the function around it.
+ring. What the code calls but nobody analyzed (a script a CI step runs, a database, a
+queue: the IR's `external` and `channel` units) gets a node too. Click a node and the
+camera orbits it, and its journey opens docked as a flame graph: what it calls directly
+first, numbered `1`, `2`, … on its bars and on the graph's labels alike. `,`/`.` show a
+level less or more, a bar's `+N` opens the calls folded under it, and `V` switches to
+showing calls only as the cursor reaches them. A closure counts as part of the function
+around it.
+
+Deep journeys stay readable. A call that does exactly what an earlier one does (the
+same function, making the same calls all the way down) shows once: the repeat is
+striped and stays folded, with `= 1.1.3` on its bar where it fits, which goes to that
+call, as does `A`. A level opens
+only as far as the panel can number its calls side by side, calls that widen it least
+first; the rest stay folded behind their `+N` (the header counts them), and `M` gives
+the panel more room. A bar too narrow for its whole number shows its last part, `.2`,
+under the caller's bar that holds the rest. A graph node leads with the shallowest call
+that runs it, and `×3` when the journey runs it three times. A hollow bar has no node:
+the call resolved to nothing analyzed, or to one of several functions.
 
 Each color says one thing. A link's color says which way a call runs: violet into the
 focus, blue out of it, with dots flowing along it. A node's fill says where it lives,

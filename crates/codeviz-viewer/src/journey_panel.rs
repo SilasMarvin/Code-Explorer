@@ -14,7 +14,6 @@ use crate::{
     disclosure::Disclose,
     explorer::{Confidence, Explorer, SpanRef, is_conditional, is_handoff},
     graph_view::node_color,
-    scene::{PALETTE, lane_color},
     ui::{egui_color, short, track_title},
 };
 
@@ -63,6 +62,12 @@ const ROW_GAP: f32 = 5.0;
 const BAR_GAP: f32 = 0.06;
 /// Pixels a slot needs to name its call.
 const NAMED_SLOT: f32 = 110.0;
+/// Pixels a slot needs to number its call; a level opens no further than that.
+const NUMBERED_SLOT: f32 = 24.0;
+/// The docked panel's widest, as a share of the space it docks in.
+const DOCKED_SHARE: f32 = 0.52;
+/// And at least this wide, room permitting.
+const DOCKED_WIDTH: f32 = 960.0;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
@@ -81,9 +86,7 @@ pub(crate) fn split(
         PanelMode::Docked => {
             let size = egui::vec2(
                 // Wide enough to name each call, up to the whole width.
-                (slots * NAMED_SLOT + PAD * 2.0)
-                    .clamp(380.0, 960.0_f32.max(area.width() * 0.52))
-                    .min(area.width() - MARGIN * 2.0),
+                (slots * NAMED_SLOT + PAD * 2.0).clamp(380.0, docked_width(area)),
                 // As tall as the journey needs, up to a share of the screen.
                 (HEADER + PAD * 2.0 + rows.max(2) as f32 * (ROW + ROW_GAP))
                     .min((area.height() * 0.45).max(200.0))
@@ -100,6 +103,28 @@ pub(crate) fn split(
             (graph, Some(panel))
         }
     }
+}
+
+/// The docked panel at its widest.
+fn docked_width(area: egui::Rect) -> f32 {
+    DOCKED_WIDTH
+        .max(area.width() * DOCKED_SHARE)
+        .min(area.width() - MARGIN * 2.0)
+}
+
+/// How many calls the panel can number side by side, at its widest in `mode`.
+pub(crate) fn room(mode: PanelMode, area: egui::Rect) -> usize {
+    let width = match mode {
+        PanelMode::Full => area.width(),
+        PanelMode::Hidden | PanelMode::Docked => docked_width(area),
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small, clamped count"
+    )]
+    let room = ((width - PAD * 2.0) / NUMBERED_SLOT).clamp(1.0, 1000.0) as usize;
+    room
 }
 
 /// One bar on screen.
@@ -197,6 +222,19 @@ fn disclosure(ui: &mut egui::Ui, explorer: &mut Explorer) {
             disclose = Disclose::Depth(depth.saturating_sub(1).max(1));
         }
         ui.label(egui::RichText::new("depth").small().color(MUTED));
+        // Why another level may open less than it could.
+        let held = explorer.disclosure().held();
+        if held > 0 {
+            ui.label(
+                egui::RichText::new(format!("{held} kept folded ·"))
+                    .small()
+                    .color(MUTED),
+            )
+            .on_hover_text(
+                "Opening these would crowd the flame graph: click a +N to open one, \
+                 or M for more room",
+            );
+        }
     }
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
@@ -441,7 +479,7 @@ fn canvas(
 
     let mouse = response.hover_pos();
     let mut hovered = None;
-    let mut fold_hit = None;
+    let mut badge_hit = None;
     for bar in &bars {
         let Some(span) = track.span(bar.span) else {
             continue;
@@ -453,25 +491,37 @@ fn canvas(
             hovered = Some(bar.span);
         }
         let tile = tile_of(bar.span);
-        let base = egui_color(tile.map_or_else(
-            || lane_color(track.color(bar.span) % PALETTE.len()),
-            |tile| node_color(explorer, diff, tile),
-        ));
         let faint = Confidence::of(span) == Confidence::Guessed || is_handoff(span);
         // What runs after the cursor dims once you step through it; at the start,
         // everything shows in full.
         let future = stepping && span.enter > cursor_enter;
-        let (fill, text) = if faint {
-            (base.gamma_multiply(0.22), MUTED)
-        } else if future {
-            (
-                base.gamma_multiply(0.38),
-                egui::Color32::from_rgb(200, 205, 216),
-            )
+        let text = if let Some(tile) = tile {
+            let base = egui_color(node_color(explorer, diff, tile));
+            let (fill, text) = if faint {
+                (base.gamma_multiply(0.22), MUTED)
+            } else if future {
+                (
+                    base.gamma_multiply(0.38),
+                    egui::Color32::from_rgb(200, 205, 216),
+                )
+            } else {
+                (base, egui::Color32::from_rgb(14, 16, 22))
+            };
+            painter.rect_filled(bar.rect, 3.0, fill);
+            text
         } else {
-            (base, egui::Color32::from_rgb(14, 16, 22))
+            // A call with no node in the graph (unresolved, one of several, or not
+            // loaded) is hollow: there is no node color to fill it with.
+            if !is_conditional(span) {
+                painter.rect_stroke(
+                    bar.rect.shrink(0.5),
+                    3.0,
+                    egui::Stroke::new(1.0, MUTED.gamma_multiply(0.8)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            MUTED
         };
-        painter.rect_filled(bar.rect, 3.0, fill);
 
         // Under a diff, what changed is outlined too; a call that is new, though what
         // it calls is not, counts as added.
@@ -509,26 +559,48 @@ fn canvas(
             painter.rect_filled(mark.intersect(bar.rect), 0.0, color);
         }
 
-        // What is folded under the bar, as a badge that opens it.
+        // What is folded under the bar, as a badge that opens it; on a repeat, the call
+        // it repeats, as a badge that goes there.
         let folded = disclosed.folded(bar.span);
-        let badge = (folded > 0 && bar.rect.width() > 40.0).then(|| {
-            let badge = egui::Rect::from_min_max(
-                egui::pos2(bar.rect.max.x - 26.0, bar.rect.min.y + 3.0),
-                egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
+        let repeats = disclosed.same_as(bar.span);
+        // A repeat is striped at any width, so it reads as one where its badge would
+        // not fit.
+        if repeats.is_some() {
+            hatch(
+                &painter.with_clip_rect(bar.rect.intersect(content)),
+                bar.rect,
             );
-            painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(120));
-            painter.text(
-                badge.center(),
-                egui::Align2::CENTER_CENTER,
-                format!("+{folded}"),
-                egui::FontId::proportional(10.5),
-                egui::Color32::from_rgb(220, 224, 234),
-            );
-            if mouse.is_some_and(|p| badge.contains(p)) {
-                fold_hit = Some(bar.span);
-            }
-            badge
-        });
+        }
+        let badge_text = match repeats.and_then(|s| disclosed.number(s)) {
+            Some(original) => Some(format!("= {original}")),
+            None => (folded > 0).then(|| format!("+{folded}")),
+        };
+        let badge = badge_text
+            .filter(|text| bar.rect.width() >= badge_width(text) + 12.0)
+            .map(|text| {
+                let badge = egui::Rect::from_min_max(
+                    egui::pos2(
+                        bar.rect.max.x - 3.0 - badge_width(&text),
+                        bar.rect.min.y + 3.0,
+                    ),
+                    egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
+                );
+                painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(120));
+                painter.text(
+                    badge.center(),
+                    egui::Align2::CENTER_CENTER,
+                    text,
+                    egui::FontId::proportional(10.5),
+                    egui::Color32::from_rgb(220, 224, 234),
+                );
+                if mouse.is_some_and(|p| badge.contains(p)) {
+                    badge_hit = Some(match repeats {
+                        Some(original) => BadgeHit::Repeats(original),
+                        None => BadgeHit::Folded(bar.span),
+                    });
+                }
+                badge
+            });
         if graph_hover.is_some() && tile == graph_hover {
             painter.rect_stroke(
                 bar.rect.expand(1.5),
@@ -538,15 +610,19 @@ fn canvas(
             );
         }
         // The same number the graph puts on the node, then what changed and the name;
-        // where the name would not fit, the number alone.
+        // where the name would not fit, the number alone, or its last part under the
+        // caller's bar that holds the rest.
         let number = disclosed.number(bar.span).unwrap_or_default();
+        // Beside the badge, not under it.
+        let free = badge.map_or(bar.rect, |badge| {
+            egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x, bar.rect.max.y))
+        });
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "a small, clamped character count"
         )]
-        let room = ((bar.rect.width() - if badge.is_some() { 38.0 } else { 10.0 }) / 6.8)
-            .clamp(0.0, 300.0) as usize;
+        let room = ((free.width() - 10.0) / 6.8).clamp(0.0, 300.0) as usize;
         let painter = painter.with_clip_rect(bar.rect.intersect(content));
         if room >= number.len() + 6 {
             let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
@@ -557,6 +633,9 @@ fn canvas(
             if let Some(condition) = span.conditions.last() {
                 label = format!("{label}  if {}", condition.arm);
             }
+            if tile.is_none() {
+                label = format!("{label}  · no node");
+            }
             painter.text(
                 bar.rect.left_center() + egui::vec2(5.0, 0.0),
                 egui::Align2::LEFT_CENTER,
@@ -564,18 +643,14 @@ fn canvas(
                 egui::FontId::proportional(12.5),
                 text,
             );
-        } else {
-            // Beside the badge, not under it.
-            let free = badge.map_or(bar.rect, |badge| {
-                egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x, bar.rect.max.y))
-            });
-            if free.width() < 6.5 * number.len() as f32 + 3.0 {
-                continue;
-            }
+        } else if let Some(shown) = [number, tail(number)]
+            .into_iter()
+            .find(|n| free.width() >= number_width(n))
+        {
             painter.text(
                 free.center(),
                 egui::Align2::CENTER_CENTER,
-                number,
+                shown,
                 egui::FontId::proportional(11.5),
                 text,
             );
@@ -636,6 +711,23 @@ fn canvas(
             );
         }
         let mut tip = explorer.label_in(track, span);
+        if let Some(number) = disclosed.number(span).filter(|n| !n.is_empty()) {
+            tip = format!("{number}  {tip}");
+        }
+        if let Some(original) = disclosed.same_as(span).and_then(|s| disclosed.number(s)) {
+            tip = format!("{tip}\nsame as {original}: its calls show there (A)");
+        }
+        let repeats: Vec<&str> = disclosed
+            .repeats(span)
+            .iter()
+            .filter_map(|&s| disclosed.number(s))
+            .collect();
+        if !repeats.is_empty() {
+            tip = format!("{tip}\nruns the same again as {}", repeats.join(", "));
+        }
+        if tile_of(span).is_none() {
+            tip = format!("{tip}\nno node in the graph: it resolves to nothing analyzed here");
+        }
         if let Some(span) = track.span(span) {
             for condition in &span.conditions {
                 let guard = condition.guard.as_deref().unwrap_or("?");
@@ -673,8 +765,13 @@ fn canvas(
 
     if response.clicked() {
         let shift = ui.input(|i| i.modifiers.shift);
-        if let Some(span) = fold_hit {
+        if let Some(BadgeHit::Folded(span)) = badge_hit {
             explorer.toggle_expanded(span);
+        } else if let Some(BadgeHit::Repeats(original)) = badge_hit {
+            explorer.select_in(SpanRef {
+                track: explorer.active(),
+                span: original,
+            });
         } else if let Some((scenario, _)) = divergence_hit {
             explorer.set_scenario(Some(scenario));
         } else if let Some(at) = hovered_ref {
@@ -687,6 +784,47 @@ fn canvas(
     Tethers {
         cursor: cursor_rect,
         hovered: hovered_rect,
+    }
+}
+
+/// A badge on a bar that does something when clicked.
+enum BadgeHit {
+    /// Opens the calls folded under this span.
+    Folded(SpanId),
+    /// Goes to the call this one repeats.
+    Repeats(SpanId),
+}
+
+/// Pixels a badge takes for `text`.
+fn badge_width(text: &str) -> f32 {
+    6.0 * text.chars().count() as f32 + 8.0
+}
+
+/// Pixels a bar needs to show a number.
+fn number_width(number: &str) -> f32 {
+    6.5 * number.chars().count() as f32 + 3.0
+}
+
+/// A number's last part, `.2` for `3.7.2`, for a bar too narrow for the whole of it:
+/// its caller's bar above holds the rest.
+fn tail(number: &str) -> &str {
+    number.rfind('.').map_or(number, |dot| &number[dot..])
+}
+
+/// Diagonal stripes across a rectangle.
+fn hatch(painter: &egui::Painter, rect: egui::Rect) {
+    if !rect.is_finite() {
+        return;
+    }
+    let stroke = egui::Stroke::new(1.5, egui::Color32::from_black_alpha(70));
+    let rise = rect.height();
+    let mut x = rect.min.x - rise;
+    while x < rect.max.x {
+        painter.line_segment(
+            [egui::pos2(x, rect.max.y), egui::pos2(x + rise, rect.min.y)],
+            stroke,
+        );
+        x += 6.0;
     }
 }
 

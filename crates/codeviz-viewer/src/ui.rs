@@ -139,6 +139,10 @@ fn draw_ui(
         egui::pos2(screen.min.x + left, screen.min.y + top),
         egui::pos2(screen.max.x - right, screen.max.y - bottom),
     );
+    let room = journey_panel::room(panel.mode, central);
+    if explorer.room() != room {
+        explorer.set_room(room);
+    }
     let (graph_area, panel_area) =
         journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
     if let Ok((mut camera, transform)) = cameras.single_mut() {
@@ -1318,8 +1322,9 @@ fn draw_graph_labels(
     }
     order.sort_by_key(|&(key, _)| key);
 
-    // Labels keep off the cards over the graph, as last laid out.
-    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search"]
+    // Labels keep off the cards and the docked journey over the graph, as last laid
+    // out.
+    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search", "journey_panel"]
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .collect();
@@ -1351,7 +1356,11 @@ fn draw_graph_labels(
                 };
                 let color = egui_color(lane_color(group % PALETTE.len()))
                     .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
+                // Functions in no container at all have no name to show.
                 let label = explorer.cluster_name(group);
+                if label.is_empty() {
+                    continue;
+                }
                 let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
                 placer.place(named, at, 0.0, job, None, false);
             }
@@ -1431,15 +1440,15 @@ fn draw_graph_labels(
                     .into_iter()
                     .flatten()
                     .reduce(|a, b| format!("{a} · {b}"));
-                // A node the journey runs leads with its place in it, as its bar does.
+                // A node the journey runs leads with its place in it, as its bar does: the
+                // shallowest call that runs it, which its repeats point at, and how many
+                // times it runs.
                 let order = journey
                     .get(&tile)
-                    .filter(|numbers| !numbers.is_empty())
-                    .map(|numbers| match numbers.as_slice() {
-                        [one] => one.clone(),
-                        [first, second] => format!("{first}, {second}"),
-                        [first, .., last] => format!("{first} … {last}"),
-                        [] => String::new(),
+                    .and_then(|numbers| match numbers.as_slice() {
+                        [] => None,
+                        [one] => Some(one.clone()),
+                        [first, ..] => Some(format!("{first} ×{}", numbers.len())),
                     });
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one; what changed after it.
@@ -1606,6 +1615,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("Shift ]", "step over this call's calls"),
             ("Shift ↑", "step out to what runs after its caller"),
             ("Home  End", "first / last call"),
+            ("A", "from a repeat to the call it repeats, and back"),
             (",  .", "show a level less / more of it"),
             ("V", "show calls by level / as the cursor reaches them"),
             ("Space", "play"),

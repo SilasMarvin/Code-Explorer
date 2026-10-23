@@ -182,3 +182,74 @@ fn dag_nodes_start_after_their_dependencies() {
         ]
     );
 }
+
+#[test]
+fn spans_that_do_the_same_share_a_shape() {
+    // `main → (load, load, render → load if dirty, walk → walk)`, where `load` reads
+    // and `walk` recurses.
+    let json = r#"{
+      "schema": "codeviz/0.1", "producer": { "name": "test", "version": "0" },
+      "units": [
+        { "id": "t:main", "name": "main", "kind": "fn", "role": "invocable",
+          "calls": [
+            { "key": "load#0", "text": "load", "targets": [{ "unit": "t:load", "certainty": "exact" }] },
+            { "key": "load#1", "text": "load", "targets": [{ "unit": "t:load", "certainty": "exact" }] },
+            { "key": "render#0", "text": "render", "targets": [{ "unit": "t:render", "certainty": "exact" }] },
+            { "key": "walk#0", "text": "walk", "targets": [{ "unit": "t:walk", "certainty": "exact" }] }
+          ] },
+        { "id": "t:load", "name": "load", "kind": "fn", "role": "invocable",
+          "calls": [{ "key": "read#0", "text": "read", "targets": [{ "unit": "t:read", "certainty": "exact" }] }] },
+        { "id": "t:read", "name": "read", "kind": "fn", "role": "invocable" },
+        { "id": "t:render", "name": "render", "kind": "fn", "role": "invocable",
+          "calls": [{ "key": "load#0", "text": "load", "targets": [{ "unit": "t:load", "certainty": "exact" }] }],
+          "body": [{ "step": "branch", "guard": "dirty", "arms": [
+            { "label": "yes", "body": [{ "step": "call", "call": "load#0" }] },
+            { "label": "no", "body": [] } ] }] },
+        { "id": "t:walk", "name": "walk", "kind": "fn", "role": "invocable",
+          "calls": [{ "key": "walk#0", "text": "walk", "targets": [{ "unit": "t:walk", "certainty": "exact" }] }] }
+      ]
+    }"#;
+    let system = system(json);
+    let journey = Journey::unroll(
+        &system,
+        &UnitId::new("t:main"),
+        None,
+        JourneyOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        names(&system, &journey),
+        [
+            "main", "load", "read", "load", "read", "render", "load", "read", "walk", "walk"
+        ]
+    );
+    let shapes = journey.shapes();
+    assert_eq!(shapes.len(), journey.len());
+    let [
+        _,
+        load,
+        read,
+        load_again,
+        read_again,
+        render,
+        load_if,
+        _,
+        walk,
+        walk_inner,
+    ] = shapes.as_slice()
+    else {
+        panic!("ten spans");
+    };
+    assert_eq!(load, load_again, "the same call twice");
+    assert_eq!(
+        load, load_if,
+        "only sometimes, but doing the same when it runs"
+    );
+    assert_eq!(read, read_again);
+    assert_ne!(load, read);
+    assert_ne!(render, load);
+    assert_ne!(
+        walk, walk_inner,
+        "the inner walk stops at the recursion; the outer one goes on to it"
+    );
+}

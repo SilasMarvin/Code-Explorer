@@ -1,7 +1,7 @@
 //! What a view means to show, written beside its screenshot so a reader's account of
 //! the picture can be checked against it: the examined function, every disclosed call
 //! with its number, the module it lives in, whether it can fail or only sometimes
-//! runs, and what a diff changed.
+//! runs, the earlier call it repeats, and what a diff changed.
 
 use codeviz_core::Change;
 use serde_json::{Value, json};
@@ -41,6 +41,7 @@ pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
                 "conditional": is_conditional(span),
                 "fails": disclosed.fails(span_id),
                 "hidden_calls": disclosed.folded(span_id),
+                "same_as": disclosed.same_as(span_id).and_then(|s| disclosed.number(s)),
             });
             Some((
                 number.split('.').filter_map(|n| n.parse().ok()).collect(),

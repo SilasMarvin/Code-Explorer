@@ -3,6 +3,8 @@
 //! Time is a logical clock that ticks once per invocation. Alternatives (branch arms)
 //! and concurrent work (`dag` nodes, `spawn`) start at the same tick and overlap.
 
+use std::collections::HashMap;
+
 use codeviz_ir::{
     Arm, CallKey, Certainty, DagNode, Dispatch, ExitKind, Invocation, Mode, Step, Unit, UnitId,
 };
@@ -22,7 +24,7 @@ impl SpanId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SpanTarget {
     Unit(UnitId),
     /// `dispatch: one` with several candidates; not expanded.
@@ -31,7 +33,7 @@ pub enum SpanTarget {
     Unresolved(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StopReason {
     /// The unit is already on the stack.
     Recursion,
@@ -43,7 +45,7 @@ pub enum StopReason {
 }
 
 /// A branch arm that must be taken for an invocation to happen.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Condition {
     pub guard: Option<String>,
     pub arm: String,
@@ -204,6 +206,79 @@ impl Journey {
     pub fn max_depth(&self) -> u32 {
         self.spans.iter().map(|s| s.depth).max().unwrap_or(0)
     }
+
+    /// A number for each span, by index, that two spans share exactly when they run the
+    /// same target and do the same below it: the same calls, made the same way, each
+    /// doing the same in turn, down to where the journey stops. How a span is itself
+    /// called (its conditions, mode, certainty) is its caller's business and does not
+    /// count, so a function called from two places has one shape when it does the same
+    /// in both. A repeated shape can be shown once and pointed at from its repeats.
+    #[must_use]
+    pub fn shapes(&self) -> Vec<usize> {
+        let mut known: HashMap<Shape<'_>, usize> = HashMap::new();
+        let mut shapes = vec![0; self.spans.len()];
+        // Spans are in pre-order, so every call comes after its caller and a reverse
+        // pass meets each span's calls before the span.
+        for (index, span) in self.spans.iter().enumerate().rev() {
+            let shape = Shape {
+                target: &span.target,
+                stopped: span.stopped,
+                refinement: span.refinement,
+                zoom: span.zoom,
+                merged: span.merged,
+                exits: span
+                    .exits
+                    .iter()
+                    .map(|e| (e.kind, e.label.as_deref(), e.conditions.as_slice()))
+                    .collect(),
+                calls: span
+                    .children
+                    .iter()
+                    .filter_map(|&child| {
+                        let call = self.spans.get(child.0)?;
+                        Some(CallShape {
+                            key: call.call.as_ref().map(|(_, key)| key),
+                            mode: call.mode,
+                            certainty: call.certainty,
+                            propagates: call.propagates,
+                            conditions: &call.conditions,
+                            repeats: call.repeats,
+                            shape: shapes.get(child.0).copied().unwrap_or_default(),
+                        })
+                    })
+                    .collect(),
+            };
+            let next = known.len();
+            if let Some(slot) = shapes.get_mut(index) {
+                *slot = *known.entry(shape).or_insert(next);
+            }
+        }
+        shapes
+    }
+}
+
+/// What a span does, for [`Journey::shapes`]: its target and how it ends, then each
+/// call it makes with the shape of what that call does.
+#[derive(PartialEq, Eq, Hash)]
+struct Shape<'j> {
+    target: &'j SpanTarget,
+    stopped: Option<StopReason>,
+    refinement: bool,
+    zoom: Option<Level>,
+    merged: u32,
+    exits: Vec<(ExitKind, Option<&'j str>, &'j [Condition])>,
+    calls: Vec<CallShape<'j>>,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct CallShape<'j> {
+    key: Option<&'j CallKey>,
+    mode: Mode,
+    certainty: Option<Certainty>,
+    propagates: bool,
+    conditions: &'j [Condition],
+    repeats: bool,
+    shape: usize,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -324,6 +324,10 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Space) {
         autoplay.playing = !autoplay.playing;
     }
+    if keys.just_pressed(KeyCode::KeyA) {
+        autoplay.playing = false;
+        explorer.jump_repeat();
+    }
     if keys.just_pressed(KeyCode::Enter) {
         if shift {
             explorer.pull_out_selected();

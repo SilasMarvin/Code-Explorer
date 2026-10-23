@@ -21,8 +21,9 @@ use crate::{
 };
 
 /// What a disclosure was worked out for: the journeys' revision, the active one, how
-/// it discloses, the spans opened by hand, and the cursor when that matters.
-type DisclosureKey = (u64, usize, Disclose, u64, Option<SpanId>);
+/// it discloses, the spans opened by hand, the room it has, and the cursor when that
+/// matters.
+type DisclosureKey = (u64, usize, Disclose, u64, usize, Option<SpanId>);
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +69,8 @@ pub(crate) struct Track {
     scenarios: Vec<Scenario>,
     scenario: Option<usize>,
     journey: Option<Journey>,
+    /// The journey's [`Journey::shapes`], by span.
+    shapes: Vec<usize>,
     scene: Scene,
     divergences: Vec<Divergence>,
     selected: Option<SpanId>,
@@ -98,6 +101,11 @@ impl Track {
 
     pub(crate) fn span(&self, id: SpanId) -> Option<&Span> {
         self.journey.as_ref()?.span(id)
+    }
+
+    /// What a span does, as a number it shares with every span that does the same.
+    pub(crate) fn shape(&self, id: SpanId) -> Option<usize> {
+        self.shapes.get(id.index()).copied()
     }
 
     /// The unit a span runs, if it resolved to exactly one.
@@ -144,6 +152,11 @@ impl Track {
             .root
             .as_ref()
             .and_then(|root| Journey::unroll(system, root, scenario, options.clone()));
+        self.shapes = self
+            .journey
+            .as_ref()
+            .map(Journey::shapes)
+            .unwrap_or_default();
         self.scene = self
             .journey
             .as_ref()
@@ -218,6 +231,10 @@ impl Clustering {
     }
 }
 
+/// How many slots wide a level may grow the flame graph until the panel says how many
+/// it can number side by side.
+const ROOM: usize = 40;
+
 /// How hard crowding containers push apart when clustered by module.
 const SEPARATION: f32 = 0.4;
 
@@ -275,6 +292,10 @@ pub(crate) struct Explorer {
     expanded: HashSet<SpanId>,
     /// Bumped whenever `expanded` changes.
     disclosure_epoch: u64,
+    /// How many calls the flame graph can show side by side.
+    room: usize,
+    /// The repeat the cursor last left for the call it repeats, to return to.
+    repeat_left: Option<SpanId>,
     disclosure_cache: Mutex<Option<(DisclosureKey, Arc<Disclosed>)>>,
     /// Nodes focused before the current one, most recent last.
     focus_history: Vec<usize>,
@@ -334,6 +355,8 @@ impl Explorer {
             disclose: Disclose::default(),
             expanded: HashSet::new(),
             disclosure_epoch: 0,
+            room: ROOM,
+            repeat_left: None,
             disclosure_cache: Mutex::new(None),
             hovered_tile: None,
             spotlight: None,
@@ -672,6 +695,16 @@ impl Explorer {
         self.disclose = disclose;
     }
 
+    pub(crate) fn room(&self) -> usize {
+        self.room
+    }
+
+    /// How many calls the flame graph can show side by side, so a level opens only as
+    /// far as they fit.
+    pub(crate) fn set_room(&mut self, room: usize) {
+        self.room = room.max(1);
+    }
+
     /// Opens or folds the calls under one span, past the disclosed depth.
     pub(crate) fn toggle_expanded(&mut self, span: SpanId) {
         if !self.expanded.remove(&span) {
@@ -687,6 +720,7 @@ impl Explorer {
             self.active,
             self.disclose,
             self.disclosure_epoch,
+            self.room,
             (self.disclose == Disclose::Time)
                 .then(|| self.selected())
                 .flatten(),
@@ -705,9 +739,29 @@ impl Explorer {
             &self.map,
             self.disclose,
             &self.expanded,
+            self.room,
         ));
         *cache = Some((key, Arc::clone(&disclosed)));
         disclosed
+    }
+
+    /// Moves the cursor from a repeat to the call it repeats, or from that call back
+    /// to the repeat it was reached from, else to its first repeat. Returns where it
+    /// went.
+    pub(crate) fn jump_repeat(&mut self) -> Option<SpanId> {
+        let disclosed = self.disclosure();
+        let current = self.selected()?;
+        let next = if let Some(original) = disclosed.same_as(current) {
+            self.repeat_left = Some(current);
+            original
+        } else {
+            let repeats = disclosed.repeats(current);
+            self.repeat_left
+                .filter(|left| repeats.contains(left))
+                .or_else(|| repeats.first().copied())?
+        };
+        self.select(Some(next));
+        Some(next)
     }
 
     /// Whether a span of the active journey shows.
