@@ -1,5 +1,6 @@
 //! `codeviz`: build, check and explore codeviz IR documents.
 
+mod cache;
 mod diff;
 mod ir;
 mod journey;

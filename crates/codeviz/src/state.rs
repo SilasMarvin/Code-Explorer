@@ -86,7 +86,7 @@ pub(crate) fn resume(args: &[OsString], saved: &[String]) -> Vec<OsString> {
 }
 
 /// FNV-1a: a hash that stays the same from one build to the next.
-fn fnv(text: &str) -> u64 {
+pub(crate) fn fnv(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })

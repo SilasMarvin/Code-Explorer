@@ -2,14 +2,17 @@
 
 use std::path::PathBuf;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::{Document, UnitId};
 use codeviz_viewer::Viewer;
 
+use crate::ir::Source;
+
 #[derive(Debug, clap::Args)]
 pub(crate) struct ViewArgs {
-    /// IR documents to load; later documents override earlier ones.
+    /// IR documents to load, or directories to analyze; later ones override earlier
+    /// ones. A directory's analysis is kept for as long as its source stays the same.
     #[arg(required = true)]
     documents: Vec<PathBuf>,
     /// Compare against these documents, an older version of the same system, and draw
@@ -21,6 +24,9 @@ pub(crate) struct ViewArgs {
     /// document and the working directory.
     #[arg(long, value_name = "DIR")]
     root: Option<PathBuf>,
+    /// How a directory is analyzed.
+    #[command(flatten)]
+    source: Source,
     #[command(flatten)]
     pub(crate) display: Display,
 }
@@ -242,15 +248,25 @@ fn find_at(system: &System, place: &str) -> anyhow::Result<UnitId> {
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
+    let load = |path: &PathBuf, root| {
+        if path.is_dir() {
+            let dir = path
+                .canonicalize()
+                .with_context(|| format!("cannot open {}", path.display()))?;
+            crate::cache::analyze(&dir, &args.source)
+        } else {
+            crate::ir::read_rooted(path, root)
+        }
+    };
     let documents = args
         .documents
         .iter()
-        .map(|path| crate::ir::read_rooted(path, args.root.as_deref()))
+        .map(|path| load(path, args.root.as_deref()))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let before = args
         .before
         .iter()
-        .map(|path| crate::ir::read_rooted(path, None))
+        .map(|path| load(path, None))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let mut command = vec!["codeviz".to_owned(), "view".to_owned()];
     let shown = |paths: &[PathBuf]| {
@@ -266,6 +282,14 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     }
     if let Some(root) = &args.root {
         command.extend(["--root".to_owned(), root.display().to_string()]);
+    }
+    if args
+        .documents
+        .iter()
+        .chain(&args.before)
+        .any(|p| p.is_dir())
+    {
+        command.extend(args.source.flags());
     }
     let origin = Origin {
         title: args.title(),

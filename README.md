@@ -17,6 +17,7 @@ codeviz validate app.json
 codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz view app.json other.json     # merged 3D view
+codeviz view crates/foo              # analyze and view; kept until the source changes
 codeviz view new.json --before old.json   # what changed, over the graph
 codeviz view app.json --at src/orders.rs:42   # open on the function at that line
 codeviz view app.json --resume       # as you last left it
@@ -69,6 +70,12 @@ and the flags for the focus, the outcome, the cursor's step, the depth, the spot
 same flags are kept as the last view of each set of documents (under
 `$XDG_STATE_HOME/codeviz`, or `~/Library/Application Support/codeviz` on a Mac), and
 `--resume` opens it again, with any flags given alongside winning.
+
+`codeviz view DIR` analyzes the directory and opens it, taking `analyze`'s `--lang`,
+`--resolve` and `--include-tests`. The analysis is kept (under `$XDG_CACHE_HOME/codeviz`,
+or `~/Library/Caches/codeviz` on a Mac) for the commit the directory is at plus any
+uncommitted changes, so opening it again before the source changes skips
+rust-analyzer.
 
 `--at FILE:LINE` opens on the function whose source spans that line. A document
 remembers the directory it was analyzed in; opened somewhere else, on a teammate's
