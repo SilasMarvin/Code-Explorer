@@ -33,6 +33,10 @@ pub(crate) struct Context<'a> {
     pub(crate) captures: HashMap<String, ReceiverRoot>,
     /// For a closure, what its first parameter is, when the call it is passed to says.
     pub(crate) argument: Option<ReceiverRoot>,
+    /// For a closure passed to a call, where: the unit making the call, where the
+    /// callee's name starts, and which argument the closure is. Its parameters are
+    /// what the callee declares that argument is called with.
+    pub(crate) callback: Option<(Vec<String>, (u32, u32), usize)>,
 }
 
 pub(crate) struct Built {
@@ -138,7 +142,12 @@ impl Builder<'_, '_, '_> {
     fn parameters(&mut self, parameters: Node<'_>) {
         let source = self.file.source;
         let mut cursor = parameters.walk();
-        let params: Vec<Node<'_>> = parameters.named_children(&mut cursor).collect();
+        // `_` is unnamed to tree-sitter, but still takes a place.
+        let params: Vec<Node<'_>> = parameters
+            .children(&mut cursor)
+            .filter(|p| p.is_named() || p.kind() == "_")
+            .filter(|p| !p.kind().ends_with("comment") && p.kind() != "attribute_item")
+            .collect();
         if let (Some(first), Some(argument)) = (params.first(), &self.cx.argument)
             && let Some(name) = binding_name(*first, source)
         {
@@ -151,19 +160,36 @@ impl Builder<'_, '_, '_> {
             if param.kind() != "parameter" {
                 // An untyped closure parameter shadows what it is named after. Named
                 // like a captured binding of known type, it is taken to be another
-                // value of that type, as with `ui.horizontal(|ui| ..)`: a guess.
+                // value of that type, as with `ui.horizontal(|ui| ..)`: a guess, unless
+                // the function the closure is passed to declares what it passes.
                 let Some(name) = binding_name(param, source) else {
                     for name in pattern_names(param, source) {
                         self.bindings.remove(&name);
                     }
                     continue;
                 };
-                if let Some(ReceiverRoot::Typed { path, .. }) = self.bindings.remove(&name) {
-                    let guess = ReceiverRoot::Typed {
+                let shadowed = self.bindings.remove(&name);
+                let guess = match shadowed {
+                    Some(ReceiverRoot::Typed { path, .. }) => Some(ReceiverRoot::Typed {
                         path,
                         declared: false,
-                    };
-                    self.bindings.insert(name, guess);
+                    }),
+                    // Itself what an outer closure was called with.
+                    Some(outer @ ReceiverRoot::Callback { .. }) => Some(outer),
+                    _ => None,
+                };
+                let root = match &self.cx.callback {
+                    Some((from, at, argument)) => Some(ReceiverRoot::Callback {
+                        from: from.clone(),
+                        at: *at,
+                        argument: *argument,
+                        parameter: index,
+                        otherwise: guess.map(Box::new),
+                    }),
+                    None => guess,
+                };
+                if let Some(root) = root {
+                    self.bindings.insert(name, root);
                 }
                 continue;
             }
@@ -427,7 +453,7 @@ impl Builder<'_, '_, '_> {
             "return_expression" => self.return_expression(node, steps),
             "try_expression" => self.try_expression(node, steps),
             "closure_expression" => {
-                self.closure(node, None);
+                self.closure(node, None, None);
             }
             "block" | "async_block" | "unsafe_block" => {
                 let inner = if node.kind() == "block" {
@@ -645,13 +671,15 @@ impl Builder<'_, '_, '_> {
         };
 
         let mut handoffs = Vec::new();
+        let called_at = callee_name(function).map(start);
         if let Some(arguments) = arguments {
             let mut cursor = arguments.walk();
             let args: Vec<Node<'_>> = arguments.named_children(&mut cursor).collect();
-            for arg in args {
+            for (position, arg) in args.into_iter().enumerate() {
                 match arg.kind() {
                     "closure_expression" | "async_block" => {
-                        let path = self.closure(arg, argument.take());
+                        let callback = called_at.map(|at| (self.cx.path.to_vec(), at, position));
+                        let path = self.closure(arg, argument.take(), callback);
                         handoffs.push((CallTarget::Closure(path), arg));
                     }
                     "identifier" | "scoped_identifier" => {
@@ -719,7 +747,12 @@ impl Builder<'_, '_, '_> {
     }
 
     /// Builds a closure or async block as its own unit, parented to this one.
-    fn closure(&mut self, node: Node<'_>, argument: Option<ReceiverRoot>) -> Vec<String> {
+    fn closure(
+        &mut self,
+        node: Node<'_>,
+        argument: Option<ReceiverRoot>,
+        callback: Option<(Vec<String>, (u32, u32), usize)>,
+    ) -> Vec<String> {
         let mut path = self.cx.path.to_vec();
         let body = if node.kind() == "async_block" {
             path.push(format!("{{async#{}}}", self.async_blocks));
@@ -743,6 +776,7 @@ impl Builder<'_, '_, '_> {
             generics: [None, None],
             captures: self.captures(),
             argument,
+            callback,
         };
         let built = build(self.ex, self.file, &cx, body);
         self.ex.push_unit(RawUnit {
@@ -761,6 +795,8 @@ impl Builder<'_, '_, '_> {
             body: Some(built.steps),
             returns: None,
             returns_ok: None,
+            callbacks: Vec::new(),
+            takes_self: false,
         });
         path
     }

@@ -749,6 +749,20 @@ impl<'a> Index<'a> {
                     Some((ty, found.certainty))
                 })
             }
+            ReceiverRoot::Callback {
+                from,
+                at,
+                argument,
+                parameter,
+                otherwise,
+            } => {
+                return match self.callback_argument(from, *at, *argument, *parameter) {
+                    Some((ty, certainty)) => Value::Typed(ty, certainty),
+                    None => otherwise
+                        .as_ref()
+                        .map_or(Value::Unknown, |root| self.root_value(unit, root)),
+                };
+            }
             ReceiverRoot::Captured { from, root } => {
                 return match self.at_path.get(from.as_slice()) {
                     Some(&index) => self
@@ -762,6 +776,36 @@ impl<'a> Index<'a> {
         };
         typed.map_or(Value::Unknown, |(ty, certainty)| {
             Value::Typed(ty, certainty)
+        })
+    }
+
+    /// The type a closure's `parameter`th parameter is called with, when the closure is
+    /// the `argument`th argument of a call (named at `at` in the unit at `from`) to a
+    /// function of ours that declares it.
+    fn callback_argument(
+        &self,
+        from: &[String],
+        at: (u32, u32),
+        argument: usize,
+        parameter: usize,
+    ) -> Option<(Vec<String>, Certainty)> {
+        let unit = self.extraction.units.get(*self.at_path.get(from)?)?;
+        let call = unit.calls.iter().find(|call| {
+            call.name_at == Some(at)
+                && matches!(call.target, CallTarget::Path(_) | CallTarget::Method { .. })
+        })?;
+        let found = self.candidates(unit, call);
+        let method_call = matches!(call.target, CallTarget::Method { .. });
+        found.units.iter().find_map(|&index| {
+            let function = self.extraction.units.get(index)?;
+            let position = argument + usize::from(method_call && function.takes_self);
+            let ty = function
+                .callbacks
+                .get(position)?
+                .as_ref()?
+                .get(parameter)?
+                .clone()?;
+            Some((self.type_path(function, ty)?, found.certainty))
         })
     }
 

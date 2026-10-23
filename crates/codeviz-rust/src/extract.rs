@@ -13,8 +13,8 @@ use crate::{
     Error, body,
     hash::content_hash,
     syntax::{
-        collect_use, compact, doc_comment, is_test_only, location, receiver_type_path, start, text,
-        type_name, unwrapped_type_path,
+        closure_arguments, collect_use, compact, doc_comment, is_test_only, location,
+        receiver_type_path, start, text, type_name, unwrapped_type_path,
     },
 };
 
@@ -29,6 +29,10 @@ pub(crate) struct Owner {
 
 /// Field name → field type path as written.
 pub(crate) type Fields = HashMap<String, Vec<String>>;
+
+/// Per parameter of a function, `self` first if it takes one: when the parameter takes
+/// a closure, the types the closure is called with, as written.
+pub(crate) type Callbacks = Vec<Option<Vec<Option<Vec<String>>>>>;
 
 /// What a method is called on, as far as declarations reveal it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +56,16 @@ pub(crate) enum ReceiverRoot {
     Returned {
         call: usize,
         tried: bool,
+    },
+    /// The `parameter`th argument a closure is called with, the closure being the
+    /// `argument`th argument of the call whose name starts `at` in the unit at `from`.
+    /// Failing that, it is what `otherwise` says.
+    Callback {
+        from: Vec<String>,
+        at: (u32, u32),
+        argument: usize,
+        parameter: usize,
+        otherwise: Option<Box<ReceiverRoot>>,
     },
     /// A binding a closure captured from the unit at `from`, where `root` means what
     /// it says.
@@ -144,6 +158,11 @@ pub(crate) struct RawUnit {
     /// The declared return type, and the `T` of a returned `Result<T, _>` or `Option<T>`.
     pub(crate) returns: Option<Vec<String>>,
     pub(crate) returns_ok: Option<Vec<String>>,
+    /// What closures its parameters take are called with.
+    pub(crate) callbacks: Callbacks,
+    /// Whether it takes `self`, so a method call's arguments start at its second
+    /// parameter.
+    pub(crate) takes_self: bool,
 }
 
 impl RawUnit {
@@ -168,6 +187,8 @@ impl RawUnit {
             body: None,
             returns: None,
             returns_ok: None,
+            callbacks: Vec::new(),
+            takes_self: false,
         }
     }
 
@@ -429,6 +450,14 @@ impl Extractor {
         let where_clause = node
             .named_children(&mut node.walk())
             .find(|c| c.kind() == "where_clause");
+        let parameters = node.child_by_field_name("parameters");
+        let (callbacks, takes_self) = parameters.map_or_else(Default::default, |parameters| {
+            callbacks(
+                parameters,
+                [node.child_by_field_name("type_parameters"), where_clause],
+                source,
+            )
+        });
 
         let built = body::build(
             self,
@@ -442,6 +471,7 @@ impl Extractor {
                 generics: [node.child_by_field_name("type_parameters"), where_clause],
                 captures: HashMap::new(),
                 argument: None,
+                callback: None,
             },
             block,
         );
@@ -470,6 +500,8 @@ impl Extractor {
             body: Some(built.steps),
             returns,
             returns_ok,
+            callbacks,
+            takes_self,
         });
     }
 
@@ -533,6 +565,53 @@ impl Extractor {
     pub(crate) fn push_route(&mut self, route: RouteHint) {
         self.out.routes.push(route);
     }
+}
+
+/// What each parameter's closure, if it takes one, is called with; and whether the
+/// first parameter is `self`.
+fn callbacks(
+    parameters: Node<'_>,
+    generics: [Option<Node<'_>>; 2],
+    source: &[u8],
+) -> (Callbacks, bool) {
+    let mut bounds = HashMap::new();
+    for node in generics.into_iter().flatten() {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let (name, bound) = match child.kind() {
+                "type_parameter" => (
+                    child.child_by_field_name("name"),
+                    child.child_by_field_name("bounds"),
+                ),
+                "where_predicate" => (
+                    child.child_by_field_name("left"),
+                    child.child_by_field_name("bounds"),
+                ),
+                _ => continue,
+            };
+            if let (Some(name), Some(bound)) = (name, bound) {
+                bounds.insert(text(name, source).to_owned(), bound);
+            }
+        }
+    }
+    let mut cursor = parameters.walk();
+    let mut takes_self = false;
+    let callbacks = parameters
+        .named_children(&mut cursor)
+        .filter_map(|parameter| match parameter.kind() {
+            "self_parameter" => {
+                takes_self = true;
+                Some(None)
+            }
+            "parameter" => Some(
+                parameter
+                    .child_by_field_name("type")
+                    .and_then(|ty| closure_arguments(ty, &bounds, source)),
+            ),
+            _ => None,
+        })
+        .collect();
+    (callbacks, takes_self)
 }
 
 /// A trait's own name with its generic arguments: `std::convert::From<&str>` → `From<&str>`.

@@ -646,6 +646,39 @@ fn methods_through_deref_traits_and_cfg_twins() {
     );
 }
 
+#[test]
+fn closures_take_the_types_their_callee_declares() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Memory; pub struct Data; pub struct Context;
+         impl Memory { pub fn focus(&self) {} }
+         impl Data { pub fn focus(&self) {} }
+         impl Context {
+             pub fn memory_mut<R>(&self, writer: impl FnOnce(&mut Memory) -> R) -> R { todo!() }
+             pub fn data<F: Fn(u8, &Data)>(&self, reader: F) {}
+         }
+         fn run(ctx: &Context) {
+             ctx.memory_mut(|mem| mem.focus());
+             ctx.data(|_, data| data.focus());
+         }",
+    )]);
+    let focus = |ty: &str| {
+        vec![(
+            ".focus".to_owned(),
+            vec![format!("rust:app::{ty}::focus")],
+            Some(Certainty::Exact),
+        )]
+    };
+    assert_eq!(
+        resolved(unit(&document, "app::run::{closure#0}")),
+        focus("Memory")
+    );
+    assert_eq!(
+        resolved(unit(&document, "app::run::{closure#1}")),
+        focus("Data")
+    );
+}
+
 /// Writes each `(name, dependencies, lib.rs)` as a crate in one workspace and
 /// analyzes it.
 fn analyze_workspace(crates: &[(&str, &str, &str)]) -> Document {

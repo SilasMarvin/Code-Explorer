@@ -1,6 +1,6 @@
 //! Small tree-sitter helpers shared by the extraction passes.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use codeviz_ir::{Location, Range};
 use tree_sitter::Node;
@@ -154,6 +154,51 @@ pub(crate) fn receiver_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<St
         // `dyn Trait` and `impl Trait` dispatch to the trait's implementations.
         "dynamic_type" | "abstract_type" => {
             receiver_type_path(node.child_by_field_name("trait")?, source)
+        }
+        _ => None,
+    }
+}
+
+/// The types a closure taken as `ty` is called with, each as a receiver type path when
+/// it has one: `impl FnOnce(&mut Memory) -> R`, `&dyn Fn(Id)`, `Box<dyn FnMut(&T)>`, or
+/// a generic `F` that `bounds` (generic name to its bounds) bounds by one of those.
+pub(crate) fn closure_arguments(
+    ty: Node<'_>,
+    bounds: &HashMap<String, Node<'_>>,
+    source: &[u8],
+) -> Option<Vec<Option<Vec<String>>>> {
+    match ty.kind() {
+        "reference_type" => closure_arguments(ty.child_by_field_name("type")?, bounds, source),
+        "abstract_type" | "dynamic_type" => {
+            closure_arguments(ty.child_by_field_name("trait")?, bounds, source)
+        }
+        "generic_type" => {
+            let base = path_segments(ty.child_by_field_name("type")?, source)?;
+            if base.last().is_none_or(|b| b != "Box") {
+                return None;
+            }
+            let arguments = ty.child_by_field_name("type_arguments")?;
+            let first = arguments.named_children(&mut arguments.walk()).next()?;
+            closure_arguments(first, bounds, source)
+        }
+        "type_identifier" => closure_arguments(*bounds.get(text(ty, source))?, bounds, source),
+        "trait_bounds" => ty
+            .named_children(&mut ty.walk())
+            .find_map(|bound| closure_arguments(bound, bounds, source)),
+        "function_type" => {
+            let parameters = ty.child_by_field_name("parameters")?;
+            let mut cursor = parameters.walk();
+            let types = parameters
+                .named_children(&mut cursor)
+                .map(|parameter| {
+                    let ty = match parameter.kind() {
+                        "parameter" => parameter.child_by_field_name("type")?,
+                        _ => parameter,
+                    };
+                    receiver_type_path(ty, source)
+                })
+                .collect();
+            Some(types)
         }
         _ => None,
     }
