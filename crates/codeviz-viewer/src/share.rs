@@ -44,7 +44,7 @@ fn share_key(
     }
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     share.pending = Some(if shift {
-        (diagram(&explorer, diff.as_deref()), "a Mermaid diagram")
+        (diagram(&explorer, diff.as_deref()), "Mermaid")
     } else {
         (write_up(&explorer, diff.as_deref()), "Markdown")
     });
