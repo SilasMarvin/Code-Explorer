@@ -1609,7 +1609,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
         "Journey",
         &[
             ("← →", "previous / next call by the same caller"),
-            ("↓", "into the first call this one makes"),
+            ("↓", "into the first call this one makes, opening it"),
             ("↑", "out to its caller"),
             ("[  ]", "back / forward one call in time"),
             ("Shift ]", "step over this call's calls"),

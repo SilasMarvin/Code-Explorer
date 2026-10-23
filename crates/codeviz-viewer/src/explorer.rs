@@ -1104,8 +1104,14 @@ impl Explorer {
 
     /// Moves the active cursor. Returns the new position.
     pub(crate) fn step(&mut self, step: Step) -> Option<SpanId> {
+        let disclosed = self.disclosure();
         let journey = self.journey()?;
         let current = self.selected().unwrap_or_else(|| journey.root());
+        // A repeat's calls are the ones it repeats, so going into it goes in there.
+        let current = match step {
+            Step::Child => disclosed.same_as(current).unwrap_or(current),
+            _ => current,
+        };
         let span = journey.span(current)?;
         let nth = |index: usize| journey.spans().nth(index).map(|(id, _)| id);
         // The first span after `id`'s subtree, in pre-order.
@@ -1142,6 +1148,18 @@ impl Explorer {
                 .map(|(id, _)| id),
             Step::Parent => span.parent,
         };
+        // Going into a call opens what is folded under it, so the cursor lands on a
+        // bar.
+        let caller = next
+            .filter(|&n| step == Step::Child && !disclosed.shows(n))
+            .and_then(|hidden| {
+                std::iter::successors(Some(hidden), |&s| journey.span(s)?.parent)
+                    .find(|&s| disclosed.number(s).is_some())
+            });
+        if let Some(caller) = caller.filter(|_| matches!(self.disclose, Disclose::Depth(_))) {
+            self.expanded.insert(caller);
+            self.disclosure_epoch += 1;
+        }
         if next.is_some() {
             self.select(next);
         }

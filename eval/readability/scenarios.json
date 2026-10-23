@@ -61,5 +61,12 @@
       "--keys",
       "i"
     ]
+  },
+  "pipeline-d1": {
+    "about": "A CI pipeline: steps fold into the pipeline, so its bars are the scripts, plugins and pipelines they run, each with a node of its own.",
+    "command": [
+      "view",
+      "demo/out/deploy-pipeline.json"
+    ]
   }
 }

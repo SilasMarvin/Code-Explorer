@@ -601,6 +601,20 @@ fn canvas(
                 }
                 badge
             });
+        // Where the badge does not fit, a notch in the corner still says calls are
+        // folded under the bar.
+        if badge.is_none() && folded > 0 && bar.rect.width() >= 8.0 {
+            let corner = bar.rect.right_bottom();
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    corner,
+                    corner - egui::vec2(0.0, 7.0),
+                    corner - egui::vec2(7.0, 0.0),
+                ],
+                egui::Color32::from_rgb(220, 224, 234),
+                egui::Stroke::NONE,
+            ));
+        }
         if graph_hover.is_some() && tile == graph_hover {
             painter.rect_stroke(
                 bar.rect.expand(1.5),
@@ -724,6 +738,10 @@ fn canvas(
             .collect();
         if !repeats.is_empty() {
             tip = format!("{tip}\nruns the same again as {}", repeats.join(", "));
+        }
+        let folded = disclosed.folded(span);
+        if folded > 0 {
+            tip = format!("{tip}\n{folded} calls folded under it: ↓ or its +{folded} opens them");
         }
         if tile_of(span).is_none() {
             tip = format!("{tip}\nno node in the graph: it resolves to nothing analyzed here");

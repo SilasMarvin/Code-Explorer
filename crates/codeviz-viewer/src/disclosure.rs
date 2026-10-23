@@ -493,6 +493,25 @@ mod tests {
     }
 
     #[test]
+    fn going_into_a_call_opens_it_and_a_repeat_goes_into_the_first() {
+        let mut explorer = explorer(REPEATS);
+        explorer.select(Some(at(&explorer, "1")));
+        explorer.step(Step::Child);
+        assert_eq!(explorer.label(explorer.selected().unwrap()), "read");
+        assert!(
+            shown(&explorer).contains(&"1.1 read".to_owned()),
+            "load opened to show where the cursor went"
+        );
+        explorer.select(Some(at(&explorer, "3")));
+        explorer.step(Step::Child);
+        assert_eq!(
+            explorer.selected(),
+            Some(at(&explorer, "1.1")),
+            "the repeat's calls are the first load's"
+        );
+    }
+
+    #[test]
     fn stepping_through_time_walks_into_a_repeat() {
         let mut explorer = explorer(REPEATS);
         explorer.set_disclose(Disclose::Time);
