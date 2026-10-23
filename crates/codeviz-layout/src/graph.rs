@@ -581,7 +581,7 @@ impl Regions {
 /// How wide a room `count` functions need, `spacing` apart.
 #[must_use]
 pub(crate) fn room(count: usize, spacing: f32) -> f32 {
-    spacing * (0.5 + 0.55 * (count as f32).sqrt())
+    spacing * (0.8 + 0.6 * (count as f32).sqrt())
 }
 
 /// How each region must move so no two of their discs, `radii` wide, come closer than

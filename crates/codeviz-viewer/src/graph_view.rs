@@ -583,12 +583,25 @@ pub(crate) fn districts(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
             list.push((*middle, *radius, *cluster));
         }
     }
+    // The middle of a crate's functions, as the layout keeps crates apart by.
+    let mut sums = vec![(Vec3::ZERO, 0.0_f32); graph.top_count()];
+    for tile in 0..explorer.map().tiles.len() {
+        let top = graph.cluster(tile).and_then(|c| graph.top(c));
+        if let (Some(top), Some(at)) = (top, explorer.tile_point(tile))
+            && let Some((sum, n)) = sums.get_mut(top)
+            && explorer.visibility(tile) >= 0.5
+        {
+            *sum += at;
+            *n += 1.0;
+        }
+    }
     members
         .iter()
         .enumerate()
         .filter(|(_, rings)| rings.len() > 1)
         .map(|(top, rings)| {
-            let middle = rings.iter().map(|r| r.0).sum::<Vec3>() / rings.len() as f32;
+            let (sum, n) = sums[top];
+            let middle = sum / n.max(1.0);
             let radius = rings
                 .iter()
                 .map(|&(at, radius, _)| (at.truncate() - middle.truncate()).length() + radius)
