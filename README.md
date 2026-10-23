@@ -115,7 +115,11 @@ so it takes seconds where the syntax takes a fraction of one; `codeviz diff` poi
 checkouts at the working tree's target directory so they are not built from scratch.
 `mise install` installs it. Without it, or with `--resolve syntax`, and for any call it
 leaves unresolved (code outside the Cargo workspace, or in a crate that does not build),
-calls are resolved from the syntax alone: module paths, `use` imports, `self` and
-declared types are followed, and a method call on a value of unknown type is matched by
-name and marked `inferred`. Capitalized call targets are treated as constructors and
+calls are resolved from the syntax alone: module paths, `use` imports and re-exports,
+`self`, declared types, the types functions return and the bindings closures capture
+are followed. A method call on a value of unknown type is matched by name only when the
+name is distinctive: not a common standard library method (`map`, `push`, `len`, …), and
+defined by one type (or one trait's implementations) in a crate the caller depends on.
+Such a match is marked `inferred`, as is a call that could be any of several overloads
+(`From<bool>` or `From<u8>`). Capitalized call targets are treated as constructors and
 dropped either way.

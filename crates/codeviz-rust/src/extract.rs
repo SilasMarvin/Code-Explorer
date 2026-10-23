@@ -53,6 +53,12 @@ pub(crate) enum ReceiverRoot {
         call: usize,
         tried: bool,
     },
+    /// A binding a closure captured from the unit at `from`, where `root` means what
+    /// it says.
+    Captured {
+        from: Vec<String>,
+        root: Box<ReceiverRoot>,
+    },
 }
 
 /// A call target as written, before resolution.
@@ -428,6 +434,8 @@ impl Extractor {
                 returns_result,
                 parameters: node.child_by_field_name("parameters"),
                 generics: [node.child_by_field_name("type_parameters"), where_clause],
+                captures: HashMap::new(),
+                argument: None,
             },
             block,
         );

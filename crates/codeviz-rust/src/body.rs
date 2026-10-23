@@ -29,6 +29,10 @@ pub(crate) struct Context<'a> {
     pub(crate) parameters: Option<Node<'a>>,
     /// Type parameters and where clause, for the traits generic parameters dispatch to.
     pub(crate) generics: [Option<Node<'a>>; 2],
+    /// For a closure, the bindings it can see from the code around it.
+    pub(crate) captures: HashMap<String, ReceiverRoot>,
+    /// For a closure, what its first parameter is, when the call it is passed to says.
+    pub(crate) argument: Option<ReceiverRoot>,
 }
 
 pub(crate) struct Built {
@@ -40,6 +44,17 @@ const PANIC_MACROS: [&str; 4] = ["panic", "unreachable", "todo", "unimplemented"
 const ERROR_MACROS: [&str; 1] = ["bail"];
 const ROUTE_METHODS: [&str; 8] = [
     "get", "post", "put", "patch", "delete", "head", "options", "any",
+];
+/// `Option` and `Result` methods that call a closure with the value they hold.
+const UNWRAPPING: [&str; 8] = [
+    "and_then",
+    "filter",
+    "inspect",
+    "is_none_or",
+    "is_ok_and",
+    "is_some_and",
+    "map",
+    "map_or",
 ];
 /// Callees that run a closure or function argument concurrently.
 const SPAWNERS: [&str; 4] = ["spawn", "spawn_blocking", "spawn_local", "spawn_on"];
@@ -78,7 +93,7 @@ pub(crate) fn build(
         occurrences: HashMap::new(),
         closures: 0,
         async_blocks: 0,
-        bindings: HashMap::new(),
+        bindings: cx.captures.clone(),
         stored_closures: HashMap::new(),
         generics: HashMap::new(),
         call_nodes: HashMap::new(),
@@ -124,8 +139,32 @@ impl Builder<'_, '_, '_> {
         let source = self.file.source;
         let mut cursor = parameters.walk();
         let params: Vec<Node<'_>> = parameters.named_children(&mut cursor).collect();
-        for param in params {
+        if let (Some(first), Some(argument)) = (params.first(), &self.cx.argument)
+            && let Some(name) = binding_name(*first, source)
+        {
+            self.bindings.insert(name, argument.clone());
+        }
+        for (index, param) in params.into_iter().enumerate() {
+            if index == 0 && self.cx.argument.is_some() && param.kind() != "parameter" {
+                continue;
+            }
             if param.kind() != "parameter" {
+                // An untyped closure parameter shadows what it is named after. Named
+                // like a captured binding of known type, it is taken to be another
+                // value of that type, as with `ui.horizontal(|ui| ..)`: a guess.
+                let Some(name) = binding_name(param, source) else {
+                    for name in pattern_names(param, source) {
+                        self.bindings.remove(&name);
+                    }
+                    continue;
+                };
+                if let Some(ReceiverRoot::Typed { path, .. }) = self.bindings.remove(&name) {
+                    let guess = ReceiverRoot::Typed {
+                        path,
+                        declared: false,
+                    };
+                    self.bindings.insert(name, guess);
+                }
                 continue;
             }
             let (Some(name), Some(ty)) = (
@@ -191,10 +230,21 @@ impl Builder<'_, '_, '_> {
     /// `let name = Type::constructor(..)`.
     fn let_binding(&mut self, declaration: Node<'_>) {
         let source = self.file.source;
-        let Some(name) = declaration
-            .child_by_field_name("pattern")
-            .and_then(|p| binding_name(p, source))
-        else {
+        let pattern = declaration.child_by_field_name("pattern");
+        if let Some(name) = pattern.and_then(|p| unwrapped_binding(p, source)) {
+            // `let Some(x) = f() else ..`, `if let Ok(x) = f()`: `x` is what `f()?`
+            // would leave.
+            let held = declaration
+                .child_by_field_name("value")
+                .and_then(|v| self.receiver(v))
+                .filter(|r| r.fields.is_empty())
+                .and_then(|r| unwrapped(r.root));
+            if let Some(root) = held {
+                self.bindings.insert(name, root);
+            }
+            return;
+        }
+        let Some(name) = pattern.and_then(|p| binding_name(p, source)) else {
             return;
         };
         let declared = declaration
@@ -377,7 +427,7 @@ impl Builder<'_, '_, '_> {
             "return_expression" => self.return_expression(node, steps),
             "try_expression" => self.try_expression(node, steps),
             "closure_expression" => {
-                self.closure(node);
+                self.closure(node, None);
             }
             "block" | "async_block" | "unsafe_block" => {
                 let inner = if node.kind() == "block" {
@@ -400,10 +450,26 @@ impl Builder<'_, '_, '_> {
         }
     }
 
+    /// Records what `if let` and `while let` conditions bind.
+    fn let_conditions(&mut self, condition: Node<'_>) {
+        match condition.kind() {
+            "let_condition" => self.let_binding(condition),
+            "let_chain" => {
+                let mut cursor = condition.walk();
+                let parts: Vec<Node<'_>> = condition.named_children(&mut cursor).collect();
+                for part in parts {
+                    self.let_conditions(part);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn loop_body(&mut self, node: Node<'_>, condition: Option<Node<'_>>) -> Vec<Step> {
         let mut body = Vec::new();
         if let Some(condition) = condition {
             self.expr(condition, false, &mut body);
+            self.let_conditions(condition);
         }
         if let Some(block) = node.child_by_field_name("body") {
             self.block(block, false, &mut body);
@@ -415,6 +481,7 @@ impl Builder<'_, '_, '_> {
         let condition = node.child_by_field_name("condition");
         if let Some(condition) = condition {
             self.expr(condition, false, steps);
+            self.let_conditions(condition);
         }
         let guard = condition.map(|c| label(c, self.source()));
         let then = node
@@ -566,6 +633,16 @@ impl Builder<'_, '_, '_> {
         if matches!(&target, Some(CallTarget::Method { name, .. }) if name == "route") {
             self.route_hint(arguments);
         }
+        // `found().map(|x| ..)`: `x` is what `found()?` would leave.
+        let mut argument = match &target {
+            Some(CallTarget::Method {
+                name,
+                receiver: Some(receiver),
+            }) if UNWRAPPING.contains(&name.as_str()) && receiver.fields.is_empty() => {
+                unwrapped(receiver.root.clone()).map(|root| self.captured(root))
+            }
+            _ => None,
+        };
 
         let mut handoffs = Vec::new();
         if let Some(arguments) = arguments {
@@ -574,7 +651,7 @@ impl Builder<'_, '_, '_> {
             for arg in args {
                 match arg.kind() {
                     "closure_expression" | "async_block" => {
-                        let path = self.closure(arg);
+                        let path = self.closure(arg, argument.take());
                         handoffs.push((CallTarget::Closure(path), arg));
                     }
                     "identifier" | "scoped_identifier" => {
@@ -642,7 +719,7 @@ impl Builder<'_, '_, '_> {
     }
 
     /// Builds a closure or async block as its own unit, parented to this one.
-    fn closure(&mut self, node: Node<'_>) -> Vec<String> {
+    fn closure(&mut self, node: Node<'_>, argument: Option<ReceiverRoot>) -> Vec<String> {
         let mut path = self.cx.path.to_vec();
         let body = if node.kind() == "async_block" {
             path.push(format!("{{async#{}}}", self.async_blocks));
@@ -664,6 +741,8 @@ impl Builder<'_, '_, '_> {
             returns_result: false,
             parameters: node.child_by_field_name("parameters"),
             generics: [None, None],
+            captures: self.captures(),
+            argument,
         };
         let built = build(self.ex, self.file, &cx, body);
         self.ex.push_unit(RawUnit {
@@ -684,6 +763,26 @@ impl Builder<'_, '_, '_> {
             returns_ok: None,
         });
         path
+    }
+
+    /// The bindings a closure defined here sees. A value returned by one of this
+    /// unit's calls is named by where that call is.
+    fn captures(&self) -> HashMap<String, ReceiverRoot> {
+        self.bindings
+            .iter()
+            .map(|(name, root)| (name.clone(), self.captured(root.clone())))
+            .collect()
+    }
+
+    /// `root` as a closure defined here sees it.
+    fn captured(&self, root: ReceiverRoot) -> ReceiverRoot {
+        match root {
+            ReceiverRoot::Returned { .. } => ReceiverRoot::Captured {
+                from: self.cx.path.to_vec(),
+                root: Box::new(root),
+            },
+            other => other,
+        }
     }
 
     fn macro_invocation(&mut self, node: Node<'_>, steps: &mut Vec<Step>) {
@@ -860,6 +959,46 @@ fn arm(label: &str, body: Vec<Step>) -> Arm {
 
 fn exit(kind: ExitKind, label: Option<String>) -> Step {
     Step::Exit { kind, label }
+}
+
+/// Every name a pattern binds, and the paths it matches against: `(a, Some(b))` →
+/// `a`, `Some`, `b`.
+fn pattern_names(pattern: Node<'_>, source: &[u8]) -> Vec<String> {
+    if pattern.kind() == "identifier" {
+        return vec![text(pattern, source).to_owned()];
+    }
+    let mut cursor = pattern.walk();
+    let parts: Vec<Node<'_>> = pattern.named_children(&mut cursor).collect();
+    parts
+        .into_iter()
+        .flat_map(|part| pattern_names(part, source))
+        .collect()
+}
+
+/// The value a returned `Option` or `Result` holds, as `?` would leave it.
+fn unwrapped(root: ReceiverRoot) -> Option<ReceiverRoot> {
+    match root {
+        ReceiverRoot::Returned { call, tried: false } => {
+            Some(ReceiverRoot::Returned { call, tried: true })
+        }
+        ReceiverRoot::Captured { from, root } => Some(ReceiverRoot::Captured {
+            from,
+            root: Box::new(unwrapped(*root)?),
+        }),
+        _ => None,
+    }
+}
+
+/// `Some(x)`, `Ok(x)` → `x`.
+fn unwrapped_binding(pattern: Node<'_>, source: &[u8]) -> Option<String> {
+    if pattern.kind() != "tuple_struct_pattern" {
+        return None;
+    }
+    let wrapper = text(pattern.child_by_field_name("type")?, source);
+    if wrapper != "Some" && wrapper != "Ok" || pattern.named_child_count() != 2 {
+        return None;
+    }
+    binding_name(pattern.named_child(1)?, source)
 }
 
 /// `x`, `mut x` → `x`. Destructuring patterns bind no single name.

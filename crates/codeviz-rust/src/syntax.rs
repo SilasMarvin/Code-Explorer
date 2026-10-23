@@ -113,9 +113,29 @@ pub(crate) fn compact(text: &str) -> String {
 }
 
 /// The type whose methods a value of this type dispatches to, looking through
-/// references and smart pointers: `&Arc<Store>` → `["Store"]`.
+/// references, smart pointers and other wrappers that deref to what they hold:
+/// `&Arc<Store>` → `["Store"]`, Bevy's `Res<Explorer>` → `["Explorer"]`.
 pub(crate) fn receiver_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
-    const POINTERS: [&str; 5] = ["Arc", "Rc", "Box", "Cow", "Pin"];
+    const POINTERS: [&str; 18] = [
+        "Arc",
+        "Box",
+        "Cow",
+        "Extension",
+        "Json",
+        "ManuallyDrop",
+        "Mut",
+        "MutexGuard",
+        "NonSend",
+        "NonSendMut",
+        "Pin",
+        "Rc",
+        "Ref",
+        "RefMut",
+        "Res",
+        "ResMut",
+        "RwLockReadGuard",
+        "RwLockWriteGuard",
+    ];
     match node.kind() {
         "reference_type" => receiver_type_path(node.child_by_field_name("type")?, source),
         "generic_type" => {

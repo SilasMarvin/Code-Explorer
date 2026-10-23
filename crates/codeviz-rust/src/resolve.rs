@@ -12,25 +12,31 @@ use codeviz_ir::{
 use crate::{
     extract::{CallTarget, Extraction, Fields, RawCall, RawUnit, Receiver, ReceiverRoot, UnitKind},
     scip::{self, Scip},
+    std_methods::is_std_method,
 };
 
 /// Bound on `use` indirection, so import cycles cannot loop forever.
 const MAX_IMPORT_HOPS: usize = 8;
+/// Bound on re-exports followed along one path; each hop may try every glob.
+const MAX_REEXPORT_HOPS: usize = 4;
 pub(crate) const SCHEME: &str = "rust";
 
 pub(crate) fn id(path: &[String]) -> UnitId {
     UnitId::from_parts(SCHEME, &path.join("::"))
 }
 
+/// Each analyzed crate, to the analyzed crates its code can name.
+pub(crate) type Crates = HashMap<String, HashSet<String>>;
+
 pub(crate) fn assemble(
     extraction: &mut Extraction,
-    crate_names: &HashSet<String>,
+    crates: &Crates,
     scip: Option<&Scip>,
     document: &mut Document,
 ) {
     disambiguate(&mut extraction.units);
     let extraction = &*extraction;
-    let mut index = Index::new(extraction, crate_names);
+    let mut index = Index::new(extraction, crates);
     index.semantic = scip.map(|scip| Semantic::new(scip, extraction));
     for raw in &extraction.units {
         document.units.push(index.unit(raw));
@@ -40,7 +46,11 @@ pub(crate) fn assemble(
 
 struct Index<'a> {
     extraction: &'a Extraction,
-    crate_names: &'a HashSet<String>,
+    crates: &'a Crates,
+    /// Names of the structs, enums, unions and traits declared in the analyzed source.
+    local_types: HashSet<&'a str>,
+    /// Each unit's id path, to the unit.
+    at_path: HashMap<&'a [String], usize>,
     /// Lookup path (`crate::module::[Type::]name`) to functions.
     by_path: HashMap<Vec<String>, Vec<usize>>,
     /// Method name to methods a by-name match may pick: inherent methods and methods
@@ -49,6 +59,38 @@ struct Index<'a> {
     /// `(type name, method name)` to every method on that type, trait impls included.
     by_type: HashMap<(&'a str, &'a str), Vec<usize>>,
     semantic: Option<Semantic<'a>>,
+}
+
+/// What a call site may invoke.
+struct Found {
+    units: Vec<usize>,
+    certainty: Certainty,
+    /// Nothing here, because the call runs code outside the analyzed source (std or a
+    /// dependency), so what it returns is of a type defined there too.
+    outside: bool,
+}
+
+impl Found {
+    fn new(units: Vec<usize>, certainty: Certainty) -> Self {
+        Self {
+            units,
+            certainty,
+            outside: false,
+        }
+    }
+
+    fn nothing() -> Self {
+        Self::new(Vec::new(), Certainty::Exact)
+    }
+}
+
+/// What a method's receiver is known to be.
+enum Value {
+    /// A value of this type, as sure as the certainty says.
+    Typed(Vec<String>, Certainty),
+    /// A value of a type defined outside the analyzed source.
+    Foreign,
+    Unknown,
 }
 
 /// rust-analyzer's resolution, tied to the extracted units.
@@ -85,10 +127,27 @@ impl<'a> Semantic<'a> {
 }
 
 impl<'a> Index<'a> {
-    fn new(extraction: &'a Extraction, crate_names: &'a HashSet<String>) -> Self {
+    fn new(extraction: &'a Extraction, crates: &'a Crates) -> Self {
         let mut by_path: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
         let mut methods: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut by_type: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+        let local_types = extraction
+            .units
+            .iter()
+            .filter(|unit| {
+                matches!(
+                    unit.kind,
+                    UnitKind::Type("struct" | "enum" | "union" | "trait")
+                )
+            })
+            .map(|unit| unit.name.as_str())
+            .collect();
+        let at_path = extraction
+            .units
+            .iter()
+            .enumerate()
+            .map(|(index, unit)| (unit.path.as_slice(), index))
+            .collect();
         for (index, unit) in extraction.units.iter().enumerate() {
             if !matches!(unit.kind, UnitKind::Function { .. }) {
                 continue;
@@ -110,7 +169,9 @@ impl<'a> Index<'a> {
         }
         Self {
             extraction,
-            crate_names,
+            crates,
+            local_types,
+            at_path,
             by_path,
             methods,
             by_type,
@@ -164,7 +225,11 @@ impl<'a> Index<'a> {
                 certainty: Certainty::Exact,
             }];
         }
-        let (mut ids, certainty) = self.candidates(caller, call);
+        let Found {
+            units: mut ids,
+            certainty,
+            ..
+        } = self.candidates(caller, call);
         // Candidates come from hash maps; source order keeps documents deterministic.
         ids.sort_unstable();
         ids.dedup();
@@ -175,6 +240,91 @@ impl<'a> Index<'a> {
                 certainty,
             })
             .collect()
+    }
+
+    /// Whether code in `caller`'s crate can name the crate unit `index` is in.
+    fn visible(&self, caller: &RawUnit, index: usize) -> bool {
+        let to = self
+            .extraction
+            .units
+            .get(index)
+            .and_then(|u| u.module.first());
+        let (Some(from), Some(to)) = (caller.module.first(), to) else {
+            return true;
+        };
+        self.crates
+            .get(from)
+            .is_none_or(|visible| visible.contains(to))
+    }
+
+    /// Whether a type path names a type declared in the analyzed source. Paths are
+    /// compared by their last segment: a foreign type used without `use` gets the
+    /// module it is used in as its path.
+    fn is_local_type(&self, ty: &[String]) -> bool {
+        ty.last()
+            .is_some_and(|name| self.local_types.contains(name.as_str()))
+    }
+
+    /// The functions at a full path, following `use` re-exports along it: where the
+    /// crate root says `pub use store::Store`, `app::Store::open` is
+    /// `app::store::Store::open`.
+    fn functions_at(&self, path: &[String], hops: usize) -> Option<&Vec<usize>> {
+        if let Some(ids) = self.by_path.get(path) {
+            return Some(ids);
+        }
+        if hops >= MAX_REEXPORT_HOPS {
+            return None;
+        }
+        (1..path.len()).find_map(|split| {
+            let (module, rest) = path.split_at(split);
+            let (name, rest) = rest.split_first()?;
+            let scope = self.extraction.scopes.get(module)?;
+            let exported: Vec<Vec<String>> = match scope.imports.get(name) {
+                Some(import) => vec![import.clone()],
+                None => scope
+                    .globs
+                    .iter()
+                    .map(|glob| glob.iter().chain([name]).cloned().collect())
+                    .collect(),
+            };
+            exported.into_iter().find_map(|import| {
+                let mut full = self.absolute(module, import, 0)?;
+                full.extend(rest.iter().cloned());
+                self.functions_at(&full, hops + 1)
+            })
+        })
+    }
+
+    /// The functions one path names. Several are implementations of one generic
+    /// trait for different arguments (`From<&str>`, `From<bool>`), and which runs
+    /// depends on types: a guess. An inherent function takes precedence.
+    fn overloads(&self, ids: &[usize]) -> (Vec<usize>, Certainty) {
+        if let [_] = ids {
+            return (ids.to_vec(), Certainty::Exact);
+        }
+        let inherent: Vec<usize> = ids
+            .iter()
+            .copied()
+            .filter(|&i| {
+                self.extraction
+                    .units
+                    .get(i)
+                    .and_then(|u| u.owner.as_ref())
+                    .is_some_and(|o| o.trait_name.is_none())
+            })
+            .collect();
+        match inherent.as_slice() {
+            [_] => (inherent, Certainty::Exact),
+            _ => (ids.to_vec(), Certainty::Inferred),
+        }
+    }
+
+    /// For `Type::function`, `Type` when it is declared in the analyzed source (or is
+    /// `Self`).
+    fn associated_type<'s>(&self, segments: &'s [String]) -> Option<&'s [String]> {
+        let ty = segments.split_last().map(|(_, ty)| ty)?;
+        let local = ty.last().is_some_and(|name| name == "Self") || self.is_local_type(ty);
+        local.then_some(ty)
     }
 
     fn resolve_path(&self, caller: &RawUnit, segments: &[String]) -> (Vec<usize>, Certainty) {
@@ -204,14 +354,15 @@ impl<'a> Index<'a> {
         for candidate in std::iter::once(segments.clone()).chain(globbed) {
             if let Some(ids) = self
                 .absolute(&caller.module, candidate, 0)
-                .and_then(|path| self.by_path.get(&path))
+                .and_then(|path| self.functions_at(&path, 0))
             {
-                return (ids.clone(), Certainty::Exact);
+                return self.overloads(ids);
             }
         }
 
-        // Re-exports and aliases are not modeled; match the path's tail instead. A bare
-        // name never names a method: that takes `Type::method` or a receiver.
+        // Aliased re-exports and macro-made items are not modeled; match the path's
+        // tail instead. A bare name never names a method: that takes `Type::method` or
+        // a receiver.
         let bare = segments.len() == 1;
         let matches = self
             .by_path
@@ -226,20 +377,46 @@ impl<'a> Index<'a> {
                         .get(i)
                         .is_some_and(|u| u.owner.is_none())
             })
+            .filter(|&i| self.visible(caller, i))
             .collect();
         (matches, Certainty::Inferred)
     }
 
-    fn resolve_method(
-        &self,
-        caller: &RawUnit,
-        name: &str,
-        receiver: Option<&Receiver>,
-    ) -> (Vec<usize>, Certainty) {
-        let Some((ty, certainty)) = receiver.and_then(|r| self.receiver_type(caller, r)) else {
-            // Nothing is known about the receiver: match by name.
-            let candidates = self.methods.get(name).map_or(&[][..], Vec::as_slice);
-            return (candidates.to_vec(), Certainty::Inferred);
+    fn resolve_method(&self, caller: &RawUnit, name: &str, receiver: Option<&Receiver>) -> Found {
+        let (ty, certainty) = match self.receiver_value(caller, receiver) {
+            Value::Typed(ty, certainty) => (ty, certainty),
+            // A std name on an unknown value is std's far more often than ours. What
+            // it returns may still be ours: an element of a collection, say.
+            Value::Foreign | Value::Unknown if is_std_method(name) => {
+                return Found::nothing();
+            }
+            // Of ours, only a local trait implemented for a foreign type can run.
+            Value::Foreign => {
+                let units: Vec<usize> = self.extension_methods(name).collect();
+                return Found {
+                    outside: units.is_empty(),
+                    ..Found::new(units, Certainty::Inferred)
+                };
+            }
+            // Nothing is known about the receiver: match by name, among the crates the
+            // caller can name, if only one type (or one trait's implementations) has a
+            // method so named. A name several types use is vocabulary, not a clue.
+            Value::Unknown => {
+                let units: Vec<usize> = self
+                    .methods
+                    .get(name)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|&i| self.visible(caller, i))
+                    .collect();
+                let mut owners = units.iter().filter_map(|&i| self.dispatcher(i));
+                let first = owners.next();
+                if owners.any(|owner| Some(owner) != first) {
+                    return Found::nothing();
+                }
+                return Found::new(units, Certainty::Inferred);
+            }
         };
         let type_name = ty.last().map_or("", String::as_str);
         if self.extraction.traits.contains(type_name) {
@@ -257,15 +434,25 @@ impl<'a> Index<'a> {
                 })
                 .collect();
             if !implementations.is_empty() {
-                return (implementations, certainty);
+                return Found::new(implementations, certainty);
             }
         }
-        let on_type = self
+        // The type's own path first: two crates may each have a `Builder`.
+        let mut path = ty.clone();
+        path.push(name.to_owned());
+        if let Some(ids) = self.functions_at(&path, 0) {
+            return Found::new(ids.clone(), certainty);
+        }
+        let on_type: Vec<usize> = self
             .by_type
             .get(&(type_name, name))
-            .map_or(&[][..], Vec::as_slice);
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&i| self.visible(caller, i))
+            .collect();
         if !on_type.is_empty() {
-            return (on_type.to_vec(), certainty);
+            return Found::new(on_type, certainty);
         }
         // The type is known but defines no such method here: a provided method of a
         // local trait, or something from std or a dependency.
@@ -283,7 +470,54 @@ impl<'a> Index<'a> {
                     .is_some_and(|o| o.trait_name.as_deref() == Some(o.type_name.as_str()))
             })
             .collect();
-        (provided, Certainty::Inferred)
+        Found {
+            // Unless the type is ours, its other methods are std's or a dependency's,
+            // and so is what they return, unless it is std's own vocabulary: `get`,
+            // `first` or `unwrap` may hand back a value of ours.
+            outside: provided.is_empty() && !self.is_local_type(&ty) && !is_std_method(name),
+            ..Found::new(provided, Certainty::Inferred)
+        }
+    }
+
+    /// For a call like `Type::default()` on a type of ours that defines no such
+    /// function (a derive or a std trait does), `Type`: what the call returns.
+    fn derived_constructor<'c>(&self, call: &'c RawCall) -> Option<&'c [String]> {
+        const CONSTRUCTORS: [&str; 6] = ["clone", "default", "from", "from_str", "new", "try_from"];
+        let CallTarget::Path(segments) = &call.target else {
+            return None;
+        };
+        let name = segments.last()?;
+        CONSTRUCTORS
+            .contains(&name.as_str())
+            .then(|| self.associated_type(segments))
+            .flatten()
+    }
+
+    /// What a method belongs to for dispatch: the local trait it implements, or else
+    /// the type it is defined on.
+    fn dispatcher(&self, index: usize) -> Option<&str> {
+        let owner = self.extraction.units.get(index)?.owner.as_ref()?;
+        Some(
+            owner
+                .trait_name
+                .as_deref()
+                .filter(|t| self.extraction.traits.contains(*t))
+                .unwrap_or(&owner.type_name),
+        )
+    }
+
+    /// Methods called `name` a value of a foreign type may have here: those of local
+    /// traits implemented for foreign types, and their provided defaults.
+    fn extension_methods<'s>(&'s self, name: &'s str) -> impl Iterator<Item = usize> + 's {
+        self.methods_named(name).filter(|&i| {
+            let owner = self.extraction.units.get(i).and_then(|u| u.owner.as_ref());
+            owner.is_some_and(|o| {
+                o.trait_name.as_ref().is_some_and(|t| {
+                    self.extraction.traits.contains(t)
+                        && (*t == o.type_name || !self.local_types.contains(o.type_name.as_str()))
+                })
+            })
+        })
     }
 
     /// Every method called `name`, on any type or trait.
@@ -295,22 +529,32 @@ impl<'a> Index<'a> {
     }
 
     /// What a call site may invoke, before closures are considered.
-    fn candidates(&self, caller: &RawUnit, call: &RawCall) -> (Vec<usize>, Certainty) {
-        if let Some(resolved) = self.resolved(call) {
-            return resolved;
+    fn candidates(&self, caller: &RawUnit, call: &RawCall) -> Found {
+        if let Some((units, certainty)) = self.resolved(call) {
+            return Found {
+                outside: units.is_empty(),
+                ..Found::new(units, certainty)
+            };
         }
         match &call.target {
-            CallTarget::Path(segments) => self.resolve_path(caller, segments),
+            CallTarget::Path(segments) => {
+                let (units, certainty) = self.resolve_path(caller, segments);
+                Found {
+                    // `Type::default()` on a type of ours is a derive, not foreign code.
+                    outside: units.is_empty() && self.associated_type(segments).is_none(),
+                    ..Found::new(units, certainty)
+                }
+            }
             // A bare name passed as a value is far more often a variable than a
             // function imported under another name: only an exact match counts.
             CallTarget::Reference(segments) => match self.resolve_path(caller, segments) {
-                (_, Certainty::Inferred) if segments.len() == 1 => (Vec::new(), Certainty::Exact),
-                found => found,
+                (_, Certainty::Inferred) if segments.len() == 1 => Found::nothing(),
+                (units, certainty) => Found::new(units, certainty),
             },
             CallTarget::Method { name, receiver } => {
                 self.resolve_method(caller, name, receiver.as_ref())
             }
-            CallTarget::Closure(_) => (Vec::new(), Certainty::Exact),
+            CallTarget::Closure(_) => Found::nothing(),
         }
     }
 
@@ -370,50 +614,94 @@ impl<'a> Index<'a> {
         self.absolute(&scope.module, path, 0)
     }
 
-    /// The type path of a receiver, following declared field types.
-    fn receiver_type(
-        &self,
-        caller: &RawUnit,
-        receiver: &Receiver,
-    ) -> Option<(Vec<String>, Certainty)> {
-        let (mut ty, certainty) = match &receiver.root {
-            ReceiverRoot::SelfValue => {
-                let owner = caller.owner.as_ref()?;
-                let mut path = caller.module.clone();
+    /// What a receiver is, following declared types, field types and return types.
+    fn receiver_value(&self, caller: &RawUnit, receiver: Option<&Receiver>) -> Value {
+        let Some(receiver) = receiver else {
+            return Value::Unknown;
+        };
+        let (mut ty, certainty) = match self.root_value(caller, &receiver.root) {
+            Value::Typed(ty, certainty) => (ty, certainty),
+            other => return other,
+        };
+        for field in &receiver.fields {
+            let Some((struct_path, fields)) = self.struct_fields(&ty) else {
+                return if self.is_local_type(&ty) {
+                    Value::Unknown
+                } else {
+                    Value::Foreign
+                };
+            };
+            let field_ty = fields.get(field);
+            let module = struct_path.get(..struct_path.len().saturating_sub(1));
+            let Some(field_ty) = module
+                .zip(field_ty)
+                .and_then(|(module, field_ty)| self.absolute(module, field_ty.clone(), 0))
+            else {
+                return Value::Unknown;
+            };
+            ty = field_ty;
+        }
+        Value::Typed(ty, certainty)
+    }
+
+    /// What the binding or value a receiver starts from is, in `unit`.
+    fn root_value(&self, unit: &RawUnit, root: &ReceiverRoot) -> Value {
+        let typed = match root {
+            ReceiverRoot::SelfValue => unit.owner.as_ref().map(|owner| {
+                let mut path = unit.module.clone();
                 path.push(owner.type_name.clone());
                 (path, Certainty::Exact)
-            }
+            }),
             ReceiverRoot::Typed { path, declared } => {
                 let certainty = if *declared {
                     Certainty::Exact
                 } else {
                     Certainty::Inferred
                 };
-                (self.type_path(caller, path.clone())?, certainty)
+                self.type_path(unit, path.clone()).map(|ty| (ty, certainty))
             }
             ReceiverRoot::Returned { call, tried } => {
                 // The receiver is what an earlier call returned: use its declared type.
-                let call = caller.calls.get(*call)?;
-                let (ids, certainty) = self.candidates(caller, call);
-                let [function] = ids.as_slice() else {
-                    return None;
+                let Some(call) = unit.calls.get(*call) else {
+                    return Value::Unknown;
                 };
-                let function = self.extraction.units.get(*function)?;
-                let returned = if *tried {
-                    &function.returns_ok
-                } else {
-                    &function.returns
+                let found = self.candidates(unit, call);
+                if found.outside {
+                    return Value::Foreign;
+                }
+                if found.units.is_empty()
+                    && let Some(ty) = self.derived_constructor(call)
+                {
+                    let ty = self.type_path(unit, ty.to_vec());
+                    return ty.map_or(Value::Unknown, |ty| Value::Typed(ty, Certainty::Inferred));
+                }
+                let [function] = found.units.as_slice() else {
+                    return Value::Unknown;
                 };
-                (self.type_path(function, returned.clone()?)?, certainty)
+                self.extraction.units.get(*function).and_then(|function| {
+                    let returned = if *tried {
+                        &function.returns_ok
+                    } else {
+                        &function.returns
+                    };
+                    let ty = self.type_path(function, returned.clone()?)?;
+                    Some((ty, found.certainty))
+                })
+            }
+            ReceiverRoot::Captured { from, root } => {
+                return match self.at_path.get(from.as_slice()) {
+                    Some(&index) => self
+                        .extraction
+                        .units
+                        .get(index)
+                        .map_or(Value::Unknown, |from| self.root_value(from, root)),
+                    None => Value::Unknown,
+                };
             }
         };
-        for field in &receiver.fields {
-            let (struct_path, fields) = self.struct_fields(&ty)?;
-            let field_ty = fields.get(field)?;
-            let module = struct_path.get(..struct_path.len().saturating_sub(1))?;
-            ty = self.absolute(module, field_ty.clone(), 0)?;
-        }
-        Some((ty, certainty))
+        typed.map_or(Value::Unknown, |(ty, certainty)| {
+            Value::Typed(ty, certainty)
+        })
     }
 
     /// A struct's fields by exact path, or by name when only one struct has it.
@@ -468,7 +756,7 @@ impl<'a> Index<'a> {
                     let mut resolved = self.absolute(module, import.clone(), hops + 1)?;
                     resolved.extend(path.into_iter().skip(1));
                     Some(resolved)
-                } else if self.crate_names.contains(&first) {
+                } else if self.crates.contains_key(&first) {
                     Some(path)
                 } else {
                     Some(module.iter().cloned().chain(path).collect())
@@ -492,7 +780,7 @@ impl<'a> Index<'a> {
         for route in &self.extraction.routes {
             let Some(handler) = self
                 .absolute(&route.module, route.handler.clone(), 0)
-                .and_then(|path| self.by_path.get(&path))
+                .and_then(|path| self.functions_at(&path, 0))
                 .and_then(|ids| ids.first())
                 .and_then(|&i| self.extraction.units.get(i))
             else {
