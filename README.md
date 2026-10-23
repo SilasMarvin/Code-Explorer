@@ -122,9 +122,10 @@ checkouts at the working tree's target directory so they are not built from scra
 `mise install` installs it. Without it, or with `--resolve syntax`, and for any call it
 leaves unresolved (code outside the Cargo workspace, or in a crate that does not build),
 calls are resolved from the syntax alone: module paths, `use` imports and re-exports,
-`self`, declared types, `Deref` impls, the types functions return, the bindings closures
-capture and the arguments a function declares its closure parameters are called with
-are followed. A method call on a value of unknown type is matched by name only when the
+`self`, declared types, `Deref` impls, the types functions return, what options,
+collections and iterators hold (through `iter`, `filter`, `get`, `unwrap`, `for` and
+`if let`), the bindings closures capture and the arguments a function declares its
+closure parameters are called with are followed. A method call on a value of unknown type is matched by name only when the
 name is distinctive: not a common standard library method (`map`, `push`, `len`, …), and
 defined by one type (or one trait's implementations) in a crate the caller depends on.
 Such a match is marked `inferred`, as is a call that could be any of several overloads
@@ -138,5 +139,5 @@ once save little and need over a gigabyte more), side by side otherwise.
 analyze the same source with `--resolve syntax` and `--resolve rust-analyzer` and it
 prints the syntax's precision and recall, by certainty, and the functions with the most
 callers in each. On this repository the syntax gets 99.4% of its edges right and finds
-98.5% of rust-analyzer's; on egui and clap_builder, 98.5% and 95% right, finding 95%
-and 88%.
+99.1% of rust-analyzer's; on egui and clap_builder, 98.6% and 95% right, finding 95%
+and 90%.

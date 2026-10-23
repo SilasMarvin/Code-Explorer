@@ -204,19 +204,62 @@ pub(crate) fn closure_arguments(
     }
 }
 
-/// The `T` in `Result<T, E>` or `Option<T>`: what `?` leaves behind.
-pub(crate) fn unwrapped_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
-    if node.kind() != "generic_type" {
-        return None;
+/// What a value of this type holds, as a receiver type path: the `T` of an
+/// `Option<T>` or `Result<T, E>` (what `?` leaves behind), the element of a `Vec<T>`,
+/// `&[T]`, `[T; N]` or set, a map's value, an iterator's `Item`, looking through
+/// references and smart pointers.
+pub(crate) fn held_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
+    const ONE: [&str; 9] = [
+        "Option",
+        "Result",
+        "Vec",
+        "VecDeque",
+        "HashSet",
+        "BTreeSet",
+        "BinaryHeap",
+        "Iter",
+        "IterMut",
+    ];
+    const MAPS: [&str; 3] = ["HashMap", "BTreeMap", "IndexMap"];
+    const POINTERS: [&str; 5] = ["Arc", "Rc", "Box", "Cow", "Pin"];
+    match node.kind() {
+        "reference_type" => held_type_path(node.child_by_field_name("type")?, source),
+        "array_type" => receiver_type_path(node.child_by_field_name("element")?, source),
+        "abstract_type" | "dynamic_type" => {
+            held_type_path(node.child_by_field_name("trait")?, source)
+        }
+        "generic_type" => {
+            let base = path_segments(node.child_by_field_name("type")?, source)?;
+            let base = base.last()?.as_str();
+            let arguments = node.child_by_field_name("type_arguments")?;
+            let mut cursor = arguments.walk();
+            let types: Vec<Node<'_>> = arguments
+                .named_children(&mut cursor)
+                .filter(|a| a.kind() != "lifetime")
+                .collect();
+            if base == "Iterator" || base == "IntoIterator" || base == "DoubleEndedIterator" {
+                // `Iterator<Item = T>`
+                let item = types.iter().find(|a| {
+                    a.kind() == "type_binding"
+                        && a.child_by_field_name("name")
+                            .is_some_and(|n| text(n, source) == "Item")
+                })?;
+                return receiver_type_path(item.child_by_field_name("type")?, source);
+            }
+            if POINTERS.contains(&base) {
+                return held_type_path(*types.first()?, source);
+            }
+            let held = if ONE.contains(&base) {
+                types.first()
+            } else if MAPS.contains(&base) {
+                types.get(1)
+            } else {
+                None
+            };
+            receiver_type_path(*held?, source)
+        }
+        _ => None,
     }
-    let base = path_segments(node.child_by_field_name("type")?, source)?;
-    if !base.last().is_some_and(|b| b == "Result" || b == "Option") {
-        return None;
-    }
-    let arguments = node.child_by_field_name("type_arguments")?;
-    let mut cursor = arguments.walk();
-    let first = arguments.named_children(&mut cursor).next()?;
-    receiver_type_path(first, source)
 }
 
 pub(crate) fn type_name(node: Node<'_>, source: &[u8]) -> String {

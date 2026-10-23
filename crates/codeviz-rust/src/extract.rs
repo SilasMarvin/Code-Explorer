@@ -13,8 +13,8 @@ use crate::{
     Error, body,
     hash::content_hash,
     syntax::{
-        closure_arguments, collect_use, compact, doc_comment, is_test_only, location,
-        receiver_type_path, start, text, type_name, unwrapped_type_path,
+        closure_arguments, collect_use, compact, doc_comment, held_type_path, is_test_only,
+        location, receiver_type_path, start, text, type_name,
     },
 };
 
@@ -27,8 +27,15 @@ pub(crate) struct Owner {
     pub(crate) trait_text: Option<String>,
 }
 
-/// Field name → field type path as written.
-pub(crate) type Fields = HashMap<String, Vec<String>>;
+/// A field's type path as written, and what a value of it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Field {
+    pub(crate) ty: Vec<String>,
+    pub(crate) holds: Option<Vec<String>>,
+}
+
+/// Field name → its type.
+pub(crate) type Fields = HashMap<String, Field>;
 
 /// Per parameter of a function, `self` first if it takes one: when the parameter takes
 /// a closure, the types the closure is called with, as written.
@@ -46,11 +53,16 @@ pub(crate) struct Receiver {
 pub(crate) enum ReceiverRoot {
     SelfValue,
     /// A binding whose type was written down (`declared`) or guessed from a
-    /// `Type::constructor(..)` initializer.
+    /// `Type::constructor(..)` initializer; `holds` is what a value of it holds, as
+    /// [`crate::syntax::held_type_path`] says.
     Typed {
         path: Vec<String>,
         declared: bool,
+        holds: Option<Vec<String>>,
     },
+    /// What the receiver holds: the value in an option or result, an element of a
+    /// collection or iterator.
+    Held(Box<Receiver>),
     /// The value returned by an earlier call in the same unit; `tried` when `?`
     /// unwrapped it.
     Returned {
@@ -155,7 +167,8 @@ pub(crate) struct RawUnit {
     pub(crate) attributes: BTreeMap<String, Scalar>,
     pub(crate) calls: Vec<RawCall>,
     pub(crate) body: Option<Vec<Step>>,
-    /// The declared return type, and the `T` of a returned `Result<T, _>` or `Option<T>`.
+    /// The declared return type, and what a value of it holds: the `T` of a returned
+    /// `Result<T, _>` or `Option<T>`, an element of a collection or iterator.
     pub(crate) returns: Option<Vec<String>>,
     pub(crate) returns_ok: Option<Vec<String>>,
     /// What closures its parameters take are called with.
@@ -446,7 +459,7 @@ impl Extractor {
         let return_type = node.child_by_field_name("return_type");
         let returns_result = return_type.is_some_and(|ty| text(ty, source).contains("Result"));
         let returns = return_type.and_then(|ty| receiver_type_path(ty, source));
-        let returns_ok = return_type.and_then(|ty| unwrapped_type_path(ty, source));
+        let returns_ok = return_type.and_then(|ty| held_type_path(ty, source));
         let where_clause = node
             .named_children(&mut node.walk())
             .find(|c| c.kind() == "where_clause");
@@ -548,9 +561,12 @@ impl Extractor {
                 }
                 _ => continue,
             };
-            if let (Some(field), Some(ty)) = (field, ty.and_then(|t| receiver_type_path(t, source)))
-            {
-                fields.insert(field, ty);
+            let (Some(field), Some(node)) = (field, ty) else {
+                continue;
+            };
+            if let Some(ty) = receiver_type_path(node, source) {
+                let holds = held_type_path(node, source);
+                fields.insert(field, Field { ty, holds });
             }
         }
         let mut path = module.to_vec();

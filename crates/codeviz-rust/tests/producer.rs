@@ -679,6 +679,43 @@ fn closures_take_the_types_their_callee_declares() {
     );
 }
 
+#[test]
+fn elements_of_collections_and_iterators_keep_their_types() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Arg; pub struct Group; pub struct Command { args: Vec<Arg> }
+         impl Arg { pub fn get_id(&self) {} }
+         impl Group { pub fn get_id(&self) {} }
+         impl Command {
+             pub fn get_arguments(&self) -> impl Iterator<Item = &Arg> { self.args.iter() }
+             fn run(&self, groups: &[Group]) {
+                 for arg in self.get_arguments() { arg.get_id(); }
+                 self.args.iter().filter(|a| a.get_id() == ()).count();
+                 groups.first().unwrap().get_id();
+                 if let Some(last) = self.args.last() { last.get_id(); }
+             }
+         }",
+    )]);
+    let get_id = |ty: &str| format!("rust:app::{ty}::get_id");
+    let targets = |id: &str| -> Vec<String> {
+        resolved(unit(&document, id))
+            .into_iter()
+            .filter(|(text, ..)| text == ".get_id")
+            .flat_map(|(_, targets, _)| targets)
+            .collect()
+    };
+    assert_eq!(
+        targets("app::Command::run"),
+        [get_id("Arg"), get_id("Group"), get_id("Arg")],
+        "a `for` loop's binding, `first().unwrap()`, `if let Some(..) = last()`"
+    );
+    assert_eq!(
+        targets("app::Command::run::{closure#0}"),
+        [get_id("Arg")],
+        "`filter` hands its closure an element"
+    );
+}
+
 /// Writes each `(name, dependencies, lib.rs)` as a crate in one workspace and
 /// analyzes it.
 fn analyze_workspace(crates: &[(&str, &str, &str)]) -> Document {

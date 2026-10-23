@@ -21,6 +21,63 @@ const MAX_IMPORT_HOPS: usize = 8;
 const MAX_REEXPORT_HOPS: usize = 4;
 /// Bound on `Deref` steps a method call looks through.
 const MAX_DEREFS: usize = 4;
+/// Methods whose result holds what their receiver holds: iterators over it, options
+/// of one of its values, views of it.
+const HOLDING: [&str; 45] = [
+    "as_deref",
+    "as_deref_mut",
+    "as_mut",
+    "as_mut_slice",
+    "as_ref",
+    "as_slice",
+    "by_ref",
+    "chain",
+    "cloned",
+    "copied",
+    "drain",
+    "filter",
+    "find",
+    "first",
+    "first_mut",
+    "fuse",
+    "get",
+    "get_mut",
+    "inspect",
+    "into_iter",
+    "into_values",
+    "iter",
+    "iter_mut",
+    "last",
+    "last_mut",
+    "max",
+    "max_by",
+    "max_by_key",
+    "min",
+    "min_by",
+    "min_by_key",
+    "next",
+    "next_back",
+    "nth",
+    "ok",
+    "peek",
+    "peekable",
+    "pop",
+    "pop_back",
+    "pop_front",
+    "rev",
+    "skip",
+    "skip_while",
+    "take_while",
+    "values",
+];
+/// Methods whose result is what their receiver holds.
+const UNWRAPPING: [&str; 5] = [
+    "expect",
+    "unwrap",
+    "unwrap_or",
+    "unwrap_or_default",
+    "unwrap_or_else",
+];
 pub(crate) const SCHEME: &str = "rust";
 
 pub(crate) fn id(path: &[String]) -> UnitId {
@@ -692,7 +749,7 @@ impl<'a> Index<'a> {
                     Value::Foreign
                 };
             };
-            let field_ty = fields.get(field);
+            let field_ty = fields.get(field).map(|field| &field.ty);
             let module = struct_path.get(..struct_path.len().saturating_sub(1));
             let Some(field_ty) = module
                 .zip(field_ty)
@@ -713,7 +770,7 @@ impl<'a> Index<'a> {
                 path.push(owner.type_name.clone());
                 (path, Certainty::Exact)
             }),
-            ReceiverRoot::Typed { path, declared } => {
+            ReceiverRoot::Typed { path, declared, .. } => {
                 let certainty = if *declared {
                     Certainty::Exact
                 } else {
@@ -721,11 +778,23 @@ impl<'a> Index<'a> {
                 };
                 self.type_path(unit, path.clone()).map(|ty| (ty, certainty))
             }
+            ReceiverRoot::Held(held) => return self.held_value(unit, held),
             ReceiverRoot::Returned { call, tried } => {
                 // The receiver is what an earlier call returned: use its declared type.
                 let Some(call) = unit.calls.get(*call) else {
                     return Value::Unknown;
                 };
+                // `x.unwrap()` and `x.first()?` are what `x` holds.
+                if let CallTarget::Method {
+                    name,
+                    receiver: Some(holder),
+                } = &call.target
+                {
+                    let names: &[&str] = if *tried { &HOLDING } else { &UNWRAPPING };
+                    if names.contains(&name.as_str()) {
+                        return self.held_value(unit, holder);
+                    }
+                }
                 let found = self.candidates(unit, call);
                 if found.outside {
                     return Value::Foreign;
@@ -773,6 +842,75 @@ impl<'a> Index<'a> {
                     None => Value::Unknown,
                 };
             }
+        };
+        typed.map_or(Value::Unknown, |(ty, certainty)| {
+            Value::Typed(ty, certainty)
+        })
+    }
+
+    /// What a receiver holds: the value in an option or result, an element of a
+    /// collection or iterator, through the methods that pass it along.
+    fn held_value(&self, unit: &RawUnit, receiver: &Receiver) -> Value {
+        if let Some((field, base)) = receiver.fields.split_last() {
+            let base = Receiver {
+                root: receiver.root.clone(),
+                fields: base.to_vec(),
+            };
+            let Value::Typed(ty, certainty) = self.receiver_value(unit, Some(&base)) else {
+                return Value::Unknown;
+            };
+            let held = self.struct_fields(&ty).and_then(|(path, fields)| {
+                let module = path.get(..path.len().saturating_sub(1))?;
+                self.absolute(module, fields.get(field)?.holds.clone()?, 0)
+            });
+            return held.map_or(Value::Unknown, |ty| Value::Typed(ty, certainty));
+        }
+        let typed = match &receiver.root {
+            ReceiverRoot::Typed {
+                holds: Some(holds),
+                declared,
+                ..
+            } => {
+                let certainty = if *declared {
+                    Certainty::Exact
+                } else {
+                    Certainty::Inferred
+                };
+                self.type_path(unit, holds.clone())
+                    .map(|ty| (ty, certainty))
+            }
+            ReceiverRoot::Returned { call, tried: false } => {
+                let Some(call) = unit.calls.get(*call) else {
+                    return Value::Unknown;
+                };
+                if let CallTarget::Method {
+                    name,
+                    receiver: Some(holder),
+                } = &call.target
+                    && HOLDING.contains(&name.as_str())
+                {
+                    return self.held_value(unit, holder);
+                }
+                let found = self.candidates(unit, call);
+                let [function] = found.units.as_slice() else {
+                    return Value::Unknown;
+                };
+                self.extraction.units.get(*function).and_then(|function| {
+                    let ty = self.type_path(function, function.returns_ok.clone()?)?;
+                    Some((ty, found.certainty))
+                })
+            }
+            ReceiverRoot::Captured { from, root } => {
+                let from = self.at_path.get(from.as_slice());
+                let held = Receiver {
+                    root: (**root).clone(),
+                    fields: Vec::new(),
+                };
+                return from
+                    .and_then(|&index| self.extraction.units.get(index))
+                    .map_or(Value::Unknown, |from| self.held_value(from, &held));
+            }
+            _ => None,
         };
         typed.map_or(Value::Unknown, |(ty, certainty)| {
             Value::Typed(ty, certainty)

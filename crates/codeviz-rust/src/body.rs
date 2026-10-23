@@ -13,8 +13,8 @@ use crate::{
     },
     hash::content_hash,
     syntax::{
-        callee_name, is_constructor, label, location, path_segments, receiver_type_path, start,
-        text,
+        callee_name, held_type_path, is_constructor, label, location, path_segments,
+        receiver_type_path, start, text,
     },
 };
 
@@ -49,16 +49,36 @@ const ERROR_MACROS: [&str; 1] = ["bail"];
 const ROUTE_METHODS: [&str; 8] = [
     "get", "post", "put", "patch", "delete", "head", "options", "any",
 ];
-/// `Option` and `Result` methods that call a closure with the value they hold.
-const UNWRAPPING: [&str; 8] = [
+/// Methods of options, results and iterators that call a closure with the value they
+/// hold, first.
+const UNWRAPPING: [&str; 27] = [
+    "all",
     "and_then",
+    "any",
     "filter",
+    "filter_map",
+    "find",
+    "find_map",
+    "flat_map",
+    "for_each",
     "inspect",
     "is_none_or",
     "is_ok_and",
     "is_some_and",
     "map",
     "map_or",
+    "map_while",
+    "max_by_key",
+    "min_by_key",
+    "partition",
+    "position",
+    "retain",
+    "skip_while",
+    "sort_by_cached_key",
+    "sort_by_key",
+    "sort_unstable_by_key",
+    "take_while",
+    "try_for_each",
 ];
 /// Callees that run a closure or function argument concurrently.
 const SPAWNERS: [&str; 4] = ["spawn", "spawn_blocking", "spawn_local", "spawn_on"];
@@ -170,9 +190,10 @@ impl Builder<'_, '_, '_> {
                 };
                 let shadowed = self.bindings.remove(&name);
                 let guess = match shadowed {
-                    Some(ReceiverRoot::Typed { path, .. }) => Some(ReceiverRoot::Typed {
+                    Some(ReceiverRoot::Typed { path, holds, .. }) => Some(ReceiverRoot::Typed {
                         path,
                         declared: false,
+                        holds,
                     }),
                     // Itself what an outer closure was called with.
                     Some(outer @ ReceiverRoot::Callback { .. }) => Some(outer),
@@ -197,21 +218,31 @@ impl Builder<'_, '_, '_> {
                 param
                     .child_by_field_name("pattern")
                     .and_then(|p| binding_name(p, source)),
-                param
-                    .child_by_field_name("type")
-                    .and_then(|t| receiver_type_path(t, source)),
+                param.child_by_field_name("type"),
             ) else {
                 continue;
             };
-            let path = self.substitute(ty);
-            self.bindings.insert(
-                name,
-                ReceiverRoot::Typed {
-                    path,
-                    declared: true,
-                },
-            );
+            if let Some(root) = self.declared(ty) {
+                self.bindings.insert(name, root);
+            }
         }
+    }
+
+    /// A binding of a declared type.
+    fn declared(&self, ty: Node<'_>) -> Option<ReceiverRoot> {
+        let source = self.file.source;
+        let holds = held_type_path(ty, source).map(|held| self.substitute(held));
+        // A slice or array has std's methods only, but holds something of interest.
+        let path = match receiver_type_path(ty, source) {
+            Some(path) => self.substitute(path),
+            None if holds.is_some() => vec!["[_]".to_owned()],
+            None => return None,
+        };
+        Some(ReceiverRoot::Typed {
+            path,
+            declared: true,
+            holds,
+        })
     }
 
     /// Records `T: Trait` from type parameters and where clauses.
@@ -258,33 +289,27 @@ impl Builder<'_, '_, '_> {
         let source = self.file.source;
         let pattern = declaration.child_by_field_name("pattern");
         if let Some(name) = pattern.and_then(|p| unwrapped_binding(p, source)) {
-            // `let Some(x) = f() else ..`, `if let Ok(x) = f()`: `x` is what `f()?`
-            // would leave.
+            // `let Some(x) = f() else ..`, `if let Ok(x) = f()`: `x` is what the value
+            // holds.
             let held = declaration
                 .child_by_field_name("value")
-                .and_then(|v| self.receiver(v))
-                .filter(|r| r.fields.is_empty())
-                .and_then(|r| unwrapped(r.root));
-            if let Some(root) = held {
-                self.bindings.insert(name, root);
-            }
+                .and_then(|v| self.receiver(v));
+            match held {
+                Some(held) => self
+                    .bindings
+                    .insert(name, ReceiverRoot::Held(Box::new(held))),
+                None => self.bindings.remove(&name),
+            };
             return;
         }
         let Some(name) = pattern.and_then(|p| binding_name(p, source)) else {
             return;
         };
-        let declared = declaration
+        if let Some(root) = declaration
             .child_by_field_name("type")
-            .and_then(|t| receiver_type_path(t, source));
-        if let Some(ty) = declared {
-            let path = self.substitute(ty);
-            self.bindings.insert(
-                name,
-                ReceiverRoot::Typed {
-                    path,
-                    declared: true,
-                },
-            );
+            .and_then(|t| self.declared(t))
+        {
+            self.bindings.insert(name, root);
             return;
         }
         let Some(value) = declaration.child_by_field_name("value") else {
@@ -304,6 +329,7 @@ impl Builder<'_, '_, '_> {
                 .map(|path| ReceiverRoot::Typed {
                     path,
                     declared: true,
+                    holds: None,
                 }),
             _ => self
                 .receiver(value)
@@ -418,6 +444,7 @@ impl Builder<'_, '_, '_> {
                 if let Some(value) = node.child_by_field_name("value") {
                     self.expr(value, false, steps);
                 }
+                self.for_binding(node);
                 let pattern = node
                     .child_by_field_name("pattern")
                     .map(|p| label(p, self.source()))
@@ -474,6 +501,29 @@ impl Builder<'_, '_, '_> {
                 }
             }
         }
+    }
+
+    /// `for x in xs`: `x` is what `xs` holds.
+    fn for_binding(&mut self, node: Node<'_>) {
+        let source = self.file.source;
+        let Some(pattern) = node.child_by_field_name("pattern") else {
+            return;
+        };
+        let Some(name) = binding_name(pattern, source) else {
+            for name in pattern_names(pattern, source) {
+                self.bindings.remove(&name);
+            }
+            return;
+        };
+        let held = node
+            .child_by_field_name("value")
+            .and_then(|v| self.receiver(v));
+        match held {
+            Some(held) => self
+                .bindings
+                .insert(name, ReceiverRoot::Held(Box::new(held))),
+            None => self.bindings.remove(&name),
+        };
     }
 
     /// Records what `if let` and `while let` conditions bind.
@@ -659,17 +709,7 @@ impl Builder<'_, '_, '_> {
         if matches!(&target, Some(CallTarget::Method { name, .. }) if name == "route") {
             self.route_hint(arguments);
         }
-        // `found().map(|x| ..)`: `x` is what `found()?` would leave.
-        let mut argument = match &target {
-            Some(CallTarget::Method {
-                name,
-                receiver: Some(receiver),
-            }) if UNWRAPPING.contains(&name.as_str()) && receiver.fields.is_empty() => {
-                unwrapped(receiver.root.clone()).map(|root| self.captured(root))
-            }
-            _ => None,
-        };
-
+        let mut argument = target.as_ref().and_then(|t| self.held_argument(t));
         let mut handoffs = Vec::new();
         let called_at = callee_name(function).map(start);
         if let Some(arguments) = arguments {
@@ -716,6 +756,24 @@ impl Builder<'_, '_, '_> {
             };
             self.record(written, handoff, handoff_mode, Some(index), arg, steps);
         }
+    }
+
+    /// `found().map(|x| ..)`, `items.iter().filter(|x| ..)`: what the first parameter
+    /// of a closure passed to such a call is, which is what the receiver holds.
+    fn held_argument(&self, target: &CallTarget) -> Option<ReceiverRoot> {
+        let CallTarget::Method {
+            name,
+            receiver: Some(receiver),
+        } = target
+        else {
+            return None;
+        };
+        UNWRAPPING.contains(&name.as_str()).then(|| {
+            ReceiverRoot::Held(Box::new(Receiver {
+                root: self.captured(receiver.root.clone()),
+                fields: receiver.fields.clone(),
+            }))
+        })
     }
 
     fn record(
@@ -817,6 +875,10 @@ impl Builder<'_, '_, '_> {
                 from: self.cx.path.to_vec(),
                 root: Box::new(root),
             },
+            ReceiverRoot::Held(held) => ReceiverRoot::Held(Box::new(Receiver {
+                root: self.captured(held.root),
+                fields: held.fields,
+            })),
             other => other,
         }
     }
@@ -1009,20 +1071,6 @@ fn pattern_names(pattern: Node<'_>, source: &[u8]) -> Vec<String> {
         .into_iter()
         .flat_map(|part| pattern_names(part, source))
         .collect()
-}
-
-/// The value a returned `Option` or `Result` holds, as `?` would leave it.
-fn unwrapped(root: ReceiverRoot) -> Option<ReceiverRoot> {
-    match root {
-        ReceiverRoot::Returned { call, tried: false } => {
-            Some(ReceiverRoot::Returned { call, tried: true })
-        }
-        ReceiverRoot::Captured { from, root } => Some(ReceiverRoot::Captured {
-            from,
-            root: Box::new(unwrapped(*root)?),
-        }),
-        _ => None,
-    }
 }
 
 /// `Some(x)`, `Ok(x)` → `x`.
