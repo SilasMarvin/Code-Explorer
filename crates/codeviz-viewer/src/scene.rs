@@ -173,7 +173,7 @@ fn stop_on_rebuild(
     }
 }
 
-/// Digit keys, for picking the nth call or caller.
+/// Digit keys, for opening the call with that number.
 const DIGITS: [KeyCode; 9] = [
     KeyCode::Digit1,
     KeyCode::Digit2,
@@ -189,7 +189,11 @@ const DIGITS: [KeyCode; 9] = [
 /// The arrows walk the journey's call tree: left and right between the calls one
 /// caller makes, down into a call, up to its caller. The brackets step through time
 /// one call at a time, the way the journey actually runs.
-fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
+fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool, alt: bool) -> Option<Step> {
+    // With alt, the arrows go back and forward through where the view has been.
+    if alt {
+        return None;
+    }
     // With shift, ] steps over a call and ↑ steps out of it, as a debugger does.
     if shift && keys.just_pressed(KeyCode::BracketRight) {
         return Some(Step::Over);
@@ -212,28 +216,18 @@ fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
     .map(|(_, step)| step)
 }
 
-/// The graph's keys: digits walk to the focus's nth call (with shift, its nth caller),
-/// Backspace goes back to the node focused before, Escape hands the focus back to the
-/// journey's cursor. Q, - and = narrow and widen what shows, L picks what it shows
-/// around and G how it measures nearness.
-fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
-    if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key))
-        && let Some(focus) = explorer.graph_focus()
-    {
-        let target = if shift {
-            explorer.callers_of(focus).get(index).copied()
-        } else {
-            explorer.graph().sequence(focus).get(index).copied()
-        };
-        if let Some(tile) = target {
-            explorer.open_at(tile);
-        }
+/// The graph's keys: digits open the call numbered so on screen, Backspace or Alt+←
+/// go back to the view before and Alt+→ forward again. Q, - and = narrow and widen
+/// what shows, L picks what it shows around and G how it measures nearness.
+fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, alt: bool) {
+    if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key)) {
+        explorer.open_numbered(index + 1);
     }
-    if keys.just_pressed(KeyCode::Backspace) && !explorer.focus_back() {
-        explorer.back();
+    if keys.just_pressed(KeyCode::Backspace) || alt && keys.just_pressed(KeyCode::ArrowLeft) {
+        explorer.go_back();
     }
-    if keys.just_pressed(KeyCode::Escape) {
-        explorer.unfocus();
+    if alt && keys.just_pressed(KeyCode::ArrowRight) {
+        explorer.go_forward();
     }
     let lens = explorer.lens();
     let lens = if keys.just_pressed(KeyCode::KeyQ) {
@@ -307,11 +301,15 @@ fn keyboard(
     mut chrome: ResMut<Chrome>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if let Some(step) = journey_step(&keys, shift) {
+    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    if let Some(step) = journey_step(&keys, shift, alt) {
         autoplay.playing = false;
         explorer.step(step);
     }
-    graph_navigation(&keys, &mut explorer, shift);
+    graph_navigation(&keys, &mut explorer, alt);
+    if keys.just_pressed(KeyCode::Escape) {
+        close_topmost(&mut explorer, &mut help, &mut chrome);
+    }
     // I and O pick out what calls into the focus and what it calls out to.
     for (key, side) in [
         (KeyCode::KeyI, Side::Callers),
@@ -342,17 +340,13 @@ fn keyboard(
         explorer.close_track(active);
     }
     if keys.just_pressed(KeyCode::KeyJ) {
-        if panel.mode == PanelMode::Hidden {
-            explorer.journey_for_focus();
-            panel.mode = PanelMode::Docked;
+        panel.mode = if panel.mode == PanelMode::Hidden {
+            PanelMode::Docked
         } else {
-            panel.mode = PanelMode::Hidden;
-        }
+            PanelMode::Hidden
+        };
     }
     if keys.just_pressed(KeyCode::KeyM) {
-        if panel.mode != PanelMode::Full {
-            explorer.journey_for_focus();
-        }
         panel.mode = match panel.mode {
             PanelMode::Full => PanelMode::Docked,
             PanelMode::Hidden | PanelMode::Docked => PanelMode::Full,
@@ -366,6 +360,20 @@ fn keyboard(
     }
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;
+    }
+}
+
+/// Escape closes whatever is on top: the search box, the key list, the spotlight,
+/// then the side panel. It never moves the view.
+fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
+    if chrome.search {
+        chrome.search = false;
+    } else if help.0 {
+        help.0 = false;
+    } else if explorer.spotlight().is_some() {
+        explorer.clear_spotlight();
+    } else if chrome.side {
+        chrome.side = false;
     }
 }
 

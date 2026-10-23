@@ -146,7 +146,7 @@ fn draw_ui(
     mut chrome: ResMut<Chrome>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
-    mut cameras: Query<(&mut Camera, &GlobalTransform), With<OrbitCamera>>,
+    mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -179,7 +179,7 @@ fn draw_ui(
     );
     let (graph_area, panel_area) =
         journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
-    if let Ok((mut camera, transform)) = cameras.single_mut() {
+    if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
             camera
@@ -212,6 +212,9 @@ fn draw_ui(
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
             legend(ctx, above(graph_area, panel_area), diff.is_some());
+        }
+        if orbit.free && !chrome.bare {
+            camera_free(ctx, graph_area, &explorer, &mut orbit);
         }
         if help.0 {
             key_help(ctx, graph_area, &mut help.0);
@@ -271,6 +274,7 @@ fn panels(
                     }
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        history_buttons(ui, explorer);
                         breadcrumb(ui, explorer, panel);
                     });
                 });
@@ -370,6 +374,25 @@ fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2, bright: bool) 
     }
 }
 
+/// Back and forward through where the view has been, as a browser's.
+fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
+    if ui
+        .add_enabled(explorer.can_go_back(), egui::Button::new("‹").small())
+        .on_hover_text("Back to the view before (Backspace, Alt+←)")
+        .clicked()
+    {
+        explorer.go_back();
+    }
+    if ui
+        .add_enabled(explorer.can_go_forward(), egui::Button::new("›").small())
+        .on_hover_text("Forward again (Alt+→)")
+        .clicked()
+    {
+        explorer.go_forward();
+    }
+    ui.separator();
+}
+
 fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPanel) {
     ui.horizontal(|ui| {
         for (mode, label, hint) in [
@@ -394,9 +417,6 @@ fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPan
                 .on_hover_text(hint)
                 .clicked()
             {
-                if mode != PanelMode::Hidden && panel.mode == PanelMode::Hidden {
-                    explorer.journey_for_focus();
-                }
                 panel.mode = mode;
             }
         }
@@ -832,13 +852,14 @@ fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
             .add_enabled(can_reroot, egui::Button::new("Start here"))
             .clicked()
         {
-            explorer.trace_from_selected();
+            explorer.trace_from_focus();
         }
         if ui
             .add_enabled(explorer.can_go_back(), egui::Button::new("Back"))
+            .on_hover_text("The view before (Backspace, Alt+←)")
             .clicked()
         {
-            explorer.back();
+            explorer.go_back();
         }
         if let (Some(level), SpanTarget::Unit(unit)) = (span.zoom, &span.target) {
             let label = match level {
@@ -1273,7 +1294,8 @@ fn draw_graph_labels(
             _ => None,
         }
     };
-    let center = explorer.attention();
+    let center = explorer.graph_focus();
+    let hovered = explorer.hovered_tile;
     let reach = explorer.reach();
     let related = |tile: usize| reach.and_then(|r| relation(r, tile));
     let spotlit = explorer.spotlit();
@@ -1309,8 +1331,9 @@ fn draw_graph_labels(
         }
         let tier = match related(tile) {
             _ if center == Some(tile) => 0,
-            // What the spotlight picks out is named, whatever else would be.
-            _ if spotlit.contains(&tile) => 1,
+            // What the pointer is over, and what the spotlight picks out, is named,
+            // whatever else would be.
+            _ if hovered == Some(tile) || spotlit.contains(&tile) => 1,
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
@@ -1357,7 +1380,7 @@ fn draw_graph_labels(
     order.sort_by_key(|&(key, _)| key);
 
     // Labels keep off the cards over the graph, as last laid out.
-    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search"]
+    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search", "camera_free"]
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .collect();
@@ -1380,7 +1403,6 @@ fn draw_graph_labels(
             )
             .collect(),
     );
-    let focus = explorer.graph_focus();
     for ((tier, _, _), named) in order {
         match named {
             Named::Group(group) => {
@@ -1413,7 +1435,6 @@ fn draw_graph_labels(
                     (2 | 5, None) => egui::Color32::from_rgb(225, 229, 238),
                     _ => egui::Color32::from_rgb(160, 167, 182),
                 };
-                let focused = focus.filter(|&f| center == Some(f));
                 let impacted =
                     diff.is_some_and(|d| d.style == DiffStyle::Impact && d.impact(tile).is_some());
                 let color = match change {
@@ -1434,7 +1455,7 @@ fn draw_graph_labels(
                         1 => "calls a change".to_owned(),
                         n => format!("{n} calls from a change"),
                     });
-                let (lead, aside) = match (relation, focused) {
+                let (lead, aside) = match (relation, center) {
                     _ if change.is_some() => (
                         change.map(|c| (diff_view::sign(c).to_owned(), color, None)),
                         diff.and_then(|d| d.moved_from(tile))
@@ -1511,8 +1532,9 @@ fn draw_graph_labels(
                 // What is gone is struck through, which reads at any size.
                 let struck = change == Some(Change::Removed);
                 let job = label_job(lead, &name, aside, color, size, struck);
-                // The focus, and what the spotlight picks out, are named come what may.
-                let force = tier == 0 || spotlit.contains(&tile);
+                // The focus, what the pointer is over and what the spotlight picks out
+                // are named come what may.
+                let force = tier == 0 || hovered == Some(tile) || spotlit.contains(&tile);
                 placer.place(named, node, edge, job, stroke, force);
             }
         }
@@ -1523,9 +1545,10 @@ fn draw_graph_labels(
     });
 }
 
-/// A button for each side of the focus: what calls it (I) and what it calls (O), each
-/// in the color its links are drawn in. A button puts its side in the spotlight, which
-/// frames everything it picks out.
+/// The focus by name, then a button for each side of it: what calls it (I) and what it
+/// calls (O), each in the color its links are drawn in. A button puts its side in the
+/// spotlight, which frames everything it picks out. The name says what those keys, and
+/// Enter, act on: the focus moves with the journey's cursor.
 fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
     let Some(focus) = explorer.graph_focus() else {
         return;
@@ -1560,10 +1583,49 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
                 pressed = Some(side);
             }
         }
+        ui.label(
+            egui::RichText::new(node_name(explorer, focus))
+                .strong()
+                .color(egui::Color32::WHITE),
+        )
+        .on_hover_text("The focus: what I, O and Enter act on. It moves with the journey's cursor");
+        ui.label(egui::RichText::new("focus").small().color(MUTED));
     });
     if let Some(side) = pressed {
         explorer.toggle_spotlight(side, now);
     }
+}
+
+/// Says the camera has been panned or zoomed away and no longer follows the journey,
+/// top left of the graph; a click, like F, brings it back.
+fn camera_free(
+    ctx: &egui::Context,
+    area: egui::Rect,
+    explorer: &Explorer,
+    camera: &mut OrbitCamera,
+) {
+    egui::Area::new("camera_free".into())
+        .fixed_pos(area.min + egui::vec2(12.0, 10.0))
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            let chip = egui::Button::new(
+                egui::RichText::new("camera free · F to follow")
+                    .size(12.5)
+                    .color(MUTED),
+            )
+            .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 215))
+            .corner_radius(8.0);
+            if ui
+                .add(chip)
+                .on_hover_text(
+                    "The camera stays where you put it. F, or a click here, \
+                     brings it back round the journey's start",
+                )
+                .clicked()
+            {
+                graph_view::orbit_anchor(explorer, camera);
+            }
+        });
 }
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
@@ -1626,7 +1688,7 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
             egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
             "click a node to open it · I callers · O calls · , . less or more of the journey \
-             · / search · S panel · H keys",
+             · Backspace back · / search · S panel · H keys",
             egui::FontId::proportional(12.0),
             MUTED,
         );
@@ -1648,7 +1710,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("V", "show calls by level / as the cursor reaches them"),
             ("Space", "play"),
             ("Tab", "next open journey"),
-            ("Enter", "trace a journey from the focus"),
+            ("Enter", "start the journey at the focus"),
             (
                 "Shift Enter",
                 "pull the cursor's call out as its own journey",
@@ -1661,17 +1723,17 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("I", "pick out what calls the focus, and show it all"),
             ("O", "pick out what the focus calls, and show it all"),
-            ("1 – 9", "focus the focus's nth call"),
-            ("Shift 1 – 9", "focus its nth caller"),
-            ("Backspace", "back to the previous focus"),
-            ("Esc", "focus the journey's cursor again"),
+            ("1 – 9", "open the call with that number"),
+            ("Backspace  Alt ←", "back to the view before"),
+            ("Alt →", "forward again"),
+            ("Esc", "close search, this list, the spotlight, the panel"),
             ("- / =", "show less / more around the start"),
             ("Q", "show all → 2 steps → 1 step"),
             ("L", "reveal around: focus → changes → journey"),
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("F", "back to the focus, head-on"),
+            ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
             ("T", "play or pause the morph"),

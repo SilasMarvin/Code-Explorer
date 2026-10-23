@@ -1,6 +1,7 @@
 //! The codebase as a graph of calls: how its nodes look, which links light up, and
-//! where the camera goes. Whatever the pointer is over, or else the focused node, is
-//! the center of attention. Each channel carries one thing: a link's color says which
+//! where the camera goes. The focus, the journey cursor's node, is the center of
+//! attention; the pointer only rings the node it is over, so passing over the graph
+//! does not repaint it. Each channel carries one thing: a link's color says which
 //! way a call runs (violet into the focus, blue out of it, with dots flowing along
 //! it), a node's fill says where it lives (its module) or, under a diff, what
 //! changed. What is near the focus is bright, fading with each call further; the rest
@@ -212,7 +213,7 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     if !explorer.shown(tile) {
         return NodeLook::Hidden;
     }
-    let center = explorer.attention();
+    let center = explorer.graph_focus();
     if center == Some(tile) {
         return NodeLook::Focus;
     }
@@ -239,11 +240,11 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
     .map(|hops| hops.clamp(1, FARTHEST_SHADE))
 }
 
-/// The color a node is filled with, at full strength: white for the center of
-/// attention, else what changed under a diff, else its module's. A journey bar is
-/// painted the same, so a bar and its node read as one thing.
+/// The color a node is filled with, at full strength: white for the focus, else what
+/// changed under a diff, else its module's. A journey bar is painted the same, so a
+/// bar and its node read as one thing.
 pub(crate) fn node_color(explorer: &Explorer, diff: Option<&DiffView>, tile: usize) -> Color {
-    if explorer.attention() == Some(tile) {
+    if explorer.graph_focus() == Some(tile) {
         return Color::WHITE;
     }
     match diff {
@@ -252,14 +253,14 @@ pub(crate) fn node_color(explorer: &Explorer, diff: Option<&DiffView>, tile: usi
     }
 }
 
-/// Keeps what reaches the center of attention current.
+/// Keeps what reaches the focus current.
 pub(crate) fn track_attention(mut explorer: ResMut<Explorer>) {
     if explorer.bypass_change_detection().refresh_reach() {
         explorer.set_changed();
     }
 }
 
-/// Restyles nodes when attention or the journeys change.
+/// Restyles nodes when the focus or the journeys change.
 pub(crate) fn style_nodes(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
@@ -320,7 +321,7 @@ fn fade(hops: u32) -> f32 {
     }
 }
 
-/// Every call as a link, then the spotlight and the center of attention.
+/// Every call as a link, then the spotlight, the focus and the node under the pointer.
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
@@ -342,7 +343,7 @@ pub(crate) fn draw_graph(
 /// path, are pale arrows fading with distance; everything else is faint.
 fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
-    let center = explorer.attention();
+    let center = explorer.graph_focus();
     let reach = explorer.reach();
     let point = |tile: usize| explorer.tile_point(tile);
     let map = explorer.map();
@@ -492,26 +493,25 @@ fn draw_spotlight(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     }
 }
 
-/// A white ring round the center of attention, and a fainter one round the journey's
-/// cursor when attention is elsewhere.
+/// A white ring round the focus, and a fainter, wider one round the node under the
+/// pointer, in the graph or as a bar in the journey.
 fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
-    let center = explorer.attention();
-    if let Some(at) = center.and_then(|c| explorer.tile_point(c)) {
-        let radius = center.map_or(1.0, |c| node_size(graph, c)) * 0.5 + 0.35;
-        gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
-    }
-    let cursor = explorer
-        .focus()
-        .and_then(|unit| explorer.map().tile_of(unit));
-    if let Some(tile) = cursor.filter(|&t| Some(t) != center)
+    let focus = explorer.graph_focus();
+    if let Some(tile) = focus
         && let Some(at) = explorer.tile_point(tile)
     {
         let radius = node_size(graph, tile) * 0.5 + 0.35;
+        gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
+    }
+    if let Some(tile) = explorer.hovered_tile.filter(|&t| Some(t) != focus)
+        && let Some(at) = explorer.tile_point(tile)
+    {
+        let radius = node_size(graph, tile) * 0.5 + 0.6;
         gizmos.sphere(
             Isometry3d::from_translation(at),
             radius,
-            Color::srgba(1.0, 1.0, 1.0, 0.4),
+            Color::srgba(1.0, 1.0, 1.0, 0.55),
         );
     }
 }
@@ -565,8 +565,8 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F turns to face the graph head-on, centered on the focus again; R pulls back to
-/// take in the whole graph.
+/// F turns to face the graph head-on, centered on the journey's start again; R pulls
+/// back to take in the whole graph.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
@@ -575,7 +575,7 @@ pub(crate) fn graph_keys(
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
             camera.turn_to(FRONT);
-            orbit_focus(&explorer, &mut camera);
+            orbit_anchor(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {
             frame_all(&explorer, &mut camera);
@@ -616,8 +616,8 @@ pub(crate) fn frame_reveal(
         return;
     }
     for mut camera in &mut cameras {
-        if lens.source == Source::Focus && !lens.changes_only && explorer.graph_focus().is_some() {
-            orbit_focus(&explorer, &mut camera);
+        if lens.source == Source::Focus && !lens.changes_only && explorer.anchor().is_some() {
+            orbit_anchor(&explorer, &mut camera);
             continue;
         }
         let Some(targets) = explorer.reveal_targets() else {
@@ -657,6 +657,7 @@ pub(crate) fn frame_spotlight(
     let points: Vec<Vec3> = explorer
         .spotlit()
         .into_iter()
+        .chain(explorer.graph_focus())
         .filter_map(|t| explorer.tile_point(t))
         .collect();
     for (mut camera, transform, projection) in &mut cameras {
@@ -724,20 +725,21 @@ pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut Orbit
     }
 }
 
-/// Orbits the focused node from far enough back to see everything it calls and
-/// everything that calls it.
-pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut OrbitCamera) {
+/// Orbits the node the journey starts at from far enough back to see everything it
+/// calls and everything that calls it, the journey as disclosed, and the cursor.
+pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
     let graph = explorer.graph();
-    let Some(focus) = explorer.graph_focus() else {
+    let Some(anchor) = explorer.anchor() else {
         return;
     };
-    let Some(at) = explorer.tile_point(focus) else {
+    let Some(at) = explorer.tile_point(anchor) else {
         return;
     };
     let reach = graph
-        .callers(focus)
-        .chain(graph.callees(focus))
+        .callers(anchor)
+        .chain(graph.callees(anchor))
         .filter(|&t| explorer.shown(t))
+        .chain(explorer.graph_focus())
         .filter_map(|t| explorer.tile_point(t))
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);
@@ -761,36 +763,67 @@ fn orbit_distance(reach: f32) -> f32 {
     (reach * 3.4).max(MIN_ORBIT_DISTANCE)
 }
 
-/// Swings round to a newly focused node, and keeps it centered while the graph moves.
-/// As more of the journey opens, pulls back to take it in.
+/// What the camera last followed: where it was aimed and how many times, the focus,
+/// and how much of the journey showed.
+#[derive(Default)]
+pub(crate) struct Followed {
+    aim: Option<(Option<usize>, u64)>,
+    focus: Option<usize>,
+    disclosed: Option<Arc<Disclosed>>,
+}
+
+/// Turns to the node the journey starts at whenever the view is pointed somewhere by
+/// hand: a node clicked, searched for, numbered or picked from the changes, going back
+/// or forward, another journey. Moving the cursor never turns it: at most the camera
+/// pulls back, around the same node, so the cursor's node stays on screen, and not
+/// even that once the viewer has panned or zoomed away. A level more or less of the
+/// journey refits the view to what shows.
 pub(crate) fn follow_focus(
     explorer: Res<Explorer>,
-    mut followed: Local<Option<usize>>,
-    mut disclosed: Local<Option<Arc<Disclosed>>>,
-    mut cameras: Query<&mut OrbitCamera>,
+    mut last: Local<Followed>,
+    mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
 ) {
+    let aim = (explorer.anchor(), explorer.aim());
     let focus = explorer.graph_focus();
-    let changed = focus != *followed;
-    *followed = focus;
     let disclosure = explorer.disclosure();
-    let opened = disclosed
+    let aimed = last.aim != Some(aim);
+    let opened = last
+        .disclosed
         .as_ref()
         .is_some_and(|d| !Arc::ptr_eq(d, &disclosure));
-    *disclosed = Some(disclosure);
-    for mut camera in &mut cameras {
-        if changed {
-            orbit_focus(&explorer, &mut camera);
-        } else if opened && let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) {
+    let moved = last.focus != focus;
+    *last = Followed {
+        aim: Some(aim),
+        focus,
+        disclosed: Some(disclosure),
+    };
+    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+        return;
+    };
+    for (mut camera, transform, projection) in &mut cameras {
+        if aimed {
+            orbit_anchor(&explorer, &mut camera);
+            continue;
+        }
+        if camera.free || !(opened || moved) {
+            continue;
+        }
+        let Projection::Perspective(perspective) = projection else {
+            continue;
+        };
+        let cursor: Vec<Vec3> = focus
+            .and_then(|t| explorer.tile_point(t))
+            .into_iter()
+            .collect();
+        let needed = fit_distance(&cursor, at, transform.rotation, perspective);
+        if opened {
+            let fits = needed.max(orbit_distance(journey_reach(&explorer, at)));
             // Stepping through time only ever pulls back, so the view does not pump.
-            let distance = orbit_distance(journey_reach(&explorer, at));
-            if explorer.disclose() != Disclose::Time || distance > camera.distance {
-                camera.glide_to(at, distance);
+            if explorer.disclose() != Disclose::Time || fits > camera.distance {
+                camera.glide_to(at, fits);
             }
-        } else if explorer.settling()
-            && !camera.free
-            && let Some(at) = focus.and_then(|t| explorer.tile_point(t))
-        {
-            camera.target = at;
+        } else if needed > camera.distance {
+            camera.glide_to(at, needed);
         }
     }
 }
