@@ -20,6 +20,7 @@ mod journey_panel;
 mod lens;
 mod routes;
 mod scene;
+mod search;
 mod source_diff;
 mod truth;
 mod ui;
@@ -63,6 +64,8 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// What the search box opens on, when it opens at once.
+    search: Option<String>,
     diff: Option<Comparison>,
 }
 
@@ -97,6 +100,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            search: None,
             diff: None,
         }
     }
@@ -243,6 +247,13 @@ impl Viewer {
         self
     }
 
+    /// Opens with the search box showing what `query` finds.
+    #[must_use]
+    pub fn with_search(mut self, query: impl Into<String>) -> Self {
+        self.search = Some(query.into());
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -365,8 +376,10 @@ impl Viewer {
         .insert_resource(JourneyPanel::new(self.panel))
         .insert_resource(ui::Chrome {
             bare: self.bare,
+            search: self.search.is_some(),
             ..default()
         })
+        .insert_resource(search::Search::new(self.search.unwrap_or_default()))
         .init_resource::<Autoplay>();
         if let Some(diff) = diff {
             app.insert_resource(diff);

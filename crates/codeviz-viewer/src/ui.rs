@@ -11,7 +11,7 @@ use std::{
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use codeviz_core::{Change, Level, SpanTarget};
-use codeviz_ir::{ExitKind, Role, UnitId};
+use codeviz_ir::ExitKind;
 
 use crate::{
     camera::OrbitCamera,
@@ -22,6 +22,7 @@ use crate::{
     lens::{self, Measure, Source},
     routes::Start,
     scene::{PALETTE, accent, lane_color},
+    search::{self, Search},
     source_diff,
 };
 
@@ -62,11 +63,6 @@ fn fallback_fonts(mut contexts: EguiContexts, mut done: Local<bool>) -> Result {
 /// Whether the key reference is showing.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct KeyHelp(pub(crate) bool);
-
-#[derive(Resource, Debug, Default)]
-struct Search {
-    query: String,
-}
 
 /// Source files read so far; `None` when a file could not be read.
 #[derive(Resource, Debug, Default)]
@@ -168,12 +164,13 @@ fn draw_ui(
             routes_card(ctx, graph_area, &mut explorer);
         }
         if chrome.search && !chrome.bare {
-            search_box(
+            search::search_box(
                 ctx,
                 graph_area,
                 &mut explorer,
                 &mut search,
                 &mut chrome.search,
+                time.elapsed_secs(),
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
@@ -230,7 +227,7 @@ fn panels(
                     }
                     if ui
                         .selectable_label(chrome.search, "Search")
-                        .on_hover_text("Find a function (/)")
+                        .on_hover_text("Find a function, or where an error is raised (/)")
                         .clicked()
                     {
                         chrome.search = !chrome.search;
@@ -431,104 +428,6 @@ fn journeys(ui: &mut egui::Ui, explorer: &mut Explorer) {
     }
 }
 
-/// A box to find a function by name, over the top of the graph: Enter or a click
-/// opens it, Escape closes the box.
-fn search_box(
-    ctx: &egui::Context,
-    area: egui::Rect,
-    explorer: &mut Explorer,
-    search: &mut Search,
-    open: &mut bool,
-) {
-    let system = explorer.system();
-    let rows: Vec<(UnitId, String, String)> = if search.query.trim().is_empty() {
-        let mut rows: Vec<_> = system
-            .entries()
-            .iter()
-            .map(|e| (e.unit.clone(), e.label.clone(), e.kind.clone()))
-            .collect();
-        rows.sort_by(|a, b| a.1.cmp(&b.1));
-        rows
-    } else {
-        let entries = system
-            .entries()
-            .iter()
-            .map(|e| (&e.unit, e.label.clone(), &e.kind));
-        let units = system
-            .units()
-            .filter(|u| u.role == Role::Invocable)
-            .map(|u| (&u.id, explorer.unit_name(&u.id), &u.kind));
-        let mut ranked: Vec<(u8, UnitId, String, String)> = entries
-            .chain(units)
-            .filter_map(|(id, name, kind)| {
-                let rank = search_rank(&search.query, id.as_str(), &name)?;
-                Some((rank, id.clone(), name, kind.clone()))
-            })
-            .collect();
-        ranked.sort_by(|a, b| (a.0, a.2.len(), &a.2).cmp(&(b.0, b.2.len(), &b.2)));
-        ranked.dedup_by(|a, b| a.1 == b.1);
-        ranked
-            .into_iter()
-            .take(200)
-            .map(|(_, id, name, kind)| (id, name, kind))
-            .collect()
-    };
-    let mut chosen = None;
-    egui::Area::new("search".into())
-        .pivot(egui::Align2::CENTER_TOP)
-        .fixed_pos(egui::pos2(area.center().x, area.min.y + 10.0))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 240))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
-                .corner_radius(8.0)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.set_width(420.0);
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut search.query)
-                            .hint_text("search functions…")
-                            .desired_width(f32::INFINITY),
-                    );
-                    field.request_focus();
-                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        chosen = rows.first().map(|row| row.0.clone());
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        *open = false;
-                    }
-                    if rows.is_empty() {
-                        ui.label(egui::RichText::new("no function matches").color(MUTED));
-                    }
-                    egui::ScrollArea::vertical()
-                        .id_salt("units")
-                        .max_height(260.0)
-                        .show(ui, |ui| {
-                            for (id, title, kind) in &rows {
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .selectable_label(explorer.root() == Some(id), title)
-                                        .on_hover_text(id.as_str())
-                                        .clicked()
-                                    {
-                                        chosen = Some(id.clone());
-                                    }
-                                    ui.label(egui::RichText::new(kind).small().color(MUTED));
-                                });
-                            }
-                        });
-                });
-        });
-    if let Some(id) = chosen {
-        match explorer.map().tile_of(&id) {
-            Some(tile) => explorer.open_at(tile),
-            None => explorer.set_root(id),
-        }
-        *open = false;
-    }
-}
-
 fn outcomes(ui: &mut egui::Ui, explorer: &mut Explorer) {
     ui.heading("Outcomes");
     let mut chosen = None;
@@ -562,36 +461,6 @@ fn outcomes(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if let Some(scenario) = chosen {
         explorer.set_scenario(scenario);
     }
-}
-
-/// How well `query` finds a function, best first, or `None` when it does not: its
-/// name exactly, then its name's start, then anywhere in its path, then each word of
-/// the query in order along the path. `.` and `::` are the same, so `orders.place`
-/// finds `services::orders::place`.
-fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
-    let normal = |text: &str| text.to_lowercase().replace("::", ".");
-    let query = normal(query.trim());
-    let name = normal(name);
-    // The path without its producer's prefix, as in `rust:`.
-    let path = normal(id.split_once(':').map_or(id, |(_, path)| path));
-    if name == query || path == query || path.ends_with(&format!(".{query}")) {
-        return Some(0);
-    }
-    if name.starts_with(&query) || name.contains(&format!(".{query}")) {
-        return Some(1);
-    }
-    if path.contains(&query) || name.contains(&query) {
-        return Some(2);
-    }
-    let mut rest = path.as_str();
-    for word in query
-        .split(|c: char| c == '.' || c.is_whitespace())
-        .filter(|w| !w.is_empty())
-    {
-        let at = rest.find(word)?;
-        rest = &rest[at + word.len()..];
-    }
-    Some(3)
 }
 
 /// The caller's source around the line that made the selected call; for the root,
@@ -1825,7 +1694,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("J", "show or hide the journey"),
             ("M", "swap graph and journey"),
             ("S", "show or hide the side panel"),
-            ("/", "search for a function"),
+            ("/", "search functions, errors, conditions, calls"),
             ("H", "this list"),
         ],
     ),
@@ -1919,28 +1788,6 @@ mod tests {
             .and_then(|labels| labels.get(&Named::Node(0)).cloned())
             .unwrap_or_else(|| panic!("the label was not remembered"));
         (shown.side, shown.offset)
-    }
-
-    #[test]
-    fn search_reads_dots_as_paths() {
-        let place = |query| {
-            search_rank(
-                query,
-                "rust:axum_server::services::orders::place",
-                "orders.place",
-            )
-        };
-        assert_eq!(place("orders.place"), Some(0), "as the graph names it");
-        assert_eq!(place("orders::place"), Some(0), "as Rust writes it");
-        assert_eq!(place("ord"), Some(1));
-        assert_eq!(place("services.orders"), Some(2));
-        assert_eq!(
-            place("server place"),
-            Some(3),
-            "words in order along the path"
-        );
-        assert_eq!(place("place orders"), None, "but not out of order");
-        assert_eq!(place("quote"), None);
     }
 
     #[test]
