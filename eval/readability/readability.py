@@ -12,7 +12,8 @@ with agents as the readers.
     python3 eval/readability/readability.py grade --run NAME [--baseline NAME]
 
 Each run lives in target/readability/NAME: shots/ and prompts/ for readers, keys/ for
-the grader, answers/ for what readers wrote, report.json for the scores.
+the grader, answers/ for what readers wrote, report.json for the scores. Set
+CODEVIZ_BIN to render with a codeviz built elsewhere instead of building one.
 """
 
 import argparse
@@ -89,7 +90,7 @@ def render(run, only, conditions):
     listed = []
     for name in names:
         shot = out / "keys" / f"{name}.png"
-        command = [str(ROOT / "target" / "debug" / "codeviz"), *scenarios[name]["command"]]
+        command = [str(binary()), *scenarios[name]["command"]]
         command += ["--bare", "--screenshot", str(shot)]
         guarded(command, out / "keys" / f"{name}.log")
         truth = json.loads(shot.with_suffix(".truth.json").read_text())
@@ -107,7 +108,17 @@ def render(run, only, conditions):
     print(json.dumps({"run": run, "dir": str(out), "scenarios": listed}))
 
 
+def binary():
+    """The codeviz to render with: $CODEVIZ_BIN when set, as a binary built elsewhere,
+    else the workspace's debug build."""
+    given = os.environ.get("CODEVIZ_BIN")
+    return Path(given) if given else ROOT / "target" / "debug" / "codeviz"
+
+
 def build():
+    # A binary given from outside is already built.
+    if os.environ.get("CODEVIZ_BIN"):
+        return
     cargo = ["mise", "exec", "--", "cargo"] if shutil.which("mise") else ["cargo"]
     subprocess.run([*cargo, "build", "-q", "-p", "codeviz"], cwd=ROOT, check=True)
 

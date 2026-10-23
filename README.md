@@ -171,8 +171,9 @@ and grades what readers answer, by aspect, against the previous run.
 
 The `readability` workflow (`.claude/workflows/readability.js`) does the whole loop with
 agents as readers: render, a Sonnet and a Haiku reader per scenario who see only the
-image, then the report. `mise run readability-render` and `mise run readability-grade` run the two
-halves by hand.
+image, then the report. `mise run readability-render` and `mise run readability-grade`
+run the two halves by hand. With `CODEVIZ_BIN` set, rendering uses that binary instead
+of building one.
 
 ## The model
 
