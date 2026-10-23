@@ -1110,12 +1110,17 @@ enum Named {
 /// Tier, then bigger first, then a stable tiebreak.
 type LabelRank = (u8, std::cmp::Reverse<usize>, usize);
 
-/// Where a label may go around its node, in order of preference.
-const SIDES: [egui::Align2; 4] = [
+/// Where a label may go around its node, in order of preference: beside it, above or
+/// below it, then off a corner.
+const SIDES: [egui::Align2; 8] = [
     egui::Align2::LEFT_CENTER,
     egui::Align2::RIGHT_CENTER,
     egui::Align2::CENTER_BOTTOM,
     egui::Align2::CENTER_TOP,
+    egui::Align2::LEFT_BOTTOM,
+    egui::Align2::LEFT_TOP,
+    egui::Align2::RIGHT_BOTTOM,
+    egui::Align2::RIGHT_TOP,
 ];
 
 /// Room kept around a label's text: its pill.
@@ -1195,13 +1200,16 @@ impl<'a> Placer<'a> {
         let extent = galley.size();
         let gap = edge + 6.0;
         let spot = |side: usize| {
-            let anchor = match SIDES[side] {
-                egui::Align2::LEFT_CENTER => node + egui::vec2(gap, 0.0),
-                egui::Align2::RIGHT_CENTER => node - egui::vec2(gap, 0.0),
-                egui::Align2::CENTER_BOTTOM => node - egui::vec2(0.0, gap),
-                _ => node + egui::vec2(0.0, gap),
+            // The label's corner nearest the node sits a gap off it, diagonally for a
+            // corner.
+            let align = SIDES[side];
+            let away = align.to_sign();
+            let corner = if away.x != 0.0 && away.y != 0.0 {
+                std::f32::consts::FRAC_1_SQRT_2
+            } else {
+                1.0
             };
-            SIDES[side].anchor_size(anchor, extent)
+            align.anchor_size(node - away * gap * corner, extent)
         };
         // Inside the graph, so no label is cut off at its edge.
         let bounds = self.painter.clip_rect();
@@ -1218,7 +1226,7 @@ impl<'a> Placer<'a> {
             .filter(|&side| fits(spot(side), egui::Vec2::ZERO));
         let side = kept
             .or_else(|| (0..SIDES.len()).find(|&side| fits(spot(side), PILL_PAD)))
-            .or_else(|| force.then(|| previous.map_or(0, |p| p.side)));
+            .or_else(|| force.then(|| least_covered(spot, &self.taken, previous.map(|p| p.side))));
         let Some(side) = side else {
             return false;
         };
@@ -1299,6 +1307,30 @@ impl<'a> Placer<'a> {
         }
         painter.galley(min, shown.galley.clone(), egui::Color32::WHITE);
     }
+}
+
+/// The side whose spot, found by `spot`, overlaps the least of `taken`; on a tie, the
+/// side the label had, then the earliest.
+fn least_covered(
+    spot: impl Fn(usize) -> egui::Rect,
+    taken: &[egui::Rect],
+    previous: Option<usize>,
+) -> usize {
+    let covered = |side: usize| -> f32 {
+        let rect = spot(side);
+        taken
+            .iter()
+            .filter_map(|r| {
+                let overlap = r.intersect(rect);
+                overlap.is_positive().then(|| overlap.area())
+            })
+            .sum()
+    };
+    previous
+        .into_iter()
+        .chain(0..SIDES.len())
+        .min_by(|&a, &b| covered(a).total_cmp(&covered(b)))
+        .unwrap_or_default()
 }
 
 /// What leads a label: text in a color, on a fill when it is a badge.
@@ -1516,10 +1548,12 @@ fn draw_graph_labels(
     }
     order.sort_by_key(|&(key, _)| key);
 
-    // Labels keep off the cards over the graph, as last laid out.
+    // Labels keep off the cards over the graph and the hint under them, as last laid
+    // out.
     let cards: Vec<egui::Rect> = ["diff_card", "legend", "search"]
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
+        .chain(painter.ctx().data(|d| d.get_temp::<egui::Rect>(hint_id())))
         .collect();
     // And off the nodes that matter, so they never hide a neighbor.
     let mut placer = Placer::new(
@@ -1781,7 +1815,8 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                     });
                 });
         });
-    ctx.layer_painter(egui::LayerId::background())
+    let hint = ctx
+        .layer_painter(egui::LayerId::background())
         .with_clip_rect(area)
         .text(
             egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
@@ -1791,6 +1826,12 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
             egui::FontId::proportional(12.0),
             MUTED,
         );
+    // Remembered so graph labels keep off it, as they do the cards.
+    ctx.data_mut(|d| d.insert_temp(hint_id(), hint));
+}
+
+fn hint_id() -> egui::Id {
+    egui::Id::new("legend_hint")
 }
 
 /// Every key, grouped by what it moves.
@@ -2045,6 +2086,24 @@ mod tests {
                 "viewer::names::Names::newest",
             ]
         );
+    }
+
+    #[test]
+    fn a_label_that_must_show_takes_the_least_covered_side() {
+        // Each side a unit square along x.
+        let spot = |side: usize| {
+            let x = side as f32;
+            egui::Rect::from_min_size(egui::pos2(x, 0.0), egui::vec2(1.0, 1.0))
+        };
+        let half = |x: f32| egui::Rect::from_min_size(egui::pos2(x, 0.0), egui::vec2(0.5, 1.0));
+        let everywhere = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(8.0, 1.0));
+        assert_eq!(least_covered(spot, &[everywhere, half(3.0)], None), 0);
+        assert_eq!(
+            least_covered(spot, &[everywhere, half(3.0)], Some(5)),
+            5,
+            "covered alike, it keeps its side"
+        );
+        assert_eq!(least_covered(spot, &[half(0.0), half(1.0)], Some(0)), 2);
     }
 
     #[test]
