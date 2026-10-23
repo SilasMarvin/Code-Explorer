@@ -66,7 +66,7 @@ back, the camera following. A pane down the left shows the focused change: where
 comes in the order (`4 of 11`), the entry points it affects, the calls it gained and
 lost, and its source before and after, with long unchanged runs folded and the part of
 a rewritten line that changed picked out; below it, every change in order, `↑3` for
-the entry points each affects. In the graph, pale arrows lead up from the focused
+the entry points each affects, ticked once you have focused it. In the graph, pale arrows lead up from the focused
 change to the nearest entry points it affects (without declared entries, the functions
 nothing calls), each named as such. The Changes card lists the entry points the whole
 diff affects.

@@ -100,6 +100,8 @@ pub(crate) struct DiffView {
     order: Vec<usize>,
     /// Where in `order` stepping last stood.
     at: Option<usize>,
+    /// The changes focused so far: read, as far as the view can tell.
+    read: HashSet<usize>,
     pub(crate) starts: Vec<Start>,
     /// Whether the starts are the functions nothing calls, for want of declared ones.
     pub(crate) roots: bool,
@@ -197,6 +199,7 @@ impl DiffView {
             removed_calls,
             order,
             at: None,
+            read: HashSet::new(),
             starts,
             roots: review.roots,
             reached_from,
@@ -258,6 +261,16 @@ impl DiffView {
         self.order.get(next).copied()
     }
 
+    /// Whether a change has been focused.
+    pub(crate) fn read(&self, tile: usize) -> bool {
+        self.read.contains(&tile)
+    }
+
+    /// How many changes are yet to be focused.
+    pub(crate) fn unread(&self) -> usize {
+        self.order.len() - self.read.len()
+    }
+
     /// The starts a change can affect, by index into [`Self::starts`].
     pub(crate) fn reached_from(&self, tile: usize) -> &[usize] {
         self.reached_from.get(&tile).map_or(&[], Vec::as_slice)
@@ -311,6 +324,9 @@ impl DiffView {
     /// nodes on the way when it moved.
     fn follow(&mut self, focus: Option<usize>) -> Option<Vec<usize>> {
         let from = focus.filter(|&f| self.changes.contains_key(&f));
+        if let Some(from) = from.filter(|f| self.order.contains(f)) {
+            self.read.insert(from);
+        }
         if self.route.as_ref().map(|(tile, _)| *tile) == from {
             return None;
         }
@@ -1016,7 +1032,8 @@ fn affected_list(ui: &mut egui::Ui, view: &DiffView) -> Option<usize> {
 
 /// Every change in the order to read them, numbered, each with how many entry points
 /// it affects, in a list that scrolls past `max_height`; the focused one is marked
-/// and kept in view as stepping moves it. Returns the node of a row clicked.
+/// and kept in view as stepping moves it, and those focused before are ticked.
+/// Returns the node of a row clicked.
 pub(crate) fn reading_list(
     ui: &mut egui::Ui,
     explorer: &Explorer,
@@ -1060,11 +1077,24 @@ pub(crate) fn reading_list(
                     ..Default::default()
                 };
                 row.append(&format!("{:>2} ", index + 1), 0.0, format(MUTED, 12.0));
+                // What was read steps back, ticked.
+                let read = view.read(tile) && focus != Some(tile);
+                let color = egui_color(change_color(change));
                 row.append(
                     &format!("{} {name}", sign(change)),
                     0.0,
-                    format(egui_color(change_color(change)), 13.5),
+                    format(
+                        if read {
+                            color.gamma_multiply(0.6)
+                        } else {
+                            color
+                        },
+                        13.5,
+                    ),
                 );
+                if read {
+                    row.append("✔", 6.0, format(MUTED, 11.0));
+                }
                 let reach = view.reached_from(tile).len();
                 if reach > 0 {
                     row.append(&format!("↑{reach}"), 8.0, format(MUTED, 12.0));
@@ -1115,6 +1145,12 @@ mod tests {
         );
         assert_eq!(view.place(a), Some(1));
         assert_eq!(view.place(b), None);
+
+        assert_eq!(view.unread(), 2);
+        assert!(view.follow(Some(c)).is_some(), "the way up from c");
+        assert!(view.read(c) && !view.read(a));
+        view.follow(Some(b));
+        assert_eq!(view.unread(), 1, "b is no change");
     }
 
     #[test]

@@ -82,6 +82,11 @@ fn focused(
         );
         ui.label(egui::RichText::new(at).strong());
         ui.label(
+            egui::RichText::new(format!("{} unread", view.unread()))
+                .small()
+                .color(MUTED),
+        );
+        ui.label(
             egui::RichText::new("N next · Shift N back")
                 .small()
                 .color(MUTED),
