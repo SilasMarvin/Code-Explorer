@@ -21,7 +21,7 @@ use crate::{
         ADDED, DiffView, MODIFIED, MOVED, REMOVED, change_color, diff_look, draw_diff_graph,
     },
     disclosure::{Disclose, Disclosed},
-    explorer::{Explorer, Side},
+    explorer::{Explorer, Side, Spotlight},
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
 };
@@ -233,8 +233,7 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
-        _ if explorer.spotlit().contains(&tile) => Some(1),
-        _ => None,
+        _ => explorer.spotlight_hops(tile),
     }
     .map(|hops| hops.clamp(1, FARTHEST_SHADE))
 }
@@ -337,9 +336,64 @@ pub(crate) fn draw_graph(
     draw_attention(&explorer, &mut gizmos);
 }
 
+/// The calls along the spotlight's routes: from each node it picks out towards the
+/// focus when it picks out callers, away from the focus when callees.
+pub(crate) struct Routes {
+    side: Side,
+    focus: usize,
+    hops: HashMap<usize, u32>,
+}
+
+impl Routes {
+    pub(crate) fn of(explorer: &Explorer) -> Option<Self> {
+        Some(Self {
+            side: explorer.spotlight()?.side,
+            focus: explorer.graph_focus()?,
+            hops: explorer.spotlit_hops(),
+        })
+    }
+
+    /// When a call lies on a route, how many calls its end further from the focus is
+    /// from it.
+    pub(crate) fn call(&self, from: usize, to: usize) -> Option<u32> {
+        let hops = |tile: usize| {
+            if tile == self.focus {
+                Some(0)
+            } else {
+                self.hops.get(&tile).copied()
+            }
+        };
+        let (outer, inner) = match self.side {
+            Side::Callers => (from, to),
+            Side::Callees => (to, from),
+        };
+        hops(inner)?;
+        hops(outer).filter(|&hops| hops > 0)
+    }
+}
+
+/// A call on one of the spotlight's routes that does not touch the focus: a pale
+/// arrow, steady out to the end of the route so the whole of it reads, with dots
+/// running the way the call does.
+pub(crate) fn draw_route(
+    gizmos: &mut Gizmos,
+    (a, b): (Vec3, Vec3),
+    hops: u32,
+    shown: f32,
+    time: f32,
+    seed: usize,
+) {
+    #[expect(clippy::cast_precision_loss, reason = "a small count of calls")]
+    let alpha = (0.95 - 0.08 * hops as f32).max(0.55) * shown;
+    let color = FURTHER.with_alpha(alpha);
+    gizmos.arrow(a, b, color).with_tip_length(0.9);
+    flow(gizmos, a, b, color.with_alpha(alpha * 0.7), time, seed);
+}
+
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
-/// them; calls further along, nearer or further from it and on the active journey's
-/// path, are pale arrows fading with distance; everything else is faint.
+/// them; calls on the spotlight's routes are pale arrows with dots of their own;
+/// calls further along, nearer or further from it and on the active journey's path,
+/// are pale arrows fading with distance; everything else is faint.
 fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.attention();
@@ -361,6 +415,7 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     let spotlit = explorer.spotlit();
+    let routes = Routes::of(explorer);
     // Calls from the focus, counting the focus itself as zero.
     let hops = |side: &HashMap<usize, u32>, tile: usize| {
         if center == Some(tile) {
@@ -376,6 +431,14 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
         };
         let shown = explorer.visibility(from).min(explorer.visibility(to));
         if shown < SPECK {
+            continue;
+        }
+        let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
+        if center != Some(from)
+            && center != Some(to)
+            && let Some(hops) = routes.as_ref().and_then(|r| r.call(from, to))
+        {
+            draw_route(gizmos, (a, b - back), hops, shown, time, index);
             continue;
         }
         // A link lights up when it takes one step nearer the focus (violet) or one
@@ -400,7 +463,6 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                 _ => None,
             }
         });
-        let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
         match lit {
             // Stop at the callee's surface so the head stays visible.
             Some((color, 1)) => {
@@ -460,23 +522,33 @@ pub(crate) fn flow(gizmos: &mut Gizmos, a: Vec3, b: Vec3, color: Color, time: f3
     }
 }
 
-/// What the spotlight picks out, ringed in its side's color: three quick pulses when
-/// it comes on, then a steady ring.
+/// What the spotlight picks out next to the focus, ringed in its side's color, and
+/// where its routes start, ringed pale: three quick pulses when it comes on or
+/// widens, then a steady ring.
 fn draw_spotlight(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
-    let Some((side, since)) = explorer.spotlight() else {
+    let Some(spotlight) = explorer.spotlight() else {
         return;
     };
-    let color = match side {
+    let color = match spotlight.side {
         Side::Callers => CALLER,
         Side::Callees => CALLEE,
     };
-    let age = time - since;
+    let age = time - spotlight.since;
     let pulse = if age < 1.8 {
         0.5 + 0.5 * (age * std::f32::consts::TAU / 0.6).cos()
     } else {
         0.0
     };
-    for tile in explorer.spotlit() {
+    let starts: HashSet<usize> = match (spotlight.side, explorer.graph_focus()) {
+        (Side::Callers, Some(focus)) => explorer.starts(focus).iter().map(|s| s.tile).collect(),
+        _ => HashSet::new(),
+    };
+    for (tile, hops) in explorer.spotlit_hops() {
+        let color = match hops {
+            1 => color,
+            _ if starts.contains(&tile) => FURTHER,
+            _ => continue,
+        };
         let Some(at) = explorer.tile_point(tile) else {
             continue;
         };
@@ -635,12 +707,12 @@ pub(crate) fn frame_reveal(
     }
 }
 
-/// When the spotlight comes on, pulls back just far enough that everything it picks
-/// out is on screen, keeping the focus in the middle; when it all already shows, the
-/// view stays put.
+/// When the spotlight comes on or widens, pulls back just far enough that everything
+/// it picks out is on screen, keeping the focus in the middle; when it all already
+/// shows, the view stays put. Once it shows routes alone, it closes in on them too.
 pub(crate) fn frame_spotlight(
     explorer: Res<Explorer>,
-    mut last: Local<Option<(Side, f32)>>,
+    mut last: Local<Option<Spotlight>>,
     mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
 ) {
     let spotlight = explorer.spotlight();
@@ -664,7 +736,7 @@ pub(crate) fn frame_spotlight(
             continue;
         };
         let needed = fit_distance(&points, center, transform.rotation, perspective);
-        if needed > camera.distance {
+        if needed > camera.distance || explorer.routes_only() {
             camera.glide_to(center, needed);
         }
     }

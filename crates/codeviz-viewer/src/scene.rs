@@ -312,13 +312,18 @@ fn keyboard(
         explorer.step(step);
     }
     graph_navigation(&keys, &mut explorer, shift);
-    // I and O pick out what calls into the focus and what it calls out to.
+    // I and O pick out what calls into the focus and what it calls out to, a call
+    // further with each press; with shift, all the way at once.
     for (key, side) in [
         (KeyCode::KeyI, Side::Callers),
         (KeyCode::KeyO, Side::Callees),
     ] {
         if keys.just_pressed(key) {
-            explorer.toggle_spotlight(side, time.elapsed_secs());
+            if shift {
+                explorer.spotlight_all(side, time.elapsed_secs());
+            } else {
+                explorer.widen_spotlight(side, time.elapsed_secs());
+            }
         }
     }
     if keys.just_pressed(KeyCode::Space) {

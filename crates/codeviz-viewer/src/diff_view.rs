@@ -11,7 +11,7 @@
 //!   units shrink away, added ones grow in, and the rest shift as the calls between
 //!   them change.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use bevy::prelude::*;
 use bevy_egui::{egui, input::egui_wants_any_keyboard_input};
@@ -20,9 +20,10 @@ use codeviz_layout::ForceGraph;
 
 use crate::{
     camera::OrbitCamera,
-    explorer::{Clustering, Explorer},
+    explorer::{Clustering, Explorer, Side},
     graph_view::{self, NodeLook},
     lens::{Lens, SPECK},
+    routes,
     scene::{PALETTE, Tile},
     ui::{MUTED, egui_color},
 };
@@ -150,17 +151,8 @@ impl DiffView {
 
         // Out from every change along its callers, nearest first.
         let graph = explorer.graph();
-        let mut impact: HashMap<usize, u32> = changes.keys().map(|&t| (t, 0)).collect();
-        let mut queue: VecDeque<usize> = changes.keys().copied().collect();
-        while let Some(at) = queue.pop_front() {
-            let hops = impact[&at] + 1;
-            for caller in graph.callers(at) {
-                if let std::collections::hash_map::Entry::Vacant(slot) = impact.entry(caller) {
-                    slot.insert(hops);
-                    queue.push_back(caller);
-                }
-            }
-        }
+        let starts: Vec<usize> = changes.keys().copied().collect();
+        let impact = routes::walk(graph, &starts, Side::Callers, None, |_| false);
         let (entries, roots) = entry_points(explorer, &changes);
         let mut affected: Vec<Affected> = entries
             .iter()
@@ -311,18 +303,17 @@ fn entry_points(
     explorer: &Explorer,
     changes: &HashMap<usize, Change>,
 ) -> (Vec<(usize, String)>, bool) {
-    let map = explorer.map();
-    let declared: Vec<(usize, String)> = explorer
-        .system()
-        .entries()
-        .iter()
-        .filter_map(|e| Some((map.tile_of(&e.unit)?, e.label.clone())))
-        .collect();
+    let declared = explorer.entries();
     if !declared.is_empty() {
-        return (declared, false);
+        let mut entries: Vec<(usize, String)> = declared
+            .iter()
+            .map(|(&t, label)| (t, label.clone()))
+            .collect();
+        entries.sort();
+        return (entries, false);
     }
     let graph = explorer.graph();
-    let roots = (0..map.tiles.len())
+    let roots = (0..explorer.map().tiles.len())
         .filter(|&t| graph.callers(t).next().is_none())
         .filter(|&t| changes.get(&t) != Some(&Change::Removed))
         .filter_map(|t| Some((t, explorer.unit_name(explorer.tile_unit(t)?))))
@@ -531,7 +522,7 @@ pub(crate) fn diff_look(explorer: &Explorer, view: &DiffView, tile: usize) -> No
 /// way they run, violet in and blue out, with dots flowing along them; otherwise added
 /// calls are green and removed ones red and dashed; under Impact, calls that carry a
 /// change towards an entry point are gold, with pulses running out along them; the
-/// journey's path is pale arrows; the rest are faint.
+/// spotlight's routes and the journey's path are pale arrows; the rest are faint.
 pub(crate) fn draw_diff_graph(
     explorer: &Explorer,
     view: &DiffView,
@@ -552,6 +543,7 @@ pub(crate) fn draw_diff_graph(
             Some((node(edge.caller)?, node(edge.callee)?))
         })
         .collect();
+    let routes = graph_view::Routes::of(explorer);
     for (index, &(from, to)) in graph.calls.iter().chain(&graph.ghosts).enumerate() {
         let (Some(a), Some(b)) = (explorer.tile_point(from), explorer.tile_point(to)) else {
             continue;
@@ -586,6 +578,9 @@ pub(crate) fn draw_diff_graph(
             }
             Some(Change::Removed) => {
                 dashed(gizmos, a, b - back, REMOVED.with_alpha(0.85 * presence));
+            }
+            _ if let Some(hops) = routes.as_ref().and_then(|r| r.call(from, to)) => {
+                graph_view::draw_route(gizmos, (a, b - back), hops, shown, time, index);
             }
             _ => {
                 let carries = view.style == DiffStyle::Impact

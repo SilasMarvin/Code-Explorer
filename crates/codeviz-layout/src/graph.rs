@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use codeviz_core::System;
-use codeviz_ir::UnitId;
+use codeviz_ir::{Mode, UnitId};
 
 use crate::CodebaseMap;
 
@@ -71,6 +71,10 @@ pub struct ForceGraph {
     /// Calls that still pull as links but no longer run, such as the calls a diff
     /// removed: kept out of [`Self::calls`], callers, reach and sequences.
     pub ghosts: Vec<(usize, usize)>,
+    /// Calls that only ever hand their callee over to run later, as a router
+    /// registers a handler: in [`Self::calls`], but wiring rather than running it.
+    /// Sorted.
+    pub registrations: Vec<(usize, usize)>,
     /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
     sequences: Vec<Vec<usize>>,
     config: ForceConfig,
@@ -105,6 +109,8 @@ impl ForceGraph {
     #[must_use]
     pub fn new(system: &System, map: &CodebaseMap, config: ForceConfig) -> Self {
         let mut calls = HashSet::new();
+        // Pairs some call site runs rather than only registers.
+        let mut runs = HashSet::new();
         // Each call site with where it is written, to put a tile's calls in order.
         let mut sites: Vec<Vec<(SiteKey, usize)>> = vec![Vec::new(); map.tiles.len()];
         for (order, unit) in system.units().enumerate() {
@@ -122,6 +128,9 @@ impl ForceGraph {
                         && to != from
                     {
                         calls.insert((from, to));
+                        if call.mode != Mode::Register {
+                            runs.insert((from, to));
+                        }
                         if let Some(list) = sites.get_mut(from) {
                             list.push(((at.0, at.1, order * 1024 + index), to));
                         }
@@ -145,6 +154,11 @@ impl ForceGraph {
         links.sort_unstable();
         let mut calls: Vec<(usize, usize)> = calls.into_iter().collect();
         calls.sort_unstable();
+        let registrations = calls
+            .iter()
+            .copied()
+            .filter(|call| !runs.contains(call))
+            .collect();
 
         let (clusters, cluster_units) = module_clusters(system, map);
         let radius = (map.tiles.len() as f32).sqrt() * 2.0;
@@ -162,6 +176,7 @@ impl ForceGraph {
             links,
             calls,
             ghosts: Vec::new(),
+            registrations,
             sequences,
             config,
         }
@@ -267,6 +282,12 @@ impl ForceGraph {
             }
         }
         stats
+    }
+
+    /// Whether `from` only registers `to`, to run later, and never runs it itself.
+    #[must_use]
+    pub fn registers(&self, from: usize, to: usize) -> bool {
+        self.registrations.binary_search(&(from, to)).is_ok()
     }
 
     /// Tiles that call `tile`.

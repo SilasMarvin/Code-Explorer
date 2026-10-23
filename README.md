@@ -35,8 +35,16 @@ focus, blue out of it, with dots flowing along it. A node's fill says where it l
 its module, the same color as its ring; under a diff it says what changed instead. A
 journey bar is filled exactly like its node, and its number sits on a badge of that
 color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
-to it. `I` picks out everything that calls the focus and `O` everything it calls,
-pulling the camera back only as far as it takes to show them all.
+to it. `I` picks out what calls the focus and `O` what it calls, pulling the camera back
+only as far as it takes to show them all; pressed again, each reaches a call further,
+and shift goes all the way at once. Past the direct callers that draws every route into
+the focus, from the entry points where requests come in (or the functions nothing calls,
+which a framework or a test runs) down to it, as pale arrows with dots running towards
+it, and steps the rest of the graph out of the way. The top bar says how many entry
+points reach the focus; with its callers picked out, a card lists them, and picking one
+opens that entry's journey with the cursor on the focus and every call on the way
+disclosed. A route stops at an entry point rather than climbing past it, and a router
+registering a handler is wiring, not a call.
 
 Digits walk to the focus's nth call, shift+digit to its nth caller, `-` and `=` reveal
 less or more around a starting point, the focus, a diff's changes or the active

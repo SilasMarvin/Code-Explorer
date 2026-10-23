@@ -20,6 +20,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{self, Measure, Source},
+    routes::Start,
     scene::{PALETTE, accent, lane_color},
     source_diff,
 };
@@ -162,6 +163,9 @@ fn draw_ui(
         );
         if let Some(diff) = diff.as_deref_mut().filter(|_| !chrome.bare) {
             diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
+        }
+        if !chrome.bare {
+            routes_card(ctx, graph_area, &mut explorer);
         }
         if chrome.search && !chrome.bare {
             search_box(
@@ -1238,7 +1242,17 @@ fn draw_graph_labels(
     let center = explorer.attention();
     let reach = explorer.reach();
     let related = |tile: usize| reach.and_then(|r| relation(r, tile));
-    let spotlit = explorer.spotlit();
+    let spotlit = explorer.spotlit_hops();
+    // Where the spotlight's routes start, and what reaches the focus from there.
+    let starts = match (explorer.spotlight(), explorer.graph_focus()) {
+        (Some(spotlight), Some(focus)) if spotlight.side == Side::Callers => explorer.starts(focus),
+        _ => Vec::new(),
+    };
+    let route_starts: Vec<usize> = starts
+        .iter()
+        .map(|s| s.tile)
+        .filter(|t| spotlit.contains_key(t))
+        .collect();
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
@@ -1272,7 +1286,7 @@ fn draw_graph_labels(
         let tier = match related(tile) {
             _ if center == Some(tile) => 0,
             // What the spotlight picks out is named, whatever else would be.
-            _ if spotlit.contains(&tile) => 1,
+            _ if spotlit.contains_key(&tile) => 1,
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
@@ -1319,7 +1333,7 @@ fn draw_graph_labels(
     order.sort_by_key(|&(key, _)| key);
 
     // Labels keep off the cards over the graph, as last laid out.
-    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search"]
+    let cards: Vec<egui::Rect> = ["diff_card", "legend", "search", "routes"]
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .collect();
@@ -1403,6 +1417,10 @@ fn draw_graph_labels(
                             .map(|was| format!("was {}", tail(was))),
                     ),
                     _ if impact_note.is_some() => (None, impact_note),
+                    // The focus says where its routes start, once they are picked out.
+                    _ if tier == 0 && focused.is_some() && !starts.is_empty() => {
+                        (None, Some(reached_from(&starts)))
+                    }
                     (Some(Relation::Downstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color, None)), None)
@@ -1464,17 +1482,17 @@ fn draw_graph_labels(
                     _ if tier == 0 => Some(egui::Color32::from_white_alpha(140)),
                     Some(Relation::Upstream(1)) => Some(egui_color(CALLER)),
                     Some(Relation::Downstream(1)) => Some(egui_color(CALLEE)),
-                    _ if spotlit.contains(&tile) => Some(egui_color(match explorer.spotlight() {
-                        Some((Side::Callers, _)) => CALLER,
-                        _ => CALLEE,
-                    })),
+                    // Where a route starts is ringed pale, as its node is.
+                    _ if route_starts.contains(&tile) => Some(egui_color(graph_view::FURTHER)),
                     _ => None,
                 };
                 // What is gone is struck through, which reads at any size.
                 let struck = change == Some(Change::Removed);
                 let job = label_job(lead, &name, aside, color, size, struck);
-                // The focus, and what the spotlight picks out, are named come what may.
-                let force = tier == 0 || spotlit.contains(&tile);
+                // The focus, what the spotlight picks out next to it, and where its routes
+                // start, are named come what may.
+                let force =
+                    tier == 0 || spotlit.get(&tile) == Some(&1) || route_starts.contains(&tile);
                 placer.place(named, node, edge, job, stroke, force);
             }
         }
@@ -1486,8 +1504,10 @@ fn draw_graph_labels(
 }
 
 /// A button for each side of the focus: what calls it (I) and what it calls (O), each
-/// in the color its links are drawn in. A button puts its side in the spotlight, which
-/// frames everything it picks out.
+/// in the color its links are drawn in, and how far the spotlight reaches on it. A
+/// button puts its side in the spotlight, a call further with each press, which
+/// frames everything it picks out. Then where the routes into the focus start
+/// (Shift I), which picks out every one of them.
 fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
     let Some(focus) = explorer.graph_focus() else {
         return;
@@ -1500,31 +1520,169 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
         .collect();
     called.sort_unstable();
     called.dedup();
-    let lit = explorer.spotlight().map(|(side, _)| side);
+    let spotlight = explorer.spotlight();
+    let picked = explorer.spotlit().len();
+    let starts = explorer.starts(focus);
     let mut pressed = None;
     ui.horizontal(|ui| {
+        if !starts.is_empty() {
+            let all = spotlight.is_some_and(|s| s.side == Side::Callers && s.reach.is_none());
+            let text = egui::RichText::new(format!("↑ {}", reached_from(&starts)));
+            if ui
+                .add(egui::Button::selectable(all, text))
+                .on_hover_text(
+                    "Every route into it, from the entry points down; pick one to follow it \
+                     (Shift I)",
+                )
+                .clicked()
+            {
+                pressed = Some((Side::Callers, true));
+            }
+        }
         for (side, count, noun, key, color) in [
             (Side::Callers, calling, "caller", "I", CALLER),
             (Side::Callees, called.len(), "call", "O", CALLEE),
         ] {
             let plural = if count == 1 { "" } else { "s" };
-            let text = egui::RichText::new(format!("● {count} {noun}{plural}  {key}"))
+            let lit = spotlight.filter(|s| s.side == side);
+            // How far the spotlight reaches past the direct ones.
+            let extent = match lit.map(|s| s.reach) {
+                Some(None) if picked > count => format!(" · all {picked}"),
+                Some(Some(reach)) if reach > 1 => format!(" · {picked} within {reach}"),
+                _ => String::new(),
+            };
+            let text = egui::RichText::new(format!("● {count} {noun}{plural}{extent}  {key}"))
                 .color(egui_color(color));
             let hint = match side {
-                Side::Callers => "Pick out what calls it, and bring it all into view (I)",
-                Side::Callees => "Pick out what it calls, and bring it all into view (O)",
+                Side::Callers => {
+                    "Pick out what calls it, a call further up each time, and bring it all \
+                     into view (I; Shift I all the way)"
+                }
+                Side::Callees => {
+                    "Pick out what it calls, a call further down each time, and bring it all \
+                     into view (O; Shift O all the way)"
+                }
             };
             if ui
-                .add_enabled(count > 0, egui::Button::selectable(lit == Some(side), text))
+                .add_enabled(count > 0, egui::Button::selectable(lit.is_some(), text))
                 .on_hover_text(hint)
                 .clicked()
             {
-                pressed = Some(side);
+                pressed = Some((side, false));
             }
         }
     });
-    if let Some(side) = pressed {
-        explorer.toggle_spotlight(side, now);
+    match pressed {
+        Some((side, true)) => explorer.spotlight_all(side, now),
+        Some((side, false)) => explorer.widen_spotlight(side, now),
+        None => {}
+    }
+}
+
+/// `reached from 3 entries`, or from the functions nothing calls when no declared
+/// entry reaches it.
+fn reached_from(starts: &[Start]) -> String {
+    let entries = starts.iter().filter(|s| s.declared).count();
+    let uncalled = starts.len() - entries;
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    match (entries, uncalled) {
+        (0, 0) => "reached from nowhere".to_owned(),
+        (0, _) => format!(
+            "reached from {}",
+            plural(
+                uncalled,
+                "function nothing calls",
+                "functions nothing calls"
+            )
+        ),
+        (_, 0) => format!("reached from {}", plural(entries, "entry", "entries")),
+        _ => format!(
+            "reached from {} and {} nothing calls",
+            plural(entries, "entry", "entries"),
+            plural(uncalled, "function", "functions")
+        ),
+    }
+}
+
+/// Where the routes into the focus start, while its callers are in the spotlight:
+/// top left of the graph. A row opens that start's journey with its cursor on the
+/// focus.
+fn routes_card(ctx: &egui::Context, area: egui::Rect, explorer: &mut Explorer) {
+    let (Some(spotlight), Some(focus)) = (explorer.spotlight(), explorer.graph_focus()) else {
+        return;
+    };
+    if spotlight.side != Side::Callers {
+        return;
+    }
+    let starts = explorer.starts(focus);
+    if starts.is_empty() {
+        return;
+    }
+    let root = explorer.root().and_then(|u| explorer.map().tile_of(u));
+    let mut chosen = None;
+    egui::Area::new("routes".into())
+        .pivot(egui::Align2::LEFT_TOP)
+        .fixed_pos(egui::pos2(area.min.x + 12.0, area.min.y + 10.0))
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 225))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_max_width(320.0);
+                    let title = reached_from(&starts);
+                    let mut title = title.chars();
+                    let title: String = title
+                        .next()
+                        .map(|c| c.to_uppercase().chain(title).collect())
+                        .unwrap_or_default();
+                    ui.label(egui::RichText::new(title).strong().size(14.0));
+                    ui.label(
+                        egui::RichText::new("pick one to follow its journey here")
+                            .small()
+                            .color(MUTED),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(area.height() * 0.4)
+                        .show(ui, |ui| {
+                            for start in &starts {
+                                let shown = spotlight.holds(start.hops);
+                                let calls = if start.hops == 1 { "call" } else { "calls" };
+                                let mut job = egui::text::LayoutJob::default();
+                                let format = |color, size| egui::TextFormat {
+                                    font_id: egui::FontId::proportional(size),
+                                    color,
+                                    ..default()
+                                };
+                                let color = if shown {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_rgb(190, 196, 210)
+                                };
+                                job.append(&short(&start.label, 40), 0.0, format(color, 13.0));
+                                job.append(
+                                    &format!("{} {calls}", start.hops),
+                                    8.0,
+                                    format(MUTED, 11.5),
+                                );
+                                if ui
+                                    .selectable_label(root == Some(start.tile), job)
+                                    .on_hover_text(format!(
+                                        "Open the journey from here, with the cursor on {}",
+                                        node_name(explorer, focus)
+                                    ))
+                                    .clicked()
+                                {
+                                    chosen = Some(start.tile);
+                                }
+                            }
+                        });
+                });
+        });
+    if let Some(start) = chosen {
+        explorer.follow_route(start);
     }
 }
 
@@ -1621,8 +1779,19 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
     (
         "Graph",
         &[
-            ("I", "pick out what calls the focus, and show it all"),
-            ("O", "pick out what the focus calls, and show it all"),
+            (
+                "I",
+                "pick out what calls the focus, a call further up each time",
+            ),
+            (
+                "Shift I",
+                "every route into the focus, from its entry points",
+            ),
+            (
+                "O",
+                "pick out what the focus calls, a call further down each time",
+            ),
+            ("Shift O", "everything the focus can run"),
             ("1 – 9", "focus the focus's nth call"),
             ("Shift 1 – 9", "focus its nth caller"),
             ("Backspace", "back to the previous focus"),

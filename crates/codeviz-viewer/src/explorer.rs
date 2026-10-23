@@ -18,6 +18,7 @@ use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConf
 use crate::{
     disclosure::{Disclose, Disclosed},
     lens::{self, Lens},
+    routes::{self, Start},
 };
 
 /// What a disclosure was worked out for: the journeys' revision, the active one, how
@@ -229,11 +230,33 @@ const SETTLE_NOW_STEPS: usize = 600;
 const SETTLED_SPEED: f32 = 0.002;
 
 /// Either side of the focus: what calls it, or what it calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Side {
     Callers,
     Callees,
 }
+
+/// One side of the focus picked out and brought into view: what calls it, out to the
+/// entry points, or what it calls, as many calls away as `reach` says.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Spotlight {
+    pub(crate) side: Side,
+    /// How many calls away it picks out; `None` goes all the way, to the entry points
+    /// above the focus or to everything below it.
+    pub(crate) reach: Option<u32>,
+    /// When it came on or last widened, in seconds of app time.
+    pub(crate) since: f32,
+}
+
+impl Spotlight {
+    /// Whether a tile this many calls from the focus is picked out.
+    pub(crate) fn holds(&self, hops: u32) -> bool {
+        hops > 0 && self.reach.is_none_or(|reach| hops <= reach)
+    }
+}
+
+/// Walks from a node along one side, each kept until the graph's calls change.
+type RouteCache = HashMap<(usize, Side), Arc<HashMap<usize, u32>>>;
 
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
@@ -279,9 +302,11 @@ pub(crate) struct Explorer {
     /// Nodes focused before the current one, most recent last.
     focus_history: Vec<usize>,
     pub(crate) hovered_tile: Option<usize>,
-    /// What calls the focus, or what it calls, picked out and brought into view, and
-    /// when, in seconds of app time.
-    spotlight: Option<(Side, f32)>,
+    /// What calls the focus, or what it calls, picked out and brought into view.
+    spotlight: Option<Spotlight>,
+    /// Declared entry points, by node, with their labels.
+    entries: HashMap<usize, String>,
+    routes: Mutex<RouteCache>,
     /// Lane label to color index, in order of first appearance across journeys.
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever a journey is rebuilt.
@@ -311,6 +336,12 @@ impl Explorer {
             graph.step();
         }
         let tiles = map.tiles.len();
+        let mut entries = HashMap::new();
+        for entry in system.entries() {
+            if let Some(tile) = map.tile_of(&entry.unit) {
+                entries.entry(tile).or_insert_with(|| entry.label.clone());
+            }
+        }
         let mut explorer = Self {
             system,
             layout_system: layout,
@@ -337,6 +368,8 @@ impl Explorer {
             disclosure_cache: Mutex::new(None),
             hovered_tile: None,
             spotlight: None,
+            entries,
+            routes: Mutex::new(HashMap::new()),
             lane_colors: HashMap::new(),
             revision: 0,
         };
@@ -369,6 +402,7 @@ impl Explorer {
     /// calls: they stop counting as callers and callees.
     pub(crate) fn retire_calls(&mut self, gone: &HashSet<(usize, usize)>) {
         self.graph.retire(gone);
+        self.routes_cache().clear();
         self.reach = None;
         self.focus_reach = None;
     }
@@ -750,32 +784,141 @@ impl Explorer {
         callers
     }
 
-    /// Which side of the focus is in the spotlight, and since when.
-    pub(crate) fn spotlight(&self) -> Option<(Side, f32)> {
+    /// Which side of the focus is in the spotlight, how far, and since when.
+    pub(crate) fn spotlight(&self) -> Option<Spotlight> {
         self.spotlight
     }
 
-    /// Puts `side` in the spotlight at `now`, or takes it out when it already is.
-    pub(crate) fn toggle_spotlight(&mut self, side: Side, now: f32) {
+    /// Puts `side` in the spotlight one call out, then widens it a call at a time
+    /// until it goes all the way, then takes it out.
+    pub(crate) fn widen_spotlight(&mut self, side: Side, now: f32) {
+        let reach = match self.spotlight {
+            Some(on) if on.side == side => match on.reach {
+                Some(reach) if reach < self.furthest(side) => Some(Some(reach + 1)),
+                _ => None,
+            },
+            _ => Some(Some(1)),
+        };
+        self.spotlight = reach.map(|reach| Spotlight {
+            side,
+            reach: reach.filter(|&r| r < self.furthest(side)),
+            since: now,
+        });
+    }
+
+    /// Puts all of `side` in the spotlight, out to the entry points or the end of
+    /// every call chain, or takes it out when it already is.
+    pub(crate) fn spotlight_all(&mut self, side: Side, now: f32) {
         self.spotlight = match self.spotlight {
-            Some((on, _)) if on == side => None,
-            _ => Some((side, now)),
+            Some(on) if on.side == side && on.reach.is_none() => None,
+            _ => Some(Spotlight {
+                side,
+                reach: None,
+                since: now,
+            }),
         };
     }
 
-    /// The nodes in the spotlight: the focus's callers or its callees, each once.
+    /// The most calls between the focus and anything on `side` of it.
+    fn furthest(&self, side: Side) -> u32 {
+        self.graph_focus().map_or(0, |focus| {
+            self.walk(focus, side).values().copied().max().unwrap_or(0)
+        })
+    }
+
+    /// The nodes in the spotlight, each once: the focus's callers or callees, as far
+    /// out as it reaches.
     pub(crate) fn spotlit(&self) -> Vec<usize> {
-        let (Some((side, _)), Some(focus)) = (self.spotlight, self.graph_focus()) else {
-            return Vec::new();
-        };
-        let mut tiles: Vec<usize> = match side {
-            Side::Callers => self.graph.callers(focus).collect(),
-            Side::Callees => self.graph.callees(focus).collect(),
-        };
+        let mut tiles: Vec<usize> = self.spotlit_hops().into_keys().collect();
         tiles.sort_unstable();
-        tiles.dedup();
-        tiles.retain(|&t| t != focus);
         tiles
+    }
+
+    /// The nodes in the spotlight, each with its calls from the focus.
+    pub(crate) fn spotlit_hops(&self) -> HashMap<usize, u32> {
+        let (Some(spotlight), Some(focus)) = (self.spotlight, self.graph_focus()) else {
+            return HashMap::new();
+        };
+        self.walk(focus, spotlight.side)
+            .iter()
+            .filter(|&(&tile, &hops)| tile != focus && spotlight.holds(hops))
+            .map(|(&tile, &hops)| (tile, hops))
+            .collect()
+    }
+
+    /// How many calls from the focus a node in the spotlight is; `None` when it is not
+    /// in the spotlight.
+    pub(crate) fn spotlight_hops(&self, tile: usize) -> Option<u32> {
+        let (spotlight, focus) = (self.spotlight?, self.graph_focus()?);
+        self.walk(focus, spotlight.side)
+            .get(&tile)
+            .copied()
+            .filter(|&hops| spotlight.holds(hops))
+    }
+
+    /// Fewest calls from `tile` to everything on `side` of it: up its callers as far
+    /// as the entry points, or down everything it calls. `tile` itself is zero.
+    pub(crate) fn walk(&self, tile: usize, side: Side) -> Arc<HashMap<usize, u32>> {
+        let mut cache = self.routes_cache();
+        if cache.len() > 64 {
+            cache.clear();
+        }
+        Arc::clone(cache.entry((tile, side)).or_insert_with(|| {
+            let stop = |t: usize| side == Side::Callers && self.entries.contains_key(&t);
+            Arc::new(routes::walk(&self.graph, &[tile], side, None, stop))
+        }))
+    }
+
+    fn routes_cache(&self) -> std::sync::MutexGuard<'_, RouteCache> {
+        self.routes.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Where the routes into `tile` start: the entry points that reach it, then what
+    /// nothing calls, nearest first.
+    pub(crate) fn starts(&self, tile: usize) -> Vec<Start> {
+        let upstream = self.walk(tile, Side::Callers);
+        routes::starts(&self.graph, &upstream, &self.entries, |t| {
+            self.tile_unit(t)
+                .map_or_else(String::new, |unit| self.unit_name(unit))
+        })
+    }
+
+    /// Declared entry points, by node, with their labels.
+    pub(crate) fn entries(&self) -> &HashMap<usize, String> {
+        &self.entries
+    }
+
+    /// Opens the journey from `start`, keeping the focus, with the cursor on the focus
+    /// and every call on the way there disclosed: one route into it, followed.
+    pub(crate) fn follow_route(&mut self, start: usize) {
+        let Some(focus) = self.graph_focus() else {
+            return;
+        };
+        let (Some(root), Some(target)) = (
+            self.tile_unit(start).cloned(),
+            self.tile_unit(focus).cloned(),
+        ) else {
+            return;
+        };
+        self.set_root(root);
+        // A function reached only on the way to a failure is not on the happy path.
+        if self.track().find(&target).is_none() && self.scenario().is_some() {
+            self.set_scenario(None);
+        }
+        let landing = self.track().find(&target);
+        self.graph_focus = Some(focus);
+        let above: Vec<SpanId> = landing
+            .and_then(|landing| {
+                let journey = self.journey()?;
+                let parent = journey.span(landing)?.parent;
+                Some(std::iter::successors(parent, |&span| journey.span(span)?.parent).collect())
+            })
+            .unwrap_or_default();
+        self.expanded = above.into_iter().collect();
+        self.disclosure_epoch += 1;
+        if let Some(landing) = landing {
+            self.track_mut().selected = Some(landing);
+        }
     }
 
     /// Returns to the node opened before this one. Returns whether there was one.
@@ -820,7 +963,15 @@ impl Explorer {
     /// How fully the lens would show each node, by tile, once eased there; `None`
     /// when it shows everything. The journey's cursor always shows.
     pub(crate) fn reveal_targets(&self) -> Option<Vec<f32>> {
-        let mut targets = if self.lens.changes_only && !self.changed_tiles.is_empty() {
+        let mut targets = if self.routes_only() {
+            // The routes alone, from where they start to the focus: the rest of the
+            // graph would bury them.
+            let mut targets = vec![0.0; self.map.tiles.len()];
+            if let Some(target) = self.graph_focus().and_then(|f| targets.get_mut(f)) {
+                *target = 1.0;
+            }
+            targets
+        } else if self.lens.changes_only && !self.changed_tiles.is_empty() {
             // What changed, and where you stand: the focus and the journey's root.
             let mut targets = vec![0.0; self.map.tiles.len()];
             let root = self.root().and_then(|u| self.map.tile_of(u));
@@ -852,6 +1003,12 @@ impl Explorer {
             *target = 1.0;
         }
         Some(targets)
+    }
+
+    /// Whether the spotlight reaches past what is next to the focus, so that it shows
+    /// its routes and leaves the rest of the graph out.
+    pub(crate) fn routes_only(&self) -> bool {
+        self.spotlight.is_some_and(|s| s.reach != Some(1))
     }
 
     /// Eases every node towards how fully the lens shows it. Returns whether any moved.
@@ -1187,6 +1344,137 @@ pub(crate) mod tests {
             Some(UnitId::new("x:main")),
             JourneyOptions::default(),
         )
+    }
+
+    /// `GET -> get -> find` and `POST -> post -> place -> (find, quote)`, with the two
+    /// routes declared entry points, and `main -> router -> (get, post)` above them.
+    pub(crate) fn routed() -> Explorer {
+        let unit = |name: &str, calls: &[&str]| {
+            let calls: Vec<String> = calls
+                .iter()
+                .map(|c| {
+                    format!(
+                        r#"{{ "key": "{c}#0", "text": "{c}", "targets": [{{ "unit": "x:{c}", "certainty": "exact" }}] }}"#
+                    )
+                })
+                .collect();
+            format!(
+                r#"{{ "id": "x:{name}", "name": "{name}", "kind": "fn", "role": "invocable", "calls": [{}] }}"#,
+                calls.join(",")
+            )
+        };
+        let units = [
+            unit("main", &["router"]),
+            unit("router", &["get", "post"]),
+            unit("get", &["find"]),
+            unit("post", &["place"]),
+            unit("place", &["find", "quote"]),
+            unit("find", &[]),
+            unit("quote", &[]),
+        ];
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }},
+                "entries": [
+                  {{ "unit": "x:get", "label": "GET /users", "kind": "http" }},
+                  {{ "unit": "x:post", "label": "POST /orders", "kind": "http" }}
+                ],
+                "units": [{}] }}"#,
+            units.join(",")
+        );
+        let system = System::new([Document::from_json(&json).unwrap()]);
+        Explorer::new(system, None, JourneyOptions::default())
+    }
+
+    fn tile_named(explorer: &Explorer, name: &str) -> usize {
+        explorer
+            .map()
+            .tile_of(&UnitId::new(format!("x:{name}")))
+            .unwrap()
+    }
+
+    #[test]
+    fn the_spotlight_widens_a_call_at_a_time_up_to_the_entries() {
+        let mut explorer = routed();
+        let [find, get, post, place, quote] =
+            ["find", "get", "post", "place", "quote"].map(|name| tile_named(&explorer, name));
+        explorer.open_at(find);
+        let sorted = |mut tiles: Vec<usize>| {
+            tiles.sort_unstable();
+            tiles
+        };
+
+        explorer.widen_spotlight(Side::Callers, 0.0);
+        assert_eq!(explorer.spotlit(), sorted(vec![get, place]), "its callers");
+        explorer.widen_spotlight(Side::Callers, 1.0);
+        assert_eq!(
+            explorer.spotlit(),
+            sorted(vec![get, place, post]),
+            "and theirs, up to the entries but not past them to the router"
+        );
+        assert_eq!(
+            explorer.spotlight().map(|s| s.reach),
+            Some(None),
+            "nothing is further, so it goes all the way"
+        );
+        assert_eq!(explorer.spotlight_hops(post), Some(2));
+        explorer.widen_spotlight(Side::Callers, 2.0);
+        assert_eq!(explorer.spotlight(), None, "past all the way, it goes out");
+
+        explorer.spotlight_all(Side::Callers, 3.0);
+        assert_eq!(explorer.spotlit().len(), 3, "all the way at once");
+        explorer.settle_visibility();
+        assert!(
+            explorer.shown(post) && explorer.shown(find),
+            "the routes and the focus show"
+        );
+        assert!(
+            !explorer.shown(tile_named(&explorer, "router")),
+            "and the rest steps out of their way"
+        );
+        let starts: Vec<(String, u32)> = explorer
+            .starts(find)
+            .into_iter()
+            .map(|s| (s.label, s.hops))
+            .collect();
+        assert_eq!(
+            starts,
+            [("GET /users".to_owned(), 1), ("POST /orders".to_owned(), 2)]
+        );
+        explorer.spotlight_all(Side::Callers, 4.0);
+        assert_eq!(explorer.spotlight(), None);
+
+        explorer.widen_spotlight(Side::Callees, 5.0);
+        explorer.open_at(post);
+        assert!(explorer.spotlight().is_none(), "a new focus starts unlit");
+        explorer.spotlight_all(Side::Callees, 6.0);
+        assert_eq!(
+            explorer.spotlit(),
+            sorted(vec![place, find, quote]),
+            "everything it can run"
+        );
+    }
+
+    #[test]
+    fn following_a_route_opens_its_journey_on_the_focus() {
+        let mut explorer = routed();
+        let (find, post) = (tile_named(&explorer, "find"), tile_named(&explorer, "post"));
+        explorer.open_at(find);
+        explorer.spotlight_all(Side::Callers, 0.0);
+        explorer.follow_route(post);
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:post"));
+        assert_eq!(at(&explorer), "find", "the cursor is on the focus");
+        assert_eq!(explorer.graph_focus(), Some(find), "which stays in focus");
+        assert!(
+            explorer
+                .disclosed_tiles()
+                .get(&find)
+                .is_some_and(|numbers| numbers == &["1.1".to_owned()]),
+            "the calls on the way there are disclosed"
+        );
+        assert!(
+            explorer.spotlight().is_some(),
+            "the other routes stay picked out"
+        );
     }
 
     fn at(explorer: &Explorer) -> String {
