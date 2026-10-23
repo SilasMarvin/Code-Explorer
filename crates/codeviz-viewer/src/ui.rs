@@ -1761,9 +1761,11 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
 /// Every key, and a key to the marks on the graph's labels and the journey's bars,
 /// each drawn as the view draws it. Opaque, so nothing behind shows through.
 fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
+    // Hung from the top, so it has the whole height to grow into from the first
+    // frame.
     egui::Area::new("key_help".into())
-        .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_pos(area.center())
+        .pivot(egui::Align2::CENTER_TOP)
+        .fixed_pos(egui::pos2(area.center().x, area.min.y + 16.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
@@ -1773,8 +1775,10 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
                 .inner_margin(egui::Margin::symmetric(18, 14))
                 .show(ui, |ui| {
                     // A short window scrolls it rather than cut it off.
+                    let tallest = area.height() - 60.0;
                     egui::ScrollArea::vertical()
-                        .max_height(area.height() - 40.0)
+                        .max_height(tallest)
+                        .min_scrolled_height(tallest)
                         .show(ui, |ui| key_help_contents(ui, open));
                 });
         });
