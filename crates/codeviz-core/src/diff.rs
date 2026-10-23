@@ -96,7 +96,8 @@ impl Diff {
     }
 }
 
-type Calls = HashMap<UnitId, HashSet<UnitId>>;
+/// What each function calls, by owner on both ends.
+pub(crate) type Calls = HashMap<UnitId, HashSet<UnitId>>;
 
 /// Old ids by the new id of the unit that moved there.
 pub type Moves = HashMap<UnitId, UnitId>;
@@ -231,7 +232,7 @@ fn rewritten(old: &Unit, new: &Unit, old_calls: &Calls, new_calls: &Calls) -> bo
 }
 
 /// What each function calls, its closures' calls included, by owner on both ends.
-fn calls(system: &System) -> Calls {
+pub(crate) fn calls(system: &System) -> Calls {
     let mut calls = Calls::new();
     for unit in system.units() {
         let from = system.owner(&unit.id);

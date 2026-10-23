@@ -11,8 +11,8 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use codeviz_core::{Change, Diff, System, align};
-use codeviz_ir::Document;
+use codeviz_core::{Change, Diff, Review, System, align};
+use codeviz_ir::{Document, UnitId};
 
 use crate::{ir::Source, view::Display};
 
@@ -89,9 +89,13 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     );
     let new_system = System::new(vec![after.clone()]);
     let (aligned, moved) = align(vec![before.clone()], &new_system);
-    let diff = Diff::between(&System::new(aligned), &new_system).with_moves(moved);
+    let old_system = System::new(aligned);
+    let diff = Diff::between(&old_system, &new_system).with_moves(moved);
     if args.summary {
-        return print(&title, &diff);
+        let review = Review::new(&diff, &old_system, &new_system);
+        let summary = summary(&title, &diff, &review, &old_system, &new_system);
+        write!(std::io::stdout().lock(), "{summary}")?;
+        return Ok(());
     }
     if diff.is_empty() {
         eprintln!("{title}: nothing changed");
@@ -192,30 +196,87 @@ fn save(dir: &Path, before: &Document, after: &Document) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print(title: &str, diff: &Diff) -> anyhow::Result<()> {
+/// What changed, as text: the totals, the entry points the changes reach, the changed
+/// functions in the order to read them, and what changed besides functions.
+fn summary(title: &str, diff: &Diff, review: &Review, before: &System, after: &System) -> String {
+    let count = |change| {
+        diff.changed(change)
+            .filter(|id| review.order.contains(id))
+            .count()
+    };
     let mut out = format!(
-        "{title}\ncalls: +{} -{}\n",
+        "{title}\n{} functions changed: +{} added, ~{} rewritten, -{} removed, >{} moved; \
+         calls +{} -{}\n",
+        review.order.len(),
+        count(Change::Added),
+        count(Change::Modified),
+        count(Change::Removed),
+        count(Change::Moved),
         diff.added_calls.len(),
         diff.removed_calls.len()
     );
-    let mut units: Vec<_> = diff.units.iter().collect();
-    units.sort_by(|a, b| a.0.cmp(b.0));
-    for (unit, change) in units {
-        let sign = match change {
-            Change::Added => '+',
-            Change::Removed => '-',
-            Change::Modified => '~',
-            Change::Moved => '>',
-        };
-        match diff.moved.get(unit) {
-            Some(was) => {
-                let _ = writeln!(out, "{sign} {unit}  (was {was})");
-            }
-            None => {
-                let _ = writeln!(out, "{sign} {unit}");
-            }
-        }
+    let affected = review.affected();
+    let starts = if review.roots {
+        "functions nothing calls"
+    } else {
+        "entry points"
+    };
+    let _ = writeln!(
+        out,
+        "reaches {} of {} {starts}",
+        affected.len(),
+        review.starts.len()
+    );
+    for &start in &affected {
+        let _ = writeln!(out, "  {}", review.starts[start].label);
     }
-    write!(std::io::stdout().lock(), "{out}")?;
-    Ok(())
+    let _ = writeln!(
+        out,
+        "\nin reading order, each change after the changes it calls:"
+    );
+    let path = |id: &UnitId| {
+        let id = id.as_str();
+        id.split_once(':').map_or(id, |(_, path)| path).to_owned()
+    };
+    for (index, unit) in review.order.iter().enumerate() {
+        let Some(change) = diff.change(unit) else {
+            continue;
+        };
+        let mut line = format!("{:>4} {} {}", index + 1, sign(change), path(unit));
+        if let Some(was) = diff.moved.get(unit) {
+            let _ = write!(line, "  (was {})", path(was));
+        }
+        let reached = review.reached_from(unit).len();
+        if reached > 0 {
+            let _ = write!(line, "  · affects {reached}");
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    let mut others: Vec<(&UnitId, Change)> = diff
+        .units
+        .iter()
+        .filter(|(id, _)| !review.order.contains(id))
+        .map(|(id, &change)| (id, change))
+        .collect();
+    others.sort();
+    if !others.is_empty() {
+        let _ = writeln!(out, "\nalso changed, not drawn:");
+    }
+    for (unit, change) in others {
+        let kind = after
+            .unit(unit)
+            .or_else(|| before.unit(unit))
+            .map_or("", |u| u.kind.as_str());
+        let _ = writeln!(out, "     {} {kind} {}", sign(change), path(unit));
+    }
+    out
+}
+
+fn sign(change: Change) -> char {
+    match change {
+        Change::Added => '+',
+        Change::Removed => '-',
+        Change::Modified => '~',
+        Change::Moved => '>',
+    }
 }
