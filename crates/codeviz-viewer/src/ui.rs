@@ -725,15 +725,9 @@ fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, sourc
         sources.version(view.old(), &unit),
         sources.version(explorer.system(), &unit),
     );
-    let place = match (&old, &new) {
-        (Some(a), Some(b)) if a.uri != b.uri || a.first != b.first => {
-            format!("was {}:{}, now {}:{}", a.uri, a.first, b.uri, b.first)
-        }
-        (_, Some(v)) | (Some(v), None) => format!("{}:{}", v.uri, v.first),
-        (None, None) => {
-            ui.label(egui::RichText::new("No source to show.").color(MUTED));
-            return;
-        }
+    let Some(place) = source_diff::whereabouts(old.as_ref(), new.as_ref()) else {
+        ui.label(egui::RichText::new("No source to show.").color(MUTED));
+        return;
     };
     let (added, removed) = source_diff::counts(old.as_ref(), new.as_ref());
     ui.label(

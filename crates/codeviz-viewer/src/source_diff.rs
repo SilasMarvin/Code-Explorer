@@ -159,6 +159,18 @@ pub(crate) struct Version {
     pub(crate) uri: String,
 }
 
+/// Where a function is, `src/a.rs:12`, or where it was and is when it moved; `None`
+/// with neither version.
+pub(crate) fn whereabouts(old: Option<&Version>, new: Option<&Version>) -> Option<String> {
+    Some(match (old, new) {
+        (Some(a), Some(b)) if a.uri != b.uri || a.first != b.first => {
+            format!("was {}:{}, now {}:{}", a.uri, a.first, b.uri, b.first)
+        }
+        (_, Some(v)) | (Some(v), None) => format!("{}:{}", v.uri, v.first),
+        (None, None) => return None,
+    })
+}
+
 /// Lines removed and added between two versions, either of which may be missing.
 pub(crate) fn counts(old: Option<&Version>, new: Option<&Version>) -> (usize, usize) {
     let none: &[String] = &[];
