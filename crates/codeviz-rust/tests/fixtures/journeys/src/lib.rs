@@ -13,10 +13,12 @@ pub fn evaluation_order() {
     Store::open().fetch(1).finish();
 }
 
-/// `?` propagates; the tail call of a `Result` function propagates too.
+/// `?` propagates; the tail call of a `Result` function propagates too. An adapter
+/// such as `ok_or` names the error it fails with.
 pub fn propagation(store: &Store) -> Result<u32, String> {
     let order = store.load(1)?;
     work::validate(&order)?;
+    store.find(order.kind).ok_or("not found")?;
     work::total(&order)
 }
 

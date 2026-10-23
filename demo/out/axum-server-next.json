@@ -454,7 +454,6 @@
           "key": ".ok_or#0",
           "text": ".ok_or",
           "targets": [],
-          "propagates": true,
           "location": {
             "uri": "src/handlers.rs",
             "range": {
@@ -494,6 +493,26 @@
         {
           "step": "call",
           "call": ".ok_or#0"
+        },
+        {
+          "step": "branch",
+          "guard": "store.order(order_id).await is None",
+          "arms": [
+            {
+              "label": "err",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "AppError::NotFound(\"order\")"
+                }
+              ]
+            },
+            {
+              "label": "ok",
+              "body": []
+            }
+          ]
         },
         {
           "step": "call",
@@ -1674,7 +1693,6 @@
           "key": ".ok_or#0",
           "text": ".ok_or",
           "targets": [],
-          "propagates": true,
           "location": {
             "uri": "src/services/users.rs",
             "range": {
@@ -1694,6 +1712,26 @@
         {
           "step": "call",
           "call": ".ok_or#0"
+        },
+        {
+          "step": "branch",
+          "guard": "store.user(id).await is None",
+          "arms": [
+            {
+              "label": "err",
+              "body": [
+                {
+                  "step": "exit",
+                  "kind": "error",
+                  "label": "AppError::NotFound(\"user\")"
+                }
+              ]
+            },
+            {
+              "label": "ok",
+              "body": []
+            }
+          ]
         }
       ]
     },

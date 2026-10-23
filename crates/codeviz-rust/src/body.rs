@@ -503,7 +503,17 @@ impl Builder<'_, '_, '_> {
                 .rposition(|call| call.mode == Mode::Call && call.via_call.is_none())
                 .map(|offset| before + offset)
         });
-        if let Some(call) = last_direct.and_then(|index| self.calls.get_mut(index)) {
+        // An adapter that turns a failure into a named error ends the function with
+        // that error; it is a call into std, which says nothing of what fails.
+        let adapted = std::iter::successors(Some(inner), |n| match n.kind() {
+            "await_expression" | "parenthesized_expression" => n.named_child(0),
+            _ => None,
+        })
+        .last()
+        .and_then(|n| error_adapter(n, self.source()));
+        if let Some(adapted) = adapted {
+            steps.push(adapted_failure(adapted));
+        } else if let Some(call) = last_direct.and_then(|index| self.calls.get_mut(index)) {
             call.propagates = true;
         } else {
             let source = label(node, self.source());
@@ -598,8 +608,13 @@ impl Builder<'_, '_, '_> {
         };
         let handoff_mode = handoff_mode(&target);
         let index = self.record(written, target, Mode::Call, None, node, steps);
+        // A tail call ends the function with its error, which an adapter names.
+        let adapted = (tail && self.cx.returns_result)
+            .then(|| error_adapter(node, source))
+            .flatten();
         if tail
             && self.cx.returns_result
+            && adapted.is_none()
             && let Some(call) = self.calls.get_mut(index)
         {
             call.propagates = true;
@@ -610,6 +625,9 @@ impl Builder<'_, '_, '_> {
                 _ => text(arg, source).to_owned(),
             };
             self.record(written, handoff, handoff_mode, Some(index), arg, steps);
+        }
+        if let Some(adapted) = adapted {
+            steps.push(adapted_failure(adapted));
         }
     }
 
@@ -844,11 +862,60 @@ fn error_label(err: Node<'_>, source: &[u8]) -> String {
         .child_by_field_name("arguments")
         .and_then(|a| a.named_child(0))
         .map_or_else(|| label(err, source), |v| label(v, source));
-    let mut value = value.as_str();
+    unconverted(&value)
+}
+
+/// An error value without a trailing conversion: `"user".into()` → `"user"`.
+fn unconverted(value: &str) -> String {
+    let mut value = value;
     for conversion in [".into()", ".to_string()", ".to_owned()"] {
         value = value.strip_suffix(conversion).unwrap_or(value);
     }
     value.replace(".into())", ")")
+}
+
+/// What fails, and the error it fails with, where a call turns a failure into a named
+/// error: `x.ok_or(E)`, `x.ok_or_else(|| E)`, `x.map_err(|_| E)`, `x.context(E)`.
+struct Adapted {
+    failing: String,
+    error: String,
+}
+
+/// `user.ok_or(AppError::NotFound("user"))` → `user is None` fails with
+/// `AppError::NotFound("user")`. `None` for any other call.
+fn error_adapter(call: Node<'_>, source: &[u8]) -> Option<Adapted> {
+    let function = call
+        .child_by_field_name("function")
+        .filter(|f| f.kind() == "field_expression")?;
+    let failing = match text(function.child_by_field_name("field")?, source) {
+        "ok_or" | "ok_or_else" => "is None",
+        "map_err" | "context" | "with_context" => "fails",
+        _ => return None,
+    };
+    let receiver = function.child_by_field_name("value")?;
+    let argument = call.child_by_field_name("arguments")?.named_child(0)?;
+    // What a closure gives back is the error.
+    let value = match argument.kind() {
+        "closure_expression" => argument.child_by_field_name("body")?,
+        _ => argument,
+    };
+    // A chain written over several lines reads as one.
+    let receiver = label(receiver, source).replace(" .", ".");
+    Some(Adapted {
+        failing: format!("{receiver} {failing}"),
+        error: unconverted(&label(value, source)),
+    })
+}
+
+/// The function ends with an adapter's error when what it adapts fails.
+fn adapted_failure(adapted: Adapted) -> Step {
+    Step::Branch {
+        guard: Some(adapted.failing),
+        arms: vec![
+            arm("err", vec![exit(ExitKind::Error, Some(adapted.error))]),
+            arm("ok", Vec::new()),
+        ],
+    }
 }
 
 fn arm(label: &str, body: Vec<Step>) -> Arm {
