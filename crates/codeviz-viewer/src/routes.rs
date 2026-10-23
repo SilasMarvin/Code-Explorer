@@ -13,8 +13,9 @@ use crate::explorer::Side;
 /// walking `side`: along callers for what reaches them, along callees for what they
 /// reach. Goes no further than `limit` calls when given, and not past a tile `stop`
 /// holds, as a route starts at an entry point and does not climb above it.
-/// Registrations are wiring, not calls: a router that registers a handler neither
-/// reaches what the handler runs nor is reached by it.
+/// Registrations are wiring, not calls: a router that registers a handler depends on
+/// it and is found, but the walk goes no further through it, so neither what calls
+/// the router nor what the handler runs counts as reached by way of it.
 pub(crate) fn walk(
     graph: &ForceGraph,
     starts: &[usize],
@@ -22,27 +23,33 @@ pub(crate) fn walk(
     limit: Option<u32>,
     stop: impl Fn(usize) -> bool,
 ) -> HashMap<usize, u32> {
-    let mut next: HashMap<usize, Vec<usize>> = HashMap::new();
+    // Each step, and whether it only registers.
+    let mut next: HashMap<usize, Vec<(usize, bool)>> = HashMap::new();
     for &(caller, callee) in &graph.calls {
-        if graph.registers(caller, callee) {
-            continue;
-        }
         let (from, to) = match side {
             Side::Callers => (callee, caller),
             Side::Callees => (caller, callee),
         };
-        next.entry(from).or_default().push(to);
+        next.entry(from)
+            .or_default()
+            .push((to, graph.registers(caller, callee)));
     }
     let mut found: HashMap<usize, u32> = starts.iter().map(|&tile| (tile, 0)).collect();
+    // Found by a registration alone: the end of the line.
+    let mut wired = HashSet::new();
     let mut queue: VecDeque<usize> = starts.iter().copied().collect();
     while let Some(at) = queue.pop_front() {
         let hops = found[&at];
-        if limit.is_some_and(|limit| hops >= limit) || (hops > 0 && stop(at)) {
+        if limit.is_some_and(|limit| hops >= limit) || (hops > 0 && stop(at)) || wired.contains(&at)
+        {
             continue;
         }
-        for &to in next.get(&at).into_iter().flatten() {
+        for &(to, registers) in next.get(&at).into_iter().flatten() {
             if let Entry::Vacant(slot) = found.entry(to) {
                 slot.insert(hops + 1);
+                if registers {
+                    wired.insert(to);
+                }
                 queue.push_back(to);
             }
         }
@@ -64,22 +71,26 @@ pub(crate) struct Start {
 
 /// Where the routes in `upstream`, a walk along callers, start: the declared entries
 /// it reached, then whatever it reached that nothing calls (but may register, to be
-/// called by a framework), each nearest first.
+/// called by a framework), each nearest first. What only registers a function on the
+/// way starts no route: it never runs it.
 pub(crate) fn starts(
     graph: &ForceGraph,
     upstream: &HashMap<usize, u32>,
     entries: &HashMap<usize, String>,
     name: impl Fn(usize) -> String,
 ) -> Vec<Start> {
-    let called: HashSet<usize> = graph
+    let runs = graph
         .calls
         .iter()
-        .filter(|&&(caller, callee)| !graph.registers(caller, callee))
-        .map(|&(_, callee)| callee)
+        .filter(|&&(caller, callee)| !graph.registers(caller, callee));
+    let called: HashSet<usize> = runs.clone().map(|&(_, callee)| callee).collect();
+    let running: HashSet<usize> = runs
+        .filter(|(_, callee)| upstream.contains_key(callee))
+        .map(|&(caller, _)| caller)
         .collect();
     let mut starts: Vec<Start> = upstream
         .iter()
-        .filter(|&(_, &hops)| hops > 0)
+        .filter(|&(tile, &hops)| hops > 0 && running.contains(tile))
         .filter_map(|(&tile, &hops)| {
             let (label, declared) = match entries.get(&tile) {
                 Some(label) => (label.clone(), true),
@@ -168,11 +179,21 @@ mod tests {
         let open = walk(&graph, &[tile("find")], Side::Callers, None, |_| false);
         assert_eq!(
             open.get(&tile("router")),
+            Some(&2),
+            "the router depends on the handler it registers"
+        );
+        assert_eq!(
+            open.get(&tile("main")),
             None,
-            "registering a handler is not calling it"
+            "but registering it is not calling it"
         );
         let down = walk(&graph, &[tile("main")], Side::Callees, None, |_| false);
-        assert_eq!(down.len(), 2, "main runs the router, which runs nothing");
+        assert_eq!(
+            down.get(&tile("get")),
+            Some(&2),
+            "what the router hands over"
+        );
+        assert_eq!(down.get(&tile("find")), None, "but not what that runs");
     }
 
     #[test]
