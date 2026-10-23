@@ -214,6 +214,23 @@ pub fn number_calls(system: &System, journey: &Journey, depth: u32) -> HashMap<S
     numbers
 }
 
+/// The most levels [`number_calls`] can show without numbering more than `calls`
+/// calls; at least one, and no more than the journey has.
+#[must_use]
+pub fn depth_to_fit(system: &System, journey: &Journey, calls: usize) -> u32 {
+    let mut depth = 1;
+    let mut shown = number_calls(system, journey, depth).len();
+    loop {
+        let deeper = number_calls(system, journey, depth + 1).len();
+        // The root is numbered too, with no number.
+        if deeper == shown || deeper - 1 > calls {
+            return depth;
+        }
+        depth += 1;
+        shown = deeper;
+    }
+}
+
 /// The calls a span makes, in order, with those made inside its closures as its own.
 #[must_use]
 pub fn calls_of(system: &System, journey: &Journey, span: SpanId) -> Vec<SpanId> {
@@ -256,23 +273,12 @@ fn shown_at(journey: &Journey, numbers: &HashMap<SpanId, String>, span: SpanId) 
 fn ending(system: &System, scenario: &Scenario) -> Ending {
     Ending {
         kind: scenario.outcome.kind,
-        label: tidy(&scenario.outcome.label),
+        label: scenario.outcome.label.clone(),
         origin: scenario
             .chain
             .last()
             .map(|site| display_name(system, system.owner(&site.unit))),
     }
-}
-
-/// Source text on one line, without the spaces formatting leaves inside brackets:
-/// `Invalid(format!("bad"))`.
-fn tidy(text: &str) -> String {
-    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    joined
-        .replace("( ", "(")
-        .replace(" )", ")")
-        .replace("[ ", "[")
-        .replace(" ]", "]")
 }
 
 struct Teller<'a> {

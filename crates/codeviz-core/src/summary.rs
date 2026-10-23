@@ -9,7 +9,11 @@ use std::{
 
 use codeviz_ir::{Role, UnitId};
 
-use crate::{Change, Diff, System, display_name, markdown::change_word, upstream};
+use crate::{
+    Change, Diff, System, display_name,
+    markdown::{change_word, code},
+    upstream,
+};
 
 /// Lists longer than this end with how many more there are.
 const MAX_ITEMS: usize = 20;
@@ -84,12 +88,12 @@ impl Diff {
             let home = unit.parent.as_ref().map_or_else(String::new, path);
             // A module or type is named as one; a function by its name alone.
             let what = if unit.role == Role::Invocable {
-                format!("{} `{}`", change_word(change), unit.name)
+                format!("{} {}", change_word(change), code(&unit.name))
             } else {
-                format!("{} {} `{}`", change_word(change), unit.kind, unit.name)
+                format!("{} {} {}", change_word(change), unit.kind, code(&unit.name))
             };
             let line = match self.moved.get(id) {
-                Some(was) => format!("{what}, from `{}`", path(was)),
+                Some(was) => format!("{what}, from {}", code(&path(was))),
                 None => what,
             };
             groups.entry(home).or_default().push((change, line));
@@ -103,7 +107,7 @@ impl Diff {
                 }
                 continue;
             }
-            let _ = writeln!(out, "- `{home}`");
+            let _ = writeln!(out, "- {}", code(&home));
             for (_, line) in lines {
                 let _ = writeln!(out, "  - {line}");
             }
@@ -129,13 +133,13 @@ impl Diff {
             by_caller
                 .entry(display_name(system, from))
                 .or_default()
-                .push(format!("`{}`", display_name(system, to)));
+                .push(code(&display_name(system, to)));
         }
         let lines: Vec<String> = by_caller
             .into_iter()
             .map(|(caller, mut callees)| {
                 callees.sort();
-                format!("`{caller}` → {}", callees.join(", "))
+                format!("{} → {}", code(&caller), callees.join(", "))
             })
             .collect();
         let mut lines = cut(lines, "callers");
@@ -173,7 +177,11 @@ impl Diff {
                     let hops = *up.distance.get(&e.unit)?;
                     Some((
                         hops,
-                        format!("`{}` (`{}`)", e.label, display_name(system, &e.unit)),
+                        format!(
+                            "{} ({})",
+                            code(&e.label),
+                            code(&display_name(system, &e.unit))
+                        ),
                     ))
                 })
                 .collect();
@@ -182,10 +190,10 @@ impl Diff {
                     up.distance
                         .iter()
                         .filter(|(unit, _)| is_root(system, unit))
-                        .map(|(unit, &hops)| (hops, format!("`{}`", display_name(system, unit)))),
+                        .map(|(unit, &hops)| (hops, code(&display_name(system, unit)))),
                 );
             }
-            let name = format!("`{}`", display_name(system, id));
+            let name = code(&display_name(system, id));
             for (hops, entry) in entries {
                 let slot = reached.entry(entry).or_insert((hops, Vec::new()));
                 slot.0 = slot.0.min(hops);

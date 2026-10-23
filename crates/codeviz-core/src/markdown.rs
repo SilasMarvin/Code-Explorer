@@ -23,7 +23,7 @@ impl Story {
             ..self.root.clone()
         });
         if !notes.is_empty() {
-            let _ = writeln!(out, "- `{}` itself: {notes}", self.root.name);
+            let _ = writeln!(out, "- {} itself: {notes}", code(&self.root.name));
         }
         for beat in &self.root.calls {
             line(beat, 0, &mut out);
@@ -33,14 +33,20 @@ impl Story {
         }
         if !self.endings.is_empty() {
             out.push_str("\nOutcomes:\n");
+            // Outcomes reached along different paths read the same: one line each.
+            let mut lines: Vec<String> = Vec::new();
             for ending in &self.endings {
                 let this = if self.told.as_ref() == Some(ending) && self.endings.len() > 1 {
                     " (this path)"
                 } else {
                     ""
                 };
-                let _ = writeln!(out, "- {}{this}", outcome(ending));
+                let line = format!("- {}{this}\n", outcome(ending));
+                if !lines.contains(&line) {
+                    lines.push(line);
+                }
             }
+            out.extend(lines);
         }
         out
     }
@@ -50,8 +56,8 @@ impl Story {
     #[must_use]
     pub fn title(&self) -> String {
         let root = match &self.entry {
-            Some(entry) => format!("`{entry}` → `{}`", self.root.name),
-            None => format!("`{}`", self.root.name),
+            Some(entry) => format!("{} → {}", code(entry), code(&self.root.name)),
+            None => code(&self.root.name),
         };
         let root = match self.root.change {
             Some(change) => format!("{root} ({})", change_word(change)),
@@ -70,10 +76,10 @@ fn line(beat: &Beat, depth: usize, out: &mut String) {
     let notes = notes(beat);
     let _ = writeln!(
         out,
-        "{}- {} `{}`{}",
+        "{}- {} {}{}",
         "  ".repeat(depth),
         beat.number,
-        beat.name,
+        code(&beat.name),
         if notes.is_empty() {
             String::new()
         } else {
@@ -138,6 +144,56 @@ fn notes(beat: &Beat) -> String {
     notes.join(", ")
 }
 
+/// Code longer than this is cut: a guard or an error can be a whole expression.
+const MAX_CODE: usize = 80;
+
+/// `text` as a Markdown code span, on one line and cut to [`MAX_CODE`]. Backticks
+/// inside it take a longer fence, as Markdown requires.
+pub(crate) fn code(text: &str) -> String {
+    let tidy = tidy(text);
+    let cut: String = if tidy.chars().count() > MAX_CODE {
+        tidy.chars()
+            .take(MAX_CODE - 1)
+            .chain(std::iter::once('…'))
+            .collect()
+    } else {
+        tidy
+    };
+    let longest = cut
+        .split(|c| c != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or_default();
+    if longest == 0 {
+        return format!("`{cut}`");
+    }
+    let fence = "`".repeat(longest + 1);
+    format!("{fence} {cut} {fence}")
+}
+
+/// Source text on one line, without the spaces that formatting leaves inside
+/// brackets and method chains: `Invalid(format!("bad"))`, `args.iter().map(read)`.
+pub(crate) fn tidy(text: &str) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::with_capacity(joined.len());
+    let mut chars = joined.chars().peekable();
+    while let Some(c) = chars.next() {
+        let next = chars.peek().copied();
+        let drop = c == ' '
+            && (matches!(next, Some(')' | ']'))
+                || matches!(out.chars().last(), Some('(' | '['))
+                || next == Some('.')
+                    && chars
+                        .clone()
+                        .nth(1)
+                        .is_some_and(|n| n.is_alphabetic() || n == '_'));
+        if !drop {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// How a diff changed a call, in a word.
 pub(crate) fn change_word(change: Change) -> &'static str {
     match change {
@@ -158,7 +214,7 @@ fn can_fail(beat: &Beat) -> String {
     let labels: Vec<String> = here.into_iter().map(failure).collect();
     let mut places: Vec<String> = Vec::new();
     for origin in under.iter().filter_map(|e| e.origin.as_ref()) {
-        let place = format!("`{origin}`");
+        let place = code(origin);
         if !places.contains(&place) {
             places.push(place);
         }
@@ -187,10 +243,7 @@ pub(crate) fn when(conditions: &[Condition]) -> String {
         parts.push(format!("if {}", tests.join(" and ")));
     }
     if !unguarded.is_empty() {
-        let arms: Vec<String> = unguarded
-            .into_iter()
-            .map(|c| format!("`{}`", c.arm.trim()))
-            .collect();
+        let arms: Vec<String> = unguarded.into_iter().map(|c| code(c.arm.trim())).collect();
         parts.push(format!("on {}", arms.join(", ")));
     }
     parts.join(" and ")
@@ -206,15 +259,15 @@ fn test(condition: &Condition) -> String {
     let arm = condition.arm.trim();
     let guard = condition.guard.as_deref().unwrap_or_default().trim();
     match arm {
-        "then" | "yes" | "true" => format!("`{guard}`"),
+        "then" | "yes" | "true" => code(guard),
         "else" | "no" | "false" => match negated(guard) {
-            Some(positive) => format!("`{positive}`"),
-            None => format!("not `{guard}`"),
+            Some(positive) => code(positive),
+            None => format!("not {}", code(guard)),
         },
         _ => {
             let subject = guard.strip_prefix("match ").unwrap_or(guard);
             let pattern = arm.strip_prefix("case ").unwrap_or(arm);
-            format!("`{subject}` is `{pattern}`")
+            format!("{} is {}", code(subject), code(pattern))
         }
     }
 }
@@ -242,8 +295,8 @@ fn negated(guard: &str) -> Option<&str> {
 /// producer could not follow.
 fn failure(ending: &Ending) -> String {
     match ending.label.strip_suffix(" fails") {
-        Some(call) => format!("`{call}` fails"),
-        None => format!("`{}`", ending.label),
+        Some(call) => format!("{} fails", code(call)),
+        None => code(&ending.label),
     }
 }
 
@@ -256,7 +309,7 @@ fn outcome(ending: &Ending) -> String {
         ExitKind::Unknown => "exit",
     };
     match &ending.origin {
-        Some(origin) => format!("{kind} {} in `{origin}`", failure(ending)),
+        Some(origin) => format!("{kind} {} in {}", failure(ending), code(origin)),
         None => format!("{kind} {}", failure(ending)),
     }
 }
@@ -264,6 +317,22 @@ fn outcome(ending: &Ending) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_code_as_markdown_reads_it() {
+        assert_eq!(code("place"), "`place`");
+        assert_eq!(code("bail!(\"no `{q}`\")"), "`` bail!(\"no `{q}`\") ``");
+        assert_eq!(
+            code("Invalid(format!( \"x\" ))"),
+            "`Invalid(format!(\"x\"))`"
+        );
+        assert_eq!(
+            code("args\n    .iter()\n    .map(read)"),
+            "`args.iter().map(read)`"
+        );
+        assert_eq!(code("0 .. 10"), "`0 .. 10`");
+        assert_eq!(code(&"x".repeat(100)).chars().count(), MAX_CODE + 2);
+    }
 
     fn arm(guard: Option<&str>, arm: &str) -> String {
         when(&[Condition {

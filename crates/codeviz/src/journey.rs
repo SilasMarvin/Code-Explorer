@@ -4,8 +4,8 @@ use std::{fmt::Write as _, io::Write as _, path::PathBuf};
 
 use anyhow::{Context, bail};
 use codeviz_core::{
-    Journey, JourneyOptions, Level, Scenario, Story, System, Zoom, describe_scenario, number_calls,
-    outline, scenarios,
+    Journey, JourneyOptions, Level, Scenario, Story, System, Zoom, depth_to_fit, describe_scenario,
+    number_calls, outline, scenarios,
 };
 use codeviz_ir::UnitId;
 
@@ -36,10 +36,14 @@ pub(crate) struct JourneyArgs {
     /// outline to paste into a pull request, doc or chat; `mermaid`, a sequence diagram.
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
-    /// Levels of calls below the entry that `md` and `mermaid` show; all by default.
+    /// Levels of calls below the entry that `md` and `mermaid` show; by default all of
+    /// them, or as many as fit in 40 calls.
     #[arg(long)]
     depth: Option<u32>,
 }
+
+/// Calls a told journey shows when no depth is asked for: about what a reader takes in.
+const TOLD_CALLS: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum Format {
@@ -124,7 +128,10 @@ fn tell(
         .get(index)
         .with_context(|| format!("no scenario {index}"))?;
     let journey = unroll(system, entry, Some(scenario), args, zoom)?;
-    let numbers = number_calls(system, &journey, args.depth.unwrap_or(u32::MAX));
+    let depth = args
+        .depth
+        .unwrap_or_else(|| depth_to_fit(system, &journey, TOLD_CALLS));
+    let numbers = number_calls(system, &journey, depth);
     let story = Story::new(system, &journey, scenarios, Some(index), &numbers);
     Ok(match args.format {
         Format::Mermaid => story.mermaid(),

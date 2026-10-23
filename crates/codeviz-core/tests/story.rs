@@ -128,23 +128,23 @@ fn a_failing_scenario_ends_where_it_fails() {
 fn numbers_follow_the_outline_in_every_demo() {
     for (what, story) in every_story() {
         let markdown = story.markdown();
-        let numbers: Vec<&str> = story.beats().map(|b| b.number.as_str()).collect();
-        let listed: Vec<&str> = markdown
+        // Each call is a list item, indented by its depth, led by its number.
+        let listed: Vec<String> = markdown
             .lines()
-            .take_while(|line| !line.is_empty() || !line.starts_with("Outcomes"))
-            .filter_map(|line| line.trim_start().strip_prefix("- "))
-            .filter_map(|line| line.split_once(" `").map(|(number, _)| number))
-            .filter(|number| number.chars().all(|c| c.is_ascii_digit() || c == '.'))
+            .take_while(|line| *line != "Outcomes:")
+            .filter_map(|line| {
+                let item = line.trim_start().strip_prefix("- ")?;
+                let (number, _) = item.split_once(" `")?;
+                let numbered = number.chars().all(|c| c.is_ascii_digit() || c == '.');
+                numbered
+                    .then(|| format!("{}{number}", &line[..line.len() - line.trim_start().len()]))
+            })
             .collect();
-        assert_eq!(listed, numbers, "{what}:\n{markdown}");
-        for beat in story.beats() {
-            let indent = "  ".repeat(beat.number.matches('.').count());
-            let line = format!("{indent}- {} `{}`", beat.number, beat.name);
-            assert!(
-                markdown.contains(&line),
-                "{what}: no `{line}` in\n{markdown}"
-            );
-        }
+        let expected: Vec<String> = story
+            .beats()
+            .map(|b| format!("{}{}", "  ".repeat(b.number.matches('.').count()), b.number))
+            .collect();
+        assert_eq!(listed, expected, "{what}:\n{markdown}");
     }
 }
 
@@ -376,4 +376,26 @@ fn summarizes_a_diff_by_module_with_the_entries_it_reaches() {
             "{name} missing:\n{markdown}"
         );
     }
+}
+
+#[test]
+fn a_journey_is_told_as_deep_as_fits() {
+    let system = demo("axum-server");
+    let entry = system.find("POST /users/{id}/orders")[0].id.clone();
+    let journey = Journey::unroll(&system, &entry, None, JourneyOptions::default()).unwrap();
+    assert_eq!(
+        codeviz_core::depth_to_fit(&system, &journey, 100),
+        4,
+        "all of it"
+    );
+    assert_eq!(
+        codeviz_core::depth_to_fit(&system, &journey, 5),
+        2,
+        "1 + 4 calls"
+    );
+    assert_eq!(
+        codeviz_core::depth_to_fit(&system, &journey, 0),
+        1,
+        "at least one level"
+    );
 }

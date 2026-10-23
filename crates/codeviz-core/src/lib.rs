@@ -26,7 +26,7 @@ pub use journey::{
 };
 pub use outline::{describe_scenario, display_name, outline};
 pub use scenario::{Outcome, Scenario, Seg, Site, StepPath, scenarios};
-pub use story::{Beat, Ending, Story, calls_of, divergence, number_calls};
+pub use story::{Beat, Ending, Story, calls_of, depth_to_fit, divergence, number_calls};
 pub use system::System;
 pub use upstream::{Reach, Upstream, UpstreamEdge, upstream};
 pub use zoom::{Level, Zoom};

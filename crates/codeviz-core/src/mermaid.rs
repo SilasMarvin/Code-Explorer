@@ -12,7 +12,7 @@ use codeviz_ir::{ExitKind, Mode};
 
 use crate::{
     Condition, StopReason,
-    markdown::{change_word, otherwise, when},
+    markdown::{change_word, otherwise, tidy, when},
     story::{Beat, Ending, Story},
 };
 
@@ -152,7 +152,10 @@ impl Block {
     fn label(&self) -> String {
         match self {
             Self::Loop => "repeats".to_owned(),
-            Self::Arm(condition) => when(std::slice::from_ref(condition)).replace('`', ""),
+            Self::Arm(condition) => {
+                let phrase = when(std::slice::from_ref(condition)).replace('`', "");
+                phrase.split_whitespace().collect::<Vec<_>>().join(" ")
+            }
         }
     }
 
@@ -327,27 +330,23 @@ fn failure(ending: &Ending) -> String {
     }
 }
 
-/// Text Mermaid shows as written: cut to [`MAX_LABEL`], and with the characters it
+/// Text Mermaid shows as written: on one line, cut to [`MAX_LABEL`], and with the characters it
 /// would read as syntax (`;` ends a statement, `#` starts an entity, `%%` a comment,
 /// `<` and `>` tags) written as entities.
 fn text(raw: &str) -> String {
-    let cut: String = if raw.chars().count() > MAX_LABEL {
-        raw.chars()
-            .take(MAX_LABEL - 1)
-            .chain(std::iter::once('…'))
-            .collect()
-    } else {
-        raw.to_owned()
-    };
-    let mut out = String::with_capacity(cut.len());
-    for c in cut.chars() {
+    let tidy = tidy(raw);
+    let long = tidy.chars().count() > MAX_LABEL;
+    let mut out = String::with_capacity(tidy.len());
+    for c in tidy.chars().take(MAX_LABEL - usize::from(long)) {
         match c {
             '#' | ';' | '%' | '<' | '>' | '&' => {
                 let _ = write!(out, "#{};", u32::from(c));
             }
-            '\n' | '\r' => out.push(' '),
             c => out.push(c),
         }
+    }
+    if long {
+        out.push('…');
     }
     out
 }
