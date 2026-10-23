@@ -7,6 +7,25 @@ use tree_sitter::Node;
 
 use crate::extract::Scope;
 
+/// The first place tree-sitter could not make sense of, if there is one: the
+/// innermost error or missing token on the way down to the first.
+pub(crate) fn first_error(root: Node<'_>) -> Option<Node<'_>> {
+    if !root.has_error() {
+        return None;
+    }
+    let mut cursor = root.walk();
+    let mut node = root;
+    loop {
+        if node.is_error() || node.is_missing() {
+            return Some(node);
+        }
+        match node.children(&mut cursor).find(Node::has_error) {
+            Some(child) => node = child,
+            None => return Some(node),
+        }
+    }
+}
+
 pub(crate) fn text<'s>(node: Node<'_>, source: &'s [u8]) -> &'s str {
     node.utf8_text(source).unwrap_or_default()
 }

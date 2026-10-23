@@ -74,6 +74,32 @@ pub enum Error {
 /// # Errors
 /// Fails if no Python file is found, or a file cannot be read or parsed.
 pub fn analyze(root: &Path) -> Result<Document, Error> {
+    Ok(analyze_checked(root)?.document)
+}
+
+/// A document, and the files it was built from that did not wholly parse.
+#[derive(Debug)]
+pub struct Analysis {
+    pub document: Document,
+    /// Files tree-sitter could not wholly parse, such as one saved halfway through an
+    /// edit. What it could parse of them is in the document.
+    pub syntax_errors: Vec<SyntaxError>,
+}
+
+/// Where a file stops parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxError {
+    /// Relative to the analyzed directory.
+    pub path: PathBuf,
+    /// The first line with an error, from 1.
+    pub line: usize,
+}
+
+/// [`analyze`], also saying which files did not wholly parse.
+///
+/// # Errors
+/// As [`analyze`].
+pub fn analyze_checked(root: &Path) -> Result<Analysis, Error> {
     let files = discover::source_files(root)?;
     if files.is_empty() {
         return Err(Error::NoSources(root.to_path_buf()));
@@ -81,6 +107,7 @@ pub fn analyze(root: &Path) -> Result<Document, Error> {
     let mut parser = Parser::new();
     parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
     let mut parsed = Vec::with_capacity(files.len());
+    let mut syntax_errors = Vec::new();
     for file in files {
         let source = std::fs::read_to_string(&file.path).map_err(|source| Error::Io {
             path: file.path.clone(),
@@ -89,13 +116,48 @@ pub fn analyze(root: &Path) -> Result<Document, Error> {
         let tree = parser
             .parse(&source, None)
             .ok_or_else(|| Error::Parse(file.path.clone()))?;
+        if let Some(error) = first_error(tree.root_node()) {
+            syntax_errors.push(SyntaxError {
+                path: file
+                    .path
+                    .strip_prefix(root)
+                    .unwrap_or(&file.path)
+                    .to_path_buf(),
+                line: error.start_position().row + 1,
+            });
+        }
         parsed.push(Parsed { file, source, tree });
     }
 
     let index = Index::build(&parsed);
     let resolver = Resolver::new(&index);
     let (lowered, channels) = lower_all(&resolver);
-    Ok(assemble(&index, lowered, &channels))
+    Ok(Analysis {
+        document: assemble(&index, lowered, &channels),
+        syntax_errors,
+    })
+}
+
+/// The first place tree-sitter could not make sense of, if there is one: the
+/// innermost error or missing token on the way down to the first.
+fn first_error(root: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    if !root.has_error() {
+        return None;
+    }
+    let mut cursor = root.walk();
+    let mut node = root;
+    loop {
+        if node.is_error() || node.is_missing() {
+            return Some(node);
+        }
+        match node
+            .children(&mut cursor)
+            .find(tree_sitter::Node::has_error)
+        {
+            Some(child) => node = child,
+            None => return Some(node),
+        }
+    }
 }
 
 /// Lowers every unit, repeating until the set of channel variables is stable.

@@ -425,3 +425,27 @@ fn demo_service_validates_cleanly() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn files_saved_halfway_through_an_edit_are_reported_where_they_stop_parsing() -> anyhow::Result<()>
+{
+    let tree = Tree::new(
+        "unparsed",
+        &[
+            ("app/fine.py", "def fine():\n    return 1\n"),
+            (
+                "app/half.py",
+                "def done():\n    pass\n\ndef typing(:\n    pass\n",
+            ),
+        ],
+    )?;
+    let analysis = codeviz_python::analyze_checked(&tree.0)?;
+    assert_eq!(
+        analysis.syntax_errors,
+        [codeviz_python::SyntaxError {
+            path: "app/half.py".into(),
+            line: 4,
+        }]
+    );
+    Ok(())
+}

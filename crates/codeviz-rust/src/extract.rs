@@ -13,8 +13,8 @@ use crate::{
     Error, body,
     hash::content_hash,
     syntax::{
-        collect_use, compact, doc_comment, is_test_only, location, receiver_type_path, start, text,
-        type_name, unwrapped_type_path,
+        collect_use, compact, doc_comment, first_error, is_test_only, location, receiver_type_path,
+        start, text, type_name, unwrapped_type_path,
     },
 };
 
@@ -199,6 +199,8 @@ pub(crate) struct Extraction {
     /// Names of traits declared in the analyzed source.
     pub(crate) traits: HashSet<String>,
     pub(crate) routes: Vec<RouteHint>,
+    /// Files that did not parse cleanly, with where the first error is.
+    pub(crate) unparsed: Vec<crate::SyntaxError>,
     /// Struct path → its fields.
     pub(crate) fields: HashMap<Vec<String>, Fields>,
     groups: HashSet<Vec<String>>,
@@ -237,6 +239,12 @@ impl Extractor {
             .parser
             .parse(source, None)
             .ok_or_else(|| Error::Parse(path.to_path_buf()))?;
+        if let Some(error) = first_error(tree.root_node()) {
+            self.out.unparsed.push(crate::SyntaxError {
+                path: path.to_path_buf(),
+                line: error.start_position().row + 1,
+            });
+        }
         let file = File { source, path };
         for depth in 1..=module.len() {
             let kind = if depth == 1 {

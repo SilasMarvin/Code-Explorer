@@ -56,6 +56,18 @@ pub struct Analysis {
     pub document: Document,
     pub packages: Vec<Package>,
     pub files_parsed: usize,
+    /// Files tree-sitter could not wholly parse, such as one saved halfway through an
+    /// edit. What it could parse of them is in the document.
+    pub syntax_errors: Vec<SyntaxError>,
+}
+
+/// Where a file stops parsing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyntaxError {
+    /// Relative to the analyzed directory.
+    pub path: PathBuf,
+    /// The first line with an error, from 1.
+    pub line: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -129,16 +141,14 @@ pub fn analyze(root: &Path, options: &AnalyzeOptions) -> Result<Analysis, Error>
     });
     document.root = Some(format!("file://{}", root.display()));
     let crate_names = packages.iter().map(|p| p.crate_name.clone()).collect();
-    resolve::assemble(
-        &mut extractor.finish(),
-        &crate_names,
-        scip.as_ref(),
-        &mut document,
-    );
+    let mut extraction = extractor.finish();
+    let syntax_errors = std::mem::take(&mut extraction.unparsed);
+    resolve::assemble(&mut extraction, &crate_names, scip.as_ref(), &mut document);
     document.canonicalize();
     Ok(Analysis {
         document,
         packages,
         files_parsed,
+        syntax_errors,
     })
 }

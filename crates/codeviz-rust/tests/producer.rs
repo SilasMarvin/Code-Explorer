@@ -392,3 +392,38 @@ fn rust_analyzer_resolves_what_names_alone_cannot() {
         "a parameter is not a function of the same name"
     );
 }
+
+#[test]
+fn files_saved_halfway_through_an_edit_are_reported_where_they_stop_parsing() {
+    let root = std::env::temp_dir().join(format!("codeviz-rust-unparsed-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("src/lib.rs"), "mod half;\npub fn fine() {}\n").unwrap();
+    fs::write(
+        root.join("src/half.rs"),
+        "pub fn done() {}\n\npub fn typing() {\n    let x = ;\n}\n",
+    )
+    .unwrap();
+    let analysis = analyze(&root, &AnalyzeOptions::default());
+    fs::remove_dir_all(&root).unwrap();
+    let analysis = analysis.unwrap();
+    assert_eq!(
+        analysis.syntax_errors,
+        [codeviz_rust::SyntaxError {
+            path: "src/half.rs".into(),
+            line: 4,
+        }]
+    );
+    assert!(
+        analysis
+            .document
+            .unit(&UnitId::new("rust:app::half::done"))
+            .is_some(),
+        "what parses is still analyzed"
+    );
+}
