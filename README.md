@@ -150,14 +150,13 @@ sequenceDiagram
     deactivate handlers
 ```
 
-`--before old.json` marks what changed since an older version, `new`, `rewritten` or
-`no longer calls …`, and starts the Markdown with what changed overall: the flow as a
-pull request leaves it. `codeviz diff REVS --summary md` writes that part alone, what a
-pull request changes, structurally: the
-changed functions grouped by module, the calls existing code gained or lost (calls
-inside new functions are only counted), and the entry points that can reach a change,
-nearest first. A screenshot run never touches the clipboard: `W` logs the text and
-writes it beside the image as `shot.copied.md`.
+`--before old.json` marks what changed since an older version (`new`, `rewritten`, `no
+longer calls …`) and starts the Markdown with what changed overall: the flow as a pull
+request leaves it. `codeviz diff REVS --summary md` writes that part alone, what a pull
+request changes, structurally: the changed functions grouped by module, the calls
+existing code gained or lost (calls inside new functions are only counted), and the
+entry points that can reach a change, nearest first. A screenshot run never touches the
+clipboard: `W` logs the text and writes it beside the image as `shot.copied.md`.
 
 ## Readability
 
