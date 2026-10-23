@@ -261,16 +261,49 @@ pub(crate) fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
     in_order(&query, &path).then_some(3)
 }
 
-/// The search box's text, and the index it searches, built when first opened.
+/// The search box's text, the index it searches, built when first opened, what the
+/// text last found, and the row the arrow keys are on.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct Search {
     query: String,
     index: Option<Index>,
+    found: Option<(String, Vec<Item>)>,
+    row: usize,
 }
 
 impl Search {
     pub(crate) fn new(query: String) -> Self {
-        Self { query, index: None }
+        Self {
+            query,
+            ..Self::default()
+        }
+    }
+
+    /// What the text finds, worked out again only when it changes: the entry points
+    /// while it is empty.
+    fn rows(&mut self, explorer: &Explorer) -> &[Item] {
+        if self
+            .found
+            .as_ref()
+            .is_none_or(|(query, _)| *query != self.query)
+        {
+            let index = self.index.get_or_insert_with(|| index(explorer));
+            let rows = if self.query.trim().is_empty() {
+                let mut rows: Vec<Item> = explorer
+                    .system()
+                    .entries()
+                    .iter()
+                    .map(Item::entry)
+                    .collect();
+                rows.sort_by(|a, b| a.text.cmp(&b.text));
+                rows
+            } else {
+                index.find(&self.query, 200).into_iter().cloned().collect()
+            };
+            self.found = Some((self.query.clone(), rows));
+            self.row = 0;
+        }
+        self.found.as_ref().map_or(&[], |(_, rows)| rows.as_slice())
     }
 }
 
@@ -286,23 +319,7 @@ pub(crate) fn search_box(
     open: &mut bool,
     now: f32,
 ) {
-    let index = search.index.get_or_insert_with(|| index(explorer));
-    let rows: Vec<Item> = if search.query.trim().is_empty() {
-        let mut rows: Vec<Item> = explorer
-            .system()
-            .entries()
-            .iter()
-            .map(Item::entry)
-            .collect();
-        rows.sort_by(|a, b| a.text.cmp(&b.text));
-        rows
-    } else {
-        index
-            .find(&search.query, 200)
-            .into_iter()
-            .cloned()
-            .collect()
-    };
+    let rows = search.rows(explorer).to_vec();
     let mut chosen = None;
     egui::Area::new("search".into())
         .pivot(egui::Align2::CENTER_TOP)
@@ -322,8 +339,21 @@ pub(crate) fn search_box(
                             .desired_width(f32::INFINITY),
                     );
                     field.request_focus();
+                    // The arrows move between rows; Enter opens the one they are on.
+                    let (down, up) = ui.input(|i| {
+                        (
+                            i.key_pressed(egui::Key::ArrowDown),
+                            i.key_pressed(egui::Key::ArrowUp),
+                        )
+                    });
+                    if down {
+                        search.row = (search.row + 1).min(rows.len().saturating_sub(1));
+                    }
+                    if up {
+                        search.row = search.row.saturating_sub(1);
+                    }
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        chosen = rows.first().cloned();
+                        chosen = rows.get(search.row).cloned();
                     }
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         *open = false;
@@ -335,8 +365,9 @@ pub(crate) fn search_box(
                         .id_salt("units")
                         .max_height(300.0)
                         .show(ui, |ui| {
-                            for item in &rows {
-                                if row(ui, explorer, item) {
+                            for (index, item) in rows.iter().enumerate() {
+                                let on = index == search.row;
+                                if row(ui, explorer, item, on, on && (down || up)) {
                                     chosen = Some(item.clone());
                                 }
                             }
@@ -372,8 +403,9 @@ fn function_name(explorer: &Explorer, unit: &UnitId) -> String {
     explorer.unit_name(drawn)
 }
 
-/// One found thing: what it says, then where it is. Returns whether it was clicked.
-fn row(ui: &mut egui::Ui, explorer: &Explorer, item: &Item) -> bool {
+/// One found thing: what it says, then where it is, marked when the arrow keys are on
+/// it and scrolled to when they just moved there. Returns whether it was clicked.
+fn row(ui: &mut egui::Ui, explorer: &Explorer, item: &Item, on: bool, moved: bool) -> bool {
     let (mark, color, what) = match item.found {
         Found::Unit => ("", egui::Color32::WHITE, None),
         Found::Exit(ExitKind::Return) => ("✔ ", egui::Color32::WHITE, Some("returns")),
@@ -385,11 +417,11 @@ fn row(ui: &mut egui::Ui, explorer: &Explorer, item: &Item) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
         let title = egui::RichText::new(format!("{mark}{}", short(&item.text, 56))).color(color);
-        let current = item.found == Found::Unit && explorer.root() == Some(&item.unit);
-        clicked = ui
-            .selectable_label(current, title)
-            .on_hover_text(&item.text)
-            .clicked();
+        let response = ui.selectable_label(on, title).on_hover_text(&item.text);
+        if moved {
+            response.scroll_to_me(None);
+        }
+        clicked = response.clicked();
         let note = match what {
             None => item.note.clone(),
             Some(what) => format!("{what} in {}", function_name(explorer, &item.unit)),
@@ -548,6 +580,29 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn finds_again_only_when_the_text_changes() {
+        let explorer = Explorer::new(system(), None, JourneyOptions::default());
+        let mut search = Search::new(String::new());
+        assert_eq!(
+            search.rows(&explorer).len(),
+            1,
+            "with nothing typed, the entry points"
+        );
+        search.query = "sku".to_owned();
+        assert_eq!(
+            search.rows(&explorer).len(),
+            2,
+            "the error and the match on it"
+        );
+        search.row = 3;
+        search.rows(&explorer);
+        assert_eq!(search.row, 3, "the same text keeps the row");
+        search.query = "q".to_owned();
+        search.rows(&explorer);
+        assert_eq!(search.row, 0, "new text starts at the top");
     }
 
     #[test]

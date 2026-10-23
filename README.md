@@ -59,8 +59,9 @@ say: where they fail or panic (an error's message or variant, `unknown sku`,
 `NotFound`), the conditions they branch on, and calls into code outside the analysis
 (`.ok_or`, `tokio::spawn`). Picking an error opens the function that raises it on the
 outcome that ends there, with every route into it from the entry points picked out;
-picking a condition or a call opens its function the same way. `--search <QUERY>` opens
-with the box showing what a query finds.
+picking a condition or a call opens its function the same way. `↑`/`↓` move between
+results and Enter opens one. `--search <QUERY>` opens with the box showing what a query
+finds.
 
 ## Diffs
 
