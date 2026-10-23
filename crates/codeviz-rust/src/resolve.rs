@@ -1,6 +1,7 @@
 //! Cross-file pass: resolves written call targets and assembles the IR document.
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fmt::Write as _,
 };
@@ -114,6 +115,15 @@ struct Index<'a> {
     /// methods show; `(_, trait)` for a trait implemented for types not declared here
     /// (a blanket `impl<T> Trait for T`, or one for `Vec<_>`).
     implements: HashSet<(&'a str, &'a str)>,
+    /// Every proper prefix of a path in `by_path`: the modules and types functions live
+    /// in.
+    prefixes: HashSet<Vec<String>>,
+    /// Paths [`Self::functions_at`] found nothing at.
+    dead_ends: RefCell<HashSet<Vec<String>>>,
+    /// What each call site resolved to, by the call's address: receivers chain through
+    /// earlier calls and enclosing closures, which would otherwise resolve again and
+    /// again.
+    found: RefCell<HashMap<usize, Found>>,
     /// Lookup path (`crate::module::[Type::]name`) to functions.
     by_path: HashMap<Vec<String>, Vec<usize>>,
     /// Method name to methods a by-name match may pick: inherent methods and methods
@@ -125,6 +135,7 @@ struct Index<'a> {
 }
 
 /// What a call site may invoke.
+#[derive(Clone)]
 struct Found {
     units: Vec<usize>,
     certainty: Certainty,
@@ -245,6 +256,12 @@ impl<'a> Index<'a> {
             local_types,
             at_path,
             implements,
+            prefixes: by_path
+                .keys()
+                .flat_map(|path| (1..path.len()).map(|n| path[..n].to_vec()))
+                .collect(),
+            dead_ends: RefCell::default(),
+            found: RefCell::default(),
             by_path,
             methods,
             by_type,
@@ -345,27 +362,40 @@ impl<'a> Index<'a> {
         if let Some(ids) = self.by_path.get(path) {
             return Some(ids);
         }
-        if hops >= MAX_REEXPORT_HOPS {
+        if hops >= MAX_REEXPORT_HOPS || self.dead_ends.borrow().contains(path) {
             return None;
         }
-        (1..path.len()).find_map(|split| {
+        let found = (1..path.len()).find_map(|split| {
             let (module, rest) = path.split_at(split);
             let (name, rest) = rest.split_first()?;
             let scope = self.extraction.scopes.get(module)?;
-            let exported: Vec<Vec<String>> = match scope.imports.get(name) {
-                Some(import) => vec![import.clone()],
-                None => scope
-                    .globs
-                    .iter()
-                    .map(|glob| glob.iter().chain([name]).cloned().collect())
-                    .collect(),
-            };
-            exported.into_iter().find_map(|import| {
+            if let Some(import) = scope.imports.get(name) {
+                let mut full = self.absolute(module, import.clone(), 0)?;
+                full.extend(rest.iter().cloned());
+                return self.functions_at(&full, hops + 1);
+            }
+            // A glob re-exports `name` only from a module that has something by it, or
+            // re-exports something itself.
+            scope.globs.iter().find_map(|glob| {
+                let import = glob.iter().chain([name]).cloned().collect();
                 let mut full = self.absolute(module, import, 0)?;
+                let reexports = full.split_last().is_some_and(|(name, module)| {
+                    self.extraction.scopes.get(module).is_some_and(|scope| {
+                        scope.imports.contains_key(name) || !scope.globs.is_empty()
+                    })
+                });
+                if !self.prefixes.contains(&full) && !reexports {
+                    return None;
+                }
                 full.extend(rest.iter().cloned());
                 self.functions_at(&full, hops + 1)
             })
-        })
+        });
+        // Deeper down, the hops left decide; at the top, nothing will change.
+        if found.is_none() && hops == 0 {
+            self.dead_ends.borrow_mut().insert(path.to_vec());
+        }
+        found
     }
 
     /// For `Trait::method`, a trait of ours (also what `T::method` becomes for a
@@ -678,6 +708,17 @@ impl<'a> Index<'a> {
 
     /// What a call site may invoke, before closures are considered.
     fn candidates(&self, caller: &RawUnit, call: &RawCall) -> Found {
+        let key = std::ptr::from_ref(call).addr();
+        if let Some(found) = self.found.borrow().get(&key) {
+            return found.clone();
+        }
+        let found = self.find(caller, call);
+        self.found.borrow_mut().insert(key, found.clone());
+        found
+    }
+
+    /// What a call site may invoke, worked out.
+    fn find(&self, caller: &RawUnit, call: &RawCall) -> Found {
         if let Some((units, certainty)) = self.resolved(call) {
             return Found {
                 outside: units.is_empty(),
