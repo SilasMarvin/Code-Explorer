@@ -597,6 +597,55 @@ fn foreign_values_and_wrappers() {
     );
 }
 
+#[test]
+fn methods_through_deref_traits_and_cfg_twins() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "use std::ops::Deref;
+         pub struct Context; pub struct Ui { ctx: Context } pub struct Plain;
+         impl Context { pub fn input(&self) {} }
+         impl Deref for Ui { type Target = Context; fn deref(&self) -> &Context { &self.ctx } }
+         pub trait Parser { fn parse(&self); fn map(&self) {} }
+         impl Parser for Plain { fn parse(&self) {} }
+         pub struct Printer;
+         impl Printer {
+             #[cfg(unix)] pub fn print(&self) {}
+             #[cfg(not(unix))] pub fn print(&self) {}
+         }
+         fn run(ui: &Ui, plain: &Plain, option: Option<u8>, printer: &Printer) {
+             ui.input();
+             plain.map();
+             option.map();
+             printer.print();
+         }",
+    )]);
+    let run = resolved(unit(&document, "app::run"));
+    assert_eq!(
+        run[0],
+        (
+            ".input".to_owned(),
+            vec!["rust:app::Context::input".to_owned()],
+            Some(Certainty::Exact)
+        ),
+        "`Ui` derefs to `Context`"
+    );
+    assert_eq!(
+        run[1],
+        (
+            ".map".to_owned(),
+            vec!["rust:app::Parser::map".to_owned()],
+            Some(Certainty::Inferred)
+        ),
+        "`Plain` implements `Parser`, so has its provided `map`"
+    );
+    assert_eq!(run[2], (".map".to_owned(), vec![], None), "`Option::map`");
+    assert_eq!(
+        (run[3].1.len(), run[3].2),
+        (2, Some(Certainty::Inferred)),
+        "which `print` builds depends on the target"
+    );
+}
+
 /// Writes each `(name, dependencies, lib.rs)` as a crate in one workspace and
 /// analyzes it.
 fn analyze_workspace(crates: &[(&str, &str, &str)]) -> Document {

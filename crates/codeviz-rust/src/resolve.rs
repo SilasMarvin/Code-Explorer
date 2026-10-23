@@ -19,6 +19,8 @@ use crate::{
 const MAX_IMPORT_HOPS: usize = 8;
 /// Bound on re-exports followed along one path; each hop may try every glob.
 const MAX_REEXPORT_HOPS: usize = 4;
+/// Bound on `Deref` steps a method call looks through.
+const MAX_DEREFS: usize = 4;
 pub(crate) const SCHEME: &str = "rust";
 
 pub(crate) fn id(path: &[String]) -> UnitId {
@@ -51,6 +53,10 @@ struct Index<'a> {
     local_types: HashSet<&'a str>,
     /// Each unit's id path, to the unit.
     at_path: HashMap<&'a [String], usize>,
+    /// `(type name, trait name)` for each local trait a type implements, as its impl's
+    /// methods show; `(_, trait)` for a trait implemented for types not declared here
+    /// (a blanket `impl<T> Trait for T`, or one for `Vec<_>`).
+    implements: HashSet<(&'a str, &'a str)>,
     /// Lookup path (`crate::module::[Type::]name`) to functions.
     by_path: HashMap<Vec<String>, Vec<usize>>,
     /// Method name to methods a by-name match may pick: inherent methods and methods
@@ -131,7 +137,7 @@ impl<'a> Index<'a> {
         let mut by_path: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
         let mut methods: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut by_type: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
-        let local_types = extraction
+        let local_types: HashSet<&str> = extraction
             .units
             .iter()
             .filter(|unit| {
@@ -148,7 +154,16 @@ impl<'a> Index<'a> {
             .enumerate()
             .map(|(index, unit)| (unit.path.as_slice(), index))
             .collect();
+        let mut implements = HashSet::new();
         for (index, unit) in extraction.units.iter().enumerate() {
+            if let Some(owner) = &unit.owner
+                && let Some(trait_name) = &owner.trait_name
+                && *trait_name != owner.type_name
+            {
+                let type_name = owner.type_name.as_str();
+                let local = local_types.contains(type_name);
+                implements.insert((if local { type_name } else { "_" }, trait_name.as_str()));
+            }
             if !matches!(unit.kind, UnitKind::Function { .. }) {
                 continue;
             }
@@ -172,6 +187,7 @@ impl<'a> Index<'a> {
             crates,
             local_types,
             at_path,
+            implements,
             by_path,
             methods,
             by_type,
@@ -437,22 +453,28 @@ impl<'a> Index<'a> {
                 return Found::new(implementations, certainty);
             }
         }
-        // The type's own path first: two crates may each have a `Builder`.
-        let mut path = ty.clone();
-        path.push(name.to_owned());
-        if let Some(ids) = self.functions_at(&path, 0) {
-            return Found::new(ids.clone(), certainty);
+        // The type's own methods, then those of what it derefs to, as `.` looks.
+        let mut on = Some(ty.clone());
+        for _ in 0..=MAX_DEREFS {
+            let Some(current) = on else {
+                break;
+            };
+            let found = self.methods_on(caller, &current, name);
+            if !found.is_empty() {
+                // Twins under different `#[cfg]`s: which one builds depends on features.
+                let (found, how) = self.overloads(&found);
+                let certainty = if how == Certainty::Inferred {
+                    how
+                } else {
+                    certainty
+                };
+                return Found::new(found, certainty);
+            }
+            on = self.deref_target(&current);
         }
-        let on_type: Vec<usize> = self
-            .by_type
-            .get(&(type_name, name))
-            .into_iter()
-            .flatten()
-            .copied()
-            .filter(|&i| self.visible(caller, i))
-            .collect();
-        if !on_type.is_empty() {
-            return Found::new(on_type, certainty);
+        if !self.is_local_type(&ty) && is_std_method(name) {
+            // `Option::map`, not a local trait's `map`: inherent methods come first.
+            return Found::nothing();
         }
         // The type is known but defines no such method here: a provided method of a
         // local trait, or something from std or a dependency.
@@ -467,7 +489,11 @@ impl<'a> Index<'a> {
                     .units
                     .get(i)
                     .and_then(|u| u.owner.as_ref())
-                    .is_some_and(|o| o.trait_name.as_deref() == Some(o.type_name.as_str()))
+                    .is_some_and(|o| {
+                        o.trait_name.as_deref() == Some(o.type_name.as_str())
+                            && (self.implements.contains(&(type_name, o.type_name.as_str()))
+                                || self.implements.contains(&("_", o.type_name.as_str())))
+                    })
             })
             .collect();
         Found {
@@ -477,6 +503,41 @@ impl<'a> Index<'a> {
             outside: provided.is_empty() && !self.is_local_type(&ty) && !is_std_method(name),
             ..Found::new(provided, Certainty::Inferred)
         }
+    }
+
+    /// The methods called `name` defined on type `ty`: by its own path first, since
+    /// two crates may each have a `Builder`, else by its name.
+    fn methods_on(&self, caller: &RawUnit, ty: &[String], name: &str) -> Vec<usize> {
+        let mut path = ty.to_vec();
+        path.push(name.to_owned());
+        if let Some(ids) = self.functions_at(&path, 0) {
+            return ids.clone();
+        }
+        let type_name = ty.last().map_or("", String::as_str);
+        self.by_type
+            .get(&(type_name, name))
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&i| self.visible(caller, i))
+            .collect()
+    }
+
+    /// What a type of ours derefs to, by its `Deref` impl.
+    fn deref_target(&self, ty: &[String]) -> Option<Vec<String>> {
+        let (module, target) = self.extraction.derefs.get(ty).or_else(|| {
+            let name = ty.last()?;
+            let mut named = self
+                .extraction
+                .derefs
+                .iter()
+                .filter(|(path, _)| path.last() == Some(name));
+            match (named.next(), named.next()) {
+                (Some((_, only)), None) => Some(only),
+                _ => None,
+            }
+        })?;
+        self.absolute(module, target.clone(), 0)
     }
 
     /// For a call like `Type::default()` on a type of ours that defines no such

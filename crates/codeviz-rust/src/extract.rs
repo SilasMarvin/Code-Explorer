@@ -207,6 +207,9 @@ pub(crate) struct Extraction {
     pub(crate) routes: Vec<RouteHint>,
     /// Struct path → its fields.
     pub(crate) fields: HashMap<Vec<String>, Fields>,
+    /// Type path → what its `Deref` impl derefs it to, as written in `module`:
+    /// `(module, target)`.
+    pub(crate) derefs: HashMap<Vec<String>, (Vec<String>, Vec<String>)>,
     groups: HashSet<Vec<String>>,
 }
 
@@ -319,6 +322,9 @@ impl Extractor {
                     trait_text: trait_node.map(|tr| trait_label(tr, source)),
                 });
                 if let (Some(owner), Some(body)) = (owner, node.child_by_field_name("body")) {
+                    if owner.trait_name.as_deref() == Some("Deref") {
+                        self.deref(module, &owner.type_name, body, source);
+                    }
                     self.type_unit(module, &owner.type_name, "type");
                     self.items(file, body, module, Some(&owner));
                 }
@@ -465,6 +471,24 @@ impl Extractor {
             returns,
             returns_ok,
         });
+    }
+
+    /// Records the `type Target = ..` of a `Deref` impl for `name`.
+    fn deref(&mut self, module: &[String], name: &str, body: Node<'_>, source: &[u8]) {
+        let mut cursor = body.walk();
+        let target = body
+            .named_children(&mut cursor)
+            .filter(|item| item.kind() == "type_item")
+            .filter(|item| {
+                item.child_by_field_name("name")
+                    .is_some_and(|n| text(n, source) == "Target")
+            })
+            .find_map(|item| receiver_type_path(item.child_by_field_name("type")?, source));
+        if let Some(target) = target {
+            let mut path = module.to_vec();
+            path.push(name.to_owned());
+            self.out.derefs.insert(path, (module.to_vec(), target));
+        }
     }
 
     fn struct_fields(&mut self, module: &[String], name: &str, node: Node<'_>, source: &[u8]) {
