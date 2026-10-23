@@ -66,7 +66,13 @@ pub(crate) struct KeyHelp(pub(crate) bool);
 #[derive(Resource, Debug, Default)]
 struct Search {
     query: String,
+    /// What the query last found, and the query it found it for: ranking every
+    /// function takes too long to do each frame in a big codebase.
+    found: Option<(String, Vec<SearchRow>)>,
 }
+
+/// A function the search box offers: its id, name and kind.
+type SearchRow = (UnitId, String, String);
 
 /// Source files read so far; `None` when a file could not be read.
 #[derive(Resource, Debug, Default)]
@@ -445,6 +451,42 @@ fn journeys(ui: &mut egui::Ui, explorer: &mut Explorer) {
     }
 }
 
+/// What `query` finds, best first: with no query, the entry points by name.
+fn search_rows(explorer: &Explorer, query: &str) -> Vec<SearchRow> {
+    let system = explorer.system();
+    if query.trim().is_empty() {
+        let mut rows: Vec<_> = system
+            .entries()
+            .iter()
+            .map(|e| (e.unit.clone(), e.label.clone(), e.kind.clone()))
+            .collect();
+        rows.sort_by(|a, b| a.1.cmp(&b.1));
+        return rows;
+    }
+    let entries = system
+        .entries()
+        .iter()
+        .map(|e| (&e.unit, e.label.clone(), &e.kind));
+    let units = system
+        .units()
+        .filter(|u| u.role == Role::Invocable)
+        .map(|u| (&u.id, explorer.unit_name(&u.id), &u.kind));
+    let mut ranked: Vec<(u8, UnitId, String, String)> = entries
+        .chain(units)
+        .filter_map(|(id, name, kind)| {
+            let rank = search_rank(query, id.as_str(), &name)?;
+            Some((rank, id.clone(), name, kind.clone()))
+        })
+        .collect();
+    ranked.sort_by(|a, b| (a.0, a.2.len(), &a.2).cmp(&(b.0, b.2.len(), &b.2)));
+    ranked.dedup_by(|a, b| a.1 == b.1);
+    ranked
+        .into_iter()
+        .take(200)
+        .map(|(_, id, name, kind)| (id, name, kind))
+        .collect()
+}
+
 /// A box to find a function by name, over the top of the graph: Enter or a click
 /// opens it, Escape closes the box.
 fn search_box(
@@ -454,39 +496,18 @@ fn search_box(
     search: &mut Search,
     open: &mut bool,
 ) {
-    let system = explorer.system();
-    let rows: Vec<(UnitId, String, String)> = if search.query.trim().is_empty() {
-        let mut rows: Vec<_> = system
-            .entries()
-            .iter()
-            .map(|e| (e.unit.clone(), e.label.clone(), e.kind.clone()))
-            .collect();
-        rows.sort_by(|a, b| a.1.cmp(&b.1));
-        rows
-    } else {
-        let entries = system
-            .entries()
-            .iter()
-            .map(|e| (&e.unit, e.label.clone(), &e.kind));
-        let units = system
-            .units()
-            .filter(|u| u.role == Role::Invocable)
-            .map(|u| (&u.id, explorer.unit_name(&u.id), &u.kind));
-        let mut ranked: Vec<(u8, UnitId, String, String)> = entries
-            .chain(units)
-            .filter_map(|(id, name, kind)| {
-                let rank = search_rank(&search.query, id.as_str(), &name)?;
-                Some((rank, id.clone(), name, kind.clone()))
-            })
-            .collect();
-        ranked.sort_by(|a, b| (a.0, a.2.len(), &a.2).cmp(&(b.0, b.2.len(), &b.2)));
-        ranked.dedup_by(|a, b| a.1 == b.1);
-        ranked
-            .into_iter()
-            .take(200)
-            .map(|(_, id, name, kind)| (id, name, kind))
-            .collect()
-    };
+    if search
+        .found
+        .as_ref()
+        .is_none_or(|(query, _)| *query != search.query)
+    {
+        let rows = search_rows(explorer, &search.query);
+        search.found = Some((search.query.clone(), rows));
+    }
+    let rows = search
+        .found
+        .as_ref()
+        .map_or(&[][..], |(_, rows)| rows.as_slice());
     let mut chosen = None;
     egui::Area::new("search".into())
         .pivot(egui::Align2::CENTER_TOP)
@@ -519,7 +540,7 @@ fn search_box(
                         .id_salt("units")
                         .max_height(260.0)
                         .show(ui, |ui| {
-                            for (id, title, kind) in &rows {
+                            for (id, title, kind) in rows {
                                 ui.horizontal(|ui| {
                                     if ui
                                         .selectable_label(explorer.root() == Some(id), title)
