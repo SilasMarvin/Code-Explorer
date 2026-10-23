@@ -329,13 +329,26 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Escape) {
         close_topmost(&mut explorer, &mut help, &mut chrome, &mut start);
     }
-    // I and O pick out what calls into the focus and what it calls out to.
+    // I and O pick out what calls into the focus and what it calls out to, a call
+    // further with each press; with shift, all the way at once.
     for (key, side) in [
         (KeyCode::KeyI, Side::Callers),
         (KeyCode::KeyO, Side::Callees),
     ] {
         if keys.just_pressed(key) {
-            explorer.toggle_spotlight(side, time.elapsed_secs());
+            if shift {
+                explorer.spotlight_all(side, time.elapsed_secs());
+            } else {
+                explorer.widen_spotlight(side, time.elapsed_secs());
+            }
+        }
+    }
+    // A follows the next route into the focus from where it starts; with shift, the
+    // one before.
+    if keys.just_pressed(KeyCode::KeyA) && explorer.follow_next_route(!shift, time.elapsed_secs()) {
+        autoplay.playing = false;
+        if panel.mode == PanelMode::Hidden {
+            panel.mode = PanelMode::Docked;
         }
     }
     // U lets calls guessed by name count, or leaves them out again.

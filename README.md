@@ -53,10 +53,21 @@ focus, blue out of it, with dots flowing along it. A node's fill says where it l
 its module, the same color as its ring; under a diff it says what changed instead. A
 journey bar is filled exactly like its node, and its number sits on a badge of that
 color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
-to it. `I` picks out everything that calls the focus and `O` everything it calls,
-pulling the camera back only as far as it takes to show them all. When that is more
-than fifteen, a card lists every one, grouped by module, and the graph names the first
-where it finds room.
+to it.
+
+`I` picks out what calls the focus and `O` what it calls, pulling the camera back only
+as far as it takes to show them all. Pressed again, each reaches two calls out, then
+all the way, then lets go; shift goes all the way at once. All the way up is every
+route into the focus: from the entry points where requests come in, or the functions
+nothing calls (which a framework or a test runs), down to it, drawn as pale arrows with
+dots running towards it, with the rest of the graph stepped out of the way. A route
+stops at the first entry point it meets, and a router that registers a handler counts
+as depending on it without leading anywhere above. The top bar says how many entry
+points reach the focus; with its callers picked out, a card lists them, and picking one
+(or `A` for the next, `Shift A` the one before) opens that entry's journey with the
+cursor on the focus and every call on the way disclosed, the route it follows drawn
+brighter than the rest. When the spotlight picks out more than fifteen, a card lists
+every one, grouped by module, and the graph names the first where it finds room.
 
 A dotted, fainter link is a guess: the analyzer matched the call by name without
 knowing the type (an `inferred` target in the IR). Guesses keep their direction color
@@ -72,9 +83,7 @@ colors stay put. Digits open the call with that number on its badge and bar, `-`
 active journey (`L` switches), measured in calls, distance in the graph, or a blend of
 both (`G` switches); what is out of reach dims, then shrinks to a speck. `Q` jumps
 between everything, two steps and one. In the journey, `←`/`→` move between calls by
-the same caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a
-function: best match first, then nearest the focus, then most called, closures only
-when the query names one (`closure`); `↑`/`↓` pick and Enter opens. `S` opens the side
+the same caller, `↓`/`↑` go in and out, `[`/`]` step through time. `S` opens the side
 panel (the view's settings, outcomes, source and details), `H` lists every key, and
 `Esc` closes whichever of those is on top, or the spotlight.
 
@@ -85,6 +94,17 @@ to the view before it, cursor, outcome, depth, opened calls and spotlight includ
 you move somewhere; stepping through the journey at most pulls it back to keep the
 cursor's node in sight. Pan or zoom and it stays where you put it, saying `camera free
 · F to follow` until `F` brings it back.
+
+`/` searches functions by name or path, entry points by route, and what function bodies
+say: where they fail or panic (an error's message or variant, `unknown sku`,
+`NotFound`), the conditions they branch on, and calls into code outside the analysis
+(`.ok_or`, `tokio::spawn`). Picking an error opens the function that raises it on the
+outcome that ends there, with every route into it from the entry points picked out;
+picking a condition or a call opens its function the same way. Functions come before
+what they say, each named as the graph names it: the best match first, then the one
+nearest the focus, then the most called. A closure is found by what it says, under the
+function around it. `↑`/`↓` move between results and Enter opens one. `--search <QUERY>` opens with the box showing what a query
+finds.
 
 ## From the graph to the code
 

@@ -77,11 +77,6 @@ impl Path {
         text
     }
 
-    /// Its own part of the name: `closure 3` of `draw › closure 3`.
-    pub(crate) fn own(&self) -> &str {
-        &self.name
-    }
-
     /// The name with as little in front as it always carries.
     pub(crate) fn short(&self) -> String {
         self.render(self.least)

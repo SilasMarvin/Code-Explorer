@@ -19,7 +19,7 @@ mod graph;
 mod map;
 mod repulsion;
 
-pub use graph::{ForceConfig, ForceGraph, GroupStats, Reach};
+pub use graph::{ForceConfig, ForceGraph, GroupStats, Reach, Toward};
 pub use map::{CodebaseMap, MapConfig, MapGroup, MapTile, map};
 
 /// What groups spans into lanes along the Z axis.

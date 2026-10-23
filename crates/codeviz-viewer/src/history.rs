@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use codeviz_core::SpanId;
 use codeviz_ir::UnitId;
 
-use crate::{disclosure::Disclose, explorer::Side};
+use crate::{disclosure::Disclose, explorer::Spotlight};
 
 /// The most places remembered; older ones are forgotten.
 const LIMIT: usize = 200;
@@ -23,8 +23,9 @@ pub(crate) struct View {
     pub(crate) cursor: Option<SpanId>,
     pub(crate) disclose: Disclose,
     pub(crate) expanded: HashSet<SpanId>,
-    /// The side in the spotlight, when it came on, and the node it was on for.
-    pub(crate) spotlight: Option<(Side, f32, usize)>,
+    /// The spotlight: its side, how far it reaches, when it came on, and the node it
+    /// was on for.
+    pub(crate) spotlight: Option<Spotlight>,
 }
 
 /// Places left behind, and places gone back from.

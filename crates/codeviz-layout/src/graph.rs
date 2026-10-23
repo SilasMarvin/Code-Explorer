@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use codeviz_core::System;
-use codeviz_ir::{Certainty, UnitId};
+use codeviz_ir::{Certainty, Mode, UnitId};
 
 use crate::{CodebaseMap, repulsion};
 
@@ -91,6 +91,10 @@ pub struct ForceGraph {
     /// Calls that still pull as links but no longer run, such as the calls a diff
     /// removed: kept out of [`Self::calls`], callers, reach and sequences.
     pub ghosts: Vec<(usize, usize)>,
+    /// Calls that only ever hand their callee over to run later, as a router
+    /// registers a handler: in [`Self::calls`], but wiring rather than running it.
+    /// Sorted.
+    pub registrations: Vec<(usize, usize)>,
     /// Every call that runs, guesses included, sorted.
     every_call: Vec<(usize, usize)>,
     /// Whether guesses count as calls.
@@ -140,6 +144,15 @@ pub struct GroupStats {
     pub incoming: usize,
 }
 
+/// Which way a walk along calls runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Toward {
+    /// Up, to what calls.
+    Callers,
+    /// Down, to what is called.
+    Callees,
+}
+
 /// Fewest calls between a node and the tiles that reach it, or that it reaches.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Reach {
@@ -156,6 +169,8 @@ impl ForceGraph {
         let mut calls = HashSet::new();
         // Calls some call site makes for sure, not by a guess.
         let mut known = HashSet::new();
+        // Pairs some call site runs rather than only registers.
+        let mut runs = HashSet::new();
         // Each call site with where it is written, to put a tile's calls in order.
         let mut sites: Vec<Vec<(SiteKey, usize)>> = vec![Vec::new(); map.tiles.len()];
         for (order, unit) in system.units().enumerate() {
@@ -175,6 +190,9 @@ impl ForceGraph {
                         calls.insert((from, to));
                         if target.certainty != Certainty::Inferred {
                             known.insert((from, to));
+                        }
+                        if call.mode != Mode::Register {
+                            runs.insert((from, to));
                         }
                         if let Some(list) = sites.get_mut(from) {
                             list.push(((at.0, at.1, order * 1024 + index), to));
@@ -201,6 +219,11 @@ impl ForceGraph {
         guesses.sort_unstable();
         let mut calls: Vec<(usize, usize)> = calls.into_iter().collect();
         calls.sort_unstable();
+        let registrations = calls
+            .iter()
+            .copied()
+            .filter(|call| !runs.contains(call))
+            .collect();
 
         let (clusters, cluster_units) = module_clusters(system, map);
         let (tops, top_units) = top_clusters(system, &cluster_units);
@@ -234,6 +257,7 @@ impl ForceGraph {
             callers: Vec::new(),
             callees: Vec::new(),
             degrees,
+            registrations,
             config,
             age: 0,
         };
@@ -329,10 +353,68 @@ impl ForceGraph {
     /// Everything that reaches `tile` and everything it reaches, by fewest calls.
     #[must_use]
     pub fn reach(&self, tile: usize) -> Reach {
+        let without_tile = |mut found: HashMap<usize, u32>| {
+            found.remove(&tile);
+            found
+        };
         Reach {
-            upstream: walk(&self.callers, tile),
-            downstream: walk(&self.callees, tile),
+            upstream: without_tile(self.walk(&[tile], Toward::Callers, None, |_| false)),
+            downstream: without_tile(self.walk(&[tile], Toward::Callees, None, |_| false)),
         }
+    }
+
+    /// Fewest calls between each tile and the nearest of `starts`, which count as zero,
+    /// walking `toward` their callers or their callees, breadth-first. Goes no further
+    /// than `limit` calls when given, and not past a tile `stop` holds, as a route
+    /// starts at an entry point and does not climb above it. A registration is wiring,
+    /// not a call: a router that registers a handler depends on it and is found, but
+    /// the walk goes no further through it, so neither what calls the router nor what
+    /// the handler runs is reached by way of it.
+    pub fn walk(
+        &self,
+        starts: &[usize],
+        toward: Toward,
+        limit: Option<u32>,
+        stop: impl Fn(usize) -> bool,
+    ) -> HashMap<usize, u32> {
+        let next = match toward {
+            Toward::Callers => &self.callers,
+            Toward::Callees => &self.callees,
+        };
+        // Whether the step from `at` to `to` only registers.
+        let registers = |at: usize, to: usize| match toward {
+            Toward::Callers => self.registers(to, at),
+            Toward::Callees => self.registers(at, to),
+        };
+        let mut found: HashMap<usize, u32> = starts.iter().map(|&tile| (tile, 0)).collect();
+        // Found by registrations alone so far: the end of the line.
+        let mut wired = HashSet::new();
+        let mut queue: VecDeque<usize> = starts.iter().copied().collect();
+        while let Some(at) = queue.pop_front() {
+            let hops = found[&at];
+            if limit.is_some_and(|limit| hops >= limit)
+                || (hops > 0 && stop(at))
+                || wired.contains(&at)
+            {
+                continue;
+            }
+            for &to in next.get(at).into_iter().flatten() {
+                let registers = registers(at, to);
+                match found.get(&to) {
+                    None => {
+                        found.insert(to, hops + 1);
+                        if registers {
+                            wired.insert(to);
+                        }
+                        queue.push_back(to);
+                    }
+                    // A call that runs what was only wired so far goes on through it.
+                    Some(_) if !registers && wired.remove(&to) => queue.push_back(to),
+                    Some(_) => {}
+                }
+            }
+        }
+        found
     }
 
     /// The module cluster a tile pulls into.
@@ -397,6 +479,12 @@ impl ForceGraph {
             }
         }
         stats
+    }
+
+    /// Whether `from` only registers `to`, to run later, and never runs it itself.
+    #[must_use]
+    pub fn registers(&self, from: usize, to: usize) -> bool {
+        self.registrations.binary_search(&(from, to)).is_ok()
     }
 
     /// Tiles that call `tile`, in order.
@@ -803,21 +891,6 @@ fn seed(key: &str, radius: f32) -> [f32; 3] {
     [r * ring * angle.cos(), r * z, r * ring * angle.sin()]
 }
 
-/// Breadth-first from `start` along `next`, each tile with the fewest steps to it.
-fn walk(next: &[Vec<usize>], start: usize) -> HashMap<usize, u32> {
-    let mut found = HashMap::new();
-    let mut queue = VecDeque::from([(start, 0)]);
-    while let Some((tile, hops)) = queue.pop_front() {
-        for &to in next.get(tile).into_iter().flatten() {
-            if to != start && !found.contains_key(&to) {
-                found.insert(to, hops + 1);
-                queue.push_back((to, hops + 1));
-            }
-        }
-    }
-    found
-}
-
 pub(crate) fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
@@ -921,6 +994,105 @@ mod tests {
             call("c")
         );
         System::new([Document::from_json(&json).unwrap()])
+    }
+
+    /// `main -> router`, which registers `get` and `post` as handlers; `get -> find`,
+    /// `post -> place -> (find, quote)`; and `orphan -> quote`, which `main` registers
+    /// as a callback and `helper` calls.
+    fn routed() -> (ForceGraph, impl Fn(&str) -> usize) {
+        // `&name` registers it rather than calling it.
+        let unit = |name: &str, calls: &[&str]| {
+            let calls: Vec<String> = calls
+                .iter()
+                .map(|c| {
+                    let (c, mode) = c
+                        .strip_prefix('&')
+                        .map_or((*c, "call"), |c| (c, "register"));
+                    format!(
+                        r#"{{ "key": "{c}#0", "text": "{c}", "mode": "{mode}", "targets": [{{ "unit": "x:{c}", "certainty": "exact" }}] }}"#
+                    )
+                })
+                .collect();
+            format!(
+                r#"{{ "id": "x:{name}", "name": "{name}", "kind": "fn", "role": "invocable", "calls": [{}] }}"#,
+                calls.join(",")
+            )
+        };
+        let units = [
+            unit("main", &["router", "&orphan", "helper"]),
+            unit("router", &["&get", "&post"]),
+            unit("get", &["find"]),
+            unit("post", &["place"]),
+            unit("place", &["find", "quote"]),
+            unit("find", &[]),
+            unit("quote", &[]),
+            unit("orphan", &["quote"]),
+            unit("helper", &["orphan"]),
+        ];
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        let system = System::new([Document::from_json(&json).unwrap()]);
+        let map = map(&system, &MapConfig::default());
+        let graph = ForceGraph::new(&system, &map, ForceConfig::default());
+        let tile = move |name: &str| map.tile_of(&UnitId::new(format!("x:{name}"))).unwrap();
+        (graph, tile)
+    }
+
+    #[test]
+    fn walks_every_route_up_to_where_it_stops() {
+        let (graph, tile) = routed();
+        let entries = |t: usize| t == tile("get") || t == tile("post");
+        let up = graph.walk(&[tile("find")], Toward::Callers, None, entries);
+        let hops = |name: &str| up.get(&tile(name)).copied();
+        assert_eq!(hops("find"), Some(0), "the start itself");
+        assert_eq!(hops("get"), Some(1));
+        assert_eq!(hops("place"), Some(1));
+        assert_eq!(hops("post"), Some(2), "through place");
+        assert_eq!(hops("router"), None, "not past the entries");
+        assert_eq!(hops("quote"), None, "a callee is not a caller");
+
+        let near = graph.walk(&[tile("find")], Toward::Callers, Some(1), entries);
+        assert_eq!(near.len(), 3, "find and its direct callers");
+
+        let open = graph.walk(&[tile("find")], Toward::Callers, None, |_| false);
+        assert_eq!(
+            open.get(&tile("router")),
+            Some(&2),
+            "the router depends on the handler it registers"
+        );
+        assert_eq!(
+            open.get(&tile("main")),
+            None,
+            "but registering it is not calling it"
+        );
+    }
+
+    #[test]
+    fn walks_down_past_what_is_both_registered_and_called() {
+        let (graph, tile) = routed();
+        let down = graph.walk(&[tile("main")], Toward::Callees, None, |_| false);
+        assert_eq!(
+            down.get(&tile("get")),
+            Some(&2),
+            "what the router hands over"
+        );
+        assert_eq!(down.get(&tile("find")), None, "but not what that runs");
+        assert_eq!(
+            down.get(&tile("quote")),
+            Some(&2),
+            "orphan is registered, but helper also calls it, so it runs"
+        );
+
+        let both = graph.walk(
+            &[tile("find"), tile("quote")],
+            Toward::Callers,
+            None,
+            |_| false,
+        );
+        assert_eq!(both.get(&tile("orphan")), Some(&1), "nearest of either");
+        assert_eq!(both.get(&tile("place")), Some(&1));
     }
 
     #[test]

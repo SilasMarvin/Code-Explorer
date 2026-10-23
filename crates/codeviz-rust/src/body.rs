@@ -646,7 +646,17 @@ impl Builder<'_, '_, '_> {
                 .rposition(|call| call.mode == Mode::Call && call.via_call.is_none())
                 .map(|offset| before + offset)
         });
-        if let Some(call) = last_direct.and_then(|index| self.calls.get_mut(index)) {
+        // An adapter that turns a failure into a named error ends the function with
+        // that error; it is a call into std, which says nothing of what fails.
+        let adapted = std::iter::successors(Some(inner), |n| match n.kind() {
+            "await_expression" | "parenthesized_expression" => n.named_child(0),
+            _ => None,
+        })
+        .last()
+        .and_then(|n| error_adapter(n, self.source()));
+        if let Some(adapted) = adapted {
+            steps.push(adapted_failure(adapted));
+        } else if let Some(call) = last_direct.and_then(|index| self.calls.get_mut(index)) {
             call.propagates = true;
         } else {
             let source = label(node, self.source());
@@ -669,36 +679,7 @@ impl Builder<'_, '_, '_> {
             return;
         };
 
-        let target = match function.kind() {
-            "field_expression" => {
-                if let Some(receiver) = function.child_by_field_name("value") {
-                    self.expr(receiver, false, steps);
-                }
-                function
-                    .child_by_field_name("field")
-                    .map(|field| CallTarget::Method {
-                        name: text(field, source).to_owned(),
-                        receiver: function
-                            .child_by_field_name("value")
-                            .and_then(|v| self.receiver(v)),
-                    })
-            }
-            _ => path_segments(function, source).map(|segments| match segments.as_slice() {
-                [name] if self.stored_closures.contains_key(name) => self
-                    .stored_closures
-                    .get(name)
-                    .map_or(CallTarget::Path(segments.clone()), |path| {
-                        CallTarget::Closure(path.clone())
-                    }),
-                // `T::make()` for a `T: Factory` dispatches through `Factory`.
-                [ty, name] if self.generics.contains_key(ty) => {
-                    let mut path = self.substitute(vec![ty.clone()]);
-                    path.push(name.clone());
-                    CallTarget::Path(path)
-                }
-                _ => CallTarget::Path(segments),
-            }),
-        };
+        let target = self.call_target(function, steps);
 
         if let Some(CallTarget::Path(segments)) = &target
             && is_constructor(segments)
@@ -749,8 +730,13 @@ impl Builder<'_, '_, '_> {
         };
         let handoff_mode = handoff_mode(&target);
         let index = self.record(written, target, Mode::Call, None, node, steps);
+        // A tail call ends the function with its error, which an adapter names.
+        let adapted = (tail && self.cx.returns_result)
+            .then(|| error_adapter(node, source))
+            .flatten();
         if tail
             && self.cx.returns_result
+            && adapted.is_none()
             && let Some(call) = self.calls.get_mut(index)
         {
             call.propagates = true;
@@ -761,6 +747,45 @@ impl Builder<'_, '_, '_> {
                 _ => text(arg, source).to_owned(),
             };
             self.record(written, handoff, handoff_mode, Some(index), arg, steps);
+        }
+        if let Some(adapted) = adapted {
+            steps.push(adapted_failure(adapted));
+        }
+    }
+
+    /// What the `function` of a call names: a method on its receiver, which is walked
+    /// first, a closure stored under that name, or a path.
+    fn call_target(&mut self, function: Node<'_>, steps: &mut Vec<Step>) -> Option<CallTarget> {
+        let source = self.file.source;
+        match function.kind() {
+            "field_expression" => {
+                if let Some(receiver) = function.child_by_field_name("value") {
+                    self.expr(receiver, false, steps);
+                }
+                function
+                    .child_by_field_name("field")
+                    .map(|field| CallTarget::Method {
+                        name: text(field, source).to_owned(),
+                        receiver: function
+                            .child_by_field_name("value")
+                            .and_then(|v| self.receiver(v)),
+                    })
+            }
+            _ => path_segments(function, source).map(|segments| match segments.as_slice() {
+                [name] if self.stored_closures.contains_key(name) => self
+                    .stored_closures
+                    .get(name)
+                    .map_or(CallTarget::Path(segments.clone()), |path| {
+                        CallTarget::Closure(path.clone())
+                    }),
+                // `T::make()` for a `T: Factory` dispatches through `Factory`.
+                [ty, name] if self.generics.contains_key(ty) => {
+                    let mut path = self.substitute(vec![ty.clone()]);
+                    path.push(name.clone());
+                    CallTarget::Path(path)
+                }
+                _ => CallTarget::Path(segments),
+            }),
         }
     }
 
@@ -1047,11 +1072,66 @@ fn error_label(err: Node<'_>, source: &[u8]) -> String {
         .child_by_field_name("arguments")
         .and_then(|a| a.named_child(0))
         .map_or_else(|| label(err, source), |v| label(v, source));
-    let mut value = value.as_str();
+    unconverted(&value)
+}
+
+/// An error value without a trailing conversion: `"user".into()` → `"user"`.
+fn unconverted(value: &str) -> String {
+    let mut value = value;
     for conversion in [".into()", ".to_string()", ".to_owned()"] {
         value = value.strip_suffix(conversion).unwrap_or(value);
     }
     value.replace(".into())", ")")
+}
+
+/// What fails, and the error it fails with, where a call turns a failure into a named
+/// error: `x.ok_or(E)`, `x.ok_or_else(|| E)`, `x.map_err(|_| E)`, `x.context(E)`.
+struct Adapted {
+    failing: String,
+    error: String,
+}
+
+/// `user.ok_or(AppError::NotFound("user"))` → `user is None` fails with
+/// `AppError::NotFound("user")`. `None` for any other call, and for an adapter that
+/// takes a function rather than the error itself, as `map_err(AppError::from)` does:
+/// that names a conversion, not an error.
+fn error_adapter(call: Node<'_>, source: &[u8]) -> Option<Adapted> {
+    let function = call
+        .child_by_field_name("function")
+        .filter(|f| f.kind() == "field_expression")?;
+    let method = text(function.child_by_field_name("field")?, source);
+    let (failing, takes_closure) = match method {
+        "ok_or" => ("is None", false),
+        "ok_or_else" => ("is None", true),
+        "context" => ("fails", false),
+        "map_err" | "with_context" => ("fails", true),
+        _ => return None,
+    };
+    let receiver = function.child_by_field_name("value")?;
+    let argument = call.child_by_field_name("arguments")?.named_child(0)?;
+    // What a closure gives back is the error.
+    let value = match argument.kind() {
+        "closure_expression" => argument.child_by_field_name("body")?,
+        _ if takes_closure => return None,
+        _ => argument,
+    };
+    // A chain written over several lines reads as one.
+    let receiver = label(receiver, source).replace(" .", ".");
+    Some(Adapted {
+        failing: format!("{receiver} {failing}"),
+        error: unconverted(&label(value, source)),
+    })
+}
+
+/// The function ends with an adapter's error when what it adapts fails.
+fn adapted_failure(adapted: Adapted) -> Step {
+    Step::Branch {
+        guard: Some(adapted.failing),
+        arms: vec![
+            arm("err", vec![exit(ExitKind::Error, Some(adapted.error))]),
+            arm("ok", Vec::new()),
+        ],
+    }
 }
 
 fn arm(label: &str, body: Vec<Step>) -> Arm {

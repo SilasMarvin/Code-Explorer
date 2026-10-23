@@ -7,6 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
     path::Path,
+    sync::Arc,
 };
 
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
@@ -15,7 +16,7 @@ use bevy_egui::{
     PrimaryEguiContext, egui,
 };
 use codeviz_core::{Change, Level, SpanTarget};
-use codeviz_ir::{ExitKind, Role, UnitId};
+use codeviz_ir::{ExitKind, UnitId};
 
 use crate::{
     actions::{self, Place, Request, Requests, Toast},
@@ -26,7 +27,9 @@ use crate::{
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{self, Measure, Source},
     peek::{self, Code, Peek, Sources},
+    routes::Start,
     scene::{PALETTE, accent, lane_color},
+    search::{self, Search},
     source_diff,
 };
 
@@ -104,16 +107,6 @@ fn fallback_fonts(mut contexts: EguiContexts, mut done: Local<bool>) -> Result {
 /// Whether the key reference is showing.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct KeyHelp(pub(crate) bool);
-
-#[derive(Resource, Debug, Default)]
-struct Search {
-    query: String,
-    /// The row Up and Down move and Enter opens.
-    highlight: usize,
-    /// What the query last found, best first, and the query and focus it found it
-    /// for: ranking every function takes too long to do each frame in a big codebase.
-    found: Option<(String, Option<usize>, Vec<Candidate>)>,
-}
 
 const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 const LINK: egui::Color32 = egui::Color32::from_rgb(160, 190, 230);
@@ -221,12 +214,13 @@ fn draw_ui(
             )
         };
         if chrome.search && !chrome.bare {
-            search_box(
+            search::search_box(
                 ctx,
                 graph_area,
                 &mut explorer,
                 &mut search,
                 &mut chrome.search,
+                time.elapsed_secs(),
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
@@ -305,7 +299,7 @@ fn panels(
                     }
                     if ui
                         .selectable_label(chrome.search, "Search")
-                        .on_hover_text("Find a function (/)")
+                        .on_hover_text("Find a function, or where an error is raised (/)")
                         .clicked()
                     {
                         chrome.search = !chrome.search;
@@ -548,310 +542,6 @@ fn journeys(ui: &mut egui::Ui, explorer: &mut Explorer) {
     }
 }
 
-/// A function search can find.
-#[derive(Debug)]
-struct Candidate {
-    id: UnitId,
-    /// What the graph calls it, without what tells it apart.
-    name: String,
-    /// Its own part of that: `closure 3` of `draw › closure 3`.
-    own: String,
-    /// Where it lives: `codeviz_core.system.System`.
-    place: String,
-    /// The route or command an entry point is reached by.
-    route: Option<String>,
-    kind: String,
-    /// Whether it is nested in another function, as a closure is, and so lives on
-    /// that function's node.
-    nested: bool,
-    /// Calls between it and the focus, more for what is further or out of reach.
-    distance: u32,
-    /// How many functions call it.
-    callers: usize,
-}
-
-/// What search knows of every function beyond its name, gathered once per query.
-struct Census<'a> {
-    explorer: &'a Explorer,
-    /// How many nodes call each node.
-    callers: Vec<usize>,
-    routes: HashMap<&'a UnitId, &'a str>,
-}
-
-impl<'a> Census<'a> {
-    fn new(explorer: &'a Explorer) -> Self {
-        let mut callers = vec![0; explorer.map().tiles.len()];
-        for &(from, to) in &explorer.graph().calls {
-            if from != to
-                && let Some(count) = callers.get_mut(to)
-            {
-                *count += 1;
-            }
-        }
-        let routes = explorer
-            .system()
-            .entries()
-            .iter()
-            .map(|e| (&e.unit, e.label.as_str()))
-            .collect();
-        Self {
-            explorer,
-            callers,
-            routes,
-        }
-    }
-
-    fn candidate(&self, unit: &codeviz_ir::Unit) -> Candidate {
-        let explorer = self.explorer;
-        let path = explorer.unit_path(&unit.id);
-        let tile = explorer.map().tile_of(&unit.id);
-        Candidate {
-            id: unit.id.clone(),
-            name: path.short(),
-            own: path.own().to_owned(),
-            place: path.container(),
-            route: self.routes.get(&unit.id).map(|&route| route.to_owned()),
-            kind: unit.kind.clone(),
-            nested: unit
-                .parent
-                .as_ref()
-                .and_then(|p| explorer.any_unit(p))
-                .is_some_and(|p| p.role == Role::Invocable),
-            distance: tile.map_or(u32::MAX, |tile| distance(explorer, tile)),
-            callers: tile
-                .and_then(|tile| self.callers.get(tile))
-                .copied()
-                .unwrap_or_default(),
-        }
-    }
-}
-
-/// How far a node is from the focus: the calls between them either way, else a step
-/// past any of those for one in the focus's module, else further still.
-fn distance(explorer: &Explorer, tile: usize) -> u32 {
-    const MODULE: u32 = 50;
-    let Some(focus) = explorer.graph_focus() else {
-        return MODULE + 1;
-    };
-    if tile == focus {
-        return 0;
-    }
-    let hops = explorer.reach().and_then(|reach| {
-        [reach.upstream.get(&tile), reach.downstream.get(&tile)]
-            .into_iter()
-            .flatten()
-            .min()
-            .copied()
-    });
-    let graph = explorer.graph();
-    match hops {
-        Some(hops) => hops.min(MODULE - 1),
-        None if graph.cluster(tile) == graph.cluster(focus) => MODULE,
-        None => MODULE + 1,
-    }
-}
-
-/// The candidates `query` finds, best first: by how well it matches, then nearest the
-/// focus, then most called. A closure lives on its function's node, so a search that
-/// only finds its function's name wants the function: closures come up only when the
-/// query names them, `closure` or a nested function's own name, and then after the
-/// functions that are not nested.
-fn search_order(query: &str, candidates: &[Candidate]) -> Vec<usize> {
-    let mut found: Vec<(bool, u8, u32, std::cmp::Reverse<usize>, usize, usize)> = candidates
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| !c.nested || names_own(query, &c.own))
-        .filter_map(|(index, c)| {
-            let by_name = search_rank(query, c.id.as_str(), &c.name);
-            let by_route = c
-                .route
-                .as_deref()
-                .and_then(|route| search_rank(query, "", route));
-            let rank = by_name.into_iter().chain(by_route).min()?;
-            Some((
-                c.nested,
-                rank,
-                c.distance,
-                std::cmp::Reverse(c.callers),
-                c.name.len(),
-                index,
-            ))
-        })
-        .collect();
-    found.sort_by(|a, b| {
-        a.cmp(b)
-            .then_with(|| candidates[a.5].name.cmp(&candidates[b.5].name))
-    });
-    found.into_iter().map(|f| f.5).collect()
-}
-
-/// Whether a word of `query` is in `own`, a nested function's own name.
-fn names_own(query: &str, own: &str) -> bool {
-    let own = own.to_lowercase();
-    query
-        .to_lowercase()
-        .split(|c: char| c == '.' || c == ':' || c == '›' || c.is_whitespace())
-        .any(|word| !word.is_empty() && own.contains(word))
-}
-
-/// What `query` finds, best first: with no query, the entry points by route.
-fn search_rows(explorer: &Explorer, query: &str) -> Vec<Candidate> {
-    let system = explorer.system();
-    let census = Census::new(explorer);
-    if query.trim().is_empty() {
-        let mut entries: Vec<Candidate> = system
-            .entries()
-            .iter()
-            .filter_map(|e| explorer.any_unit(&e.unit))
-            .map(|unit| census.candidate(unit))
-            .collect();
-        entries.sort_by(|a, b| a.route.cmp(&b.route));
-        entries.dedup_by(|a, b| a.id == b.id);
-        return entries;
-    }
-    let candidates: Vec<Candidate> = system
-        .units()
-        .filter(|u| u.role == Role::Invocable)
-        .map(|unit| census.candidate(unit))
-        .collect();
-    let order = search_order(query, &candidates);
-    let mut candidates: Vec<Option<Candidate>> = candidates.into_iter().map(Some).collect();
-    order
-        .into_iter()
-        .take(200)
-        .filter_map(|index| candidates[index].take())
-        .collect()
-}
-
-/// A box to find a function by name, over the top of the graph: Up and Down pick a
-/// row, Enter or a click opens it, Escape closes the box. Each row names the function
-/// as the graph does, with where it lives after it.
-fn search_box(
-    ctx: &egui::Context,
-    area: egui::Rect,
-    explorer: &mut Explorer,
-    search: &mut Search,
-    open: &mut bool,
-) {
-    let focus = explorer.graph_focus();
-    if search
-        .found
-        .as_ref()
-        .is_none_or(|(query, at, _)| *query != search.query || *at != focus)
-    {
-        let rows = search_rows(explorer, &search.query);
-        search.found = Some((search.query.clone(), focus, rows));
-        search.highlight = 0;
-    }
-    let rows = search
-        .found
-        .as_ref()
-        .map_or(&[][..], |(_, _, rows)| rows.as_slice());
-    let mut chosen = None;
-    egui::Area::new("search".into())
-        .pivot(egui::Align2::CENTER_TOP)
-        .fixed_pos(egui::pos2(area.center().x, area.min.y + 10.0))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 240))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
-                .corner_radius(8.0)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.set_width(460.0);
-                    // Taken before the field sees them, which would move its caret.
-                    let (up, down) = ui.input_mut(|i| {
-                        (
-                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-                        )
-                    });
-                    let last = rows.len().saturating_sub(1);
-                    if down {
-                        search.highlight = (search.highlight + 1).min(last);
-                    }
-                    if up {
-                        search.highlight = search.highlight.saturating_sub(1);
-                    }
-                    search.highlight = search.highlight.min(last);
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut search.query)
-                            .hint_text("search functions…")
-                            .desired_width(f32::INFINITY),
-                    );
-                    field.request_focus();
-                    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        chosen = rows.get(search.highlight).map(|row| row.id.clone());
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        *open = false;
-                    }
-                    if rows.is_empty() {
-                        ui.label(egui::RichText::new("no function matches").color(MUTED));
-                    }
-                    egui::ScrollArea::vertical()
-                        .id_salt("units")
-                        .max_height(280.0)
-                        .show(ui, |ui| {
-                            for (index, row) in rows.iter().enumerate() {
-                                let highlighted = index == search.highlight;
-                                let response = search_row(ui, explorer, row, highlighted);
-                                if highlighted && (up || down) {
-                                    response.scroll_to_me(None);
-                                }
-                                if response.clicked() {
-                                    chosen = Some(row.id.clone());
-                                }
-                            }
-                        });
-                });
-        });
-    if let Some(id) = chosen {
-        match explorer.map().tile_of(&id) {
-            Some(tile) => explorer.open_at(tile),
-            None => explorer.set_root(id),
-        }
-        *open = false;
-    }
-}
-
-/// One search result: its name, an entry point's route, where it lives and its kind,
-/// muted, all one row to click.
-fn search_row(
-    ui: &mut egui::Ui,
-    explorer: &Explorer,
-    row: &Candidate,
-    highlighted: bool,
-) -> egui::Response {
-    let font = egui::FontId::proportional(13.0);
-    let small = egui::FontId::proportional(11.5);
-    let mut job = egui::text::LayoutJob::default();
-    let text = |color| egui::TextFormat {
-        font_id: font.clone(),
-        color,
-        ..default()
-    };
-    let muted = |color| egui::TextFormat {
-        font_id: small.clone(),
-        color,
-        valign: egui::Align::Center,
-        ..default()
-    };
-    job.append(&row.name, 0.0, text(egui::Color32::WHITE));
-    if let Some(route) = &row.route {
-        job.append(route, 8.0, muted(egui::Color32::from_rgb(200, 205, 216)));
-    }
-    if !row.place.is_empty() {
-        job.append(&row.place, 8.0, muted(MUTED));
-    }
-    job.append(&row.kind, 8.0, muted(MUTED.gamma_multiply(0.7)));
-    job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width());
-    let full = explorer.unit_path(&row.id).full();
-    ui.add(egui::Button::selectable(highlighted, job).frame_when_inactive(highlighted))
-        .on_hover_text(full)
-}
-
 /// How many places to start the card offers.
 const STARTS_SHOWN: usize = 6;
 
@@ -971,36 +661,6 @@ fn outcomes(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if let Some(scenario) = chosen {
         explorer.set_scenario(scenario);
     }
-}
-
-/// How well `query` finds a function, best first, or `None` when it does not: its
-/// name exactly, then its name's start, then anywhere in its path, then each word of
-/// the query in order along the path. `.` and `::` are the same, so `orders.place`
-/// finds `services::orders::place`.
-fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
-    let normal = |text: &str| text.to_lowercase().replace("::", ".").replace(" › ", ".");
-    let query = normal(query.trim());
-    let name = normal(name);
-    // The path without its producer's prefix, as in `rust:`.
-    let path = normal(id.split_once(':').map_or(id, |(_, path)| path));
-    if name == query || path == query || path.ends_with(&format!(".{query}")) {
-        return Some(0);
-    }
-    if name.starts_with(&query) || name.contains(&format!(".{query}")) {
-        return Some(1);
-    }
-    if path.contains(&query) || name.contains(&query) {
-        return Some(2);
-    }
-    let mut rest = path.as_str();
-    for word in query
-        .split(|c: char| c == '.' || c.is_whitespace())
-        .filter(|w| !w.is_empty())
-    {
-        let at = rest.find(word)?;
-        rest = &rest[at + word.len()..];
-    }
-    Some(3)
 }
 
 /// The caller's source around the line that made the selected call; for the root,
@@ -1836,11 +1496,23 @@ fn draw_graph_labels(
     let hovered = explorer.hovered_tile;
     let reach = explorer.reach();
     let related = |tile: usize| reach.and_then(|r| relation(r, tile));
-    let spotlit = explorer.spotlit();
+    let spotlit = explorer.spotlit_hops();
     let crowded = spotlit.len() > SPOTLIGHT_NAMES;
     let named_first: HashSet<usize> = spotlit_in_order(explorer)
         .into_iter()
         .take(SPOTLIGHT_NAMES)
+        .collect();
+    // Where the spotlight's routes start, and what reaches the focus from there.
+    let starts = match (explorer.spotlight(), explorer.graph_focus()) {
+        (Some(spotlight), Some(focus)) if spotlight.side == Side::Callers => {
+            explorer.route_starts(focus)
+        }
+        _ => Arc::default(),
+    };
+    let route_starts: Vec<usize> = starts
+        .iter()
+        .map(|s| s.tile)
+        .filter(|t| spotlit.contains_key(t))
         .collect();
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
@@ -1897,7 +1569,7 @@ fn draw_graph_labels(
             _ if center == Some(tile) => 0,
             // What the pointer is over, and what the spotlight picks out, is named,
             // whatever else would be.
-            _ if hovered == Some(tile) || spotlit.contains(&tile) => 1,
+            _ if hovered == Some(tile) || spotlit.contains_key(&tile) => 1,
             // Where the codebase starts is named while nothing is in focus, the
             // entries that reach the most at least.
             _ if center.is_none() && first_entries.contains(&tile) => 1,
@@ -1980,6 +1652,7 @@ fn draw_graph_labels(
         "starts",
         "spotlight",
         "peek",
+        "routes",
     ]
     .into_iter()
     .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
@@ -2042,19 +1715,23 @@ fn draw_graph_labels(
                 let Some((node, edge)) = discs[tile] else {
                     continue;
                 };
-                // The focus is named come what may, and what the spotlight picks out
-                // too while it is few. Of a hub's many neighbors, the first fan out to
-                // find room and the rest are named only where there is some; the
-                // spotlight's card lists them all.
-                // What the pointer is over is named come what may too.
-                let insist =
-                    if tier == 0 || hovered == Some(tile) || spotlit.contains(&tile) && !crowded {
-                        Insist::Always
-                    } else if named_first.contains(&tile) {
-                        Insist::FanOut
-                    } else {
-                        Insist::No
-                    };
+                // The focus, what the pointer is over and where the spotlight's routes
+                // start are named come what may, and what the spotlight picks out next
+                // to the focus too while it is few. Of a hub's many neighbors, the first
+                // fan out to find room and the rest are named only where there is some;
+                // the spotlight's card lists them all.
+                let next_to = spotlit.get(&tile) == Some(&1);
+                let insist = if tier == 0
+                    || hovered == Some(tile)
+                    || route_starts.contains(&tile)
+                    || next_to && !crowded
+                {
+                    Insist::Always
+                } else if named_first.contains(&tile) {
+                    Insist::FanOut
+                } else {
+                    Insist::No
+                };
                 if names >= MAX_NAMES && insist == Insist::No {
                     continue;
                 }
@@ -2122,14 +1799,21 @@ fn draw_graph_labels(
                 .filter_map(|(on, mark)| on.then_some(mark))
                 .collect();
                 // An entry point says how it is reached, after its name, unless that
-                // only says its name again.
+                // only says its name again; the focus says where its routes start, once
+                // they are picked out.
                 let route = entry_label(explorer, tile)
                     .filter(|route| !route.to_lowercase().contains(&name.to_lowercase()))
                     .map(str::to_owned);
-                let aside = [route, aside, (!marks.is_empty()).then(|| marks.join(" · "))]
-                    .into_iter()
-                    .flatten()
-                    .reduce(|a, b| format!("{a} · {b}"));
+                let routes = (tier == 0 && !starts.is_empty()).then(|| reached_from(&starts));
+                let aside = [
+                    route,
+                    aside,
+                    routes,
+                    (!marks.is_empty()).then(|| marks.join(" · ")),
+                ]
+                .into_iter()
+                .flatten()
+                .reduce(|a, b| format!("{a} · {b}"));
                 // A node the journey runs leads with its place in it, as its bar does.
                 let order = journey
                     .get(&tile)
@@ -2167,10 +1851,8 @@ fn draw_graph_labels(
                     _ if tier == 0 => Some(egui::Color32::from_white_alpha(140)),
                     Some(Relation::Upstream(1)) => Some(egui_color(CALLER)),
                     Some(Relation::Downstream(1)) => Some(egui_color(CALLEE)),
-                    _ if spotlit.contains(&tile) => Some(egui_color(match explorer.spotlight() {
-                        Some((Side::Callers, _)) => CALLER,
-                        _ => CALLEE,
-                    })),
+                    // Where a route starts is ringed pale, as its node is.
+                    _ if route_starts.contains(&tile) => Some(egui_color(graph_view::FURTHER)),
                     _ => None,
                 };
                 // What is gone is struck through, which reads at any size.
@@ -2200,20 +1882,25 @@ fn rough(radius: f32) -> usize {
     size
 }
 
-/// What the spotlight picks out, most telling first: the focus's calls in the order
-/// it makes them, or its callers with the most calls of their own first.
+/// What the spotlight picks out, most telling first: nearest the focus first, then
+/// the focus's calls in the order it makes them, or its callers with the most calls
+/// of their own first.
 fn spotlit_in_order(explorer: &Explorer) -> Vec<usize> {
+    let hops = explorer.spotlit_hops();
     let mut spotlit = explorer.spotlit();
-    let (Some((side, _)), Some(focus)) = (explorer.spotlight(), explorer.graph_focus()) else {
+    let (Some(spotlight), Some(focus)) = (explorer.spotlight(), explorer.graph_focus()) else {
         return spotlit;
     };
     let graph = explorer.graph();
-    match side {
+    let near = |tile: usize| hops.get(&tile).copied().unwrap_or(u32::MAX);
+    match spotlight.side {
         Side::Callees => {
             let first = |tile: usize| graph.sequence(focus).iter().position(|&t| t == tile);
-            spotlit.sort_by_key(|&t| (first(t).unwrap_or(usize::MAX), t));
+            spotlit.sort_by_key(|&t| (near(t), first(t).unwrap_or(usize::MAX), t));
         }
-        Side::Callers => spotlit.sort_by_key(|&t| (std::cmp::Reverse(graph.degree(t)), t)),
+        Side::Callers => {
+            spotlit.sort_by_key(|&t| (near(t), std::cmp::Reverse(graph.degree(t)), t));
+        }
     }
     spotlit
 }
@@ -2225,7 +1912,7 @@ fn spotlight_card(
     area: egui::Rect,
     explorer: &mut Explorer,
 ) -> Option<egui::Rect> {
-    let (side, _) = explorer.spotlight()?;
+    let side = explorer.spotlight()?.side;
     let spotlit = spotlit_in_order(explorer);
     if spotlit.len() <= SPOTLIGHT_NAMES {
         return None;
@@ -2303,9 +1990,11 @@ fn spotlight_card(
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
-/// calls (O), each in the color its links are drawn in. A button puts its side in the
-/// spotlight, which frames everything it picks out. The name says what those keys, and
-/// Enter, act on: the focus moves with the journey's cursor.
+/// calls (O), each in the color its links are drawn in, and how far the spotlight
+/// reaches on it. A button puts its side in the spotlight, a call further with each
+/// press, which frames everything it picks out. Then where the routes into the focus
+/// start (Shift I), which picks out every one of them. The name says what those keys,
+/// and Enter, act on: the focus moves with the journey's cursor.
 fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
     let Some(focus) = explorer.graph_focus() else {
         return;
@@ -2318,19 +2007,48 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
         .collect();
     called.sort_unstable();
     called.dedup();
-    let lit = explorer.spotlight().map(|(side, _)| side);
+    let spotlight = explorer.spotlight();
+    let picked = explorer.spotlit().len();
+    let starts = explorer.route_starts(focus);
     let mut pressed = None;
     ui.horizontal(|ui| {
+        if !starts.is_empty() {
+            let all = spotlight.is_some_and(|s| s.side == Side::Callers && s.reach.is_none());
+            let text = egui::RichText::new(format!("↑ {}", reached_from(&starts)));
+            if ui
+                .add(egui::Button::selectable(all, text))
+                .on_hover_text(
+                    "Every route into it, from the entry points down; pick one, or A, to \
+                     follow it (Shift I)",
+                )
+                .clicked()
+            {
+                pressed = Some((Side::Callers, true));
+            }
+        }
         for (side, count, noun, key, color) in [
             (Side::Callers, calling, "caller", "I", CALLER),
             (Side::Callees, called.len(), "call", "O", CALLEE),
         ] {
             let plural = if count == 1 { "" } else { "s" };
-            let text = egui::RichText::new(format!("● {count} {noun}{plural}  {key}"))
+            let lit = spotlight.filter(|s| s.side == side);
+            // How far the spotlight reaches past the direct ones.
+            let extent = match lit.map(|s| s.reach) {
+                Some(None) if picked > count => format!(" · all {picked}"),
+                Some(Some(reach)) if reach > 1 => format!(" · {picked} within {reach}"),
+                _ => String::new(),
+            };
+            let text = egui::RichText::new(format!("● {count} {noun}{plural}{extent}  {key}"))
                 .color(egui_color(color));
             let mut hint = match side {
-                Side::Callers => "Pick out what calls it, and bring it all into view (I)",
-                Side::Callees => "Pick out what it calls, and bring it all into view (O)",
+                Side::Callers => {
+                    "Pick out what calls it, then two calls up, then every route in, and bring \
+                     it all into view (I; Shift I all the way)"
+                }
+                Side::Callees => {
+                    "Pick out what it calls, then two calls down, then everything it runs, and \
+                     bring it all into view (O; Shift O all the way)"
+                }
             }
             .to_owned();
             let guessed = explorer.guessed_neighbors(focus, side);
@@ -2341,11 +2059,11 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
                 );
             }
             if ui
-                .add_enabled(count > 0, egui::Button::selectable(lit == Some(side), text))
+                .add_enabled(count > 0, egui::Button::selectable(lit.is_some(), text))
                 .on_hover_text(hint)
                 .clicked()
             {
-                pressed = Some(side);
+                pressed = Some((side, false));
             }
         }
         ui.label(
@@ -2356,14 +2074,128 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
         .on_hover_text("The focus: what I, O and Enter act on. It moves with the journey's cursor");
         ui.label(egui::RichText::new("focus").small().color(MUTED));
     });
-    if let Some(side) = pressed {
-        explorer.toggle_spotlight(side, now);
+    match pressed {
+        Some((side, true)) => explorer.spotlight_all(side, now),
+        Some((side, false)) => explorer.widen_spotlight(side, now),
+        None => {}
     }
 }
 
-/// The cards down the graph's top left, each under the one before: where to start or
-/// the spotlight's list, then the focus's source. Returns where the last went, for the
-/// camera chip to go under.
+/// `reached from 3 entries`, or from the functions nothing calls when no declared
+/// entry reaches it.
+fn reached_from(starts: &[Start]) -> String {
+    let entries = starts.iter().filter(|s| s.declared).count();
+    let uncalled = starts.len() - entries;
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    match (entries, uncalled) {
+        (0, 0) => "reached from nowhere".to_owned(),
+        (0, _) => format!(
+            "reached from {}",
+            plural(
+                uncalled,
+                "function nothing calls",
+                "functions nothing calls"
+            )
+        ),
+        (_, 0) => format!("reached from {}", plural(entries, "entry", "entries")),
+        _ => format!(
+            "reached from {} and {} nothing calls",
+            plural(entries, "entry", "entries"),
+            plural(uncalled, "function", "functions")
+        ),
+    }
+}
+
+/// Where the routes into the focus start, while its callers are in the spotlight:
+/// top left of the graph. A row opens that start's journey with its cursor on the
+/// focus.
+fn routes_card(
+    ctx: &egui::Context,
+    area: egui::Rect,
+    explorer: &mut Explorer,
+) -> Option<egui::Rect> {
+    let (Some(spotlight), Some(focus)) = (explorer.spotlight(), explorer.graph_focus()) else {
+        return None;
+    };
+    if spotlight.side != Side::Callers {
+        return None;
+    }
+    let starts = explorer.route_starts(focus);
+    if starts.is_empty() {
+        return None;
+    }
+    let root = explorer.root().and_then(|u| explorer.map().tile_of(u));
+    let mut chosen = None;
+    let shown = egui::Area::new("routes".into())
+        .pivot(egui::Align2::LEFT_TOP)
+        .fixed_pos(egui::pos2(area.min.x + 12.0, area.min.y + 10.0))
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 225))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_max_width(320.0);
+                    let title = reached_from(&starts);
+                    let mut title = title.chars();
+                    let title: String = title
+                        .next()
+                        .map(|c| c.to_uppercase().chain(title).collect())
+                        .unwrap_or_default();
+                    ui.label(egui::RichText::new(title).strong().size(14.0));
+                    ui.label(
+                        egui::RichText::new("pick one, or A, to follow its journey here")
+                            .small()
+                            .color(MUTED),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(area.height() * 0.4)
+                        .show(ui, |ui| {
+                            for start in starts.iter() {
+                                let shown = spotlight.holds(start.hops);
+                                let calls = if start.hops == 1 { "call" } else { "calls" };
+                                let mut job = egui::text::LayoutJob::default();
+                                let format = |color, size| egui::TextFormat {
+                                    font_id: egui::FontId::proportional(size),
+                                    color,
+                                    ..default()
+                                };
+                                let color = if shown {
+                                    egui::Color32::WHITE
+                                } else {
+                                    egui::Color32::from_rgb(190, 196, 210)
+                                };
+                                job.append(&short(&start.label, 40), 0.0, format(color, 13.0));
+                                job.append(
+                                    &format!("{} {calls}", start.hops),
+                                    8.0,
+                                    format(MUTED, 11.5),
+                                );
+                                if ui
+                                    .selectable_label(root == Some(start.tile), job)
+                                    .on_hover_text(format!(
+                                        "Open the journey from here, with the cursor on {}",
+                                        node_name(explorer, focus)
+                                    ))
+                                    .clicked()
+                                {
+                                    chosen = Some(start.tile);
+                                }
+                            }
+                        });
+                });
+        });
+    if let Some(start) = chosen {
+        explorer.follow_route(start);
+    }
+    Some(shown.response.rect)
+}
+
+/// The cards down the graph's top left, each under the one before: where to start, or
+/// where the routes into the focus start and the spotlight's list; then the focus's
+/// source. Returns where the last went, for the camera chip to go under.
 fn corner_cards(
     ctx: &egui::Context,
     area: egui::Rect,
@@ -2373,18 +2205,21 @@ fn corner_cards(
     code: &mut Code<'_>,
     (peek, diff): (&mut bool, Option<&DiffView>),
 ) -> Option<egui::Rect> {
-    let card = if *start {
+    let below = |card: Option<egui::Rect>| {
+        card.map_or(area, |card| {
+            egui::Rect::from_min_max(egui::pos2(area.min.x, card.max.y), area.max)
+        })
+    };
+    let mut card = if *start {
         start_card(ctx, area, explorer, start, panel)
     } else {
-        spotlight_card(ctx, area, explorer)
+        let routes = routes_card(ctx, area, explorer);
+        spotlight_card(ctx, below(routes), explorer).or(routes)
     };
-    if !*peek {
-        return card;
+    if *peek {
+        card = peek::draw(ctx, below(card), explorer, diff, code, peek).or(card);
     }
-    let below = card.map_or(area, |card| {
-        egui::Rect::from_min_max(egui::pos2(area.min.x, card.max.y), area.max)
-    });
-    peek::draw(ctx, below, explorer, diff, code, peek).or(card)
+    card
 }
 
 /// Says the camera has been panned or zoomed away and no longer follows the journey,
@@ -2540,8 +2375,23 @@ const KEYS: [&[Group]; 4] = [
     &[(
         "Graph",
         &[
-            ("I", "pick out what calls the focus, and show it all"),
-            ("O", "pick out what the focus calls, and show it all"),
+            (
+                "I",
+                "what calls the focus, then 2 calls up, then all, then off",
+            ),
+            (
+                "Shift I",
+                "every route into the focus, from its entry points",
+            ),
+            (
+                "A  Shift A",
+                "follow the next / previous route into the focus",
+            ),
+            (
+                "O",
+                "what the focus calls, then 2 calls down, then all, then off",
+            ),
+            ("Shift O", "everything the focus can run"),
             ("U", "count calls guessed by name, or leave them out"),
             ("1 – 9", "open the call with that number"),
             ("Backspace  Alt ←", "back to the view before"),
@@ -2581,7 +2431,7 @@ const KEYS: [&[Group]; 4] = [
                 ("M", "swap graph and journey"),
                 ("S", "show or hide the side panel"),
                 ("B", "show or hide the focus's source"),
-                ("/", "search for a function; ↑ ↓ pick, Enter opens"),
+                ("/", "search functions, errors, conditions, calls"),
                 ("W", "show or hide where to start"),
                 ("H", "this list"),
             ],
@@ -2652,7 +2502,7 @@ fn tail(path: &str) -> String {
 }
 
 /// `text` cut to `max` characters, with an ellipsis when it was cut.
-fn short(text: &str, max: usize) -> String {
+pub(crate) fn short(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_owned(),
@@ -2692,109 +2542,6 @@ mod tests {
             .and_then(|labels| labels.get(&Named::Node(0)).cloned())
             .unwrap_or_else(|| panic!("the label was not remembered"));
         (shown.side, shown.offset)
-    }
-
-    #[test]
-    fn search_reads_dots_as_paths() {
-        let place = |query| {
-            search_rank(
-                query,
-                "rust:axum_server::services::orders::place",
-                "orders.place",
-            )
-        };
-        assert_eq!(place("orders.place"), Some(0), "as the graph names it");
-        assert_eq!(place("orders::place"), Some(0), "as Rust writes it");
-        assert_eq!(place("ord"), Some(1));
-        assert_eq!(place("services.orders"), Some(2));
-        assert_eq!(
-            place("server place"),
-            Some(3),
-            "words in order along the path"
-        );
-        assert_eq!(place("place orders"), None, "but not out of order");
-        assert_eq!(place("quote"), None);
-    }
-
-    fn candidate(id: &str, own: &str, nested: bool, distance: u32, callers: usize) -> Candidate {
-        let (place, _) = id.rsplit_once("::").unwrap_or_default();
-        let name = if nested {
-            format!("{} › {own}", place.rsplit("::").next().unwrap_or_default())
-        } else {
-            own.to_owned()
-        };
-        Candidate {
-            id: UnitId::new(format!("rust:{id}")),
-            name,
-            own: own.to_owned(),
-            place: place.replace("::", "."),
-            route: None,
-            kind: "fn".to_owned(),
-            nested,
-            distance,
-            callers,
-        }
-    }
-
-    fn found(query: &str, candidates: &[Candidate]) -> Vec<String> {
-        search_order(query, candidates)
-            .into_iter()
-            .map(|index| {
-                candidates[index]
-                    .id
-                    .as_str()
-                    .trim_start_matches("rust:")
-                    .to_owned()
-            })
-            .collect()
-    }
-
-    #[test]
-    fn search_leaves_closures_out_unless_asked_for() {
-        let candidates = [
-            candidate("ui::draw_graph_labels", "draw_graph_labels", false, 9, 1),
-            candidate(
-                "ui::draw_graph_labels::{closure#3}",
-                "closure 3",
-                true,
-                9,
-                0,
-            ),
-            candidate("ui::draw_ui", "draw_ui", false, 9, 1),
-        ];
-        assert_eq!(
-            found("draw", &candidates),
-            ["ui::draw_ui", "ui::draw_graph_labels"],
-            "a closure lives on its function's node"
-        );
-        assert_eq!(
-            found("draw closure", &candidates),
-            ["ui::draw_graph_labels::{closure#3}"]
-        );
-        assert_eq!(
-            found("draw_graph_labels › closure 3", &candidates),
-            ["ui::draw_graph_labels::{closure#3}"],
-            "as the screen names it"
-        );
-    }
-
-    #[test]
-    fn search_puts_what_is_near_the_focus_first_then_what_is_most_called() {
-        let candidates = [
-            candidate("core::system::System::new", "new", false, 51, 30),
-            candidate("viewer::Viewer::new", "new", false, 51, 2),
-            candidate("viewer::explorer::Explorer::new", "new", false, 1, 0),
-            candidate("viewer::names::Names::newest", "newest", false, 0, 0),
-        ];
-        assert_eq!(
-            found("new", &candidates),
-            [
-                "viewer::explorer::Explorer::new",
-                "core::system::System::new",
-                "viewer::Viewer::new",
-                "viewer::names::Names::newest",
-            ]
-        );
     }
 
     #[test]

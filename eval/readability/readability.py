@@ -46,6 +46,7 @@ ASPECTS = {
     "fails": "failure",
     "conditional": "condition",
     "callers": "callers",
+    "starts": "routes",
     "module": "link",
     "added": "diff",
     "removed": "diff",
@@ -222,6 +223,14 @@ def quiz(truth):
         )
     if truth["callers"] and len(truth["callers"]) <= 8:
         ask("callers", "What calls the examined function?", "set", truth["callers"])
+    spotlight = truth.get("spotlight") or {}
+    if spotlight.get("starts"):
+        ask(
+            "starts",
+            "Which entry points reach the examined function, directly or through other functions?",
+            "set",
+            names(spotlight["starts"]),
+        )
     changes = truth["changes"]
     if changes is not None:
         ask("added", "Which functions are new in this change? Answer an empty list if none.", "set", changes["added"])
@@ -239,7 +248,7 @@ def names(calls):
     return [c["name"] for c in calls]
 
 
-PRIMER = """How to read this tool: each dot is a function. Rings group functions by module, with the module name in capitals; a node is filled with its module's color. The white ringed node is the function being examined. Blue arrows run from it to the functions it calls, violet arrows into it from its callers ("calls it #k of n"), with dots flowing in the direction of the call. The number on a colored badge before a name is the order of the call (1 runs first; 3.2 is the second call made inside call 3). The panel at the bottom right is a flame graph: the top bar is the examined function, each row below is one level deeper, left to right is the order in time, and each bar is filled with the same color as its node. "+N" on a bar means N more calls inside it are hidden. A red stripe at a bar's right end means that call can fail, splitting off an error outcome; a dashed outline means the call only happens under a condition. In a diff, a node and its bar are filled by what changed: "+" and green mean added, "~" and yellow mean changed, "−" and red, struck through, mean removed, gray means unchanged."""
+PRIMER = """How to read this tool: each dot is a function. Rings group functions by module, with the module name in capitals; a node is filled with its module's color. The white ringed node is the function being examined. Blue arrows run from it to the functions it calls, violet arrows into it from its callers ("calls it #k of n"), with dots flowing in the direction of the call. The number on a colored badge before a name is the order of the call (1 runs first; 3.2 is the second call made inside call 3). The panel at the bottom right is a flame graph: the top bar is the examined function, each row below is one level deeper, left to right is the order in time, and each bar is filled with the same color as its node. "+N" on a bar means N more calls inside it are hidden. A red stripe at a bar's right end means that call can fail, splitting off an error outcome; a dashed outline means the call only happens under a condition. With every route into the examined function picked out, pale arrows with dots flowing along them run from the entry points (ringed pale, named by their route such as "GET /path") through the functions between, down to its direct callers, and the rest of the graph is left out. In a diff, a node and its bar are filled by what changed: "+" and green mean added, "~" and yellow mean changed, "−" and red, struck through, mean removed, gray means unchanged."""
 
 
 def prompt(image, questions, condition):

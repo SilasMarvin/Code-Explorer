@@ -19,6 +19,10 @@ impl Store {
         Ok(Order { quantity: 1, kind: 0 })
     }
 
+    pub fn find(&self, _kind: u32) -> Option<Order> {
+        None
+    }
+
     pub async fn refresh(&self) {}
 }
 

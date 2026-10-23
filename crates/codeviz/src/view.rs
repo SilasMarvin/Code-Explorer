@@ -145,6 +145,10 @@ struct Render {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
+    /// Open with the search box showing what this finds: functions, errors,
+    /// conditions, calls.
+    #[arg(long, value_name = "QUERY")]
+    search: Option<String>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -417,6 +421,9 @@ fn start(system: &System, args: &Start) -> anyhow::Result<impl FnOnce(Viewer) ->
 fn render(mut viewer: Viewer, args: &Render) -> anyhow::Result<Viewer> {
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some(query) = &args.search {
+        viewer = viewer.with_search(query);
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

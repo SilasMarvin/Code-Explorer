@@ -82,11 +82,11 @@ pub(crate) fn flags(view: &View<'_>) -> Vec<String> {
     {
         flag("depth", Some(depth.to_string()));
     }
-    if let Some((side, _)) = explorer
+    if let Some(spotlight) = explorer
         .spotlight()
         .filter(|_| !explorer.spotlit().is_empty())
     {
-        let side = match side {
+        let side = match spotlight.side {
             Side::Callers => "callers",
             Side::Callees => "callees",
         };

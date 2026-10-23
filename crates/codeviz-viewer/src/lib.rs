@@ -23,7 +23,9 @@ mod journey_panel;
 mod lens;
 mod names;
 mod peek;
+mod routes;
 mod scene;
+mod search;
 mod share;
 mod source_diff;
 mod starts;
@@ -69,6 +71,8 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// What the search box opens on, when it opens at once.
+    search: Option<String>,
     diff: Option<Comparison>,
     /// Directories whose files the editor opens elsewhere.
     edit_roots: Vec<(PathBuf, PathBuf)>,
@@ -109,6 +113,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            search: None,
             diff: None,
             edit_roots: Vec::new(),
             spotlight: None,
@@ -294,6 +299,13 @@ impl Viewer {
         self
     }
 
+    /// Opens with the search box showing what `query` finds.
+    #[must_use]
+    pub fn with_search(mut self, query: impl Into<String>) -> Self {
+        self.search = Some(query.into());
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -368,7 +380,7 @@ impl Viewer {
             }
         }
         if let Some(side) = self.spotlight {
-            explorer.toggle_spotlight(side, 0.0);
+            explorer.widen_spotlight(side, 0.0);
         }
         explorer
     }
@@ -439,10 +451,12 @@ impl Viewer {
         .insert_resource(JourneyPanel::new(panel))
         .insert_resource(ui::Chrome {
             bare: self.bare,
+            search: self.search.is_some(),
             ..default()
         })
         .insert_resource(ui::StartCard(starts))
         .insert_resource(explorer)
+        .insert_resource(search::Search::new(self.search.unwrap_or_default()))
         .init_resource::<Autoplay>()
         .insert_resource(actions::EditRoots(self.edit_roots))
         .insert_resource(self.peek)
