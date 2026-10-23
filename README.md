@@ -128,4 +128,7 @@ name is distinctive: not a common standard library method (`map`, `push`, `len`,
 defined by one type (or one trait's implementations) in a crate the caller depends on.
 Such a match is marked `inferred`, as is a call that could be any of several overloads
 (`From<bool>` or `From<u8>`). Capitalized call targets are treated as constructors and
-dropped either way.
+dropped either way. `analyze` and `diff` print how many call sites resolved exactly, how
+many by a guess, and how many not at all, and warn when rust-analyzer is missing or
+fails. `diff` analyzes its two sides one after the other under rust-analyzer (two at
+once save little and need over a gigabyte more), side by side otherwise.
