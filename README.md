@@ -17,7 +17,10 @@ codeviz validate app.json
 codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz view app.json other.json     # merged 3D view
+codeviz view crates/foo              # analyze and view; kept until the source changes
 codeviz view new.json --before old.json   # what changed, over the graph
+codeviz view app.json --at src/orders.rs:42   # open on the function at that line
+codeviz view app.json --resume       # as you last left it
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -29,7 +32,7 @@ inside a wide grey ring named for the crate. It opens on the whole graph, head-o
 with the busiest functions named and each entry point flying a small flag (`▶` on its
 label), and a card of where to start: the entry points that reach the most of the
 codebase first, those in demo, example and test code last, or without declared
-entries the functions nothing calls. Enter opens the first, `E` or `Esc` hides the
+entries the functions nothing calls. Enter opens the first, `W` or `Esc` hides the
 card. `--entry` or `--focus` opens straight on a journey instead.
 
 Click a node and the camera orbits it, and its journey opens docked as a flame graph:
@@ -77,6 +80,38 @@ you move somewhere; stepping through the journey at most pulls it back to keep t
 cursor's node in sight. Pan or zoom and it stays where you put it, saying `camera free
 · F to follow` until `F` brings it back.
 
+## From the graph to the code
+
+`B` shows the focused function's source in a card over the graph's corner, colored by
+syntax; each line that makes one of the journey's calls carries that call's number on
+a badge filled like its node. Its location is a link: clicking it, or pressing `E`,
+opens the function in your editor. The editor is `$CODEVIZ_EDITOR`, a command with
+`{file}`, `{line}` and `{column}` in it (`code -g {file}:{line}` by default), else
+`$VISUAL` or `$EDITOR` when it is an editor with a window of its own (Zed, Sublime,
+Cursor, a JetBrains IDE…), else VS Code, else a terminal editor in the terminal
+codeviz was started from. The card and the side panel copy a function's id or its
+`path:line`. `P` saves a picture of the view to the desktop (`$XDG_PICTURES_DIR` or
+`~/Pictures` elsewhere) and copies it. A line at the top says what each did.
+
+`Y` copies the command that opens the view as it stands, the documents (or the `diff`)
+and the flags for the focus, the outcome, the cursor's step, the depth, the spotlight
+(`--spotlight callers|callees`), the reveal, the layout and the source card
+(`--peek`), to paste for a teammate or into a note; the camera is left to frame it. The
+same flags are kept as the last view of each set of documents (under
+`$XDG_STATE_HOME/codeviz`, or `~/Library/Application Support/codeviz` on a Mac), and
+`--resume` opens it again, with any flags given alongside winning.
+
+`codeviz view DIR` analyzes the directory and opens it, taking `analyze`'s `--lang`,
+`--resolve` and `--include-tests`. The analysis is kept (under `$XDG_CACHE_HOME/codeviz`,
+or `~/Library/Caches/codeviz` on a Mac) for the commit the directory is at plus any
+uncommitted changes, so opening it again before the source changes skips
+rust-analyzer.
+
+`--at FILE:LINE` opens on the function whose source spans that line. A document
+remembers the directory it was analyzed in; opened somewhere else, on a teammate's
+machine say, it looks for that directory around the document and the working
+directory, and `--root DIR` says where it is.
+
 ## Diffs
 
 `codeviz diff` checks out each revision with `git archive`, analyzes both, and draws
@@ -92,7 +127,9 @@ callees) is one node, not a removal and an addition. `D` cycles three views:
 - **Morph**: each version laid out alone, animating between them; `T` pauses.
 
 A diff opens showing only what changed, the focus and the journey's root; `C` (or
-`--show-unchanged`) brings back everything else. Focusing a node shows its old and new source as a line diff.
+`--show-unchanged`) brings back everything else. Clicking a node opens its old and new
+source as a line diff. `--save DIR` keeps both documents, with a copy of the source
+each checked-out revision points at, to open later with `codeviz view`.
 
 ## Readability
 

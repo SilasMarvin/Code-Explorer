@@ -5,7 +5,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
@@ -17,12 +17,14 @@ use codeviz_core::{Change, Level, SpanTarget};
 use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
+    actions::{self, Place, Request, Requests, Toast},
     camera::OrbitCamera,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side, SpanRef, Track},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{self, Measure, Source},
+    peek::{self, Code, Peek, Sources},
     scene::{PALETTE, accent, lane_color},
     source_diff,
 };
@@ -36,6 +38,7 @@ impl Plugin for UiPlugin {
             .init_resource::<StartCard>()
             .init_resource::<Chrome>()
             .init_resource::<Sources>()
+            .init_resource::<Peek>()
             .add_systems(
                 PreUpdate,
                 keys_to_the_graph
@@ -111,24 +114,8 @@ struct Search {
     found: Option<(String, Option<usize>, Vec<Candidate>)>,
 }
 
-/// Source files read so far; `None` when a file could not be read.
-#[derive(Resource, Debug, Default)]
-struct Sources(HashMap<PathBuf, Option<Vec<String>>>);
-
-impl Sources {
-    fn lines(&mut self, path: &Path) -> Option<&[String]> {
-        self.0
-            .entry(path.to_path_buf())
-            .or_insert_with(|| {
-                std::fs::read_to_string(path)
-                    .ok()
-                    .map(|text| text.lines().map(str::to_owned).collect())
-            })
-            .as_deref()
-    }
-}
-
 const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
+const LINK: egui::Color32 = egui::Color32::from_rgb(160, 190, 230);
 const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 
@@ -159,6 +146,8 @@ fn draw_ui(
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
+    mut requests: ResMut<Requests>,
+    (toast, mut peek): (Res<Toast>, ResMut<Peek>),
 ) -> Result {
     explorer.bypass_change_detection().refresh_names();
     let ctx = contexts.ctx_mut()?;
@@ -170,6 +159,10 @@ fn draw_ui(
             .max_rect(ctx.viewport_rect()),
     );
 
+    let mut code = Code {
+        sources: &mut sources,
+        requests: &mut requests,
+    };
     let [top, bottom, left, right] = if chrome.bare {
         [0.0; 4]
     } else {
@@ -177,7 +170,7 @@ fn draw_ui(
             &mut root_ui,
             &mut explorer,
             &mut panel,
-            &mut sources,
+            &mut code,
             &mut chrome,
             diff.as_deref(),
             time.elapsed_secs(),
@@ -213,14 +206,18 @@ fn draw_ui(
         if let Some(diff) = diff.as_deref_mut().filter(|_| !chrome.bare) {
             diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
         }
-        // The start card and the spotlight's share the top left; the camera chip goes
-        // under whichever shows.
         let card = if chrome.bare {
             None
-        } else if start.0 {
-            start_card(ctx, graph_area, &mut explorer, &mut start.0, &mut panel)
         } else {
-            spotlight_card(ctx, graph_area, &mut explorer)
+            corner_cards(
+                ctx,
+                graph_area,
+                &mut explorer,
+                &mut start.0,
+                &mut panel,
+                &mut code,
+                (&mut peek.0, diff.as_deref()),
+            )
         };
         if chrome.search && !chrome.bare {
             search_box(
@@ -241,23 +238,38 @@ fn draw_ui(
         if help.0 {
             key_help(ctx, graph_area, &mut help.0);
         }
+        if !chrome.bare {
+            actions::draw_toast(ctx, graph_area, &toast, time.elapsed_secs());
+        }
         if let Some(area) = panel_area {
-            let tethers =
-                journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(&explorer, &to_screen)) {
-                tether(ctx, bar, node, false);
-            }
-            // The bar under the pointer, to the node it stands for.
-            let hovered = explorer
-                .hovered_tile
-                .and_then(|tile| explorer.tile_point(tile))
-                .and_then(to_screen);
-            if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
-                tether(ctx, bar, node, true);
-            }
+            let diff = diff.as_deref();
+            docked_journey(ctx, area, &mut explorer, &mut panel, diff, &to_screen);
         }
     }
     Ok(())
+}
+
+/// The journey in `area`, tied to the graph: its cursor's bar to its node, and the bar
+/// under the pointer to the node it stands for.
+fn docked_journey(
+    ctx: &egui::Context,
+    area: egui::Rect,
+    explorer: &mut Explorer,
+    panel: &mut JourneyPanel,
+    diff: Option<&DiffView>,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    let tethers = journey_panel::draw(ctx, area, explorer, panel, diff);
+    if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(explorer, to_screen)) {
+        tether(ctx, bar, node, false);
+    }
+    let hovered = explorer
+        .hovered_tile
+        .and_then(|tile| explorer.tile_point(tile))
+        .and_then(to_screen);
+    if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
+        tether(ctx, bar, node, true);
+    }
 }
 
 /// The panels around the graph, and how much of each edge they take: top, bottom, left
@@ -266,7 +278,7 @@ fn panels(
     root_ui: &mut egui::Ui,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
-    sources: &mut Sources,
+    code: &mut Code<'_>,
     chrome: &mut Chrome,
     diff: Option<&DiffView>,
     now: f32,
@@ -316,11 +328,11 @@ fn panels(
                     outcomes(ui, explorer);
                     ui.separator();
                     match diff {
-                        Some(view) => changed_source(ui, explorer, view, sources),
-                        None => source(ui, explorer, sources),
+                        Some(view) => changed_source(ui, explorer, view, code),
+                        None => source(ui, explorer, code),
                     }
                     ui.separator();
-                    details(ui, explorer);
+                    details(ui, explorer, code.requests);
                 });
             })
             .response
@@ -823,7 +835,7 @@ const STARTS_SHOWN: usize = 6;
 
 /// Where to start, over the top left of the graph: the entry points that reach the
 /// most first, or without any the functions nothing calls; demo and test code last.
-/// A click opens one; E hides the card.
+/// A click opens one; W hides the card.
 fn start_card(
     ctx: &egui::Context,
     area: egui::Rect,
@@ -887,9 +899,9 @@ fn start_card(
                     }
                     let more = explorer.starts().len().saturating_sub(STARTS_SHOWN);
                     let footer = if more > 0 {
-                        format!("{more} more under / search · E hides this")
+                        format!("{more} more under / search · W hides this")
                     } else {
-                        "E hides this".to_owned()
+                        "W hides this".to_owned()
                     };
                     ui.label(egui::RichText::new(footer).small().color(MUTED));
                 });
@@ -971,7 +983,7 @@ fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
 
 /// The caller's source around the line that made the selected call; for the root,
 /// its own definition.
-fn source(ui: &mut egui::Ui, explorer: &Explorer, sources: &mut Sources) {
+fn source(ui: &mut egui::Ui, explorer: &Explorer, code: &mut Code<'_>) {
     let Some(selected) = explorer.selected() else {
         return;
     };
@@ -994,16 +1006,18 @@ fn source(ui: &mut egui::Ui, explorer: &Explorer, sources: &mut Sources) {
         (unit.id.clone(), location, title)
     };
     ui.label(egui::RichText::new(title).strong());
-    ui.label(
-        egui::RichText::new(location.to_string())
-            .small()
-            .color(MUTED),
-    );
-    let Some(path) = explorer.system().local_path(&owner, &location.uri) else {
+    let path = explorer.system().local_path(&owner, &location.uri);
+    let place = path.clone().map(|file| Place {
+        file,
+        line: location.range.map_or(1, |r| r.start_line),
+        column: location.range.map_or(1, |r| r.start_col),
+    });
+    location_link(ui, &location.to_string(), place, code.requests);
+    let Some(path) = path else {
         return;
     };
-    let Some(lines) = sources.lines(&path) else {
-        ui.label(egui::RichText::new(format!("Cannot read {}", path.display())).color(MUTED));
+    let Some(lines) = code.sources.lines(&path) else {
+        cannot_read(ui, &path);
         return;
     };
     let line = location.range.map_or(1, |r| r.start_line) as usize;
@@ -1039,7 +1053,7 @@ fn source(ui: &mut egui::Ui, explorer: &Explorer, sources: &mut Sources) {
 
 /// The focused function as the diff changed it: its old and new source as one
 /// unified diff.
-fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, sources: &mut Sources) {
+fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, code: &mut Code<'_>) {
     let Some((tile, unit)) = explorer
         .graph_focus()
         .and_then(|tile| Some((tile, explorer.tile_unit(tile)?.clone())))
@@ -1066,7 +1080,7 @@ fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, sourc
         let location = system.unit(&unit)?.location.as_ref()?;
         let range = location.range?;
         let path = system.local_path(&unit, &location.uri)?;
-        let lines = sources.lines(&path)?;
+        let lines = code.sources.lines(&path)?;
         let (first, last) = (range.start_line as usize, range.end_line as usize);
         let body = lines
             .get(first.checked_sub(1)?..last.min(lines.len()))?
@@ -1084,7 +1098,12 @@ fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, sourc
             return;
         }
     };
-    ui.label(egui::RichText::new(place).small().color(MUTED));
+    location_link(
+        ui,
+        &place,
+        Place::of(explorer.system(), &unit),
+        code.requests,
+    );
     if let Some(was) = view.moved_from(tile) {
         ui.label(
             egui::RichText::new(format!("was {was}"))
@@ -1105,7 +1124,7 @@ fn as_side(side: Option<&(Vec<String>, usize, String)>) -> Option<source_diff::S
     })
 }
 
-fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
+fn details(ui: &mut egui::Ui, explorer: &mut Explorer, requests: &mut Requests) {
     let Some(selected) = explorer.selected() else {
         return;
     };
@@ -1119,6 +1138,7 @@ fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
     );
     if let Some(unit) = explorer.unit(selected) {
         ui.label(egui::RichText::new(unit.id.as_str()).small().color(MUTED));
+        copy_buttons(ui, explorer.system(), &unit.id, requests);
         if let Some(signature) = unit.attributes.get("signature") {
             ui.label(egui::RichText::new(signature.to_string()).monospace());
         }
@@ -1192,6 +1212,83 @@ fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
             }
         }
     });
+}
+
+/// Where something is written, as a link that opens it in the editor when it is on
+/// disk.
+pub(crate) fn location_link(
+    ui: &mut egui::Ui,
+    text: &str,
+    place: Option<Place>,
+    requests: &mut Requests,
+) {
+    let text = egui::RichText::new(text).small();
+    match place {
+        Some(place) => {
+            if ui
+                .link(text.color(LINK))
+                .on_hover_text("Open in the editor (E opens the focus)")
+                .clicked()
+            {
+                requests.push(Request::Edit(place));
+            }
+        }
+        None => {
+            ui.label(text.color(MUTED));
+        }
+    }
+}
+
+/// Buttons that copy a function's id, and where it is written as `path:line`.
+pub(crate) fn copy_buttons(
+    ui: &mut egui::Ui,
+    system: &codeviz_core::System,
+    unit: &UnitId,
+    requests: &mut Requests,
+) {
+    let place = system.unit(unit).and_then(|u| {
+        let location = u.location.as_ref()?;
+        Some(format!(
+            "{}:{}",
+            location.uri,
+            location.range.map_or(1, |r| r.start_line)
+        ))
+    });
+    ui.horizontal(|ui| {
+        if ui
+            .small_button("Copy id")
+            .on_hover_text(unit.as_str())
+            .clicked()
+        {
+            requests.push(Request::Copy {
+                text: unit.to_string(),
+                what: "its id".to_owned(),
+            });
+        }
+        if let Some(place) = place
+            && ui
+                .small_button("Copy path:line")
+                .on_hover_text(&place)
+                .clicked()
+        {
+            requests.push(Request::Copy {
+                what: place.clone(),
+                text: place,
+            });
+        }
+    });
+}
+
+/// Says a source file cannot be read, and how to point at where it is.
+pub(crate) fn cannot_read(ui: &mut egui::Ui, path: &Path) {
+    ui.label(
+        egui::RichText::new(format!("Cannot read {}", actions::home_relative(path))).color(MUTED),
+    );
+    ui.label(
+        egui::RichText::new("Open with --root DIR to read the source from where it is.")
+            .small()
+            .color(MUTED),
+    );
 }
 
 /// Restricts 3D rendering to the area between the panels.
@@ -1860,6 +1957,7 @@ fn draw_graph_labels(
         "journey_panel",
         "starts",
         "spotlight",
+        "peek",
     ]
     .into_iter()
     .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
@@ -2233,6 +2331,32 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
     }
 }
 
+/// The cards down the graph's top left, each under the one before: where to start or
+/// the spotlight's list, then the focus's source. Returns where the last went, for the
+/// camera chip to go under.
+fn corner_cards(
+    ctx: &egui::Context,
+    area: egui::Rect,
+    explorer: &mut Explorer,
+    start: &mut bool,
+    panel: &mut JourneyPanel,
+    code: &mut Code<'_>,
+    (peek, diff): (&mut bool, Option<&DiffView>),
+) -> Option<egui::Rect> {
+    let card = if *start {
+        start_card(ctx, area, explorer, start, panel)
+    } else {
+        spotlight_card(ctx, area, explorer)
+    };
+    if !*peek {
+        return card;
+    }
+    let below = card.map_or(area, |card| {
+        egui::Rect::from_min_max(egui::pos2(area.min.x, card.max.y), area.max)
+    });
+    peek::draw(ctx, below, explorer, diff, code, peek).or(card)
+}
+
 /// Says the camera has been panned or zoomed away and no longer follows the journey,
 /// top left of the graph, under any card there; a click, like F, brings it back.
 fn camera_free(
@@ -2328,7 +2452,7 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
             egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
             "click a node to open it · I callers · O calls · , . less or more of the journey \
-             · Backspace back · / search · E where to start · S panel · H keys",
+             · Backspace back · B source · E editor · / search · W where to start · S panel · H keys",
             egui::FontId::proportional(12.0),
             MUTED,
         );
@@ -2340,9 +2464,12 @@ fn hint_id() -> egui::Id {
     egui::Id::new("legend_hint")
 }
 
-/// Every key, grouped by what it moves.
-const KEYS: [(&str, &[(&str, &str)]); 4] = [
-    (
+/// A heading and its keys.
+type Group = (&'static str, &'static [(&'static str, &'static str)]);
+
+/// Every key, grouped by what it moves, in columns.
+const KEYS: [&[Group]; 4] = [
+    &[(
         "Journey",
         &[
             ("← →", "previous / next call by the same caller"),
@@ -2366,8 +2493,8 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ),
             ("X", "close the journey"),
         ],
-    ),
-    (
+    )],
+    &[(
         "Graph",
         &[
             ("I", "pick out what calls the focus, and show it all"),
@@ -2390,8 +2517,8 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("D", "diff: status → impact → morph"),
             ("T", "play or pause the morph"),
         ],
-    ),
-    (
+    )],
+    &[(
         "Camera",
         &[
             ("two fingers", "orbit"),
@@ -2401,19 +2528,48 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("left / middle drag", "orbit"),
             ("right / Shift drag", "pan"),
         ],
-    ),
-    (
-        "Layout",
-        &[
-            ("J", "show or hide the journey"),
-            ("M", "swap graph and journey"),
-            ("S", "show or hide the side panel"),
-            ("/", "search for a function; ↑ ↓ pick, Enter opens"),
-            ("E", "show or hide where to start"),
-            ("H", "this list"),
-        ],
-    ),
+    )],
+    &[
+        (
+            "Layout",
+            &[
+                ("J", "show or hide the journey"),
+                ("M", "swap graph and journey"),
+                ("S", "show or hide the side panel"),
+                ("B", "show or hide the focus's source"),
+                ("/", "search for a function; ↑ ↓ pick, Enter opens"),
+                ("W", "show or hide where to start"),
+                ("H", "this list"),
+            ],
+        ),
+        (
+            "Elsewhere",
+            &[
+                ("E", "open the focus in your editor"),
+                ("Y", "copy the view as a command line"),
+                ("P", "save a picture of the view"),
+            ],
+        ),
+    ],
 ];
+
+fn key_group(ui: &mut egui::Ui, title: &str, keys: &[(&str, &str)]) {
+    ui.label(egui::RichText::new(title).strong().size(14.0));
+    ui.add_space(4.0);
+    egui::Grid::new(title)
+        .spacing(egui::vec2(12.0, 4.0))
+        .show(ui, |ui| {
+            for (key, what) in keys {
+                ui.label(
+                    egui::RichText::new(*key)
+                        .monospace()
+                        .color(egui::Color32::WHITE),
+                );
+                ui.label(egui::RichText::new(*what).color(MUTED));
+                ui.end_row();
+            }
+        });
+}
 
 fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
     egui::Area::new("key_help".into())
@@ -2428,24 +2584,12 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
                 .inner_margin(egui::Margin::symmetric(18, 14))
                 .show(ui, |ui| {
                     ui.horizontal_top(|ui| {
-                        for (title, keys) in KEYS {
+                        for column in KEYS {
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(title).strong().size(14.0));
-                                ui.add_space(4.0);
-                                egui::Grid::new(title).spacing(egui::vec2(12.0, 4.0)).show(
-                                    ui,
-                                    |ui| {
-                                        for (key, what) in keys {
-                                            ui.label(
-                                                egui::RichText::new(*key)
-                                                    .monospace()
-                                                    .color(egui::Color32::WHITE),
-                                            );
-                                            ui.label(egui::RichText::new(*what).color(MUTED));
-                                            ui.end_row();
-                                        }
-                                    },
-                                );
+                                for &(title, keys) in column {
+                                    key_group(ui, title, keys);
+                                    ui.add_space(10.0);
+                                }
                             });
                             ui.add_space(16.0);
                         }

@@ -619,11 +619,16 @@ impl Explorer {
     /// Makes `track` active with its cursor on `span`.
     pub(crate) fn select_in(&mut self, at: SpanRef) {
         if at.track < self.tracks.len() {
-            if self.active != at.track {
-                self.active = at.track;
-                self.refresh_journey_tiles();
-            }
+            self.activate(at.track);
             self.select(Some(at.span));
+        }
+    }
+
+    /// Makes `track` active, its cursor where it was.
+    pub(crate) fn activate(&mut self, track: usize) {
+        if track < self.tracks.len() && self.active != track {
+            self.active = track;
+            self.refresh_journey_tiles();
         }
     }
 

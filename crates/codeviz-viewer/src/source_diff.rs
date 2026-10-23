@@ -53,8 +53,8 @@ pub(crate) struct Side<'a> {
     pub(crate) first: usize,
 }
 
-const ADDED_BG: egui::Color32 = egui::Color32::from_rgb(22, 58, 34);
-const REMOVED_BG: egui::Color32 = egui::Color32::from_rgb(72, 26, 28);
+pub(crate) const ADDED_BG: egui::Color32 = egui::Color32::from_rgb(22, 58, 34);
+pub(crate) const REMOVED_BG: egui::Color32 = egui::Color32::from_rgb(72, 26, 28);
 
 /// Old and new side by side in one column: removed lines red with their old line
 /// number, added lines green with their new one. With one side missing, the function
@@ -100,7 +100,12 @@ pub(crate) fn show(ui: &mut egui::Ui, old: Option<Side<'_>>, new: Option<Side<'_
                 let response = ui.add(egui::Label::new(row).wrap_mode(egui::TextWrapMode::Extend));
                 if background.is_some() && first_change {
                     first_change = false;
-                    response.scroll_to_me(Some(egui::Align::Center));
+                    // By its left edge, so the line numbers stay in view.
+                    let edge = egui::Rect::from_min_size(
+                        response.rect.min,
+                        egui::vec2(1.0, response.rect.height()),
+                    );
+                    ui.scroll_to_rect(edge, Some(egui::Align::Center));
                 }
             }
         });

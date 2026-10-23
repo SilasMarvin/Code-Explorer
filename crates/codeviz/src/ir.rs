@@ -40,6 +40,32 @@ pub(crate) struct Source {
     resolve: Resolve,
 }
 
+impl Source {
+    /// The flags that ask for this, where it is not the default.
+    pub(crate) fn flags(&self) -> Vec<String> {
+        let mut flags = Vec::new();
+        if let Some(language) = self.lang {
+            let name = match language {
+                Language::Rust => "rust",
+                Language::Python => "python",
+            };
+            flags.extend(["--lang".to_owned(), name.to_owned()]);
+        }
+        if self.include_tests {
+            flags.push("--include-tests".to_owned());
+        }
+        let resolve = match self.resolve {
+            Resolve::Auto => None,
+            Resolve::RustAnalyzer => Some("rust-analyzer"),
+            Resolve::Syntax => Some("syntax"),
+        };
+        if let Some(resolve) = resolve {
+            flags.extend(["--resolve".to_owned(), resolve.to_owned()]);
+        }
+        flags
+    }
+}
+
 #[derive(Debug, clap::Args)]
 pub(crate) struct AnalyzeArgs {
     /// Directory to analyze.
@@ -200,4 +226,135 @@ pub(crate) fn read(path: &PathBuf) -> anyhow::Result<Document> {
         std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     Document::from_json(&json)
         .with_context(|| format!("{} is not a codeviz document", path.display()))
+}
+
+/// Reads a document for viewing, with its source found: under `root` when given, else
+/// under the root it was saved with while that exists, else wherever the same
+/// directory turns up around the document or the working directory. So a document
+/// made on another machine, or from a checkout since removed, still shows its source.
+pub(crate) fn read_rooted(path: &PathBuf, root: Option<&Path>) -> anyhow::Result<Document> {
+    let mut document = read(path)?;
+    if let Some(root) = root {
+        let root = root
+            .canonicalize()
+            .with_context(|| format!("cannot open {}", root.display()))?;
+        document.root = Some(file_uri(&root));
+        return Ok(document);
+    }
+    let Some(stored) = document
+        .root
+        .as_deref()
+        .and_then(|r| r.strip_prefix("file://"))
+        .map(PathBuf::from)
+    else {
+        return Ok(document);
+    };
+    let samples = relative_files(&document);
+    if stored.is_dir() || samples.is_empty() {
+        return Ok(document);
+    }
+    let around = |dir: Option<PathBuf>| {
+        dir.and_then(|d| d.canonicalize().ok())
+            .map(|d| d.ancestors().map(Path::to_path_buf).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    let mut bases = around(path.parent().map(|p| p.join(".")));
+    for base in around(std::env::current_dir().ok()) {
+        if !bases.contains(&base) {
+            bases.push(base);
+        }
+    }
+    match find_root(&stored, &bases, &samples) {
+        Some(found) => {
+            eprintln!(
+                "{}: its source is not at {}; reading it from {}",
+                path.display(),
+                stored.display(),
+                found.display()
+            );
+            document.root = Some(file_uri(&found));
+        }
+        None => eprintln!(
+            "{}: cannot find its source (it was at {}); pass --root DIR",
+            path.display(),
+            stored.display()
+        ),
+    }
+    Ok(document)
+}
+
+/// A few of the files a document's locations name relative to its root.
+pub(crate) fn relative_files(document: &Document) -> Vec<String> {
+    let mut files = Vec::new();
+    for unit in &document.units {
+        let calls = unit.calls.iter().filter_map(|c| c.location.as_ref());
+        for location in unit.location.iter().chain(calls) {
+            if !location.uri.contains("://") && !files.contains(&location.uri) {
+                files.push(location.uri.clone());
+            }
+        }
+    }
+    files
+}
+
+/// Where a moved root went: the stored root's last components, longest first, under
+/// each of `bases` nearest first (with no components, each base itself), taking the
+/// first directory that holds most of `files`.
+fn find_root(stored: &Path, bases: &[PathBuf], files: &[String]) -> Option<PathBuf> {
+    let samples = &files[..files.len().min(5)];
+    let holds = |dir: &Path| {
+        let present = samples.iter().filter(|f| dir.join(f).is_file()).count();
+        present > 0 && present * 2 >= samples.len()
+    };
+    let parts: Vec<_> = stored.components().skip(1).collect();
+    (0..=parts.len()).find_map(|skip| {
+        let tail: PathBuf = parts[skip..].iter().collect();
+        bases
+            .iter()
+            .map(|base| base.join(&tail))
+            .find(|dir| dir.is_dir() && holds(dir))
+    })
+}
+
+pub(crate) fn file_uri(path: &Path) -> String {
+    format!("file://{}", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_a_moved_root_by_its_last_components() {
+        let scratch = std::env::temp_dir().join(format!("codeviz-root-{}", std::process::id()));
+        let clone = scratch.join("elsewhere/shop");
+        let service = clone.join("services/api");
+        std::fs::create_dir_all(service.join("src")).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(service.join("src/main.rs"), "fn main() {}\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let files = vec!["src/main.rs".to_owned(), "src/gone.rs".to_owned()];
+        let stored = Path::new("/home/someone/shop/services/api");
+        let bases: Vec<PathBuf> = clone
+            .join("docs")
+            .ancestors()
+            .map(Path::to_path_buf)
+            .collect();
+
+        assert_eq!(
+            find_root(stored, &bases, &files),
+            Some(service.clone()),
+            "found under the clone, at the same place in it"
+        );
+        assert_eq!(
+            find_root(stored, std::slice::from_ref(&service), &files),
+            Some(service.clone()),
+            "or as the directory itself"
+        );
+        assert_eq!(
+            find_root(stored, &bases, &["src/other.rs".to_owned()]),
+            None,
+            "only where the files are"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
 }

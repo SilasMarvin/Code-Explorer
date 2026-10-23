@@ -7,11 +7,13 @@ use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
 
 use crate::{
+    diff_view::DiffView,
     disclosure::Disclose,
     explorer::{Autoplay, Clustering, Explorer, Side, SpanRef, Step, Track},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
+    peek::Peek,
     ui::{Chrome, KeyHelp, StartCard},
 };
 
@@ -131,6 +133,7 @@ fn on_node_click(
     mut explorer: ResMut<Explorer>,
     mut panel: ResMut<JourneyPanel>,
     mut start: ResMut<StartCard>,
+    (diff, mut peek): (Option<Res<DiffView>>, ResMut<Peek>),
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -151,6 +154,10 @@ fn on_node_click(
         // Clicking a node is asking what it does: its journey opens with it.
         if panel.mode == PanelMode::Hidden {
             panel.mode = PanelMode::Docked;
+        }
+        // In a diff, it is also asking how it changed.
+        if diff.is_some() {
+            peek.0 = true;
         }
     }
 }
@@ -349,7 +356,7 @@ fn keyboard(
             explorer.trace_from_focus();
         }
     }
-    if keys.just_pressed(KeyCode::KeyE) {
+    if keys.just_pressed(KeyCode::KeyW) {
         start.0 = !start.0;
     }
     if keys.just_pressed(KeyCode::Tab) {

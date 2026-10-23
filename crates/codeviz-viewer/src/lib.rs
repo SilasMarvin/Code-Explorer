@@ -10,23 +10,27 @@
     reason = "Bevy system parameters are taken by value"
 )]
 
+mod actions;
 mod camera;
 mod capture;
 mod diff_view;
 mod disclosure;
+mod editor;
 mod explorer;
 mod graph_view;
 mod history;
 mod journey_panel;
 mod lens;
 mod names;
+mod peek;
 mod scene;
+mod share;
 mod source_diff;
 mod starts;
 mod truth;
 mod ui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use bevy::{prelude::*, window::WindowPlugin};
 use bevy_egui::EguiPlugin;
@@ -66,6 +70,12 @@ pub struct Viewer {
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
     diff: Option<Comparison>,
+    /// Directories whose files the editor opens elsewhere.
+    edit_roots: Vec<(PathBuf, PathBuf)>,
+    spotlight: Option<explorer::Side>,
+    /// Whether the source peek is open.
+    peek: peek::Peek,
+    share: share::Share,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -100,6 +110,10 @@ impl Viewer {
             depth: None,
             bare: false,
             diff: None,
+            edit_roots: Vec::new(),
+            spotlight: None,
+            peek: peek::Peek(false),
+            share: share::Share::default(),
         }
     }
 
@@ -246,6 +260,40 @@ impl Viewer {
         self
     }
 
+    /// Opens files under `from` in the editor from under `to` instead: a scratch
+    /// checkout's in the working tree.
+    #[must_use]
+    pub fn with_edit_root(mut self, from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> Self {
+        self.edit_roots.push((from.into(), to.into()));
+        self
+    }
+
+    /// Opens with what calls the focus (`callers`) or what it calls (`callees`)
+    /// picked out.
+    #[must_use]
+    pub fn with_spotlight(mut self, side: &str) -> Self {
+        self.spotlight = Some(match side {
+            "callers" => explorer::Side::Callers,
+            _ => explorer::Side::Callees,
+        });
+        self
+    }
+
+    /// Opens with the focus's source showing over the graph.
+    #[must_use]
+    pub fn with_peek(mut self) -> Self {
+        self.peek = peek::Peek(true);
+        self
+    }
+
+    /// How to open these documents again, `command` (`codeviz view app.json`) ahead of
+    /// the view's own flags, and where to keep the last view of them.
+    #[must_use]
+    pub fn with_share(mut self, command: Vec<String>, state: Option<PathBuf>) -> Self {
+        self.share = share::Share { command, state };
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -290,9 +338,25 @@ impl Viewer {
         );
         // An outcome, a step or another journey needs a journey to start with.
         if explorer.root().is_none()
+            && self.focus.is_none()
             && (self.scenario.is_some() || self.step > 0 || !self.also.is_empty())
         {
             explorer.root_at_best_start();
+        }
+        // The other journeys open below the first, which stays the one the focus,
+        // outcome and cursor apply to.
+        for root in self.also.drain(..) {
+            explorer.add_track(root);
+        }
+        explorer.activate(0);
+        explorer.set_clustering(self.clustering);
+        explorer.set_lens(self.lens);
+        if let Some(tile) = self
+            .focus
+            .take()
+            .and_then(|unit| explorer.map().tile_of(&unit))
+        {
+            explorer.open_at(tile);
         }
         if self.scenario.is_some() {
             explorer.set_scenario(self.scenario);
@@ -303,17 +367,8 @@ impl Viewer {
                 explorer.step(explorer::Step::Into);
             }
         }
-        for root in self.also.drain(..) {
-            explorer.add_track(root);
-        }
-        explorer.set_clustering(self.clustering);
-        explorer.set_lens(self.lens);
-        if let Some(tile) = self
-            .focus
-            .take()
-            .and_then(|unit| explorer.map().tile_of(&unit))
-        {
-            explorer.open_at(tile);
+        if let Some(side) = self.spotlight {
+            explorer.toggle_spotlight(side, 0.0);
         }
         explorer
     }
@@ -377,6 +432,8 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
+            actions::ActionsPlugin,
+            share::SharePlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(JourneyPanel::new(panel))
@@ -386,7 +443,19 @@ impl Viewer {
         })
         .insert_resource(ui::StartCard(starts))
         .insert_resource(explorer)
-        .init_resource::<Autoplay>();
+        .init_resource::<Autoplay>()
+        .insert_resource(actions::EditRoots(self.edit_roots))
+        .insert_resource(self.peek)
+        .insert_resource(self.share)
+        .insert_resource(match &self.screenshot {
+            // A screenshot run reaches nothing outside: its pictures go beside it.
+            Some(path) => actions::Effects::Render {
+                dir: path
+                    .parent()
+                    .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
+            },
+            None => actions::Effects::Live,
+        });
         if let Some(diff) = diff {
             app.insert_resource(diff);
         }
