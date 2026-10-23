@@ -24,6 +24,15 @@ pub struct ForceConfig {
     /// How hard two containers that crowd each other push apart, so each reads as its
     /// own cluster with space around it; zero lets them mingle.
     pub separation: f32,
+    /// Whether each module keeps to a room of its own: a disc as big as its functions
+    /// need, which none of them leaves and no other room overlaps, so a module stays
+    /// compact and clear however its calls pull.
+    pub rooms: bool,
+    /// How hard a node that strays to the edge of its room is pulled back in.
+    pub containment: f32,
+    /// How hard each module is pulled towards the rest of its crate (or top-level
+    /// package), when there are several, so a crate reads as one district.
+    pub crate_cohesion: f32,
     /// How hard a link between two containers pulls, as a share of [`Self::spring`]:
     /// below one, calls across containers bend the clusters towards each other without
     /// merging them.
@@ -45,6 +54,9 @@ impl Default for ForceConfig {
             link_length: 6.0,
             cohesion: 0.02,
             separation: 0.0,
+            rooms: false,
+            containment: 0.0,
+            crate_cohesion: 0.0,
             cross_spring: 1.0,
             gravity: 0.004,
             flatten: 0.0,
@@ -64,6 +76,10 @@ pub struct ForceGraph {
     clusters: Vec<usize>,
     /// The module each cluster stands for, by cluster.
     cluster_units: Vec<Option<UnitId>>,
+    /// The crate (or top-level package) each cluster sits in, by cluster.
+    tops: Vec<usize>,
+    /// The crate each top stands for, by top.
+    top_units: Vec<Option<UnitId>>,
     /// Links between tiles, each pair once, lower index first.
     pub links: Vec<(usize, usize)>,
     /// The same links with their direction: `(caller, callee)`, sorted.
@@ -87,9 +103,9 @@ pub struct ForceGraph {
 /// The furthest a node moves in one step.
 const MAX_STEP: f32 = 2.0;
 /// Steps that run at full speed; small graphs settle well within them.
-const WARM_STEPS: usize = 600;
+const WARM_STEPS: usize = 400;
 /// How much of its reach a step keeps from the one before, once cooling.
-const COOLING: f32 = 0.995;
+const COOLING: f32 = 0.993;
 
 /// The share of [`MAX_STEP`] a node may move at this age: all of it at first, then
 /// less each step, so even a graph too big to find its balance stops.
@@ -169,12 +185,13 @@ impl ForceGraph {
         calls.sort_unstable();
 
         let (clusters, cluster_units) = module_clusters(system, map);
-        let radius = (map.tiles.len() as f32).sqrt() * 2.0;
-        let positions = map
-            .tiles
-            .iter()
-            .map(|tile| seed(tile.unit.as_str(), radius))
-            .collect();
+        let (tops, top_units) = top_clusters(system, &cluster_units);
+        let positions = seed_positions(
+            map,
+            (&clusters, &cluster_units),
+            (&tops, &top_units),
+            config.link_length,
+        );
         let mut degrees = vec![0; map.tiles.len()];
         for &(a, b) in &links {
             degrees[a] += 1;
@@ -185,6 +202,8 @@ impl ForceGraph {
             groups: map.tiles.iter().map(|t| t.group).collect(),
             clusters,
             cluster_units,
+            tops,
+            top_units,
             positions,
             links,
             calls,
@@ -264,6 +283,24 @@ impl ForceGraph {
         self.cluster_units.len()
     }
 
+    /// The crate (or top-level package) a cluster sits in.
+    #[must_use]
+    pub fn top(&self, cluster: usize) -> Option<usize> {
+        self.tops.get(cluster).copied()
+    }
+
+    /// The crate a top stands for, when it has one.
+    #[must_use]
+    pub fn top_unit(&self, top: usize) -> Option<&UnitId> {
+        self.top_units.get(top)?.as_ref()
+    }
+
+    /// How many crates (or top-level packages) there are.
+    #[must_use]
+    pub fn top_count(&self) -> usize {
+        self.top_units.len()
+    }
+
     /// The container each tile belongs to, by group index.
     #[must_use]
     pub fn group(&self, tile: usize) -> Option<usize> {
@@ -335,66 +372,9 @@ impl ForceGraph {
             forces[a] = add(forces[a], pull);
             forces[b] = sub(forces[b], pull);
         }
-        let mut centers: Vec<([f32; 3], f32)> = Vec::new();
-        for (position, &group) in self.positions.iter().zip(&self.clusters) {
-            if centers.len() <= group {
-                centers.resize(group + 1, ([0.0; 3], 0.0));
-            }
-            if let Some((sum, n)) = centers.get_mut(group) {
-                *sum = add(*sum, *position);
-                *n += 1.0;
-            }
-        }
-        // Containers keep apart as wholes. Each takes up a ball as wide as its
-        // functions spread; two balls closer than their radii plus a gap push apart,
-        // harder the more they overlap, the smaller one moving more. So a cluster
-        // stays whole and clear of its neighbors however many calls cross between.
-        let mut apart = vec![[0.0_f32; 3]; centers.len()];
-        if config.separation > 0.0 {
-            let middles: Vec<[f32; 3]> = centers
-                .iter()
-                .map(|&(sum, n)| scale(sum, 1.0 / n.max(1.0)))
-                .collect();
-            let mut spread = vec![0.0_f32; centers.len()];
-            for (position, &group) in self.positions.iter().zip(&self.clusters) {
-                let offset = sub(*position, middles[group]);
-                spread[group] += dot(offset, offset);
-            }
-            let radii: Vec<f32> = spread
-                .iter()
-                .zip(&centers)
-                .map(|(&sum, &(_, n))| (sum / n.max(1.0)).sqrt() * 1.8 + config.link_length * 0.5)
-                .collect();
-            let gap = config.link_length * 2.0;
-            for a in 0..centers.len() {
-                for b in (a + 1)..centers.len() {
-                    let (n_a, n_b) = (centers[a].1, centers[b].1);
-                    if n_a == 0.0 || n_b == 0.0 {
-                        continue;
-                    }
-                    let delta = sub(middles[a], middles[b]);
-                    let distance = dot(delta, delta).sqrt().max(0.01);
-                    let overlap = radii[a] + radii[b] + gap - distance;
-                    if overlap <= 0.0 {
-                        continue;
-                    }
-                    let push = scale(delta, config.separation * overlap / distance);
-                    let total = n_a + n_b;
-                    apart[a] = add(apart[a], scale(push, n_b / total));
-                    apart[b] = sub(apart[b], scale(push, n_a / total));
-                }
-            }
-        }
-        for (i, force) in forces.iter_mut().enumerate() {
-            let position = self.positions[i];
-            if let Some(&push) = self.clusters.get(i).and_then(|&g| apart.get(g)) {
-                *force = add(*force, push);
-            }
-            if let Some(&(sum, n)) = self.clusters.get(i).and_then(|&g| centers.get(g)) {
-                let center = scale(sum, 1.0 / n);
-                *force = add(*force, scale(sub(center, position), config.cohesion));
-            }
-            *force = sub(*force, scale(position, config.gravity));
+        self.hold_regions(&mut forces);
+        for (force, position) in forces.iter_mut().zip(&self.positions) {
+            *force = sub(*force, scale(*position, config.gravity));
             force[2] -= position[2] * config.flatten;
         }
 
@@ -402,7 +382,7 @@ impl ForceGraph {
         // smaller still the longer it runs, so a big graph comes to rest.
         let limit = MAX_STEP * cooling(self.age);
         self.age += 1;
-        let mut speed = 0.0;
+        let before = self.positions.clone();
         let moving = self.velocities.iter_mut().zip(&mut self.positions);
         for ((velocity_slot, position), force) in moving.zip(&forces) {
             let velocity = scale(add(*velocity_slot, *force), config.damping);
@@ -414,10 +394,302 @@ impl ForceGraph {
             };
             *velocity_slot = velocity;
             *position = add(*position, velocity);
-            speed += length.min(limit);
         }
-        speed / count as f32
+        if config.rooms {
+            self.keep_to_rooms();
+        }
+        // How far nodes actually went, once held to their rooms.
+        let moved: f32 = before
+            .iter()
+            .zip(&self.positions)
+            .map(|(&a, &b)| {
+                let delta = sub(b, a);
+                dot(delta, delta).sqrt()
+            })
+            .sum();
+        moved / count as f32
     }
+
+    /// Moves whole crates apart until no two districts overlap, and each module into
+    /// its crate's district; then whole modules apart until no two rooms overlap; then
+    /// brings back any node that left its room to the room's edge. What was moved
+    /// back no longer heads the way it was stopped, so the graph comes to rest
+    /// against its walls.
+    fn keep_to_rooms(&mut self) {
+        let spacing = self.config.link_length;
+        let mut modules = Regions::measure(&self.positions, &self.clusters, self.cluster_count());
+        let rooms: Vec<f32> = modules.counts.iter().map(|&n| room(n, spacing)).collect();
+        let before = modules.middles.clone();
+        if self.crates_apart() {
+            let tops = self.tops_of(&modules);
+            let districts = self.districts(&rooms);
+            let shifts = separate(&tops, &districts, spacing * 2.0);
+            for (cluster, middle) in modules.middles.iter_mut().enumerate() {
+                *middle = add(*middle, shifts[self.tops[cluster]]);
+            }
+        }
+        let shifts = separate(&modules, &rooms, spacing);
+        let moves: Vec<[f32; 3]> = modules
+            .middles
+            .iter()
+            .zip(&before)
+            .zip(&shifts)
+            .map(|((&after, &was), &shift)| add(sub(after, was), shift))
+            .collect();
+        let moving = self.positions.iter_mut().zip(&mut self.velocities);
+        for ((position, velocity), &cluster) in moving.zip(&self.clusters) {
+            let shift = moves[cluster];
+            *position = add(*position, shift);
+            // A module pushed back stops heading into what pushed it.
+            let pushed = dot(shift, shift).sqrt();
+            if pushed > 1e-4 {
+                let back = scale(shift, 1.0 / pushed);
+                let into = dot(*velocity, back).min(0.0);
+                *velocity = sub(*velocity, scale(back, into));
+            }
+            let middle = add(before[cluster], shift);
+            let [x, y, _] = sub(*position, middle);
+            let distance = x.hypot(y);
+            let edge = rooms[cluster] - spacing * 0.5;
+            if distance > edge {
+                let out = [x / distance, y / distance, 0.0];
+                let back = distance - edge;
+                *position = sub(*position, scale(out, back));
+                let outward = dot(*velocity, out).max(0.0);
+                *velocity = sub(*velocity, scale(out, outward));
+            }
+        }
+    }
+
+    /// Whether crates keep to districts of their own: when there are several, and
+    /// their modules are pulled together.
+    fn crates_apart(&self) -> bool {
+        self.config.crate_cohesion > 0.0 && self.top_count() > 1
+    }
+
+    /// Each crate as a region, from its modules: their middle, weighted by size.
+    fn tops_of(&self, modules: &Regions) -> Regions {
+        let mut sums = vec![[0.0_f32; 3]; self.top_count()];
+        let mut counts = vec![0; self.top_count()];
+        for (cluster, &top) in self.tops.iter().enumerate() {
+            let n = modules.counts[cluster];
+            sums[top] = add(sums[top], scale(modules.middles[cluster], n as f32));
+            counts[top] += n;
+        }
+        let middles = sums
+            .iter()
+            .zip(&counts)
+            .map(|(&sum, &n)| scale(sum, 1.0 / (n.max(1) as f32)))
+            .collect();
+        Regions { middles, counts }
+    }
+
+    /// How wide each crate's district is: room for its modules' rooms, loosely packed.
+    fn districts(&self, rooms: &[f32]) -> Vec<f32> {
+        let gap = self.config.link_length;
+        let mut area = vec![0.0_f32; self.top_count()];
+        for (cluster, &top) in self.tops.iter().enumerate() {
+            area[top] += (rooms[cluster] + gap / 2.0).powi(2);
+        }
+        // Discs packed loosely fill about three fifths of the disc round them.
+        area.iter().map(|&a| (a / 0.6).sqrt()).collect()
+    }
+
+    /// Keeps each module together in a room of its own, clear of the others, and
+    /// each crate's modules together when there are several crates. A whole module
+    /// moves as one when pushed, so it stays whole however many calls cross between.
+    fn hold_regions(&self, forces: &mut [[f32; 3]]) {
+        let config = self.config;
+        let modules = Regions::measure(&self.positions, &self.clusters, self.cluster_count());
+        let gap = config.link_length;
+        let rooms: Vec<f32> = modules
+            .counts
+            .iter()
+            .map(|&n| room(n, config.link_length))
+            .collect();
+        // Each module's push, the same for every node in it.
+        let mut moves = if config.separation > 0.0 {
+            keep_apart(&modules, &rooms, gap, config.separation)
+        } else {
+            vec![[0.0; 3]; modules.middles.len()]
+        };
+        if self.crates_apart() {
+            let tops = self.tops_of(&modules);
+            let apart = keep_apart(&tops, &self.districts(&rooms), gap * 2.0, config.separation);
+            for (cluster, (slot, &middle)) in moves.iter_mut().zip(&modules.middles).enumerate() {
+                let top = self.tops[cluster];
+                let inward = scale(sub(tops.middles[top], middle), config.crate_cohesion);
+                *slot = add(add(*slot, inward), apart[top]);
+            }
+        }
+        for (node, force) in forces.iter_mut().enumerate() {
+            let Some(&cluster) = self.clusters.get(node) else {
+                continue;
+            };
+            let position = self.positions[node];
+            let middle = modules.middles[cluster];
+            let inward = sub(middle, position);
+            *force = add(*force, moves[cluster]);
+            *force = add(*force, scale(inward, config.cohesion));
+            let distance = dot(inward, inward).sqrt();
+            let outside = distance - rooms[cluster];
+            if config.containment > 0.0 && outside > 0.0 {
+                *force = add(
+                    *force,
+                    scale(inward, config.containment * outside / distance),
+                );
+            }
+        }
+    }
+}
+
+/// Where each region's nodes are: their middle, and how many.
+struct Regions {
+    middles: Vec<[f32; 3]>,
+    counts: Vec<usize>,
+}
+
+impl Regions {
+    /// Each of `count` regions, from the region of each node.
+    fn measure(positions: &[[f32; 3]], regions: &[usize], count: usize) -> Self {
+        let mut sums = vec![[0.0_f32; 3]; count];
+        let mut counts = vec![0; count];
+        for (position, &region) in positions.iter().zip(regions) {
+            sums[region] = add(sums[region], *position);
+            counts[region] += 1;
+        }
+        let middles = sums
+            .iter()
+            .zip(&counts)
+            .map(|(&sum, &n)| scale(sum, 1.0 / (n.max(1) as f32)))
+            .collect();
+        Self { middles, counts }
+    }
+}
+
+/// How wide a room `count` functions need, `spacing` apart.
+#[must_use]
+pub(crate) fn room(count: usize, spacing: f32) -> f32 {
+    spacing * (0.5 + 0.55 * (count as f32).sqrt())
+}
+
+/// How each region must move so no two of their discs, `radii` wide, come closer than
+/// `gap` across the plane facing the view: two that do push apart, harder the more
+/// they overlap, the smaller moving more.
+fn keep_apart(regions: &Regions, radii: &[f32], gap: f32, strength: f32) -> Vec<[f32; 3]> {
+    let count = regions.middles.len();
+    let mut moves = vec![[0.0_f32; 3]; count];
+    for a in 0..count {
+        for b in (a + 1)..count {
+            let (n_a, n_b) = (regions.counts[a] as f32, regions.counts[b] as f32);
+            if n_a == 0.0 || n_b == 0.0 {
+                continue;
+            }
+            // Apart in the plane facing the view, so no region hides behind another.
+            let [x, y, _] = sub(regions.middles[a], regions.middles[b]);
+            let delta = [x, y, 0.0];
+            let distance = dot(delta, delta).sqrt().max(0.01);
+            let overlap = radii[a] + radii[b] + gap - distance;
+            if overlap <= 0.0 {
+                continue;
+            }
+            let push = scale(delta, strength * overlap / distance);
+            let total = n_a + n_b;
+            moves[a] = add(moves[a], scale(push, n_b / total));
+            moves[b] = sub(moves[b], scale(push, n_a / total));
+        }
+    }
+    moves
+}
+
+/// How far each region must move, in the plane facing the view, so no two of their
+/// discs, `radii` wide, come closer than `gap`: each overlap is shared out, the smaller
+/// region moving more. Every overlap in a round is worked out before any moves, so
+/// the order regions come in does not push them one way; a few rounds settle what
+/// one move makes overlap anew.
+fn separate(regions: &Regions, radii: &[f32], gap: f32) -> Vec<[f32; 3]> {
+    const ROUNDS: usize = 4;
+    let count = regions.middles.len();
+    let mut middles = regions.middles.clone();
+    for _ in 0..ROUNDS {
+        let mut moves = vec![[0.0_f32; 3]; count];
+        let mut any = false;
+        for a in 0..count {
+            for b in (a + 1)..count {
+                let (n_a, n_b) = (regions.counts[a] as f32, regions.counts[b] as f32);
+                if n_a == 0.0 || n_b == 0.0 {
+                    continue;
+                }
+                let [x, y, _] = sub(middles[a], middles[b]);
+                let distance = x.hypot(y);
+                let overlap = radii[a] + radii[b] + gap - distance;
+                if overlap <= 0.0 {
+                    continue;
+                }
+                // Two on one spot part along a direction fixed by which they are.
+                let along = if distance > 1e-3 {
+                    [x / distance, y / distance, 0.0]
+                } else {
+                    let angle = (a * 7 + b * 13) as f32;
+                    [angle.cos(), angle.sin(), 0.0]
+                };
+                let total = n_a + n_b;
+                moves[a] = add(moves[a], scale(along, overlap * n_b / total));
+                moves[b] = sub(moves[b], scale(along, overlap * n_a / total));
+                any = true;
+            }
+        }
+        if !any {
+            break;
+        }
+        for (middle, shift) in middles.iter_mut().zip(&moves) {
+            *middle = add(*middle, scale(*shift, 0.5));
+        }
+    }
+    middles
+        .iter()
+        .zip(&regions.middles)
+        .map(|(&after, &before)| sub(after, before))
+        .collect()
+}
+
+/// Where each tile starts: its crate somewhere in a ball round the origin, its module
+/// somewhere in its crate, itself somewhere in its module's room, each place fixed by
+/// a name, so the same codebase always starts from the same shape and each module
+/// starts gathered.
+fn seed_positions(
+    map: &CodebaseMap,
+    (clusters, cluster_units): (&[usize], &[Option<UnitId>]),
+    (tops, top_units): (&[usize], &[Option<UnitId>]),
+    spacing: f32,
+) -> Vec<[f32; 3]> {
+    let name = |unit: Option<&Option<UnitId>>, index: usize| {
+        unit.and_then(Option::as_ref)
+            .map_or_else(|| format!("#{index}"), ToString::to_string)
+    };
+    let mut sizes = vec![0; tops.len()];
+    for &cluster in clusters {
+        sizes[cluster] += 1;
+    }
+    let mut top_sizes = vec![0; tops.iter().max().map_or(0, |t| t + 1)];
+    for (cluster, &top) in tops.iter().enumerate() {
+        top_sizes[top] += sizes[cluster];
+    }
+    let world = room(map.tiles.len(), spacing);
+    map.tiles
+        .iter()
+        .zip(clusters)
+        .map(|(tile, &cluster)| {
+            let top = tops[cluster];
+            let crate_seed = seed(&name(top_units.get(top), top), world);
+            let module_seed = seed(
+                &name(cluster_units.get(cluster), cluster),
+                room(top_sizes[top], spacing),
+            );
+            let own = seed(tile.unit.as_str(), room(sizes[cluster], spacing) * 0.7);
+            add(add(crate_seed, module_seed), own)
+        })
+        .collect()
 }
 
 /// A point in a ball of `radius`, fixed by `key`, so the same codebase always starts
@@ -496,6 +768,34 @@ fn module_clusters(system: &System, map: &CodebaseMap) -> (Vec<usize>, Vec<Optio
         })
         .collect();
     (clusters, units)
+}
+
+/// For each cluster, its top: the outermost crate or package holding its module,
+/// numbered in order of first appearance, each with the unit it stands for.
+fn top_clusters(
+    system: &System,
+    cluster_units: &[Option<UnitId>],
+) -> (Vec<usize>, Vec<Option<UnitId>>) {
+    const TOPS: [&str; 2] = ["crate", "package"];
+    let mut numbers: HashMap<Option<UnitId>, usize> = HashMap::new();
+    let mut units = Vec::new();
+    let tops = cluster_units
+        .iter()
+        .map(|unit| {
+            let top = unit.as_ref().and_then(|id| {
+                std::iter::once(system.unit(id)?)
+                    .chain(system.ancestors(id))
+                    .rfind(|u| TOPS.contains(&u.kind.as_str()))
+                    .map(|u| u.id.clone())
+            });
+            let next = numbers.len();
+            *numbers.entry(top.clone()).or_insert_with(|| {
+                units.push(top);
+                next
+            })
+        })
+        .collect();
+    (tops, units)
 }
 
 #[cfg(test)]
@@ -615,6 +915,74 @@ mod tests {
             steps += 1;
             assert!(steps < 3000, "still moving after {steps} steps");
         }
+    }
+
+    /// Two modules of `count` functions each, every one calling every function in
+    /// the other module.
+    fn tangled(count: usize) -> System {
+        let mut units = vec![
+            r#"{ "id": "x:m0", "name": "m0", "kind": "module", "role": "group" }"#.to_owned(),
+            r#"{ "id": "x:m1", "name": "m1", "kind": "module", "role": "group" }"#.to_owned(),
+        ];
+        for module in 0..2 {
+            for i in 0..count {
+                let calls: Vec<String> = (0..count)
+                    .map(|j| {
+                        format!(
+                            r#"{{ "key": "c{j}", "text": "f", "targets": [{{ "unit": "x:m{}f{j}", "certainty": "exact" }}] }}"#,
+                            1 - module
+                        )
+                    })
+                    .collect();
+                units.push(format!(
+                    r#"{{ "id": "x:m{module}f{i}", "name": "f{i}", "kind": "fn", "role": "invocable", "parent": "x:m{module}", "calls": [{}] }}"#,
+                    calls.join(",")
+                ));
+            }
+        }
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        System::new([Document::from_json(&json).unwrap()])
+    }
+
+    #[test]
+    fn modules_keep_to_rooms_of_their_own() {
+        let system = tangled(12);
+        let map = map(&system, &MapConfig::default());
+        let config = ForceConfig {
+            cohesion: 0.15,
+            separation: 0.4,
+            rooms: true,
+            cross_spring: 0.3,
+            ..ForceConfig::default()
+        };
+        let mut graph = ForceGraph::new(&system, &map, config);
+        let mut steps = 0;
+        while graph.step() > 0.002 {
+            steps += 1;
+            assert!(steps < 3000, "still moving after {steps} steps");
+        }
+        let modules = Regions::measure(&graph.positions, &graph.clusters, graph.cluster_count());
+        let spread = |cluster: usize| {
+            graph
+                .positions
+                .iter()
+                .zip(&graph.clusters)
+                .filter(|&(_, &c)| c == cluster)
+                .map(|(p, _)| {
+                    let [x, y, _] = sub(*p, modules.middles[cluster]);
+                    x.hypot(y)
+                })
+                .fold(0.0, f32::max)
+        };
+        let [x, y, _] = sub(modules.middles[0], modules.middles[1]);
+        assert!(
+            spread(0) + spread(1) < x.hypot(y),
+            "however much they call each other, the modules stay apart"
+        );
+        assert!(spread(0) <= room(12, config.link_length));
     }
 
     #[test]

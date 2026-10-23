@@ -208,6 +208,9 @@ impl Clustering {
             Self::Modules => ForceConfig {
                 cohesion: 0.15,
                 separation: SEPARATION,
+                rooms: true,
+                containment: 0.3,
+                crate_cohesion: 0.05,
                 cross_spring: 0.3,
                 ..spread
             },
