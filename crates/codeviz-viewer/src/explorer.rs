@@ -790,8 +790,12 @@ impl Explorer {
     }
 
     /// Puts `side` in the spotlight one call out, then widens it a call at a time
-    /// until it goes all the way, then takes it out.
+    /// until it goes all the way, then takes it out. Nothing on that side, nothing
+    /// to pick out.
     pub(crate) fn widen_spotlight(&mut self, side: Side, now: f32) {
+        if self.furthest(side) == 0 {
+            return;
+        }
         let reach = match self.spotlight {
             Some(on) if on.side == side => match on.reach {
                 Some(reach) if reach < self.furthest(side) => Some(Some(reach + 1)),
@@ -809,6 +813,9 @@ impl Explorer {
     /// Puts all of `side` in the spotlight, out to the entry points or the end of
     /// every call chain, or takes it out when it already is.
     pub(crate) fn spotlight_all(&mut self, side: Side, now: f32) {
+        if self.furthest(side) == 0 {
+            return;
+        }
         self.spotlight = match self.spotlight {
             Some(on) if on.side == side && on.reach.is_none() => None,
             _ => Some(Spotlight {
@@ -1005,10 +1012,11 @@ impl Explorer {
         Some(targets)
     }
 
-    /// Whether the spotlight reaches past what is next to the focus, so that it shows
-    /// its routes and leaves the rest of the graph out.
+    /// Whether the spotlight picks out more than what is next to the focus, so that
+    /// it shows its routes and leaves the rest of the graph out.
     pub(crate) fn routes_only(&self) -> bool {
         self.spotlight.is_some_and(|s| s.reach != Some(1))
+            && self.spotlit_hops().values().any(|&hops| hops > 1)
     }
 
     /// Eases every node towards how fully the lens shows it. Returns whether any moved.
@@ -1442,6 +1450,10 @@ pub(crate) mod tests {
         );
         explorer.spotlight_all(Side::Callers, 4.0);
         assert_eq!(explorer.spotlight(), None);
+
+        explorer.open_at(tile_named(&explorer, "main"));
+        explorer.spotlight_all(Side::Callers, 4.5);
+        assert_eq!(explorer.spotlight(), None, "nothing calls main");
 
         explorer.widen_spotlight(Side::Callees, 5.0);
         explorer.open_at(post);
