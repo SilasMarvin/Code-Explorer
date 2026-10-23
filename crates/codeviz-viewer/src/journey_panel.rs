@@ -1,7 +1,8 @@
 //! The active journey as a flame graph over the graph: time left to right, each call
 //! on the row below its caller. Docked in a corner while the graph has the screen, or
-//! filling the screen below a strip of graph. The cursor, hover and focus are shared
-//! with the graph, so a bar and its node light up together.
+//! filling the screen below a strip of graph. Each bar is painted the color of its
+//! node, and the cursor, hover and focus are shared with the graph, so a bar and its
+//! node light up together.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
@@ -12,8 +13,8 @@ use crate::{
     diff_view::{DiffView, change_color, sign},
     disclosure::Disclose,
     explorer::{Confidence, Explorer, SpanRef, is_conditional, is_handoff},
-    graph_view::{CALLEE, CALLER, Relation, relation},
-    scene::{PALETTE, accent, lane_color},
+    graph_view::node_color,
+    scene::{PALETTE, lane_color},
     ui::{egui_color, short, track_title},
 };
 
@@ -118,16 +119,23 @@ pub(crate) fn extent(explorer: &Explorer) -> (usize, f32) {
     (disclosed.rows(), slots)
 }
 
-/// Draws the panel and handles its input. Returns the cursor bar's rect, for a
-/// tether to its node in the graph.
+/// The bars a tether runs from: the cursor's, and the one under the pointer.
+#[derive(Default)]
+pub(crate) struct Tethers {
+    pub(crate) cursor: Option<egui::Rect>,
+    pub(crate) hovered: Option<egui::Rect>,
+}
+
+/// Draws the panel and handles its input. Returns the bars to tether to their nodes
+/// in the graph.
 pub(crate) fn draw(
     ctx: &egui::Context,
     rect: egui::Rect,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
     diff: Option<&DiffView>,
-) -> Option<egui::Rect> {
-    let mut cursor_bar = None;
+) -> Tethers {
+    let mut tethers = Tethers::default();
     egui::Area::new("journey_panel".into())
         .fixed_pos(rect.min)
         .order(egui::Order::Middle)
@@ -151,9 +159,9 @@ pub(crate) fn draw(
             let content =
                 egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.min.y + HEADER), rect.max)
                     .shrink(PAD);
-            cursor_bar = canvas(ui, content, explorer, panel, diff);
+            tethers = canvas(ui, content, explorer, panel, diff);
         });
-    cursor_bar
+    tethers
 }
 
 /// How much of the journey shows: levels of calls below the root, or everything up to
@@ -244,8 +252,8 @@ fn title(ui: &mut egui::Ui, explorer: &Explorer) {
     let active = explorer.active();
     ui.add(
         egui::Label::new(
-            egui::RichText::new(format!("■ {}", track_title(explorer, active)))
-                .color(egui_color(accent(active)))
+            egui::RichText::new(track_title(explorer, active))
+                .color(egui::Color32::WHITE)
                 .strong(),
         )
         .truncate(),
@@ -275,7 +283,7 @@ fn canvas(
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
     diff: Option<&DiffView>,
-) -> Option<egui::Rect> {
+) -> Tethers {
     let response = ui.interact(
         content,
         ui.id().with("journey_canvas"),
@@ -292,7 +300,7 @@ fn canvas(
             egui::FontId::proportional(13.0),
             MUTED,
         );
-        return None;
+        return Tethers::default();
     }
     // Only what is disclosed is laid out, a slot per call.
     let disclosed = explorer.disclosure();
@@ -369,7 +377,7 @@ fn canvas(
         .and_then(|c| track.span(c.span))
         .map_or(0, |s| s.enter);
     let graph_focus = explorer.graph_focus();
-    let reach = explorer.reach();
+    let stepping = cursor.is_some_and(|c| track.journey().is_some_and(|j| j.root() != c.span));
     let tile_of = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
 
     let bars: Vec<Bar> = scene
@@ -444,9 +452,15 @@ fn canvas(
         if mouse.is_some_and(|p| bar.rect.contains(p)) {
             hovered = Some(bar.span);
         }
-        let base = egui_color(lane_color(track.color(bar.span) % PALETTE.len()));
+        let tile = tile_of(bar.span);
+        let base = egui_color(tile.map_or_else(
+            || lane_color(track.color(bar.span) % PALETTE.len()),
+            |tile| node_color(explorer, diff, tile),
+        ));
         let faint = Confidence::of(span) == Confidence::Guessed || is_handoff(span);
-        let future = span.enter > cursor_enter;
+        // What runs after the cursor dims once you step through it; at the start,
+        // everything shows in full.
+        let future = stepping && span.enter > cursor_enter;
         let (fill, text) = if faint {
             (base.gamma_multiply(0.22), MUTED)
         } else if future {
@@ -459,13 +473,8 @@ fn canvas(
         };
         painter.rect_filled(bar.rect, 3.0, fill);
 
-        // The focus's direct callers and callees, underlined in their colors.
-        let tile = tile_of(bar.span);
-        let related = tile
-            .zip(reach)
-            .and_then(|(tile, reach)| relation(reach, tile));
-        // Under a diff, what changed instead, outlined too; a call that is new, though
-        // what it calls is not, counts as added.
+        // Under a diff, what changed is outlined too; a call that is new, though what
+        // it calls is not, counts as added.
         let new_call = diff
             .zip(span.parent.and_then(tile_of))
             .zip(tile)
@@ -474,27 +483,15 @@ fn canvas(
             .zip(tile)
             .and_then(|(diff, tile)| diff.change(tile))
             .or(new_call.then_some(Change::Added));
-        let underline = match (change, related) {
-            (Some(change), _) => Some(change_color(change)),
-            _ if diff.is_some() => None,
-            (None, Some(Relation::Upstream(1))) => Some(CALLER),
-            (None, Some(Relation::Downstream(1))) => Some(CALLEE),
-            _ => None,
-        };
-        if let Some(change) = change {
-            painter.rect_stroke(
-                bar.rect,
-                3.0,
-                egui::Stroke::new(1.5, egui_color(change_color(change))),
-                egui::StrokeKind::Inside,
-            );
-        }
-        if let Some(color) = underline {
-            let line = egui::Rect::from_min_max(
-                egui::pos2(bar.rect.min.x, bar.rect.max.y - 3.0),
-                bar.rect.max,
-            );
-            painter.rect_filled(line, 1.0, egui_color(color));
+        // A call that only sometimes runs is outlined in dashes, in its change's color
+        // under a diff.
+        let outline = change.map(|c| egui::Stroke::new(1.5, egui_color(change_color(c))));
+        if is_conditional(span) {
+            let stroke =
+                outline.unwrap_or(egui::Stroke::new(1.2, egui::Color32::from_white_alpha(190)));
+            dashed_outline(&painter, bar.rect.shrink(0.75), stroke);
+        } else if let Some(stroke) = outline {
+            painter.rect_stroke(bar.rect, 3.0, stroke, egui::StrokeKind::Inside);
         }
 
         // How it can end, marked at its right end: green returns, red fails.
@@ -567,9 +564,16 @@ fn canvas(
                 egui::FontId::proportional(12.5),
                 text,
             );
-        } else if bar.rect.width() >= 6.5 * number.len() as f32 + 3.0 {
+        } else {
+            // Beside the badge, not under it.
+            let free = badge.map_or(bar.rect, |badge| {
+                egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x, bar.rect.max.y))
+            });
+            if free.width() < 6.5 * number.len() as f32 + 3.0 {
+                continue;
+            }
             painter.text(
-                bar.rect.center(),
+                free.center(),
                 egui::Align2::CENTER_CENTER,
                 number,
                 egui::FontId::proportional(11.5),
@@ -586,15 +590,16 @@ fn canvas(
         }
     }
 
-    // Red dots where other outcomes split off; click one to follow it.
+    // A red end on the bars where other outcomes split off, inside the bar so it
+    // cannot be read as its neighbor's; click one to follow it.
     let mut divergence_hit = None;
     for divergence in track.divergences() {
         let Some(rect) = rect_of(divergence.span) else {
             continue;
         };
-        let dot = egui::pos2(rect.max.x - 6.0, rect.min.y - 1.0);
-        painter.circle_filled(dot, 4.0, ERROR);
-        if mouse.is_some_and(|p| p.distance(dot) < 7.0) {
+        let mark = egui::Rect::from_min_max(egui::pos2(rect.max.x - 5.0, rect.min.y), rect.max);
+        painter.rect_filled(mark, 2.0, ERROR);
+        if mouse.is_some_and(|p| mark.expand(3.0).contains(p)) {
             divergence_hit = Some((divergence.scenario, divergence.label.clone()));
         }
     }
@@ -644,6 +649,9 @@ fn canvas(
         response.clone().on_hover_text(tip);
     }
 
+    let hovered_rect = hovered
+        .and_then(rect_of)
+        .filter(|rect| content.intersects(*rect));
     // Hovering a bar lights its node in the graph.
     let hovered_ref = hovered.map(|span| SpanRef {
         track: explorer.active(),
@@ -676,7 +684,26 @@ fn canvas(
             }
         }
     }
-    cursor_rect
+    Tethers {
+        cursor: cursor_rect,
+        hovered: hovered_rect,
+    }
+}
+
+/// A rectangle's outline in dashes.
+fn dashed_outline(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    // Dashes along an unbounded line never end.
+    if !rect.is_finite() {
+        return;
+    }
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    painter.extend(egui::Shape::dashed_line(&corners, stroke, 4.0, 3.0));
 }
 
 #[cfg(test)]

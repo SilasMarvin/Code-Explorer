@@ -1,5 +1,10 @@
-//! The graph camera: a perspective view orbiting a point. Left-drag orbits, right-drag
-//! pans, scroll or pinch zooms. Moves to a new point, distance or angle ease in.
+//! The graph camera: a perspective view orbiting a point, driven as Blender's viewport
+//! is. On a trackpad, two fingers orbit, shift and two fingers pan, and a pinch or
+//! ctrl and two fingers zoom; with a mouse, the wheel zooms, left- or middle-drag
+//! orbits and right- or shift-drag pans. Zoom goes towards the pointer, so you can
+//! zoom into any part of the graph. Panning or zooming away lets go of the focused
+//! node until you click one or press F. Moves to a new point, distance or angle ease
+//! in.
 
 use bevy::{
     camera::{CameraOutputMode, visibility::RenderLayers},
@@ -10,6 +15,7 @@ use bevy::{
     post_process::bloom::Bloom,
     prelude::*,
     render::render_resource::BlendState,
+    window::PrimaryWindow,
 };
 use bevy_egui::{EguiGlobalSettings, PrimaryEguiContext, input::egui_wants_any_pointer_input};
 
@@ -50,6 +56,9 @@ pub(crate) struct OrbitCamera {
     goal_distance: Option<f32>,
     /// Angles being eased towards, until the viewer orbits by hand.
     goal_angles: Option<(f32, f32)>,
+    /// Whether the viewer has panned or zoomed away from the focused node, so the
+    /// camera stops holding it in the middle.
+    pub(crate) free: bool,
 }
 
 impl Default for OrbitCamera {
@@ -62,6 +71,7 @@ impl Default for OrbitCamera {
             pitch: ANGLED.1,
             goal_distance: None,
             goal_angles: None,
+            free: false,
         }
     }
 }
@@ -71,6 +81,32 @@ impl OrbitCamera {
     pub(crate) fn glide_to(&mut self, target: Vec3, distance: f32) {
         self.target = target;
         self.goal_distance = Some(distance);
+        self.free = false;
+    }
+
+    /// Moves the point orbited by `offset` at once, letting go of the focus.
+    fn pan(&mut self, offset: Vec3) {
+        self.target += offset;
+        self.focus += offset;
+        self.free = true;
+    }
+
+    /// Zooms by `factor` (below 1 is nearer), towards `toward` when given: the whole
+    /// view scales about that point, so it stays where it is on screen.
+    fn zoom(&mut self, factor: f32, toward: Option<Vec3>) {
+        let distance = (self.distance * factor).clamp(2.0, 4_000.0);
+        if let Some(point) = toward {
+            self.pan((self.focus - point) * (distance / self.distance - 1.0));
+        }
+        self.distance = distance;
+        self.goal_distance = None;
+    }
+
+    /// Turns by a drag of `delta` pixels.
+    fn orbit(&mut self, delta: Vec2) {
+        self.goal_angles = None;
+        self.yaw -= delta.x * ORBIT_SPEED;
+        self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
     /// Eases round to `(yaw, pitch)`.
@@ -131,35 +167,68 @@ fn spawn_camera(
 
 fn camera_input(
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     mut pinches: MessageReader<PinchGesture>,
-    mut cameras: Query<(&mut OrbitCamera, &Transform)>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut cameras: Query<(&mut OrbitCamera, &Transform, &Camera, &GlobalTransform)>,
 ) {
-    // A trackpad pinch zooms like the wheel: spread to zoom in.
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let ctrl = keys.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]);
+    // A trackpad pinch zooms: spread to zoom in.
     let pinch: f32 = pinches.read().map(|p| p.0).sum();
-    for (mut camera, transform) in &mut cameras {
-        let lines = match scroll.unit {
-            MouseScrollUnit::Line => scroll.delta.y,
-            MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
-        };
-        let zoom = (1.0 - lines * 0.1) * (1.0 - pinch * 1.5);
+    for (mut camera, transform, view, global) in &mut cameras {
+        // What a pixel of drag moves the view by, at the depth of the point orbited.
+        let pan_scale = camera.distance * 0.0015;
+        let pan =
+            |delta: Vec2| (transform.right() * -delta.x + transform.up() * delta.y) * pan_scale;
+        // Where the pointer is, at the depth of the point orbited.
+        let pointer = window.cursor_position().and_then(|cursor| {
+            let corner = view.logical_viewport_rect().map_or(Vec2::ZERO, |r| r.min);
+            let ray = view.viewport_to_world(global, cursor - corner).ok()?;
+            let ahead = transform.forward();
+            let along = ray.direction.dot(*ahead);
+            (along.abs() > 1e-4).then(|| {
+                ray.origin + *ray.direction * ((camera.focus - ray.origin).dot(*ahead) / along)
+            })
+        });
+        let mut zoom = 1.0 - pinch * 1.5;
+        match scroll.unit {
+            // A mouse wheel zooms.
+            MouseScrollUnit::Line => zoom *= 1.0 - scroll.delta.y * 0.1,
+            // Two fingers on a trackpad: zoom with ctrl, pan with shift, else orbit.
+            MouseScrollUnit::Pixel if scroll.delta != Vec2::ZERO => {
+                if ctrl {
+                    zoom *= 1.0 - scroll.delta.y * 0.0025;
+                } else if shift {
+                    let offset = pan(scroll.delta);
+                    camera.pan(offset);
+                } else {
+                    camera.orbit(scroll.delta);
+                }
+            }
+            MouseScrollUnit::Pixel => {}
+        }
         if (zoom - 1.0).abs() > f32::EPSILON {
-            camera.goal_distance = None;
-            camera.distance = (camera.distance * zoom.clamp(0.5, 2.0)).clamp(2.0, 4_000.0);
+            camera.zoom(zoom.clamp(0.5, 2.0), pointer);
         }
-        if buttons.pressed(MouseButton::Left) && motion.delta != Vec2::ZERO {
-            camera.goal_angles = None;
-            camera.yaw -= motion.delta.x * ORBIT_SPEED;
-            camera.pitch =
-                (camera.pitch - motion.delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        if motion.delta == Vec2::ZERO {
+            continue;
         }
-        if buttons.pressed(MouseButton::Right) {
-            let scale = camera.distance * 0.0015;
-            let offset =
-                (transform.right() * -motion.delta.x + transform.up() * motion.delta.y) * scale;
-            camera.target += offset;
-            camera.focus += offset;
+        let orbiting = buttons.any_pressed([MouseButton::Left, MouseButton::Middle]) && !shift;
+        let panning = buttons.pressed(MouseButton::Right)
+            || shift && buttons.any_pressed([MouseButton::Left, MouseButton::Middle]);
+        if panning {
+            let offset = pan(motion.delta);
+            camera.pan(offset);
+        } else if orbiting {
+            camera.orbit(motion.delta);
         }
     }
 }

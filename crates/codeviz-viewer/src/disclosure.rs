@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use codeviz_core::SpanId;
 use codeviz_layout::CodebaseMap;
 
-use crate::explorer::Track;
+use crate::explorer::{Track, is_conditional};
 
 /// How much of the active journey shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,6 +40,12 @@ pub(crate) struct Disclosed {
     levels: HashMap<SpanId, u32>,
     /// The nodes shown, each with the numbers of its spans.
     tiles: HashMap<usize, Vec<String>>,
+    /// Shown spans where another outcome splits off: where the failure happens, or the
+    /// nearest shown call it happens under.
+    fails: HashSet<SpanId>,
+    /// Nodes that can fail, and nodes every shown run of which is conditional.
+    failing_tiles: HashSet<usize>,
+    sometimes_tiles: HashSet<usize>,
 }
 
 impl Disclosed {
@@ -106,6 +112,31 @@ impl Disclosed {
             }
             disclosed.children.insert(span, children);
         }
+        disclosed.fails = track
+            .divergences()
+            .iter()
+            .filter_map(|divergence| {
+                std::iter::successors(Some(divergence.span), |&s| journey.span(s)?.parent)
+                    .find(|s| disclosed.numbers.contains_key(s))
+            })
+            .collect();
+        let mut always = HashSet::new();
+        for &span in disclosed.numbers.keys() {
+            let Some(tile) = tile(span) else {
+                continue;
+            };
+            if disclosed.fails.contains(&span) {
+                disclosed.failing_tiles.insert(tile);
+            }
+            if journey.span(span).is_some_and(is_conditional) {
+                disclosed.sometimes_tiles.insert(tile);
+            } else {
+                always.insert(tile);
+            }
+        }
+        disclosed
+            .sometimes_tiles
+            .retain(|tile| !always.contains(tile));
         let mut numbered: Vec<(&SpanId, &String)> = disclosed.numbers.iter().collect();
         numbered.sort();
         for (&span, number) in numbered {
@@ -129,6 +160,30 @@ impl Disclosed {
         self.numbers.get(&span).map(String::as_str)
     }
 
+    /// Every shown call with its number, the root's (empty) included, in no order.
+    pub(crate) fn numbered(&self) -> impl Iterator<Item = (SpanId, &str)> {
+        self.numbers
+            .iter()
+            .map(|(&span, number)| (span, number.as_str()))
+    }
+
+    /// Whether a shown span can fail: where another outcome splits off from it, or from
+    /// something folded under it.
+    pub(crate) fn fails(&self, span: SpanId) -> bool {
+        self.fails.contains(&span)
+    }
+
+    /// Whether a shown node can fail.
+    pub(crate) fn tile_fails(&self, tile: usize) -> bool {
+        self.failing_tiles.contains(&tile)
+    }
+
+    /// Whether a shown node runs only under a condition or in a loop, every time the
+    /// journey reaches it.
+    pub(crate) fn tile_sometimes(&self, tile: usize) -> bool {
+        self.sometimes_tiles.contains(&tile)
+    }
+
     /// The calls a shown span makes, closures flattened, in order.
     pub(crate) fn children(&self, span: SpanId) -> &[SpanId] {
         self.children.get(&span).map_or(&[], Vec::as_slice)
@@ -140,11 +195,6 @@ impl Disclosed {
             .iter()
             .filter(|&&c| !self.shows(c))
             .count()
-    }
-
-    /// Levels of calls between the root and a shown span.
-    pub(crate) fn level(&self, span: SpanId) -> Option<u32> {
-        self.levels.get(&span).copied()
     }
 
     /// The nodes shown, each with the numbers of the calls that run it.

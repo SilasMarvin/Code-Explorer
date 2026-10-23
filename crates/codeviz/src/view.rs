@@ -69,9 +69,19 @@ pub(crate) struct Display {
     /// Open with this function (entry label or unit id suffix) focused in the graph.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
+    /// Open the journey this many levels deep instead of one.
+    #[arg(long, value_name = "LEVELS")]
+    depth: Option<u32>,
+    /// Draw only the graph and the journey, without the panels and cards around them.
+    #[arg(long)]
+    bare: bool,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
+    /// With --screenshot, keys to press first, separated by spaces: `o`, `.`, `up`,
+    /// `shift+]`.
+    #[arg(long, value_name = "KEYS", requires = "screenshot")]
+    keys: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -226,8 +236,17 @@ pub(crate) fn open(
     if args.show_unchanged {
         viewer = viewer.with_unchanged();
     }
+    if let Some(depth) = args.depth {
+        viewer = viewer.with_depth(depth);
+    }
+    if args.bare {
+        viewer = viewer.bare();
+    }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
+    }
+    if let Some(keys) = &args.keys {
+        viewer = viewer.with_keys(keys).map_err(anyhow::Error::msg)?;
     }
     if viewer.run().is_error() {
         bail!("viewer exited with an error");

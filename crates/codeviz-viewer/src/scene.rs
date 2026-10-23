@@ -6,11 +6,11 @@ use bevy_egui::input::egui_wants_any_keyboard_input;
 
 use crate::{
     disclosure::Disclose,
-    explorer::{Autoplay, Clustering, Explorer, SpanRef, Step, Track},
+    explorer::{Autoplay, Clustering, Explorer, Side, SpanRef, Step, Track},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
-    ui::KeyHelp,
+    ui::{Chrome, KeyHelp},
 };
 
 pub(crate) struct ScenePlugin;
@@ -33,6 +33,7 @@ impl Plugin for ScenePlugin {
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::follow_focus,
                 graph_view::frame_reveal,
+                graph_view::frame_spotlight,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
             )
@@ -60,17 +61,19 @@ pub(crate) fn accent(track: usize) -> Color {
 #[derive(Component, Debug)]
 pub(crate) struct Tile(pub(crate) usize);
 
-/// Container colors: pale, low-chroma hues that tell containers apart without being
-/// mistaken for the saturated amber, blue and accents that carry meaning.
+/// Module colors: a node's fill, its module's ring and its journey bar, distinct
+/// enough that a bar finds its node by color. None is near the violet and blue that
+/// links use to say which way a call runs, nor the orange and red that mark the
+/// journey and removals, so a module's color never reads as one of those.
 pub(crate) const PALETTE: [(f32, f32, f32); 8] = [
-    (0.66, 0.62, 0.84),
-    (0.62, 0.78, 0.64),
-    (0.84, 0.62, 0.68),
-    (0.56, 0.76, 0.78),
-    (0.82, 0.77, 0.58),
-    (0.64, 0.67, 0.76),
-    (0.72, 0.74, 0.52),
-    (0.80, 0.67, 0.61),
+    (0.36, 0.80, 0.72),
+    (0.93, 0.56, 0.72),
+    (0.76, 0.80, 0.36),
+    (0.66, 0.78, 0.60),
+    (0.70, 0.70, 0.60),
+    (0.90, 0.84, 0.50),
+    (0.48, 0.82, 0.48),
+    (0.96, 0.74, 0.86),
 ];
 
 pub(crate) fn lane_color(lane: usize) -> Color {
@@ -186,7 +189,14 @@ const DIGITS: [KeyCode; 9] = [
 /// The arrows walk the journey's call tree: left and right between the calls one
 /// caller makes, down into a call, up to its caller. The brackets step through time
 /// one call at a time, the way the journey actually runs.
-fn journey_step(keys: &ButtonInput<KeyCode>) -> Option<Step> {
+fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
+    // With shift, ] steps over a call and ↑ steps out of it, as a debugger does.
+    if shift && keys.just_pressed(KeyCode::BracketRight) {
+        return Some(Step::Over);
+    }
+    if shift && keys.just_pressed(KeyCode::ArrowUp) {
+        return Some(Step::Out);
+    }
     [
         (KeyCode::ArrowRight, Step::Next),
         (KeyCode::ArrowLeft, Step::Previous),
@@ -289,17 +299,28 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
 
 fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     mut explorer: ResMut<Explorer>,
     mut autoplay: ResMut<Autoplay>,
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
+    mut chrome: ResMut<Chrome>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if let Some(step) = journey_step(&keys) {
+    if let Some(step) = journey_step(&keys, shift) {
         autoplay.playing = false;
         explorer.step(step);
     }
     graph_navigation(&keys, &mut explorer, shift);
+    // I and O pick out what calls into the focus and what it calls out to.
+    for (key, side) in [
+        (KeyCode::KeyI, Side::Callers),
+        (KeyCode::KeyO, Side::Callees),
+    ] {
+        if keys.just_pressed(key) {
+            explorer.toggle_spotlight(side, time.elapsed_secs());
+        }
+    }
     if keys.just_pressed(KeyCode::Space) {
         autoplay.playing = !autoplay.playing;
     }
@@ -337,8 +358,14 @@ fn keyboard(
             PanelMode::Hidden | PanelMode::Docked => PanelMode::Full,
         };
     }
-    if keys.just_pressed(KeyCode::Slash) || keys.just_pressed(KeyCode::KeyH) {
+    if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
+    }
+    if keys.just_pressed(KeyCode::KeyS) {
+        chrome.side = !chrome.side;
+    }
+    if keys.just_pressed(KeyCode::Slash) {
+        chrome.search = true;
     }
 }
 

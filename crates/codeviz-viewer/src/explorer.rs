@@ -228,6 +228,13 @@ const SETTLE_NOW_STEPS: usize = 600;
 /// Below this mean speed the graph counts as settled and stops simulating.
 const SETTLED_SPEED: f32 = 0.002;
 
+/// Either side of the focus: what calls it, or what it calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Side {
+    Callers,
+    Callees,
+}
+
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
     system: System,
@@ -272,6 +279,9 @@ pub(crate) struct Explorer {
     /// Nodes focused before the current one, most recent last.
     focus_history: Vec<usize>,
     pub(crate) hovered_tile: Option<usize>,
+    /// What calls the focus, or what it calls, picked out and brought into view, and
+    /// when, in seconds of app time.
+    spotlight: Option<(Side, f32)>,
     /// Lane label to color index, in order of first appearance across journeys.
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever a journey is rebuilt.
@@ -326,6 +336,7 @@ impl Explorer {
             disclosure_epoch: 0,
             disclosure_cache: Mutex::new(None),
             hovered_tile: None,
+            spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
         };
@@ -645,6 +656,7 @@ impl Explorer {
             self.set_root(unit);
         }
         self.graph_focus = Some(tile);
+        self.spotlight = None;
         self.expanded.clear();
         self.disclosure_epoch += 1;
         if let Disclose::Depth(_) = self.disclose {
@@ -738,6 +750,34 @@ impl Explorer {
         callers
     }
 
+    /// Which side of the focus is in the spotlight, and since when.
+    pub(crate) fn spotlight(&self) -> Option<(Side, f32)> {
+        self.spotlight
+    }
+
+    /// Puts `side` in the spotlight at `now`, or takes it out when it already is.
+    pub(crate) fn toggle_spotlight(&mut self, side: Side, now: f32) {
+        self.spotlight = match self.spotlight {
+            Some((on, _)) if on == side => None,
+            _ => Some((side, now)),
+        };
+    }
+
+    /// The nodes in the spotlight: the focus's callers or its callees, each once.
+    pub(crate) fn spotlit(&self) -> Vec<usize> {
+        let (Some((side, _)), Some(focus)) = (self.spotlight, self.graph_focus()) else {
+            return Vec::new();
+        };
+        let mut tiles: Vec<usize> = match side {
+            Side::Callers => self.graph.callers(focus).collect(),
+            Side::Callees => self.graph.callees(focus).collect(),
+        };
+        tiles.sort_unstable();
+        tiles.dedup();
+        tiles.retain(|&t| t != focus);
+        tiles
+    }
+
     /// Returns to the node opened before this one. Returns whether there was one.
     pub(crate) fn focus_back(&mut self) -> bool {
         let Some(tile) = self.focus_history.pop() else {
@@ -749,6 +789,7 @@ impl Explorer {
 
     /// Lets the focus follow the journey's cursor again.
     pub(crate) fn unfocus(&mut self) {
+        self.spotlight = None;
         if let Some(previous) = self.graph_focus.take() {
             self.focus_history.push(previous);
         }
@@ -798,8 +839,9 @@ impl Explorer {
         } else {
             self.lens.targets(&self.graph, &self.seeds())?
         };
-        // The disclosed journey always shows: it is what you opened.
-        for tile in self.disclosed_tiles().into_keys() {
+        // The disclosed journey always shows: it is what you opened. So does what the
+        // spotlight picks out.
+        for tile in self.disclosed_tiles().into_keys().chain(self.spotlit()) {
             if let Some(target) = targets.get_mut(tile) {
                 *target = 1.0;
             }
@@ -885,12 +927,6 @@ impl Explorer {
             .cluster_unit(cluster)
             .and_then(|id| self.any_unit(id))
             .map_or_else(String::new, |unit| unit.name.clone())
-    }
-
-    /// The color index for a container.
-    pub(crate) fn group_color(&self, group: usize) -> Option<usize> {
-        let unit = self.map.groups.get(group)?.unit.as_ref()?;
-        self.lane_colors.get(unit.as_str()).copied()
     }
 
     /// Gives every container a color, after those the journeys use.
@@ -1116,14 +1152,14 @@ pub(crate) fn is_handoff(span: &Span) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use codeviz_ir::Document;
 
     use super::*;
     use crate::lens::Measure;
 
     /// `main -> (a -> c), b`
-    fn explorer() -> Explorer {
+    pub(crate) fn explorer() -> Explorer {
         let unit = |name: &str, calls: &[&str]| {
             let calls: Vec<String> = calls
                 .iter()

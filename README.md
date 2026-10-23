@@ -24,19 +24,28 @@ codeviz diff v1..v2 --summary        # print the changes instead
 ```
 
 The codebase floats as a graph, one node per function, each module gathered in its own
-faint ring. Click a node and the camera orbits it, and its journey opens docked as a
-flame graph: what it calls directly first, numbered `1`, `2`, … in the flame graph, the
-outline and on the graph's labels alike, so a bar and its node match at a glance.
-`,`/`.` show a level less or more, a bar's `+N` opens the calls folded under it, and
-`V` switches to showing calls only as the cursor reaches them. A closure counts as part
-of the function around it. What calls the focus lights amber, what it calls blue.
-Digits walk to its nth call, shift+digit to its nth caller,
-`-` and `=` reveal less or more around a starting point, the focus, a diff's changes
-or the active journey (`L` switches), measured in calls, distance in the graph, or a
-blend of both (`G` switches); what is out of reach dims, then shrinks to a speck. `Q`
-jumps between everything, two steps and one. In the journey, `←`/`→` move
-between calls by the same caller, `↓`/`↑` go in and out, `[`/`]` step through time.
-`H` lists every key.
+ring. Click a node and the camera orbits it, and its journey opens docked as a flame
+graph: what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
+labels alike. `,`/`.` show a level less or more, a bar's `+N` opens the calls folded
+under it, and `V` switches to showing calls only as the cursor reaches them. A closure
+counts as part of the function around it.
+
+Each color says one thing. A link's color says which way a call runs: violet into the
+focus, blue out of it, with dots flowing along it. A node's fill says where it lives,
+its module, the same color as its ring; under a diff it says what changed instead. A
+journey bar is filled exactly like its node, and its number sits on a badge of that
+color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
+to it. `I` picks out everything that calls the focus and `O` everything it calls,
+pulling the camera back only as far as it takes to show them all.
+
+Digits walk to the focus's nth call, shift+digit to its nth caller, `-` and `=` reveal
+less or more around a starting point, the focus, a diff's changes or the active
+journey (`L` switches), measured in calls, distance in the graph, or a blend of both
+(`G` switches); what is out of reach dims, then shrinks to a speck. `Q` jumps between
+everything, two steps and one. In the journey, `←`/`→` move between calls by the same
+caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a function,
+`S` opens the side panel (the view's settings, outcomes, source and details), `H`
+lists every key.
 
 ## Diffs
 
@@ -46,7 +55,7 @@ part of the function that defines them, and a function that moved or was renamed
 (found by the IR's `aliases`, an equal content hash, or the same kind, parent and
 callees) is one node, not a removal and an addition. `D` cycles three views:
 
-- **Status**: added (green), rewritten (gold), removed (red ghosts), moved (blue); new
+- **Status**: added (green), rewritten (yellow), removed (red ghosts), moved (grey); new
   calls as arrows, removed calls dashed.
 - **Impact**: everything that can reach a change, hotter the closer, out to the entry
   points it affects (or, without declared entries, the functions nothing calls).
@@ -54,6 +63,23 @@ callees) is one node, not a removal and an addition. `D` cycles three views:
 
 A diff opens showing only what changed, the focus and the journey's root; `C` (or
 `--show-unchanged`) brings back everything else. Focusing a node shows its old and new source as a line diff.
+
+## Readability
+
+`eval/readability` measures how much of a view a reader gets right from its screenshot
+alone. Each scenario in `scenarios.json` renders bare (`--bare`: the graph and the
+journey, nothing else), and `--screenshot` writes `shot.truth.json` beside the image:
+the focus, every disclosed call with its number and module, whether it can fail or only
+sometimes runs, how many calls it folds away, and what a diff changed. `--keys` presses
+keys first (`--keys "i"`, `--keys ". . o"`), so a scenario can show a view you reach by
+hand. From that, `readability.py` writes questions with their answers (call order,
+nesting, folding, failures, conditions, callers, which module a call lives in, changes)
+and grades what readers answer, by aspect, against the previous run.
+
+The `readability` workflow (`.claude/workflows/readability.js`) does the whole loop with
+agents as readers: render, a Sonnet and a Haiku reader per scenario who see only the
+image, then the report. `mise run readability-render` and `mise run readability-grade` run the two
+halves by hand.
 
 ## The model
 

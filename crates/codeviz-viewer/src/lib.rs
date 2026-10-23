@@ -20,6 +20,7 @@ mod journey_panel;
 mod lens;
 mod scene;
 mod source_diff;
+mod truth;
 mod ui;
 
 use std::path::PathBuf;
@@ -44,6 +45,8 @@ pub struct Viewer {
     options: JourneyOptions,
     title: String,
     screenshot: Option<PathBuf>,
+    /// Keys a screenshot presses first, once the scene settles.
+    keys: Vec<capture::Press>,
     scenario: Option<usize>,
     step: usize,
     also: Vec<UnitId>,
@@ -55,6 +58,10 @@ pub struct Viewer {
     /// Whether a diff opens showing only what changed.
     changes_only: bool,
     focus: Option<UnitId>,
+    /// How many levels of the opened journey show at first.
+    depth: Option<u32>,
+    /// Whether only the graph and the journey draw, without the panels and cards.
+    bare: bool,
     diff: Option<Comparison>,
 }
 
@@ -77,6 +84,7 @@ impl Viewer {
             options: JourneyOptions::default(),
             title: "codeviz".to_owned(),
             screenshot: None,
+            keys: Vec::new(),
             scenario: None,
             step: 0,
             also: Vec::new(),
@@ -86,6 +94,8 @@ impl Viewer {
             lens_source: false,
             changes_only: true,
             focus: None,
+            depth: None,
+            bare: false,
             diff: None,
         }
     }
@@ -218,6 +228,20 @@ impl Viewer {
         self
     }
 
+    /// Opens the journey this many levels deep instead of one.
+    #[must_use]
+    pub fn with_depth(mut self, depth: u32) -> Self {
+        self.depth = Some(depth);
+        self
+    }
+
+    /// Draws only the graph and the journey, without the panels and cards around them.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -237,6 +261,20 @@ impl Viewer {
     pub fn with_screenshot(mut self, path: impl Into<PathBuf>) -> Self {
         self.screenshot = Some(path.into());
         self
+    }
+
+    /// Keys to press before the screenshot, once the scene settles, separated by
+    /// spaces: `o`, `.`, `up`, `shift+]`.
+    ///
+    /// # Errors
+    ///
+    /// Names the first key it cannot read.
+    pub fn with_keys(mut self, keys: &str) -> Result<Self, String> {
+        self.keys = keys
+            .split_whitespace()
+            .map(|key| capture::Press::parse(key).ok_or_else(|| format!("unknown key `{key}`")))
+            .collect::<Result<_, _>>()?;
+        Ok(self)
     }
 
     fn explorer(&mut self) -> Explorer {
@@ -301,6 +339,9 @@ impl Viewer {
             explorer.refresh_reach();
             view
         });
+        if let Some(depth) = self.depth {
+            explorer.set_disclose(disclosure::Disclose::Depth(depth));
+        }
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -321,12 +362,19 @@ impl Viewer {
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
         .insert_resource(JourneyPanel::new(self.panel))
+        .insert_resource(ui::Chrome {
+            bare: self.bare,
+            ..default()
+        })
         .init_resource::<Autoplay>();
         if let Some(diff) = diff {
             app.insert_resource(diff);
         }
         if let Some(path) = self.screenshot {
-            app.add_plugins(capture::CapturePlugin(path));
+            app.add_plugins(capture::CapturePlugin {
+                path,
+                keys: self.keys,
+            });
         }
         app.run()
     }

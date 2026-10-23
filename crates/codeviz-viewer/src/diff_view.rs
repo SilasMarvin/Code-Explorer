@@ -29,8 +29,10 @@ use crate::{
 
 pub(crate) const ADDED: Color = Color::srgb(0.32, 0.95, 0.5);
 pub(crate) const REMOVED: Color = Color::srgb(1.0, 0.34, 0.34);
-pub(crate) const MODIFIED: Color = Color::srgb(1.0, 0.8, 0.22);
-pub(crate) const MOVED: Color = Color::srgb(0.42, 0.78, 1.0);
+/// Yellow rather than orange, and moved grey rather than blue, to stay clear of the
+/// violet and blue that say which way a call runs.
+pub(crate) const MODIFIED: Color = Color::srgb(1.0, 0.86, 0.3);
+pub(crate) const MOVED: Color = Color::srgb(0.8, 0.82, 0.9);
 
 /// Steps each version's own layout runs from the shared one.
 const VERSION_STEPS: usize = 160;
@@ -514,14 +516,22 @@ pub(crate) fn diff_look(explorer: &Explorer, view: &DiffView, tile: usize) -> No
     }
     match (view.style, view.impact(tile)) {
         (DiffStyle::Impact, Some(hops)) => NodeLook::Impacted(hops.min(3)),
-        _ => NodeLook::Faded(explorer.tile_color(tile) % PALETTE.len()),
+        // Near the focus but left alone: neutral, so where it sits still reads.
+        _ => explorer
+            .reach()
+            .and_then(|reach| graph_view::near(explorer, reach, tile))
+            .map_or(
+                NodeLook::Faded(explorer.tile_color(tile) % PALETTE.len()),
+                NodeLook::Unchanged,
+            ),
     }
 }
 
-/// Every call, colored by the diff. Added calls are green, removed ones red and
-/// dashed; under Impact, calls that carry a change towards an entry point are gold,
-/// with pulses running out along them; calls touching the center of attention are
-/// white; the rest are faint.
+/// Every call, colored by the diff. Calls touching the center of attention say which
+/// way they run, violet in and blue out, with dots flowing along them; otherwise added
+/// calls are green and removed ones red and dashed; under Impact, calls that carry a
+/// change towards an entry point are gold, with pulses running out along them; the
+/// journey's path is pale arrows; the rest are faint.
 pub(crate) fn draw_diff_graph(
     explorer: &Explorer,
     view: &DiffView,
@@ -542,7 +552,7 @@ pub(crate) fn draw_diff_graph(
             Some((node(edge.caller)?, node(edge.callee)?))
         })
         .collect();
-    for &(from, to) in graph.calls.iter().chain(&graph.ghosts) {
+    for (index, &(from, to)) in graph.calls.iter().chain(&graph.ghosts).enumerate() {
         let (Some(a), Some(b)) = (explorer.tile_point(from), explorer.tile_point(to)) else {
             continue;
         };
@@ -555,8 +565,20 @@ pub(crate) fn draw_diff_graph(
             continue;
         }
         let back = (b - a).normalize_or_zero() * graph_view::node_size(graph, to) * 0.5;
-        let touches = center.is_some_and(|c| c == from || c == to);
+        let side = match center {
+            Some(c) if c == to => Some(graph_view::CALLER),
+            Some(c) if c == from => Some(graph_view::CALLEE),
+            _ => None,
+        };
         match view.call_change(from, to) {
+            Some(Change::Removed) if let Some(color) = side => {
+                dashed(gizmos, a, b - back, color.with_alpha(0.85 * presence));
+            }
+            _ if let Some(color) = side => {
+                let color = color.with_alpha(0.95 * presence);
+                gizmos.arrow(a, b - back, color).with_tip_length(1.1);
+                graph_view::flow(gizmos, a, b - back, color, time, index);
+            }
             Some(Change::Added) => {
                 gizmos
                     .arrow(a, b - back, ADDED.with_alpha(0.9 * presence))
@@ -586,23 +608,15 @@ pub(crate) fn draw_diff_graph(
                         0.22,
                         MODIFIED.with_alpha((strength + 0.2) * shown),
                     );
-                } else if touches {
-                    gizmos
-                        .arrow(a, b - back, Color::srgba(1.0, 1.0, 1.0, 0.7 * shown))
-                        .with_tip_length(0.6);
                 } else if path.contains(&(from, to)) {
                     gizmos
-                        .arrow(a, b - back, Color::srgba(0.85, 0.9, 1.0, 0.5 * shown))
-                        .with_tip_length(0.6);
+                        .arrow(a, b - back, graph_view::FURTHER.with_alpha(0.45 * shown))
+                        .with_tip_length(0.8);
                 } else {
                     gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, 0.07 * shown));
                 }
             }
         }
-    }
-    if let Some(at) = center.and_then(|c| explorer.tile_point(c)) {
-        let radius = center.map_or(1.0, |c| graph_view::node_size(graph, c)) * 0.5 + 0.35;
-        gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
     }
 }
 

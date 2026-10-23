@@ -34,3 +34,11 @@ run = "cargo run -p codeviz -- view demo/architecture/orders-platform.json demo/
 [tasks.demo-zoom]
 description = "Architecture + Rust + Python joined by the links document; zoom in from the viewer"
 run = "cargo run -p codeviz -- view demo/architecture/orders-platform.json demo/out/axum-server.json demo/out/python-service.json demo/links/orders-platform.links.json --entry arch:api-gateway/post-users-id-orders"
+
+[tasks.readability-render]
+description = "Screenshot the readability scenarios and write a quiz for each (target/readability/latest)"
+run = "python3 eval/readability/readability.py render"
+
+[tasks.readability-grade]
+description = "Score the answers readers gave for the latest readability run"
+run = "python3 eval/readability/readability.py grade"
