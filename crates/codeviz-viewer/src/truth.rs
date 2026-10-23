@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::{
     diff_view::DiffView,
-    explorer::{Explorer, is_conditional},
+    explorer::{Explorer, Side, is_conditional},
     ui::node_name,
 };
 
@@ -87,6 +87,42 @@ pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
         }),
         "calls": calls.into_iter().map(|(_, call)| call).collect::<Vec<_>>(),
         "changes": changes,
+        "spotlight": spotlight(explorer),
+    })
+}
+
+/// What the spotlight picks out: which side, how far, each node with its calls from
+/// the focus, and where the routes into the focus start.
+fn spotlight(explorer: &Explorer) -> Value {
+    let Some(spotlight) = explorer.spotlight() else {
+        return Value::Null;
+    };
+    let mut picked: Vec<(u32, String)> = explorer
+        .spotlit_hops()
+        .into_iter()
+        .map(|(tile, hops)| (hops, node_name(explorer, tile)))
+        .collect();
+    picked.sort();
+    let starts: Vec<Value> = match (spotlight.side, explorer.graph_focus()) {
+        (Side::Callers, Some(focus)) => explorer
+            .starts(focus)
+            .into_iter()
+            .filter(|start| spotlight.holds(start.hops))
+            .map(|start| json!({ "name": start.label, "calls": start.hops, "entry": start.declared }))
+            .collect(),
+        _ => Vec::new(),
+    };
+    json!({
+        "side": match spotlight.side {
+            Side::Callers => "callers",
+            Side::Callees => "callees",
+        },
+        "reach": spotlight.reach,
+        "picked": picked
+            .into_iter()
+            .map(|(hops, name)| json!({ "name": name, "calls": hops }))
+            .collect::<Vec<_>>(),
+        "starts": starts,
     })
 }
 
@@ -104,6 +140,43 @@ mod tests {
     use codeviz_ir::UnitId;
 
     use super::*;
+
+    #[test]
+    fn names_the_routes_the_spotlight_picks_out() {
+        let mut explorer = crate::explorer::tests::routed();
+        let find = explorer.map().tile_of(&UnitId::new("x:find")).unwrap();
+        explorer.open_at(find);
+        assert_eq!(of(&explorer, None)["spotlight"], Value::Null);
+        explorer.spotlight_all(Side::Callers, 0.0);
+        let truth = of(&explorer, None);
+        assert_eq!(truth["spotlight"]["side"], "callers");
+        assert_eq!(truth["spotlight"]["reach"], Value::Null, "all the way");
+        let names = |key: &str| -> Vec<(String, u64)> {
+            truth["spotlight"][key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| {
+                    (
+                        v["name"].as_str().unwrap().to_owned(),
+                        v["calls"].as_u64().unwrap(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            names("picked"),
+            [
+                ("GET /users".to_owned(), 1),
+                ("place".to_owned(), 1),
+                ("POST /orders".to_owned(), 2)
+            ]
+        );
+        assert_eq!(
+            names("starts"),
+            [("GET /users".to_owned(), 1), ("POST /orders".to_owned(), 2)]
+        );
+    }
 
     #[test]
     fn lists_the_disclosed_calls_in_order_with_what_is_folded() {
