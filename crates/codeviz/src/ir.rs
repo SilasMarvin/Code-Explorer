@@ -40,6 +40,32 @@ pub(crate) struct Source {
     resolve: Resolve,
 }
 
+impl Source {
+    /// The flags that ask for this, where it is not the default.
+    pub(crate) fn flags(&self) -> Vec<String> {
+        let mut flags = Vec::new();
+        if let Some(language) = self.lang {
+            let name = match language {
+                Language::Rust => "rust",
+                Language::Python => "python",
+            };
+            flags.extend(["--lang".to_owned(), name.to_owned()]);
+        }
+        if self.include_tests {
+            flags.push("--include-tests".to_owned());
+        }
+        let resolve = match self.resolve {
+            Resolve::Auto => None,
+            Resolve::RustAnalyzer => Some("rust-analyzer"),
+            Resolve::Syntax => Some("syntax"),
+        };
+        if let Some(resolve) = resolve {
+            flags.extend(["--resolve".to_owned(), resolve.to_owned()]);
+        }
+        flags
+    }
+}
+
 #[derive(Debug, clap::Args)]
 pub(crate) struct AnalyzeArgs {
     /// Directory to analyze.

@@ -22,30 +22,52 @@ pub(crate) struct ViewArgs {
     #[arg(long, value_name = "DIR")]
     root: Option<PathBuf>,
     #[command(flatten)]
-    display: Display,
+    pub(crate) display: Display,
+}
+
+impl ViewArgs {
+    /// What names these documents, for keeping their last view, and a name for it.
+    pub(crate) fn state_key(&self) -> (String, String) {
+        let key = format!(
+            "view\n{}\nbefore\n{}",
+            crate::state::key(self.documents.iter().map(PathBuf::as_path)),
+            crate::state::key(self.before.iter().map(PathBuf::as_path))
+        );
+        (key, self.title())
+    }
+
+    fn title(&self) -> String {
+        self.documents
+            .iter()
+            .filter_map(|p| p.file_stem())
+            .map(|s| s.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" + ")
+    }
+}
+
+/// Where the documents a viewer opens came from.
+pub(crate) struct Origin {
+    pub(crate) title: String,
+    /// The command that opens the same documents, ahead of the view's own flags.
+    pub(crate) command: Vec<String>,
+    /// What names the documents, for keeping their last view, and a name for it.
+    pub(crate) key: (String, String),
+    /// Files under the first open in the editor from under the second.
+    pub(crate) edit_root: Option<(PathBuf, PathBuf)>,
 }
 
 /// What the viewer opens on and how it shows it.
 #[derive(Debug, clap::Args)]
 pub(crate) struct Display {
-    /// Entry label (`POST /users`) or unit id suffix to start from.
-    #[arg(short, long)]
-    entry: Option<String>,
+    #[command(flatten)]
+    pub(crate) start: Start,
     /// Include calls nothing resolved.
     #[arg(long)]
     unresolved: bool,
     /// Start with summaries, or the units they refine.
     #[arg(long, value_enum, default_value_t = crate::journey::ZoomArg::Summary)]
     zoom: crate::journey::ZoomArg,
-    /// Open on this outcome (as numbered by `codeviz journey`) instead of the happy path.
-    #[arg(long)]
-    scenario: Option<usize>,
-    /// Open with the cursor this many steps into the journey.
-    #[arg(long, default_value_t = 0)]
-    step: usize,
-    /// Also open journeys from these entries.
-    #[arg(long, value_name = "ENTRY")]
-    also: Vec<String>,
     /// How the journey shows over the graph.
     #[arg(long, value_enum, default_value_t = JourneyArg::Docked)]
     journey: JourneyArg,
@@ -71,15 +93,49 @@ pub(crate) struct Display {
     /// How the reveal measures nearness.
     #[arg(long, value_enum, default_value_t = NearArg::Calls)]
     reveal_by: NearArg,
+    /// Open with the focus's source showing over the graph (B).
+    #[arg(long)]
+    peek: bool,
+    #[command(flatten)]
+    render: Render,
+}
+
+/// Where the viewer opens: the function it focuses, the journey from it and how far
+/// into it.
+#[derive(Debug, clap::Args)]
+pub(crate) struct Start {
+    /// Entry label (`POST /users`) or unit id suffix to start from.
+    #[arg(short, long)]
+    entry: Option<String>,
     /// Open with this function (entry label or unit id suffix) focused in the graph.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
     /// Open with the function at this place in the source focused: `src/orders.rs:42`.
-    #[arg(long, value_name = "FILE:LINE", conflicts_with = "focus")]
+    #[arg(long, value_name = "FILE:LINE", overrides_with = "focus")]
     at: Option<String>,
+    /// Open on this outcome (as numbered by `codeviz journey`) instead of the happy path.
+    #[arg(long)]
+    scenario: Option<usize>,
+    /// Open with the cursor this many steps into the journey.
+    #[arg(long, default_value_t = 0)]
+    step: usize,
     /// Open the journey this many levels deep instead of one.
     #[arg(long, value_name = "LEVELS")]
     depth: Option<u32>,
+    /// Open with what calls the focus, or what it calls, picked out (I and O).
+    #[arg(long, value_enum)]
+    spotlight: Option<SpotlightArg>,
+    /// Also open journeys from these entries.
+    #[arg(long, value_name = "ENTRY")]
+    also: Vec<String>,
+    /// Open as this was last left, with any flags given here on top.
+    #[arg(long)]
+    pub(crate) resume: bool,
+}
+
+/// Rendering once, for a picture.
+#[derive(Debug, clap::Args)]
+struct Render {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
@@ -100,6 +156,14 @@ enum JourneyArg {
     Docked,
     /// Below a strip of graph.
     Full,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum SpotlightArg {
+    /// What calls the focus.
+    Callers,
+    /// What the focus calls.
+    Callees,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -188,43 +252,40 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .iter()
         .map(|path| crate::ir::read_rooted(path, None))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let title = args
-        .documents
-        .iter()
-        .filter_map(|p| p.file_stem())
-        .map(|s| s.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" + ");
-    open(documents, before, &args.display, &title, None)
+    let mut command = vec!["codeviz".to_owned(), "view".to_owned()];
+    let shown = |paths: &[PathBuf]| {
+        paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+    };
+    command.extend(shown(&args.documents));
+    if !args.before.is_empty() {
+        command.push("--before".to_owned());
+        command.extend(shown(&args.before));
+    }
+    if let Some(root) = &args.root {
+        command.extend(["--root".to_owned(), root.display().to_string()]);
+    }
+    let origin = Origin {
+        title: args.title(),
+        command,
+        key: args.state_key(),
+        edit_root: None,
+    };
+    open(documents, before, &args.display, origin)
 }
 
 /// Opens `documents`, diffed against `before` unless it is empty, and blocks until the
-/// window closes. Files under the first of `edit_root` open in the editor from under
-/// the second.
+/// window closes.
 pub(crate) fn open(
     documents: Vec<Document>,
     before: Vec<Document>,
     args: &Display,
-    title: &str,
-    edit_root: Option<(PathBuf, PathBuf)>,
+    origin: Origin,
 ) -> anyhow::Result<()> {
     let system = System::new(documents.clone());
-    let root = match &args.entry {
-        Some(query) => Some(crate::journey::find_one(&system, query)?),
-        None => None,
-    };
-    let also = args
-        .also
-        .iter()
-        .map(|query| crate::journey::find_one(&system, query))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let focus = match (&args.focus, &args.at) {
-        (Some(query), _) => Some(crate::journey::find_one(&system, query)?),
-        (None, Some(place)) => Some(find_at(&system, place)?),
-        (None, None) => None,
-    };
-    let title = format!("codeviz — {title}");
-
+    let start = start(&system, &args.start)?;
     let viewer = if before.is_empty() {
         Viewer::new(system)
     } else {
@@ -239,25 +300,14 @@ pub(crate) fn open(
         }
         viewer
     };
-    let mut viewer = viewer.with_title(title).with_options(JourneyOptions {
-        include_unresolved: args.unresolved,
-        zoom: args.zoom.into(),
-        ..JourneyOptions::default()
-    });
-    if let Some(root) = root {
-        viewer = viewer.with_root(root);
-    }
-    for root in also {
-        viewer = viewer.also(root);
-    }
-    if let Some(focus) = focus {
-        viewer = viewer.with_focus(focus);
-    }
-    if let Some(scenario) = args.scenario {
-        viewer = viewer.with_scenario(scenario);
-    }
-    viewer = viewer
-        .with_step(args.step)
+    let viewer = viewer
+        .with_title(format!("codeviz — {}", origin.title))
+        .with_options(JourneyOptions {
+            include_unresolved: args.unresolved,
+            zoom: args.zoom.into(),
+            ..JourneyOptions::default()
+        });
+    let mut viewer = start(viewer)
         .with_journey(match args.journey {
             JourneyArg::Hidden => "hidden",
             JourneyArg::Docked => "docked",
@@ -283,14 +333,66 @@ pub(crate) fn open(
     if args.show_unchanged {
         viewer = viewer.with_unchanged();
     }
-    if let Some(depth) = args.depth {
-        viewer = viewer.with_depth(depth);
+    if args.peek {
+        viewer = viewer.with_peek();
     }
+    if let Some((from, to)) = origin.edit_root {
+        viewer = viewer.with_edit_root(from, to);
+    }
+    let (key, name) = &origin.key;
+    viewer = viewer.with_share(origin.command, crate::state::file(key, name));
+    if render(viewer, &args.render)?.run().is_error() {
+        bail!("viewer exited with an error");
+    }
+    Ok(())
+}
+
+/// What opens a viewer where `args` says, its functions found in `system`.
+fn start(system: &System, args: &Start) -> anyhow::Result<impl FnOnce(Viewer) -> Viewer + use<>> {
+    let find = |query: &String| crate::journey::find_one(system, query);
+    let root = args.entry.as_ref().map(find).transpose()?;
+    let also = args
+        .also
+        .iter()
+        .map(find)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let focus = match (&args.focus, &args.at) {
+        (Some(query), _) => Some(find(query)?),
+        (None, Some(place)) => Some(find_at(system, place)?),
+        (None, None) => None,
+    };
+    let (scenario, depth, spotlight, step) = (args.scenario, args.depth, args.spotlight, args.step);
+    Ok(move |viewer: Viewer| {
+        let mut viewer = viewer.with_step(step);
+        if let Some(root) = root {
+            viewer = viewer.with_root(root);
+        }
+        for root in also {
+            viewer = viewer.also(root);
+        }
+        if let Some(focus) = focus {
+            viewer = viewer.with_focus(focus);
+        }
+        if let Some(scenario) = scenario {
+            viewer = viewer.with_scenario(scenario);
+        }
+        if let Some(depth) = depth {
+            viewer = viewer.with_depth(depth);
+        }
+        if let Some(side) = spotlight {
+            viewer = viewer.with_spotlight(match side {
+                SpotlightArg::Callers => "callers",
+                SpotlightArg::Callees => "callees",
+            });
+        }
+        viewer
+    })
+}
+
+/// `viewer` rendering once for a picture, when `args` asks.
+fn render(mut viewer: Viewer, args: &Render) -> anyhow::Result<Viewer> {
     if args.bare {
         viewer = viewer.bare();
-    }
-    if let Some((from, to)) = edit_root {
-        viewer = viewer.with_edit_root(from, to);
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
@@ -298,8 +400,5 @@ pub(crate) fn open(
     if let Some(keys) = &args.keys {
         viewer = viewer.with_keys(keys).map_err(anyhow::Error::msg)?;
     }
-    if viewer.run().is_error() {
-        bail!("viewer exited with an error");
-    }
-    Ok(())
+    Ok(viewer)
 }

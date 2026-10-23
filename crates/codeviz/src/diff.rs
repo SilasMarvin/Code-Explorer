@@ -13,7 +13,10 @@ use anyhow::{Context, bail};
 use codeviz_core::{Change, Diff, System, align};
 use codeviz_ir::Document;
 
-use crate::{ir::Source, view::Display};
+use crate::{
+    ir::Source,
+    view::{Display, Origin},
+};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct DiffArgs {
@@ -34,7 +37,39 @@ pub(crate) struct DiffArgs {
     #[arg(long, value_name = "DIR")]
     save: Option<PathBuf>,
     #[command(flatten)]
-    display: Display,
+    pub(crate) display: Display,
+}
+
+impl DiffArgs {
+    /// What names this diff, for keeping its last view, and a name for it.
+    pub(crate) fn state_key(&self) -> (String, String) {
+        let path = self
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| self.path.clone());
+        let name = path.file_name().map_or_else(
+            || "repository".to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        (
+            format!("diff\n{}\n{}", path.display(), self.revisions),
+            format!("{name} {}", self.revisions),
+        )
+    }
+
+    /// The command that runs this diff again, ahead of the view's own flags.
+    fn command(&self) -> Vec<String> {
+        let mut command = vec![
+            "codeviz".to_owned(),
+            "diff".to_owned(),
+            self.revisions.clone(),
+        ];
+        if self.path != Path::new(".") {
+            command.extend(["-C".to_owned(), self.path.display().to_string()]);
+        }
+        command.extend(self.source.flags());
+        command
+    }
 }
 
 pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
@@ -84,12 +119,17 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     if diff.is_empty() {
         eprintln!("{title}: nothing changed");
     }
-    // The newer revision's functions open in the editor from the working tree, not
-    // from a checkout gone once this exits.
-    let edit_root = new
-        .as_ref()
-        .map(|new| (new.dir.join(&prefix), path.clone()));
-    crate::view::open(vec![after], vec![before], &args.display, &title, edit_root)
+    let origin = Origin {
+        title,
+        command: args.command(),
+        key: args.state_key(),
+        // The newer revision's functions open in the editor from the working tree,
+        // not from a checkout gone once this exits.
+        edit_root: new
+            .as_ref()
+            .map(|new| (new.dir.join(&prefix), path.clone())),
+    };
+    crate::view::open(vec![after], vec![before], &args.display, origin)
 }
 
 /// The revision to compare from, and the one to compare to (the working tree if none).

@@ -19,6 +19,7 @@ codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as t
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
 codeviz view app.json --at src/orders.rs:42   # open on the function at that line
+codeviz view app.json --resume       # as you last left it
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -60,6 +61,14 @@ Cursor, a JetBrains IDE…), else VS Code, else a terminal editor in the termina
 codeviz was started from. The card and the side panel copy a function's id or its
 `path:line`. `P` saves a picture of the view to the desktop (`$XDG_PICTURES_DIR` or
 `~/Pictures` elsewhere) and copies it. A line at the top says what each did.
+
+`Y` copies the command that opens the view as it stands, the documents (or the `diff`)
+and the flags for the focus, the outcome, the cursor's step, the depth, the spotlight
+(`--spotlight callers|callees`), the reveal, the layout and the source card
+(`--peek`), to paste for a teammate or into a note; the camera is left to frame it. The
+same flags are kept as the last view of each set of documents (under
+`$XDG_STATE_HOME/codeviz`, or `~/Library/Application Support/codeviz` on a Mac), and
+`--resume` opens it again, with any flags given alongside winning.
 
 `--at FILE:LINE` opens on the function whose source spans that line. A document
 remembers the directory it was analyzed in; opened somewhere else, on a teammate's

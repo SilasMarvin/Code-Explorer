@@ -435,11 +435,16 @@ impl Explorer {
     /// Makes `track` active with its cursor on `span`.
     pub(crate) fn select_in(&mut self, at: SpanRef) {
         if at.track < self.tracks.len() {
-            if self.active != at.track {
-                self.active = at.track;
-                self.refresh_journey_tiles();
-            }
+            self.activate(at.track);
             self.select(Some(at.span));
+        }
+    }
+
+    /// Makes `track` active, its cursor where it was.
+    pub(crate) fn activate(&mut self, track: usize) {
+        if track < self.tracks.len() && self.active != track {
+            self.active = track;
+            self.refresh_journey_tiles();
         }
     }
 
@@ -632,6 +637,11 @@ impl Explorer {
     pub(crate) fn graph_focus(&self) -> Option<usize> {
         self.graph_focus
             .or_else(|| self.focus().and_then(|f| self.map.tile_of(f)))
+    }
+
+    /// The node focused by hand, rather than following the journey's cursor.
+    pub(crate) fn focused_by_hand(&self) -> Option<usize> {
+        self.graph_focus
     }
 
     /// The node the camera orbits: the one focused by hand, else where the active

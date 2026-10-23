@@ -115,12 +115,19 @@ pub(crate) fn draw(
                         .id_salt("peek_source")
                         .max_height(height)
                         .auto_shrink([false, true])
-                        .show(ui, |ui| match (diff, &old, &new) {
-                            (Some(_), None, None) | (None, _, None) => {
-                                no_source(ui, explorer, &unit);
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            match (diff, &old, &new) {
+                                (Some(_), None, None) | (None, _, None) => {
+                                    no_source(ui, explorer, &unit);
+                                }
+                                (Some(_), old, new) => {
+                                    changed(ui, old.as_ref(), new.as_ref(), &badges);
+                                }
+                                (None, _, Some(new)) => plain(ui, new, &badges),
                             }
-                            (Some(_), old, new) => changed(ui, old.as_ref(), new.as_ref(), &badges),
-                            (None, _, Some(new)) => plain(ui, new, &badges),
+                            // Room under the last line for the scroll bar.
+                            ui.add_space(10.0);
                         });
                 });
         });

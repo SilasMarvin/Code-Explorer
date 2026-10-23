@@ -1751,6 +1751,7 @@ const KEYS: [&[Group]; 4] = [
             "Elsewhere",
             &[
                 ("E", "open the focus in your editor"),
+                ("Y", "copy the view as a command line"),
                 ("P", "save a picture of the view"),
             ],
         ),
