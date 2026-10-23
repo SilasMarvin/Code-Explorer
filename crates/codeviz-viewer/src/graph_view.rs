@@ -337,9 +337,20 @@ pub(crate) fn draw_graph(
     draw_attention(&explorer, &mut gizmos);
 }
 
+/// The calls to draw: those that count, then guesses left out of them.
+pub(crate) fn drawn_calls(graph: &ForceGraph) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let uncounted = (!graph.counts_guesses()).then_some(&graph.guesses);
+    graph
+        .calls
+        .iter()
+        .chain(uncounted.into_iter().flatten())
+        .copied()
+}
+
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the active journey's
-/// path, are pale arrows fading with distance; everything else is faint.
+/// path, are pale arrows fading with distance; everything else is faint. A call only
+/// guessed at is dotted and fainter, whatever its color.
 fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.attention();
@@ -370,7 +381,7 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
         }
     };
 
-    for (index, &(from, to)) in graph.calls.iter().enumerate() {
+    for (index, (from, to)) in drawn_calls(graph).enumerate() {
         let (Some(a), Some(b)) = (point(from), point(to)) else {
             continue;
         };
@@ -401,6 +412,12 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             }
         });
         let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
+        if graph.guessed(from, to) {
+            let on_path = path.contains(&(from, to));
+            let color = guess_color(lit, center, (from, to), on_path);
+            dotted(gizmos, a, b - back, color.with_alpha(color.alpha() * shown));
+            continue;
+        }
         match lit {
             // Stop at the callee's surface so the head stays visible.
             Some((color, 1)) => {
@@ -430,6 +447,45 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                 gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, alpha * shown));
             }
         }
+    }
+}
+
+/// The color of a guessed call, before the lens fades it: as a call would be lit, but
+/// fainter. Left out of what counts, a guess touching the center of attention still
+/// says which way it would run.
+fn guess_color(
+    lit: Option<(Color, u32)>,
+    center: Option<usize>,
+    (from, to): (usize, usize),
+    on_path: bool,
+) -> Color {
+    let side = match center {
+        Some(c) if c == to => Some(CALLER),
+        Some(c) if c == from => Some(CALLEE),
+        _ => None,
+    };
+    match (lit, side) {
+        (Some((color, 1)), _) | (None, Some(color)) => color.with_alpha(0.6),
+        (Some((_, outer)), _) => FURTHER.with_alpha(fade(outer) * 0.6),
+        (None, None) if on_path => FURTHER.with_alpha(0.3),
+        (None, None) => {
+            let alpha = if center.is_some() { 0.06 } else { 0.2 };
+            Color::srgba(0.6, 0.66, 0.8, alpha)
+        }
+    }
+}
+
+/// A line drawn in short dots, for a call only guessed at.
+pub(crate) fn dotted(gizmos: &mut Gizmos, a: Vec3, b: Vec3, color: Color) {
+    const PERIOD: f32 = 0.75;
+    let length = a.distance(b);
+    let dots = (length / PERIOD).max(1.0).floor();
+    let mut at = 0.0;
+    while at < dots {
+        let from = a.lerp(b, at / dots);
+        let to = a.lerp(b, (at + 0.35) / dots);
+        gizmos.line(from, to, color);
+        at += 1.0;
     }
 }
 

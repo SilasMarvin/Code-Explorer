@@ -321,6 +321,11 @@ fn keyboard(
             explorer.toggle_spotlight(side, time.elapsed_secs());
         }
     }
+    // N lets calls guessed by name count, or leaves them out again.
+    if keys.just_pressed(KeyCode::KeyN) {
+        let counted = !explorer.counts_guesses();
+        explorer.set_guesses(counted);
+    }
     if keys.just_pressed(KeyCode::Space) {
         autoplay.playing = !autoplay.playing;
     }

@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use codeviz_core::System;
-use codeviz_ir::UnitId;
+use codeviz_ir::{Certainty, UnitId};
 
 use crate::CodebaseMap;
 
@@ -66,12 +66,23 @@ pub struct ForceGraph {
     cluster_units: Vec<Option<UnitId>>,
     /// Links between tiles, each pair once, lower index first.
     pub links: Vec<(usize, usize)>,
-    /// The same links with their direction: `(caller, callee)`, sorted.
+    /// The calls that count, with their direction: `(caller, callee)`, sorted. Guesses
+    /// count only when [`Self::set_guesses`] lets them in.
     pub calls: Vec<(usize, usize)>,
+    /// Calls the producer only guessed at, matching a method by name: every call site
+    /// behind them names the callee as an `inferred` target. Sorted.
+    pub guesses: Vec<(usize, usize)>,
     /// Calls that still pull as links but no longer run, such as the calls a diff
     /// removed: kept out of [`Self::calls`], callers, reach and sequences.
     pub ghosts: Vec<(usize, usize)>,
-    /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
+    /// Every call that runs, guesses included, sorted.
+    every_call: Vec<(usize, usize)>,
+    /// Whether guesses count as calls.
+    guessing: bool,
+    /// Per tile, the tiles it calls in the order the calls are written, repeats kept;
+    /// guesses included.
+    every_sequence: Vec<Vec<usize>>,
+    /// The same, without guesses unless they count.
     sequences: Vec<Vec<usize>>,
     config: ForceConfig,
 }
@@ -105,6 +116,8 @@ impl ForceGraph {
     #[must_use]
     pub fn new(system: &System, map: &CodebaseMap, config: ForceConfig) -> Self {
         let mut calls = HashSet::new();
+        // Calls some call site makes for sure, not by a guess.
+        let mut known = HashSet::new();
         // Each call site with where it is written, to put a tile's calls in order.
         let mut sites: Vec<Vec<(SiteKey, usize)>> = vec![Vec::new(); map.tiles.len()];
         for (order, unit) in system.units().enumerate() {
@@ -122,6 +135,9 @@ impl ForceGraph {
                         && to != from
                     {
                         calls.insert((from, to));
+                        if target.certainty != Certainty::Inferred {
+                            known.insert((from, to));
+                        }
                         if let Some(list) = sites.get_mut(from) {
                             list.push(((at.0, at.1, order * 1024 + index), to));
                         }
@@ -143,6 +159,8 @@ impl ForceGraph {
             .into_iter()
             .collect();
         links.sort_unstable();
+        let mut guesses: Vec<(usize, usize)> = calls.difference(&known).copied().collect();
+        guesses.sort_unstable();
         let mut calls: Vec<(usize, usize)> = calls.into_iter().collect();
         calls.sort_unstable();
 
@@ -153,30 +171,84 @@ impl ForceGraph {
             .iter()
             .map(|tile| seed(tile.unit.as_str(), radius))
             .collect();
-        Self {
+        let mut graph = Self {
             velocities: vec![[0.0; 3]; map.tiles.len()],
             groups: map.tiles.iter().map(|t| t.group).collect(),
             clusters,
             cluster_units,
             positions,
             links,
-            calls,
+            calls: Vec::new(),
+            guesses,
             ghosts: Vec::new(),
-            sequences,
+            every_call: calls,
+            guessing: false,
+            every_sequence: sequences,
+            sequences: Vec::new(),
             config,
-        }
+        };
+        graph.count_calls();
+        graph
     }
 
     /// Turns these calls into ghosts: they keep pulling their ends together, but no
     /// longer count as calls.
     pub fn retire(&mut self, gone: &HashSet<(usize, usize)>) {
-        let (ghosts, calls) = self.calls.iter().partition(|call| gone.contains(call));
-        self.calls = calls;
+        let (ghosts, calls) = self.every_call.iter().partition(|call| gone.contains(call));
+        self.every_call = calls;
         self.ghosts.extend::<Vec<_>>(ghosts);
         self.ghosts.sort_unstable();
-        for (from, sequence) in self.sequences.iter_mut().enumerate() {
+        self.guesses.retain(|call| !gone.contains(call));
+        for (from, sequence) in self.every_sequence.iter_mut().enumerate() {
             sequence.retain(|&to| !gone.contains(&(from, to)));
         }
+        self.count_calls();
+    }
+
+    /// Whether guesses count as calls: as callers and callees, in reach and in
+    /// sequences. They are left out until let in.
+    pub fn set_guesses(&mut self, counted: bool) {
+        if self.guessing != counted {
+            self.guessing = counted;
+            self.count_calls();
+        }
+    }
+
+    /// Whether guesses count as calls.
+    #[must_use]
+    pub fn counts_guesses(&self) -> bool {
+        self.guessing
+    }
+
+    /// Whether the call from `from` to `to` is only a guess.
+    #[must_use]
+    pub fn guessed(&self, from: usize, to: usize) -> bool {
+        self.guesses.binary_search(&(from, to)).is_ok()
+    }
+
+    /// Rebuilds the calls and sequences that count from every call.
+    fn count_calls(&mut self) {
+        let counted = |from: usize, to: usize| self.guessing || !self.guessed(from, to);
+        let calls = self
+            .every_call
+            .iter()
+            .copied()
+            .filter(|&(from, to)| counted(from, to))
+            .collect();
+        let sequences = self
+            .every_sequence
+            .iter()
+            .enumerate()
+            .map(|(from, sequence)| {
+                sequence
+                    .iter()
+                    .copied()
+                    .filter(|&to| counted(from, to))
+                    .collect()
+            })
+            .collect();
+        self.calls = calls;
+        self.sequences = sequences;
     }
 
     /// Changes the forces; the graph moves until it settles under them.
@@ -542,6 +614,46 @@ mod tests {
         assert_eq!(
             stats.iter().map(|s| s.internal + s.outgoing).sum::<usize>(),
             2
+        );
+    }
+
+    #[test]
+    fn guesses_count_as_calls_only_when_let_in() {
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" },
+          "units": [
+            { "id": "x:a", "name": "a", "kind": "fn", "role": "invocable", "calls": [
+              { "key": "b#0", "text": "b", "targets": [{ "unit": "x:b", "certainty": "inferred" }] },
+              { "key": "c#0", "text": "c", "targets": [{ "unit": "x:c", "certainty": "inferred" }] },
+              { "key": "c#1", "text": "c", "targets": [{ "unit": "x:c", "certainty": "exact" }] }
+            ] },
+            { "id": "x:b", "name": "b", "kind": "fn", "role": "invocable" },
+            { "id": "x:c", "name": "c", "kind": "fn", "role": "invocable" }
+          ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let map = map(&system, &MapConfig::default());
+        let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
+        let tile = |name: &str| map.tile_of(&codeviz_ir::UnitId::new(name)).unwrap();
+        let (a, b, c) = (tile("x:a"), tile("x:b"), tile("x:c"));
+        // One site calls `c` for sure: the call is known, however the other guessed.
+        assert_eq!(graph.guesses, [(a, b)]);
+        assert!(graph.guessed(a, b) && !graph.guessed(a, c));
+        assert_eq!(graph.callees(a).collect::<Vec<_>>(), [c]);
+        assert_eq!(graph.sequence(a), [c, c]);
+        assert!(graph.linked(a, b), "a guess still pulls");
+
+        graph.set_guesses(true);
+        assert_eq!(graph.callees(a).count(), 2);
+        assert_eq!(graph.sequence(a), [b, c, c]);
+        assert_eq!(graph.reach(b).upstream.get(&a), Some(&1));
+
+        graph.retire(&HashSet::from([(a, b)]));
+        assert!(graph.guesses.is_empty() && graph.ghosts == [(a, b)]);
+        graph.set_guesses(false);
+        graph.set_guesses(true);
+        assert_eq!(
+            graph.callees(a).collect::<Vec<_>>(),
+            [c],
+            "a ghost stays retired"
         );
     }
 

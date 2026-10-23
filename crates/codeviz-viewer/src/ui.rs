@@ -5,6 +5,7 @@
 
 use std::{
     collections::HashMap,
+    fmt::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -173,7 +174,10 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            let guesses = explorer
+                .guesses_in_view()
+                .then(|| explorer.counts_guesses());
+            legend(ctx, above(graph_area, panel_area), diff.is_some(), guesses);
         }
         if help.0 {
             key_help(ctx, graph_area, &mut help.0);
@@ -284,6 +288,24 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     });
     if clustering != explorer.clustering() {
         explorer.set_clustering(clustering);
+    }
+    let mut counted = explorer.counts_guesses();
+    let any = !explorer.graph().guesses.is_empty();
+    let hint = if any {
+        "Calls the analyzer matched by name, without knowing the type: drawn dotted, \
+         and left out of callers, calls and what lights up unless counted (N)"
+    } else {
+        "Every call here was resolved; none is a guess"
+    };
+    if ui
+        .add_enabled(
+            any,
+            egui::Checkbox::new(&mut counted, "Count calls guessed by name"),
+        )
+        .on_hover_text(hint)
+        .changed()
+    {
+        explorer.set_guesses(counted);
     }
 }
 
@@ -1510,10 +1532,18 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
             let plural = if count == 1 { "" } else { "s" };
             let text = egui::RichText::new(format!("● {count} {noun}{plural}  {key}"))
                 .color(egui_color(color));
-            let hint = match side {
+            let mut hint = match side {
                 Side::Callers => "Pick out what calls it, and bring it all into view (I)",
                 Side::Callees => "Pick out what it calls, and bring it all into view (O)",
-            };
+            }
+            .to_owned();
+            let guessed = explorer.guessed_neighbors(focus, side);
+            if guessed > 0 {
+                let _ = write!(
+                    hint,
+                    "\n{guessed} more only guessed by name, not counted (N counts them)"
+                );
+            }
             if ui
                 .add_enabled(count > 0, egui::Button::selectable(lit == Some(side), text))
                 .on_hover_text(hint)
@@ -1529,8 +1559,9 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
 }
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
-/// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+/// link runs, and that a dotted one is a guess when any shows (`guesses` says whether
+/// they count). A hint at the keys below.
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, guesses: Option<bool>) {
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1574,6 +1605,18 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                         ui.label(egui::RichText::new("→").color(egui_color(graph_view::FURTHER)));
                         ui.label(egui::RichText::new("further along").size(12.5));
                         ui.add_space(6.0);
+                        if let Some(counted) = guesses {
+                            let text = if counted {
+                                "guessed by name, counted (N)"
+                            } else {
+                                "guessed by name, not counted (N)"
+                            };
+                            ui.label(
+                                egui::RichText::new("┈┈").color(egui::Color32::from_gray(200)),
+                            );
+                            ui.label(egui::RichText::new(text).size(12.5));
+                            ui.add_space(6.0);
+                        }
                         ui.label(
                             egui::RichText::new("journey bars match their nodes")
                                 .size(12.5)
@@ -1623,6 +1666,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("I", "pick out what calls the focus, and show it all"),
             ("O", "pick out what the focus calls, and show it all"),
+            ("N", "count calls guessed by name, or leave them out"),
             ("1 – 9", "focus the focus's nth call"),
             ("Shift 1 – 9", "focus its nth caller"),
             ("Backspace", "back to the previous focus"),

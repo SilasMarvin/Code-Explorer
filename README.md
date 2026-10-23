@@ -38,6 +38,12 @@ color beside the node, so a bar finds its node at a glance; hovering a bar draws
 to it. `I` picks out everything that calls the focus and `O` everything it calls,
 pulling the camera back only as far as it takes to show them all.
 
+A dotted, fainter link is a guess: the analyzer matched the call by name without
+knowing the type (an `inferred` target in the IR). Guesses keep their direction color
+but are left out of the caller and call counts, of `I` and `O`, and of what lights up
+around the focus; `N` (or the side panel's checkbox) counts them too. The legend shows
+the dotted line only when the view has guesses.
+
 Digits walk to the focus's nth call, shift+digit to its nth caller, `-` and `=` reveal
 less or more around a starting point, the focus, a diff's changes or the active
 journey (`L` switches), measured in calls, distance in the graph, or a blend of both

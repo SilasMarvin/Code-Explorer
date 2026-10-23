@@ -373,6 +373,42 @@ impl Explorer {
         self.focus_reach = None;
     }
 
+    /// Whether calls the producer only guessed at count as callers and callees.
+    pub(crate) fn counts_guesses(&self) -> bool {
+        self.graph.counts_guesses()
+    }
+
+    /// Lets guessed calls count as callers, callees and reach, or leaves them out.
+    pub(crate) fn set_guesses(&mut self, counted: bool) {
+        self.graph.set_guesses(counted);
+        self.reach = None;
+        self.focus_reach = None;
+    }
+
+    /// Whether a guessed call is drawn: both its ends show.
+    pub(crate) fn guesses_in_view(&self) -> bool {
+        self.graph
+            .guesses
+            .iter()
+            .any(|&(from, to)| self.shown(from) && self.shown(to))
+    }
+
+    /// The tiles on `side` of `tile` that only a guess links it to, each once, when
+    /// guesses are left out.
+    pub(crate) fn guessed_neighbors(&self, tile: usize, side: Side) -> usize {
+        if self.counts_guesses() {
+            return 0;
+        }
+        self.graph
+            .guesses
+            .iter()
+            .filter(|&&(from, to)| match side {
+                Side::Callers => to == tile && from != tile,
+                Side::Callees => from == tile && to != tile,
+            })
+            .count()
+    }
+
     pub(crate) fn tracks(&self) -> &[Track] {
         &self.tracks
     }
