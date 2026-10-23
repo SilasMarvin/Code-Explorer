@@ -87,6 +87,28 @@ pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
         }),
         "calls": calls.into_iter().map(|(_, call)| call).collect::<Vec<_>>(),
         "changes": changes,
+        "review": diff.map(|diff| review(explorer, diff)),
+    })
+}
+
+/// Where stepping through a diff stands: the changes in reading order, which of them
+/// is focused, the entry points the way up from it reaches, and what the graph does
+/// not draw.
+fn review(explorer: &Explorer, diff: &DiffView) -> Value {
+    let name = |tile: usize| explorer.tile_unit(tile).map(|u| explorer.unit_name(u));
+    let focus = explorer.graph_focus();
+    json!({
+        "order": diff.order().iter().map(|&t| name(t)).collect::<Vec<_>>(),
+        "at": focus.and_then(|f| diff.place(f)).map(|at| at + 1),
+        "route_ends": diff.route().map_or_else(Vec::new, |route| {
+            route.ends.iter().map(|&t| node_name(explorer, t)).collect()
+        }),
+        "not_drawn": diff.offstage.as_ref().map(|files| {
+            files
+                .iter()
+                .map(|f| json!({ "path": f.path, "places": f.places }))
+                .collect::<Vec<_>>()
+        }),
     })
 }
 

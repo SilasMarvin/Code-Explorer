@@ -397,7 +397,13 @@ fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPan
         ui.separator();
         journeys(ui, explorer);
         let Some(selected) = explorer.selected() else {
-            ui.label("Pick a unit on the left.");
+            // A function the journeys' version lacks, as a diff's removed one: named,
+            // with nothing to step through.
+            let text = match explorer.graph_focus() {
+                Some(tile) => node_name(explorer, tile),
+                None => "Click a node to open it.".to_owned(),
+            };
+            ui.label(text);
             return;
         };
         let mut chosen = None;
