@@ -112,9 +112,8 @@ impl Story {
         let told = scenario.and_then(|i| endings.get(i)).cloned();
         let mut fails: HashMap<SpanId, Vec<Ending>> = HashMap::new();
         let mut ends: HashMap<SpanId, Ending> = HashMap::new();
-        for (index, scenario_) in scenarios.iter().enumerate().skip(1) {
-            let at =
-                divergence(journey, scenario_).and_then(|span| shown_at(journey, numbers, span));
+        for (index, other) in scenarios.iter().enumerate().skip(1) {
+            let at = divergence(journey, other).and_then(|span| shown_at(journey, numbers, span));
             let (Some(at), Some(end)) = (at, endings.get(index)) else {
                 continue;
             };
