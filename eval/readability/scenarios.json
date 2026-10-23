@@ -61,5 +61,16 @@
       "--keys",
       "i"
     ]
+  },
+  "axum-routes": {
+    "about": "Every route into find_user (Shift I): the entry points that reach it, directly or through orders.place, with the rest of the graph stepped back.",
+    "command": [
+      "view",
+      "demo/out/axum-server.json",
+      "--focus",
+      "users::find_user",
+      "--keys",
+      "shift+i"
+    ]
   }
 }
