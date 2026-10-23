@@ -261,6 +261,21 @@ impl OrbitCamera {
             return;
         }
         self.room = room;
+        self.refit();
+    }
+
+    /// Takes the view's shape, refitting what was framed when it changes, as when the
+    /// side panel opens.
+    fn set_lens(&mut self, fov: f32, aspect: f32) {
+        if (fov - self.fov).abs() + (aspect - self.aspect).abs() < 0.01 {
+            return;
+        }
+        (self.fov, self.aspect) = (fov, aspect);
+        self.refit();
+    }
+
+    /// Fits what was framed to the room and the view as they are now.
+    fn refit(&mut self) {
         if let Some(framed) = &self.framed {
             let (aim, distance) = self.aim_at(&framed.points, self.target, framed.nearest);
             self.aim = aim;
@@ -447,8 +462,7 @@ fn apply_camera(
     let ease = 1.0 - (-EASING * time.delta_secs()).exp();
     for (mut camera, mut transform, projection) in &mut cameras {
         if let Projection::Perspective(perspective) = projection {
-            camera.fov = perspective.fov;
-            camera.aspect = perspective.aspect_ratio;
+            camera.set_lens(perspective.fov, perspective.aspect_ratio);
         }
         camera.focus = camera.focus.lerp(camera.target, ease);
         camera.shift = camera.shift.lerp(camera.room.middle + camera.aim, ease);

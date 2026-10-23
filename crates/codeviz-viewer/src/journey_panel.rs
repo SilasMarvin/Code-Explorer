@@ -80,12 +80,14 @@ const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 
 /// Where the graph renders and where the panel sits, within the space between the
 /// side panels: each as big as the journey needs, `rows` deep and `width` wide, up to
-/// a share of the screen. Docked, it floats in the bottom-right corner; full, it
-/// takes the bottom across the whole width and the graph renders above it.
+/// a share of the screen. Docked, it floats in the bottom-right corner, leaving
+/// `beside` clear to its left when it can (for the legend); full, it takes the bottom
+/// across the whole width and the graph renders above it.
 pub(crate) fn split(
     mode: PanelMode,
     area: egui::Rect,
     (rows, width): (usize, f32),
+    beside: f32,
 ) -> (egui::Rect, Option<egui::Rect>) {
     let height = HEADER + PAD * 2.0 + rows.max(2) as f32 * (ROW + ROW_GAP);
     match mode {
@@ -93,7 +95,9 @@ pub(crate) fn split(
         PanelMode::Docked => {
             let size = egui::vec2(
                 (width + PAD * 2.0)
-                    .clamp(380.0, (area.width() * DOCKED_WIDTH).max(380.0))
+                    .min(area.width() * DOCKED_WIDTH)
+                    .min(area.width() - beside - MARGIN * 2.0)
+                    .max(380.0)
                     .min(area.width() - MARGIN * 2.0),
                 height
                     .min((area.height() * DOCKED_HEIGHT).max(200.0))
@@ -850,19 +854,29 @@ mod tests {
     #[test]
     fn the_panel_is_as_big_as_the_journey_up_to_a_share_of_the_screen() {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
-        let (graph, docked) = split(PanelMode::Docked, screen, (3, 500.0));
+        let (graph, docked) = split(PanelMode::Docked, screen, (3, 500.0), 0.0);
         let docked = docked.unwrap();
         assert_eq!(graph, screen, "docked, it floats over the graph");
         assert_eq!(docked.max, screen.max - egui::vec2(MARGIN, MARGIN));
         assert!((docked.width() - (500.0 + PAD * 2.0)).abs() < 1e-3);
         assert!((docked.height() - (HEADER + PAD * 2.0 + 3.0 * (ROW + ROW_GAP))).abs() < 1e-3);
-        let (_, wide) = split(PanelMode::Docked, screen, (40, 5000.0));
+        let (_, wide) = split(PanelMode::Docked, screen, (40, 5000.0), 0.0);
         let wide = wide.unwrap();
         assert!(wide.width() <= screen.width() * DOCKED_WIDTH + 1e-3);
         assert!(wide.height() <= screen.height() * DOCKED_HEIGHT + 1e-3);
+        let (_, narrower) = split(PanelMode::Docked, screen, (3, 5000.0), 900.0);
+        assert!(
+            narrower.unwrap().min.x >= 900.0,
+            "it leaves the legend its corner"
+        );
+        let (_, least) = split(PanelMode::Docked, screen, (3, 5000.0), 1400.0);
+        assert!(
+            (least.unwrap().width() - 380.0).abs() < 1e-3,
+            "but not below the least"
+        );
 
         // Full, it takes the bottom as deep as its rows, and the graph the rest.
-        let (graph, full) = split(PanelMode::Full, screen, (4, 500.0));
+        let (graph, full) = split(PanelMode::Full, screen, (4, 500.0), 0.0);
         let full = full.unwrap();
         assert_eq!(full.width(), screen.width());
         assert_eq!(graph.max.y, full.min.y);
@@ -870,7 +884,7 @@ mod tests {
             full.height() < 200.0,
             "four rows leave the graph most of it"
         );
-        let (graph, _) = split(PanelMode::Full, screen, (60, 500.0));
+        let (graph, _) = split(PanelMode::Full, screen, (60, 500.0), 0.0);
         assert!(graph.height() >= screen.height() * (1.0 - FULL_SHARE) - 1e-3);
     }
 

@@ -139,8 +139,12 @@ fn draw_ui(
         egui::pos2(screen.min.x + left, screen.min.y + top),
         egui::pos2(screen.max.x - right, screen.max.y - bottom),
     );
-    let (graph_area, panel_area) =
-        journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
+    let (graph_area, panel_area) = journey_panel::split(
+        panel.mode,
+        central,
+        journey_panel::extent(&explorer),
+        legend_width(ctx, &chrome),
+    );
     if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
@@ -353,6 +357,14 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 /// Whether two rectangles share more than an edge.
 fn overlaps(a: egui::Rect, b: egui::Rect) -> bool {
     a.min.x < b.max.x && b.min.x < a.max.x && a.min.y < b.max.y && b.min.y < a.max.y
+}
+
+/// How much of the bottom left the legend takes, as last laid out, with its margins.
+fn legend_width(ctx: &egui::Context, chrome: &Chrome) -> f32 {
+    if chrome.bare {
+        return 0.0;
+    }
+    card_rect(ctx, "legend").map_or(0.0, |legend| legend.width() + 24.0)
 }
 
 /// Where the legend sits: the graph's bottom left, or above a docked journey that
@@ -1614,6 +1626,8 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
+                    // Its text is not for selecting: a click anywhere folds it.
+                    ui.style_mut().interaction.selectable_labels = false;
                     if !folded {
                         legend_lines(ui, diffing);
                     }
@@ -1758,58 +1772,58 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
                 .corner_radius(10.0)
                 .inner_margin(egui::Margin::symmetric(18, 14))
                 .show(ui, |ui| {
-                    ui.horizontal_top(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new("Names in the graph")
-                                    .strong()
-                                    .size(14.0),
-                            );
-                            ui.add_space(4.0);
-                            label_key(ui);
-                        });
-                        ui.add_space(24.0);
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new("Bars in the journey")
-                                    .strong()
-                                    .size(14.0),
-                            );
-                            ui.add_space(4.0);
-                            journey_panel::bar_key(ui);
-                        });
-                    });
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-                    ui.horizontal_top(|ui| {
-                        for (title, keys) in KEYS {
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(title).strong().size(14.0));
-                                ui.add_space(4.0);
-                                egui::Grid::new(title).spacing(egui::vec2(12.0, 3.0)).show(
-                                    ui,
-                                    |ui| {
-                                        for (key, what) in keys {
-                                            ui.label(
-                                                egui::RichText::new(*key)
-                                                    .monospace()
-                                                    .color(egui::Color32::WHITE),
-                                            );
-                                            ui.label(egui::RichText::new(*what).color(MUTED));
-                                            ui.end_row();
-                                        }
-                                    },
-                                );
-                            });
-                            ui.add_space(16.0);
-                        }
-                    });
-                    if ui.small_button("close (H)").clicked() {
-                        *open = false;
-                    }
+                    // A short window scrolls it rather than cut it off.
+                    egui::ScrollArea::vertical()
+                        .max_height(area.height() - 40.0)
+                        .show(ui, |ui| key_help_contents(ui, open));
                 });
         });
+}
+
+/// The key to the marks on names and bars, every key, and a button to close it.
+fn key_help_contents(ui: &mut egui::Ui, open: &mut bool) {
+    let heading = |ui: &mut egui::Ui, title: &str| {
+        ui.label(egui::RichText::new(title).strong().size(14.0));
+        ui.add_space(4.0);
+    };
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            heading(ui, "Names in the graph");
+            label_key(ui);
+        });
+        ui.add_space(24.0);
+        ui.vertical(|ui| {
+            heading(ui, "Bars in the journey");
+            journey_panel::bar_key(ui);
+        });
+    });
+    ui.add_space(8.0);
+    ui.separator();
+    ui.add_space(4.0);
+    ui.horizontal_top(|ui| {
+        for (title, keys) in KEYS {
+            ui.vertical(|ui| {
+                heading(ui, title);
+                egui::Grid::new(title)
+                    .spacing(egui::vec2(12.0, 3.0))
+                    .show(ui, |ui| {
+                        for (key, what) in keys {
+                            ui.label(
+                                egui::RichText::new(*key)
+                                    .monospace()
+                                    .color(egui::Color32::WHITE),
+                            );
+                            ui.label(egui::RichText::new(*what).color(MUTED));
+                            ui.end_row();
+                        }
+                    });
+            });
+            ui.add_space(16.0);
+        }
+    });
+    if ui.small_button("close (H)").clicked() {
+        *open = false;
+    }
 }
 
 /// What the marks on the graph's names mean, each drawn as the graph draws it.
@@ -1949,6 +1963,55 @@ mod tests {
             .and_then(|labels| labels.get(&Named::Node(0)).cloned())
             .unwrap_or_else(|| panic!("the label was not remembered"));
         (shown.side, shown.offset)
+    }
+
+    #[test]
+    fn a_click_folds_the_legend_and_another_opens_it() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+        let run = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| legend(ui.ctx(), screen, false));
+            output.textures_delta.clear();
+            card_rect(&ctx, "legend").expect("the legend shows")
+        };
+        let click = |at: egui::Pos2| {
+            [true, false]
+                .map(|pressed| egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                })
+                .into_iter()
+                .chain([egui::Event::PointerMoved(at)])
+                .collect::<Vec<_>>()
+        };
+        // A few frames for its size to settle.
+        let settle = || {
+            let mut rect = run(Vec::new());
+            for _ in 0..2 {
+                rect = run(Vec::new());
+            }
+            rect
+        };
+        let open = settle();
+        assert!(open.max.y <= screen.max.y && open.min.x >= screen.min.x);
+        run(vec![egui::Event::PointerMoved(open.center())]);
+        run(click(open.center()));
+        let folded = settle();
+        assert!(
+            folded.height() < open.height() / 2.0,
+            "folded to a line: {folded:?} from {open:?}"
+        );
+        run(vec![egui::Event::PointerMoved(folded.center())]);
+        run(click(folded.center()));
+        let reopened = settle();
+        assert!((reopened.height() - open.height()).abs() < 1.0);
     }
 
     #[test]
