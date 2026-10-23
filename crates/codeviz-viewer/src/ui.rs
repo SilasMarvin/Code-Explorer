@@ -1667,6 +1667,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
             ("T", "play or pause the morph"),
+            ("B", "live: diff against the version first opened"),
         ],
     ),
     (

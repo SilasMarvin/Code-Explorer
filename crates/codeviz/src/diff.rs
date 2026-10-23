@@ -13,7 +13,11 @@ use anyhow::{Context, bail};
 use codeviz_core::{Change, Diff, System, align};
 use codeviz_ir::Document;
 
-use crate::{ir::Source, view::Display};
+use crate::{
+    ir::Source,
+    view::Display,
+    watch::{self, Input},
+};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct DiffArgs {
@@ -32,6 +36,11 @@ pub(crate) struct DiffArgs {
     /// Also write the two documents to this directory, as `before.json` and `after.json`.
     #[arg(long, value_name = "DIR")]
     save: Option<PathBuf>,
+    /// Keep the view live as you edit: the working tree is analyzed again whenever it
+    /// changes and drawn against the revision. Both sides are analyzed from the syntax
+    /// alone, to keep up.
+    #[arg(short, long, conflicts_with = "summary")]
+    watch: bool,
     #[command(flatten)]
     display: Display,
 }
@@ -44,20 +53,36 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     let top = PathBuf::from(git(&path, &["rev-parse", "--show-toplevel"])?);
     let prefix = git(&path, &["rev-parse", "--show-prefix"])?;
     let (base, head) = revisions(&top, &args.revisions)?;
+    if args.watch && head.is_some() {
+        bail!("--watch follows the working tree: give one revision to compare it with");
+    }
+    let source = if args.watch {
+        args.source.syntax_only()
+    } else {
+        args.source.clone()
+    };
 
     // The checkouts have no build of their own: rust-analyzer builds their build
     // scripts and proc macros where the working tree's are, not from scratch.
     let target_dir = crate::ir::target_dir(&path);
     let analyze = |root: &Path| {
-        crate::ir::analyze_dir(root, &args.source, target_dir.as_deref())
+        crate::ir::analyze_dir(root, &source, target_dir.as_deref())
             .with_context(|| format!("cannot analyze {}", root.display()))
     };
     let old = Checkout::new(&top, &base)?;
     let before = analyze(&old.dir.join(&prefix))?;
+    // A live diff keeps the working tree as read, files that do not parse and all.
+    let mut opened = None;
     let (after, new) = match &head {
         Some(head) => {
             let new = Checkout::new(&top, head)?;
             (analyze(&new.dir.join(&prefix))?, Some(new))
+        }
+        None if args.watch => {
+            let read = Input::Source(path.clone()).read(&source)?;
+            let after = read.document.clone();
+            opened = Some(read);
+            (after, None)
         }
         None => (analyze(&path)?, None),
     };
@@ -83,7 +108,9 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     if diff.is_empty() {
         eprintln!("{title}: nothing changed");
     }
-    crate::view::open(vec![after], vec![before], &args.display, &title, None)
+    let updates =
+        opened.map(|read| watch::spawn(vec![Input::Source(path.clone())], source, vec![read]));
+    crate::view::open(vec![after], vec![before], &args.display, &title, updates)
 }
 
 /// The revision to compare from, and the one to compare to (the working tree if none).

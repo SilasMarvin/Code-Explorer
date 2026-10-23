@@ -90,6 +90,17 @@ pub(crate) struct Analyzed {
     pub(crate) unparsed: Vec<(PathBuf, usize)>,
 }
 
+/// Whether `root` is a Cargo package or workspace, or a directory of them such as a
+/// workspace's `crates/`.
+fn holds_cargo_packages(root: &Path) -> bool {
+    root.join("Cargo.toml").exists()
+        || std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().join("Cargo.toml").exists())
+}
+
 /// [`analyze_dir`], also saying which files did not wholly parse.
 pub(crate) fn analyze_source(
     root: &Path,
@@ -98,7 +109,7 @@ pub(crate) fn analyze_source(
 ) -> anyhow::Result<Analyzed> {
     let language = match source.lang {
         Some(language) => language,
-        None if root.join("Cargo.toml").exists() => Language::Rust,
+        None if holds_cargo_packages(root) => Language::Rust,
         None => Language::Python,
     };
     if language == Language::Python {

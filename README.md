@@ -17,10 +17,12 @@ codeviz validate app.json
 codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz view app.json other.json     # merged 3D view
+codeviz view crates --watch          # live: the graph follows your edits
 codeviz view new.json --before old.json   # what changed, over the graph
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
+codeviz diff HEAD --watch            # uncommitted changes, live as you make them
 ```
 
 The codebase floats as a graph, one node per function, each module gathered in its own
@@ -46,6 +48,22 @@ everything, two steps and one. In the journey, `←`/`→` move between calls by
 caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a function,
 `S` opens the side panel (the view's settings, outcomes, source and details), `H`
 lists every key.
+
+## Live
+
+`view --watch` keeps the viewer open beside your editor. `view` takes directories of
+source as well as IR documents; with `--watch` it reads them again a moment after
+each save (a directory from the syntax alone, a fraction of a second for this
+workspace; an IR document when whatever writes it rewrites it) and updates the graph
+in place. Every function stays where it was and a new one starts beside what calls
+it, then the graph settles around it; the focus, the journeys and their cursors, the
+spotlight and the camera stay put, a cursor whose call went away landing on its
+caller. What changed ripples, green where added and yellow where rewritten, and a note
+over the graph names it. A save that leaves a file unparsable is held back: the last
+good graph stays, with a note saying where the file stops parsing. `B` draws everything
+changed since the viewer opened as a diff, as `--before` would. `diff REV --watch` does
+the same against a revision, so `codeviz diff HEAD --watch` shows your uncommitted
+changes growing as you make them.
 
 ## Diffs
 
