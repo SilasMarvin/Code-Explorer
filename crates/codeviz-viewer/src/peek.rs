@@ -112,7 +112,8 @@ pub(crate) fn draw(
                     header(ui, explorer, change, &unit, shown, code, open);
                     let badges = call_badges(explorer, diff, &unit);
                     egui::ScrollArea::both()
-                        .id_salt("peek_source")
+                        // Each function keeps its own place in its source.
+                        .id_salt(("peek_source", &unit))
                         .max_height(height)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
@@ -122,7 +123,8 @@ pub(crate) fn draw(
                                     no_source(ui, explorer, &unit);
                                 }
                                 (Some(_), old, new) => {
-                                    changed(ui, old.as_ref(), new.as_ref(), &badges);
+                                    let first_look = first_look(ui.ctx(), &unit);
+                                    changed(ui, old.as_ref(), new.as_ref(), &badges, first_look);
                                 }
                                 (None, _, Some(new)) => plain(ui, new, &badges),
                             }
@@ -239,20 +241,32 @@ fn plain(ui: &mut egui::Ui, body: &Body, badges: &HashMap<usize, Vec<(String, eg
     let mut state = Lexer::default();
     for (index, text) in body.lines.iter().enumerate() {
         let number = body.first + index;
-        let mut job = gutter(number, ' ', badges.get(&number));
+        let mut job = gutter(number, ' ', badges.get(&number), room(badges));
         state.highlight(&mut job, text, language, None);
         ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend));
     }
 }
 
+/// Whether the peek shows `unit` for the first time since it showed another.
+fn first_look(ctx: &egui::Context, unit: &UnitId) -> bool {
+    let id = egui::Id::new("peek_unit");
+    ctx.data_mut(|d| {
+        let first = d.get_temp::<UnitId>(id).as_ref() != Some(unit);
+        d.insert_temp(id, unit.clone());
+        first
+    })
+}
+
 /// Old and new as one line diff, each line colored by syntax over the diff's own
-/// green and red.
+/// green and red; on a first look, scrolled to the first change.
 fn changed(
     ui: &mut egui::Ui,
     old: Option<&Body>,
     new: Option<&Body>,
     badges: &HashMap<usize, Vec<(String, egui::Color32)>>,
+    first_look: bool,
 ) {
+    let mut to_change = first_look;
     let none: &[String] = &[];
     let (old_lines, new_lines) = (
         old.map_or(none, |b| b.lines.as_slice()),
@@ -284,7 +298,7 @@ fn changed(
         } else {
             badges.get(&number)
         };
-        let mut job = gutter(number, sign, marks);
+        let mut job = gutter(number, sign, marks, room(badges));
         lexer.highlight(&mut job, text, language, background);
         if let Line::Same(i, _) = line {
             // The old side reads the same line too, to keep its comments in step.
@@ -295,7 +309,13 @@ fn changed(
                 None,
             );
         }
-        ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend));
+        let row = ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend));
+        if to_change && background.is_some() {
+            to_change = false;
+            // By its left edge, so the view does not slide sideways.
+            let edge = egui::Rect::from_min_size(row.rect.min, egui::vec2(1.0, row.rect.height()));
+            ui.scroll_to_rect(edge, Some(egui::Align::Center));
+        }
     }
 }
 
@@ -304,6 +324,7 @@ fn gutter(
     number: usize,
     sign: char,
     badges: Option<&Vec<(String, egui::Color32)>>,
+    room: usize,
 ) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let format = |color| egui::TextFormat {
@@ -318,7 +339,7 @@ fn gutter(
     );
     let badges = badges.map_or(&[][..], Vec::as_slice);
     // Lines without a call keep the same indent as those with one.
-    let width: usize = badges.iter().map(|(n, _)| n.len() + 2).sum();
+    let width = badge_width(badges);
     for (number, fill) in badges {
         job.append(
             &format!(" {number} "),
@@ -330,15 +351,27 @@ fn gutter(
         );
     }
     job.append(
-        &" ".repeat(BADGE_ROOM.saturating_sub(width) + 1),
+        &" ".repeat(room.saturating_sub(width) + 1),
         0.0,
         format(egui::Color32::TRANSPARENT),
     );
     job
 }
 
-/// Room kept before each line for call badges, in characters.
-const BADGE_ROOM: usize = 3;
+/// Room kept before each line for call badges, in characters: at least enough for
+/// one, and as much as the widest line's take, so the code lines up below.
+fn room(badges: &HashMap<usize, Vec<(String, egui::Color32)>>) -> usize {
+    badges
+        .values()
+        .map(|b| badge_width(b))
+        .max()
+        .unwrap_or(0)
+        .max(3)
+}
+
+fn badge_width(badges: &[(String, egui::Color32)]) -> usize {
+    badges.iter().map(|(n, _)| n.chars().count() + 2).sum()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Language {
