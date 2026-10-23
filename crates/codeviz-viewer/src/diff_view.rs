@@ -1,25 +1,25 @@
-//! A diff over the graph, drawn three ways. The graph lays out both versions at once,
+//! A diff over the graph, drawn two ways. The graph lays out both versions at once,
 //! so every unit either side has keeps one place.
 //!
 //! - Status: added units glow green, rewritten ones gold, removed ones linger as red
-//!   ghosts; calls that appeared are green and calls that went away red.
-//! - Impact: the blast radius. Everything that can reach a change heats up, hottest
-//!   nearest it, and pulses run from each change out along its callers to the entry
-//!   points it can affect.
+//!   ghosts; calls that appeared are green and calls that went away red. `N` steps
+//!   through the changes in the order to read them, callees first, and the focused
+//!   change shows the way up from it to the entry points it can affect.
 //! - Morph: the graph as it was, then as it is. Each version is laid out on its own,
 //!   starting from the shared layout, and the graph moves between the two: removed
 //!   units shrink away, added ones grow in, and the rest shift as the calls between
 //!   them change.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bevy::prelude::*;
 use bevy_egui::{egui, input::egui_wants_any_keyboard_input};
-use codeviz_core::{Change, Diff, System};
+use codeviz_core::{Change, Diff, Review, System};
 use codeviz_layout::ForceGraph;
 
 use crate::{
     camera::OrbitCamera,
+    change_pane,
     explorer::{Clustering, Explorer},
     graph_view::{self, NodeLook},
     lens::{Lens, SPECK},
@@ -39,20 +39,20 @@ const VERSION_STEPS: usize = 160;
 /// Seconds of one morph cycle: hold before, move, hold after, move back.
 const HOLD: f32 = 1.2;
 const MOVE: f32 = 2.4;
+/// The most entry points the way up from a change runs to, nearest first.
+const ROUTE_ENDS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum DiffStyle {
     #[default]
     Status,
-    Impact,
     Morph,
 }
 
 impl DiffStyle {
     pub(crate) fn next(self) -> Self {
         match self {
-            Self::Status => Self::Impact,
-            Self::Impact => Self::Morph,
+            Self::Status => Self::Morph,
             Self::Morph => Self::Status,
         }
     }
@@ -69,13 +69,24 @@ pub(crate) struct Totals {
     pub(crate) calls_removed: usize,
 }
 
-/// An entry point a change can reach.
+/// Where things start: an entry point, or a function nothing calls.
 #[derive(Debug, Clone)]
-pub(crate) struct Affected {
-    pub(crate) tile: usize,
+pub(crate) struct Start {
+    /// Its node, when the graph has one.
+    pub(crate) tile: Option<usize>,
     pub(crate) label: String,
-    /// Calls between it and the nearest change.
-    pub(crate) hops: u32,
+}
+
+/// The way up from a change to the starts it can affect: the shortest call chain to
+/// each of the nearest few.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Route {
+    /// Every node on the way, the change included.
+    pub(crate) tiles: HashSet<usize>,
+    /// The calls along it, as `(caller, callee)`.
+    pub(crate) calls: HashSet<(usize, usize)>,
+    /// The starts it reaches, nearest first.
+    pub(crate) ends: Vec<usize>,
 }
 
 #[derive(Resource, Debug)]
@@ -85,12 +96,21 @@ pub(crate) struct DiffView {
     changes: HashMap<usize, Change>,
     added_calls: HashSet<(usize, usize)>,
     removed_calls: HashSet<(usize, usize)>,
-    /// Calls between each node and the nearest change it can reach; zero for changes.
-    impact: HashMap<usize, u32>,
-    pub(crate) affected: Vec<Affected>,
-    pub(crate) entry_count: usize,
-    /// Whether the entries are the functions nothing calls, for want of declared ones.
+    /// The changes in the order to read them: each after the changes it calls.
+    order: Vec<usize>,
+    /// Where in `order` stepping last stood.
+    at: Option<usize>,
+    pub(crate) starts: Vec<Start>,
+    /// Whether the starts are the functions nothing calls, for want of declared ones.
     pub(crate) roots: bool,
+    /// The starts each change can affect, by index into `starts`.
+    reached_from: HashMap<usize, Vec<usize>>,
+    /// The starts any change affects, those more changes reach first.
+    pub(crate) affected: Vec<usize>,
+    /// What calls each node in either version, by tile.
+    callers: Vec<Vec<usize>>,
+    /// The way up from the focused change, and the change it starts from.
+    route: Option<(usize, Route)>,
     /// The old version, with moved functions under their new ids.
     old: System,
     /// What each moved node was called before.
@@ -99,8 +119,6 @@ pub(crate) struct DiffView {
     before: Vec<[f32; 3]>,
     after: Vec<[f32; 3]>,
     shared: Vec<[f32; 3]>,
-    /// Calls in and out of each node, by tile.
-    degrees: Vec<usize>,
     /// The clustering `before` and `after` were laid out under.
     laid_out_for: Clustering,
     /// From 0 (before) to 1 (after).
@@ -148,33 +166,30 @@ impl DiffView {
             calls_removed: removed_calls.len(),
         };
 
-        // Out from every change along its callers, nearest first.
-        let graph = explorer.graph();
-        let mut impact: HashMap<usize, u32> = changes.keys().map(|&t| (t, 0)).collect();
-        let mut queue: VecDeque<usize> = changes.keys().copied().collect();
-        while let Some(at) = queue.pop_front() {
-            let hops = impact[&at] + 1;
-            for caller in graph.callers(at) {
-                if let std::collections::hash_map::Entry::Vacant(slot) = impact.entry(caller) {
-                    slot.insert(hops);
-                    queue.push_back(caller);
-                }
-            }
-        }
-        let (entries, roots) = entry_points(explorer, &changes);
-        let mut affected: Vec<Affected> = entries
+        let review = Review::new(diff, &before, explorer.system());
+        let order: Vec<usize> = review.order.iter().filter_map(tile).collect();
+        let starts: Vec<Start> = review
+            .starts
             .iter()
-            .filter_map(|(tile, label)| {
-                Some(Affected {
-                    tile: *tile,
-                    label: label.clone(),
-                    hops: *impact.get(tile)?,
-                })
+            .map(|start| Start {
+                tile: tile(&start.unit),
+                label: start.label.clone(),
             })
             .collect();
-        // What a change reaches comes before what changed itself, nearest first.
-        affected
-            .sort_by(|a, b| (a.hops == 0, a.hops, &a.label).cmp(&(b.hops == 0, b.hops, &b.label)));
+        let reached_from = review
+            .order
+            .iter()
+            .filter_map(|unit| Some((tile(unit)?, review.reached_from(unit).to_vec())))
+            .collect();
+        let graph = explorer.graph();
+        let mut callers = vec![Vec::new(); map.tiles.len()];
+        for &(from, to) in graph.calls.iter().chain(&graph.ghosts) {
+            if from != to
+                && let Some(list) = callers.get_mut(to)
+            {
+                list.push(from);
+            }
+        }
 
         let (before_at, after_at) = versions(explorer, &before, &changes);
         Self {
@@ -183,10 +198,14 @@ impl DiffView {
             changes,
             added_calls,
             removed_calls,
-            impact,
-            affected,
-            entry_count: entries.len(),
-            roots,
+            order,
+            at: None,
+            starts,
+            roots: review.roots,
+            reached_from,
+            affected: review.affected(),
+            callers,
+            route: None,
             moved: diff
                 .moved
                 .iter()
@@ -204,7 +223,6 @@ impl DiffView {
             after: after_at,
             shared: graph.positions.clone(),
             laid_out_for: explorer.clustering(),
-            degrees: (0..map.tiles.len()).map(|t| graph.degree(t)).collect(),
             morph: 0.0,
             playing: true,
             clock: 0.0,
@@ -216,19 +234,34 @@ impl DiffView {
         &self.old
     }
 
-    /// The change most tied into the rest: the one with the most calls in and out,
-    /// to open on.
-    pub(crate) fn hub(&self) -> Option<usize> {
-        self.changes
-            .iter()
-            .filter(|&(_, &change)| change != Change::Removed)
-            .max_by_key(|&(&tile, _)| {
-                (
-                    self.degrees.get(tile).copied().unwrap_or(0),
-                    std::cmp::Reverse(tile),
-                )
-            })
-            .map(|(&tile, _)| tile)
+    /// The changes in the order to read them.
+    pub(crate) fn order(&self) -> &[usize] {
+        &self.order
+    }
+
+    /// Where `tile` comes in the reading order, from 0.
+    pub(crate) fn place(&self, tile: usize) -> Option<usize> {
+        self.order.iter().position(|&t| t == tile)
+    }
+
+    /// The change `by` places on from the focus in the reading order: the next or the
+    /// previous one, or the first when the focus is not a change and none was stepped
+    /// to yet. Stays at either end.
+    pub(crate) fn step_from(&mut self, focus: Option<usize>, by: isize) -> Option<usize> {
+        let last = self.order.len().checked_sub(1)?;
+        let at = focus.and_then(|f| self.place(f)).or(self.at);
+        let next = match at {
+            Some(at) => at.saturating_add_signed(by).min(last),
+            None if by < 0 => last,
+            None => 0,
+        };
+        self.at = Some(next);
+        self.order.get(next).copied()
+    }
+
+    /// The starts a change can affect, by index into [`Self::starts`].
+    pub(crate) fn reached_from(&self, tile: usize) -> &[usize] {
+        self.reached_from.get(&tile).map_or(&[], Vec::as_slice)
     }
 
     /// What a moved node was called before.
@@ -238,11 +271,6 @@ impl DiffView {
 
     pub(crate) fn change(&self, tile: usize) -> Option<Change> {
         self.changes.get(&tile).copied()
-    }
-
-    /// Calls from `tile` to the nearest change, when it can reach one.
-    pub(crate) fn impact(&self, tile: usize) -> Option<u32> {
-        self.impact.get(&tile).copied()
     }
 
     /// Whether a call appeared or went away.
@@ -256,11 +284,56 @@ impl DiffView {
         }
     }
 
+    /// The calls a change gained and lost, by callee.
+    pub(crate) fn calls_changed(&self, tile: usize) -> (Vec<usize>, Vec<usize>) {
+        let from = |calls: &HashSet<(usize, usize)>| {
+            let mut callees: Vec<usize> = calls
+                .iter()
+                .filter(|(caller, _)| *caller == tile)
+                .map(|&(_, callee)| callee)
+                .collect();
+            callees.sort_unstable();
+            callees
+        };
+        (from(&self.added_calls), from(&self.removed_calls))
+    }
+
+    /// The way up from the focused change to what it affects, when the focus is one.
+    pub(crate) fn route(&self) -> Option<&Route> {
+        self.route.as_ref().map(|(_, route)| route)
+    }
+
+    /// Whether a node is a start on the way up from the focused change.
+    pub(crate) fn route_end(&self, tile: usize) -> bool {
+        self.route().is_some_and(|r| r.ends.contains(&tile))
+    }
+
+    /// Climbs from `focus` when it is a change, else clears the way up. Returns the
+    /// nodes on the way when it moved.
+    fn follow(&mut self, focus: Option<usize>) -> Option<Vec<usize>> {
+        let from = focus.filter(|&f| self.changes.contains_key(&f));
+        if self.route.as_ref().map(|(tile, _)| *tile) == from {
+            return None;
+        }
+        let tiles: HashSet<usize> = self.starts.iter().filter_map(|s| s.tile).collect();
+        self.route = from.map(|from| {
+            (
+                from,
+                route(from, &self.callers, |t| tiles.contains(&t), ROUTE_ENDS),
+            )
+        });
+        Some(
+            self.route()
+                .map(|r| r.tiles.iter().copied().collect())
+                .unwrap_or_default(),
+        )
+    }
+
     /// How much of the "after" version is showing, eased.
     pub(crate) fn progress(&self) -> f32 {
         match self.style {
             DiffStyle::Morph => ease(self.morph),
-            DiffStyle::Status | DiffStyle::Impact => 1.0,
+            DiffStyle::Status => 1.0,
         }
     }
 
@@ -305,29 +378,47 @@ impl DiffView {
     }
 }
 
-/// Where things start, by node and name: the declared entries, or else whatever
-/// nothing calls (`main`, a framework's callbacks, a library's API). Says which.
-fn entry_points(
-    explorer: &Explorer,
-    changes: &HashMap<usize, Change>,
-) -> (Vec<(usize, String)>, bool) {
-    let map = explorer.map();
-    let declared: Vec<(usize, String)> = explorer
-        .system()
-        .entries()
-        .iter()
-        .filter_map(|e| Some((map.tile_of(&e.unit)?, e.label.clone())))
-        .collect();
-    if !declared.is_empty() {
-        return (declared, false);
+/// The way up from `from` along `callers` to the nearest `limit` starts: breadth
+/// first, so each start's chain is a shortest one.
+fn route(
+    from: usize,
+    callers: &[Vec<usize>],
+    is_start: impl Fn(usize) -> bool,
+    limit: usize,
+) -> Route {
+    // Each node reached, by the node it calls on the way back down.
+    let mut down: HashMap<usize, usize> = HashMap::new();
+    let mut ends = Vec::new();
+    let mut queue = VecDeque::from([from]);
+    let mut seen = HashSet::from([from]);
+    while let Some(at) = queue.pop_front() {
+        if is_start(at) {
+            ends.push(at);
+            if ends.len() == limit {
+                break;
+            }
+        }
+        for &caller in callers.get(at).into_iter().flatten() {
+            if seen.insert(caller) {
+                down.insert(caller, at);
+                queue.push_back(caller);
+            }
+        }
     }
-    let graph = explorer.graph();
-    let roots = (0..map.tiles.len())
-        .filter(|&t| graph.callers(t).next().is_none())
-        .filter(|&t| changes.get(&t) != Some(&Change::Removed))
-        .filter_map(|t| Some((t, explorer.unit_name(explorer.tile_unit(t)?))))
-        .collect();
-    (roots, true)
+    let mut route = Route {
+        tiles: HashSet::from([from]),
+        ends,
+        ..Route::default()
+    };
+    for &end in &route.ends {
+        let mut at = end;
+        while let Some(&callee) = down.get(&at) {
+            route.tiles.insert(at);
+            route.calls.insert((at, callee));
+            at = callee;
+        }
+    }
+    route
 }
 
 /// Where each node sits in the old version and in the new one: each laid out alone,
@@ -386,6 +477,7 @@ impl Plugin for DiffPlugin {
             Update,
             (
                 diff_keys.run_if(not(egui_wants_any_keyboard_input)),
+                follow_route,
                 animate,
                 frame_changes,
             )
@@ -397,13 +489,22 @@ impl Plugin for DiffPlugin {
     }
 }
 
-/// D cycles the styles; T pauses or resumes the morph; C shows only what changed, or
-/// everything again.
+/// N steps to the next change in reading order and shift+N back, bringing the source
+/// pane back if it was closed; D cycles the styles; T pauses or resumes the morph; C
+/// shows only what changed, or everything again.
 fn diff_keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut view: ResMut<DiffView>,
     mut explorer: ResMut<Explorer>,
+    mut pane: ResMut<change_pane::Closed>,
 ) {
+    if keys.just_pressed(KeyCode::KeyN) {
+        let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+        if let Some(tile) = view.step_from(explorer.graph_focus(), if shift { -1 } else { 1 }) {
+            explorer.open_at(tile);
+            pane.0 = false;
+        }
+    }
     if keys.just_pressed(KeyCode::KeyC) {
         let lens = explorer.lens();
         explorer.set_lens(Lens {
@@ -416,6 +517,15 @@ fn diff_keys(
     }
     if keys.just_pressed(KeyCode::KeyT) {
         view.playing = !view.playing;
+    }
+}
+
+/// Keeps the way up from the focused change showing.
+fn follow_route(mut view: ResMut<DiffView>, mut explorer: ResMut<Explorer>) {
+    let focus = explorer.graph_focus();
+    if let Some(tiles) = view.bypass_change_detection().follow(focus) {
+        explorer.set_trail(tiles);
+        view.set_changed();
     }
 }
 
@@ -503,7 +613,8 @@ fn frame_changes(view: Res<DiffView>, mut cameras: Query<&mut OrbitCamera>, mut 
     }
 }
 
-/// How a node looks under the diff: its change, or how near a change it is, or faded.
+/// How a node looks under the diff: its change; or, left alone, neutral where it is
+/// near the focus or on the way up from it, else faded.
 pub(crate) fn diff_look(explorer: &Explorer, view: &DiffView, tile: usize) -> NodeLook {
     if !explorer.shown(tile) {
         return NodeLook::Hidden;
@@ -514,24 +625,22 @@ pub(crate) fn diff_look(explorer: &Explorer, view: &DiffView, tile: usize) -> No
     if let Some(change) = view.change(tile) {
         return NodeLook::Changed(change);
     }
-    match (view.style, view.impact(tile)) {
-        (DiffStyle::Impact, Some(hops)) => NodeLook::Impacted(hops.min(3)),
-        // Near the focus but left alone: neutral, so where it sits still reads.
-        _ => explorer
-            .reach()
-            .and_then(|reach| graph_view::near(explorer, reach, tile))
-            .map_or(
-                NodeLook::Faded(explorer.tile_color(tile) % PALETTE.len()),
-                NodeLook::Unchanged,
-            ),
+    let near = explorer
+        .reach()
+        .and_then(|reach| graph_view::near(explorer, reach, tile));
+    let on_route = view.route().is_some_and(|r| r.tiles.contains(&tile));
+    match near {
+        Some(hops) => NodeLook::Unchanged(hops),
+        None if view.route_end(tile) => NodeLook::Unchanged(1),
+        None if on_route => NodeLook::Unchanged(2),
+        None => NodeLook::Faded(explorer.tile_color(tile) % PALETTE.len()),
     }
 }
 
 /// Every call, colored by the diff. Calls touching the center of attention say which
 /// way they run, violet in and blue out, with dots flowing along them; otherwise added
-/// calls are green and removed ones red and dashed; under Impact, calls that carry a
-/// change towards an entry point are gold, with pulses running out along them; the
-/// journey's path is pale arrows; the rest are faint.
+/// calls are green and removed ones red and dashed; the way up from the focused change
+/// to its entry points, and the journey's path, are pale arrows; the rest are faint.
 pub(crate) fn draw_diff_graph(
     explorer: &Explorer,
     view: &DiffView,
@@ -552,6 +661,7 @@ pub(crate) fn draw_diff_graph(
             Some((node(edge.caller)?, node(edge.callee)?))
         })
         .collect();
+    let route = view.route();
     for (index, &(from, to)) in graph.calls.iter().chain(&graph.ghosts).enumerate() {
         let (Some(a), Some(b)) = (explorer.tile_point(from), explorer.tile_point(to)) else {
             continue;
@@ -587,34 +697,18 @@ pub(crate) fn draw_diff_graph(
             Some(Change::Removed) => {
                 dashed(gizmos, a, b - back, REMOVED.with_alpha(0.85 * presence));
             }
+            _ if route.is_some_and(|r| r.calls.contains(&(from, to))) => {
+                gizmos
+                    .arrow(a, b - back, graph_view::FURTHER.with_alpha(0.6 * shown))
+                    .with_tip_length(0.8);
+            }
+            _ if path.contains(&(from, to)) => {
+                gizmos
+                    .arrow(a, b - back, graph_view::FURTHER.with_alpha(0.45 * shown))
+                    .with_tip_length(0.8);
+            }
             _ => {
-                let carries = view.style == DiffStyle::Impact
-                    && view
-                        .impact(from)
-                        .zip(view.impact(to))
-                        .is_some_and(|(caller, callee)| caller == callee + 1);
-                if carries {
-                    let hops = view.impact(from).unwrap_or(1);
-                    let strength = match hops {
-                        1 => 0.8,
-                        2 => 0.55,
-                        _ => 0.35,
-                    };
-                    gizmos.line(a, b, MODIFIED.with_alpha(strength * shown));
-                    // A pulse running from the callee out to its caller.
-                    let phase = (time * 0.7 + (from * 7 + to * 13) as f32 * 0.137).fract();
-                    gizmos.sphere(
-                        Isometry3d::from_translation(b.lerp(a, phase)),
-                        0.22,
-                        MODIFIED.with_alpha((strength + 0.2) * shown),
-                    );
-                } else if path.contains(&(from, to)) {
-                    gizmos
-                        .arrow(a, b - back, graph_view::FURTHER.with_alpha(0.45 * shown))
-                        .with_tip_length(0.8);
-                } else {
-                    gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, 0.07 * shown));
-                }
+                gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, 0.07 * shown));
             }
         }
     }
@@ -652,16 +746,19 @@ pub(crate) fn change_color(change: Change) -> Color {
     }
 }
 
-/// What changed, how it is drawn, and what it reaches: top right of the graph.
+/// What changed, how it is drawn, and what it reaches: top right of the graph. The
+/// changes are listed here only when the change pane, which lists them, is closed.
 /// Rows focus their node.
 pub(crate) fn diff_card(
     ctx: &egui::Context,
     area: egui::Rect,
     explorer: &mut Explorer,
     view: &mut DiffView,
+    listed: bool,
 ) {
     let mut chosen = None;
     let mut style = view.style;
+    let focus = explorer.graph_focus();
     egui::Area::new("diff_card".into())
         .pivot(egui::Align2::RIGHT_TOP)
         .fixed_pos(egui::pos2(area.max.x - 12.0, area.min.y + 10.0))
@@ -673,13 +770,31 @@ pub(crate) fn diff_card(
                 .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {
                     ui.set_max_width(300.0);
-                    ui.label(egui::RichText::new("Changes").strong().size(15.0));
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Changes").strong().size(15.0));
+                        if let Some(at) = focus.and_then(|f| view.place(f)) {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} of {}",
+                                            at + 1,
+                                            view.order.len()
+                                        ))
+                                        .color(MUTED),
+                                    );
+                                },
+                            );
+                        }
+                    });
                     totals_line(ui, view.totals);
                     let mut lens = explorer.lens();
                     if ui
                         .checkbox(&mut lens.changes_only, "Only changes")
                         .on_hover_text(
-                            "Hide what did not change, but for the focus and the journey's root (C)",
+                            "Hide what did not change, but for the focus, its journey's root \
+                             and the way up from it to its entry points (C)",
                         )
                         .changed()
                     {
@@ -689,54 +804,19 @@ pub(crate) fn diff_card(
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut style, DiffStyle::Status, "Status")
                             .on_hover_text("What changed, and the calls that came and went (D)");
-                        ui.selectable_value(&mut style, DiffStyle::Impact, "Impact")
-                            .on_hover_text("Everything that can reach a change (D)");
                         ui.selectable_value(&mut style, DiffStyle::Morph, "Morph")
                             .on_hover_text("The graph before, then after (D)");
                     });
                     match style {
                         DiffStyle::Status => {
-                            chosen = status_list(ui, explorer, view, area.height() * 0.55);
+                            chosen = affected_list(ui, view);
+                            if listed {
+                                let height = area.height() * 0.4;
+                                chosen =
+                                    reading_list(ui, explorer, view, "card", height).or(chosen);
+                            }
                         }
-                        DiffStyle::Impact => {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Reaches {} of {} {}",
-                                    view.affected.len(),
-                                    view.entry_count,
-                                    if view.roots {
-                                        "functions nothing calls"
-                                    } else {
-                                        "entry points"
-                                    }
-                                ))
-                                .small()
-                                .color(MUTED),
-                            );
-                            chosen = impact_list(ui, view, area.height() * 0.5);
-                        }
-                        DiffStyle::Morph => {
-                            ui.horizontal(|ui| {
-                                let label = if view.playing { "Pause" } else { "Play" };
-                                if ui
-                                    .button(label)
-                                    .on_hover_text("Play or pause (T)")
-                                    .clicked()
-                                {
-                                    view.playing = !view.playing;
-                                }
-                                ui.label(egui::RichText::new("before").small().color(MUTED));
-                                let mut t = view.morph;
-                                if ui
-                                    .add(egui::Slider::new(&mut t, 0.0..=1.0).show_value(false))
-                                    .changed()
-                                {
-                                    view.morph = t;
-                                    view.playing = false;
-                                }
-                                ui.label(egui::RichText::new("after").small().color(MUTED));
-                            });
-                        }
+                        DiffStyle::Morph => morph_controls(ui, view),
                     }
                 });
         });
@@ -746,6 +826,30 @@ pub(crate) fn diff_card(
     if let Some(tile) = chosen {
         explorer.open_at(tile);
     }
+}
+
+/// Play, pause and scrub the morph.
+fn morph_controls(ui: &mut egui::Ui, view: &mut DiffView) {
+    ui.horizontal(|ui| {
+        let label = if view.playing { "Pause" } else { "Play" };
+        if ui
+            .button(label)
+            .on_hover_text("Play or pause (T)")
+            .clicked()
+        {
+            view.playing = !view.playing;
+        }
+        ui.label(egui::RichText::new("before").small().color(MUTED));
+        let mut t = view.morph;
+        if ui
+            .add(egui::Slider::new(&mut t, 0.0..=1.0).show_value(false))
+            .changed()
+        {
+            view.morph = t;
+            view.playing = false;
+        }
+        ui.label(egui::RichText::new("after").small().color(MUTED));
+    });
 }
 
 /// How many functions changed each way, and how many calls came and went.
@@ -775,96 +879,119 @@ fn totals_line(ui: &mut egui::Ui, totals: Totals) {
     );
 }
 
-/// The entry points a change reaches, nearest first, in a list that scrolls past
-/// `max_height`. Returns the node of a row clicked.
-fn impact_list(ui: &mut egui::Ui, view: &DiffView, max_height: f32) -> Option<usize> {
+/// The entry points the changes reach, those more changes reach first, folded away
+/// at first when there are many. Returns the node of a row clicked.
+fn affected_list(ui: &mut egui::Ui, view: &DiffView) -> Option<usize> {
+    if view.affected.is_empty() {
+        return None;
+    }
     let mut chosen = None;
-    egui::ScrollArea::vertical()
-        .max_height(max_height)
+    let what = if view.roots {
+        "functions nothing calls"
+    } else {
+        "entry points"
+    };
+    let title = format!(
+        "Affects {} of {} {what}",
+        view.affected.len(),
+        view.starts.len()
+    );
+    egui::CollapsingHeader::new(egui::RichText::new(title).size(13.0))
+        .id_salt("affected")
+        .default_open(view.affected.len() <= 4)
         .show(ui, |ui| {
-            for affected in &view.affected {
-                let note = match affected.hops {
-                    0 => "changed itself".to_owned(),
-                    1 => "calls a change".to_owned(),
-                    n => format!("{n} calls from a change"),
+            for &index in &view.affected {
+                let Some(start) = view.starts.get(index) else {
+                    continue;
                 };
-                let text = egui::RichText::new(format!("{}  · {note}", affected.label))
-                    .color(egui_color(MODIFIED));
-                if ui
-                    .add(egui::Label::new(text).sense(egui::Sense::click()))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
+                let reached = view
+                    .order
+                    .iter()
+                    .filter(|&&t| view.reached_from(t).contains(&index))
+                    .count();
+                let plural = if reached == 1 { "" } else { "s" };
+                let text =
+                    egui::RichText::new(format!("{}  · {reached} change{plural}", start.label));
+                let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                if let Some(tile) = start.tile
+                    && response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
                 {
-                    chosen = Some(affected.tile);
+                    chosen = Some(tile);
                 }
             }
         });
     chosen
 }
 
-/// Every change, grouped by container, in a list that scrolls past `max_height`.
-/// Returns the node of a row clicked.
-fn status_list(
+/// Every change in the order to read them, numbered, each with how many entry points
+/// it affects, in a list that scrolls past `max_height`; the focused one is marked
+/// and kept in view as stepping moves it. Returns the node of a row clicked.
+pub(crate) fn reading_list(
     ui: &mut egui::Ui,
     explorer: &Explorer,
     view: &DiffView,
+    id: &str,
     max_height: f32,
 ) -> Option<usize> {
-    let map = explorer.map();
-    let mut groups: BTreeMap<&str, Vec<(Change, String, usize)>> = BTreeMap::new();
-    for (tile, change) in view.changed() {
-        let group = map
-            .tile(tile)
-            .and_then(|t| map.groups.get(t.group))
-            .map_or("", |g| g.label.as_str());
-        let name = explorer
-            .tile_unit(tile)
-            .and_then(|u| explorer.any_unit(u))
-            .map_or_else(String::new, |u| u.name.clone());
-        groups.entry(group).or_default().push((change, name, tile));
-    }
-    let open = groups.len() <= 6;
+    let focus = explorer.graph_focus();
+    ui.label(
+        egui::RichText::new("All changes, callees before callers · N next, Shift N back")
+            .small()
+            .color(MUTED),
+    );
+    // Scroll to the focus only when it moves, so the list can still be scrolled.
+    let scrolled = egui::Id::new(("reading_list_focus", id));
+    let moved = ui.ctx().data_mut(|d| {
+        let last = d.get_temp::<Option<usize>>(scrolled).flatten();
+        d.insert_temp(scrolled, focus);
+        last != focus
+    });
     let mut chosen = None;
     egui::ScrollArea::vertical()
+        .id_salt(("reading_list", id))
         .max_height(max_height)
+        // As tall as it may be from the start, not just what the card had room for
+        // before the list showed.
+        .min_scrolled_height(max_height)
+        .auto_shrink([false, true])
         .show(ui, |ui| {
-            for (label, rows) in &mut groups {
-                rows.sort();
-                let mut header = egui::text::LayoutJob::default();
-                let format = |color| egui::TextFormat {
+            for (index, &tile) in view.order.iter().enumerate() {
+                let Some(change) = view.change(tile) else {
+                    continue;
+                };
+                let name = explorer
+                    .tile_unit(tile)
+                    .map_or_else(String::new, |u| explorer.unit_name(u));
+                let mut row = egui::text::LayoutJob::default();
+                let format = |color, size| egui::TextFormat {
                     color,
-                    font_id: egui::FontId::proportional(13.5),
+                    font_id: egui::FontId::proportional(size),
                     ..Default::default()
                 };
-                header.append(label, 0.0, format(egui::Color32::from_rgb(215, 220, 230)));
-                for change in [
-                    Change::Added,
-                    Change::Modified,
-                    Change::Moved,
-                    Change::Removed,
-                ] {
-                    let n = rows.iter().filter(|r| r.0 == change).count();
-                    if n > 0 {
-                        let text = format!("{}{n}", sign(change));
-                        header.append(&text, 8.0, format(egui_color(change_color(change))));
-                    }
+                row.append(&format!("{:>2} ", index + 1), 0.0, format(MUTED, 12.0));
+                row.append(
+                    &format!("{} {name}", sign(change)),
+                    0.0,
+                    format(egui_color(change_color(change)), 13.5),
+                );
+                let reach = view.reached_from(tile).len();
+                if reach > 0 {
+                    row.append(&format!("↑{reach}"), 8.0, format(MUTED, 12.0));
                 }
-                egui::CollapsingHeader::new(header)
-                    .id_salt(*label)
-                    .default_open(open || rows.len() <= 3)
-                    .show(ui, |ui| {
-                        for (change, name, tile) in rows.iter() {
-                            let text = egui::RichText::new(format!("{}  {name}", sign(*change)))
-                                .color(egui_color(change_color(*change)));
-                            if ui
-                                .add(egui::Label::new(text).sense(egui::Sense::click()))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                chosen = Some(*tile);
-                            }
-                        }
-                    });
+                let response = ui.selectable_label(focus == Some(tile), row).on_hover_text(
+                    explorer
+                        .tile_unit(tile)
+                        .map_or_else(String::new, ToString::to_string)
+                        + &format!("\naffects {reach} entry points"),
+                );
+                if focus == Some(tile) && moved {
+                    response.scroll_to_me(Some(egui::Align::Center));
+                }
+                if response.clicked() {
+                    chosen = Some(tile);
+                }
             }
         });
     chosen
@@ -873,6 +1000,55 @@ fn status_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stepping_runs_through_the_changes_callees_first() {
+        // main -> (a -> c), b; a and c rewritten.
+        let mut explorer = crate::explorer::tests::explorer();
+        let id = |name: &str| codeviz_ir::UnitId::new(format!("x:{name}"));
+        let diff = Diff {
+            units: HashMap::from([(id("a"), Change::Modified), (id("c"), Change::Modified)]),
+            ..Diff::default()
+        };
+        let before = explorer.system().clone();
+        let mut view = DiffView::new(&mut explorer, &diff, before);
+        let tile = |name: &str| explorer.map().tile_of(&id(name)).unwrap();
+        let (a, b, c) = (tile("a"), tile("b"), tile("c"));
+        assert_eq!(view.order(), [c, a], "c before a, which calls it");
+        assert_eq!(view.step_from(None, 1), Some(c), "the first to read");
+        assert_eq!(view.step_from(Some(c), 1), Some(a));
+        assert_eq!(view.step_from(Some(a), 1), Some(a), "it stays at the end");
+        assert_eq!(view.step_from(Some(a), -1), Some(c));
+        assert_eq!(
+            view.step_from(Some(b), 1),
+            Some(a),
+            "from elsewhere, on from where stepping left off"
+        );
+        assert_eq!(view.place(a), Some(1));
+        assert_eq!(view.place(b), None);
+    }
+
+    #[test]
+    fn the_way_up_runs_to_the_nearest_starts_along_shortest_chains() {
+        // 0 is the change; 1 and 2 call it, 3 calls 1 and 2; 4 calls 3; 5 calls 2.
+        let mut callers = vec![Vec::new(); 6];
+        callers[0] = vec![1, 2];
+        callers[1] = vec![3];
+        callers[2] = vec![3, 5];
+        callers[3] = vec![4];
+        let starts = [4, 5];
+        let route = route(0, &callers, |t| starts.contains(&t), 8);
+        assert_eq!(route.ends, [5, 4], "nearest first");
+        assert_eq!(
+            route.calls,
+            HashSet::from([(5, 2), (2, 0), (4, 3), (3, 1), (1, 0)]),
+            "one chain each, the first found"
+        );
+        assert_eq!(route.tiles, HashSet::from([0, 1, 2, 3, 4, 5]));
+        let nearest = super::route(0, &callers, |t| starts.contains(&t), 1);
+        assert_eq!(nearest.ends, [5]);
+        assert_eq!(nearest.tiles, HashSet::from([0, 2, 5]));
+    }
 
     #[test]
     fn the_morph_holds_at_each_end() {

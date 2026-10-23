@@ -57,8 +57,6 @@ pub(crate) enum NodeLook {
     Plain(usize),
     /// Added, removed or rewritten, when showing a diff.
     Changed(Change),
-    /// Can reach a change in this many calls (capped at [`FARTHEST_SHADE`]).
-    Impacted(u32),
 }
 
 /// Steps of brightness a node fades through as the lens reveals or hides it.
@@ -146,20 +144,6 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
             ..default()
         },
     );
-    for hops in 1..=FARTHEST_SHADE {
-        let (shade, strength) = match hops {
-            1 => (0.8, 1.0),
-            2 => (0.6, 0.45),
-            _ => (0.45, 0.15),
-        };
-        let linear = LinearRgba::from(MODIFIED);
-        let color = Color::from(LinearRgba::rgb(
-            linear.red * shade,
-            linear.green * shade * 0.85,
-            linear.blue * shade * 0.6,
-        ));
-        table.insert(NodeLook::Impacted(hops), glow(color, strength));
-    }
     table.insert(
         NodeLook::Hidden,
         StandardMaterial {
@@ -725,7 +709,7 @@ pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut Orbit
 }
 
 /// Orbits the focused node from far enough back to see everything it calls and
-/// everything that calls it.
+/// everything that calls it, and under a diff the way up to what it affects.
 pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut OrbitCamera) {
     let graph = explorer.graph();
     let Some(focus) = explorer.graph_focus() else {
@@ -738,6 +722,7 @@ pub(crate) fn orbit_focus(explorer: &Explorer, camera: &mut OrbitCamera) {
         .callers(focus)
         .chain(graph.callees(focus))
         .filter(|&t| explorer.shown(t))
+        .chain(explorer.trail().iter().copied())
         .filter_map(|t| explorer.tile_point(t))
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);

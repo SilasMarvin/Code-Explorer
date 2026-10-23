@@ -24,7 +24,7 @@ description = "Explore the Rust demo, starting at POST /users/{id}/orders"
 run = "cargo run -p codeviz -- view demo/out/axum-server.json --entry 'POST /users/{id}/orders'"
 
 [tasks.demo-diff]
-description = "The Rust demo after a change (tax, audit trail, simpler discount), diffed against before; D cycles status / impact / morph"
+description = "The Rust demo after a change (tax, audit trail, simpler discount), diffed against before; N steps through the changes, D switches to morph"
 run = "cargo run -p codeviz -- view demo/out/axum-server-next.json --before demo/out/axum-server.json --entry 'POST /users/{id}/orders' --journey hidden"
 
 [tasks.demo-merged]

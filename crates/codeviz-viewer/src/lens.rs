@@ -16,7 +16,7 @@ pub(crate) enum Source {
     /// The focused function.
     #[default]
     Focus,
-    /// A diff's changes; nearness counts only towards callers, as Impact does.
+    /// A diff's changes; nearness counts only towards callers, what a change affects.
     Changes,
     /// The functions the active journey runs.
     Journey,

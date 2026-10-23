@@ -269,6 +269,9 @@ pub(crate) struct Explorer {
     visibility: Vec<f32>,
     /// A diff's changed nodes, for a lens that starts from them.
     changed_tiles: Vec<usize>,
+    /// The way up from a focused change to the entry points it affects, which always
+    /// shows.
+    trail: Vec<usize>,
     /// How much of the active journey shows.
     disclose: Disclose,
     /// Spans opened one level past the disclosed depth, by hand.
@@ -330,6 +333,7 @@ impl Explorer {
             lens: Lens::default(),
             visibility: vec![1.0; tiles],
             changed_tiles: Vec::new(),
+            trail: Vec::new(),
             focus_history: Vec::new(),
             disclose: Disclose::default(),
             expanded: HashSet::new(),
@@ -808,6 +812,16 @@ impl Explorer {
         self.changed_tiles = tiles;
     }
 
+    /// Shows the way up from a focused change, whatever the lens leaves out.
+    pub(crate) fn set_trail(&mut self, tiles: Vec<usize>) {
+        self.trail = tiles;
+    }
+
+    /// The way up from a focused change.
+    pub(crate) fn trail(&self) -> &[usize] {
+        &self.trail
+    }
+
     /// Where the lens starts: the focus, the changes, or the active journey.
     fn seeds(&self) -> Vec<usize> {
         match self.lens.source {
@@ -840,8 +854,13 @@ impl Explorer {
             self.lens.targets(&self.graph, &self.seeds())?
         };
         // The disclosed journey always shows: it is what you opened. So does what the
-        // spotlight picks out.
-        for tile in self.disclosed_tiles().into_keys().chain(self.spotlit()) {
+        // spotlight picks out, and the way up from a focused change.
+        for tile in self
+            .disclosed_tiles()
+            .into_keys()
+            .chain(self.spotlit())
+            .chain(self.trail.iter().copied())
+        {
             if let Some(target) = targets.get_mut(tile) {
                 *target = 1.0;
             }

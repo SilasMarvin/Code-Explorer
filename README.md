@@ -50,19 +50,33 @@ lists every key.
 ## Diffs
 
 `codeviz diff` checks out each revision with `git archive`, analyzes both, and draws
-the difference over the new graph. It compares function by function: closures count as
-part of the function that defines them, and a function that moved or was renamed
-(found by the IR's `aliases`, an equal content hash, or the same kind, parent and
-callees) is one node, not a removal and an addition. `D` cycles three views:
+the difference over the new graph, saying on stderr how far it has got. It compares
+function by function: closures count as part of the function that defines them, and a
+function that moved or was renamed (found by the IR's `aliases`, an equal content hash,
+or the same kind, parent and callees) is one node, not a removal and an addition.
+Added functions are green, rewritten ones yellow, removed ones red ghosts and moved
+ones grey; new calls are green arrows, removed calls red dashes.
 
-- **Status**: added (green), rewritten (yellow), removed (red ghosts), moved (grey); new
-  calls as arrows, removed calls dashed.
-- **Impact**: everything that can reach a change, hotter the closer, out to the entry
-  points it affects (or, without declared entries, the functions nothing calls).
-- **Morph**: each version laid out alone, animating between them; `T` pauses.
+The changes are put in an order to read them: each after the changes it calls, through
+unchanged functions too, so you meet what a function now relies on before the function
+itself. A caller of the change just read comes next when it can, so a chain reads
+bottom up as one, then a change beside it in the same container, then the one more
+entry points reach. The diff opens on the first; `N` steps to the next and `Shift N`
+back, the camera following. A pane down the left shows the focused change: where it
+comes in the order (`4 of 11`), the entry points it affects, the calls it gained and
+lost, and its source before and after, with long unchanged runs folded and the part of
+a rewritten line that changed picked out; below it, every change in order, `↑3` for
+the entry points each affects. In the graph, pale arrows lead up from the focused
+change to the nearest entry points it affects (without declared entries, the functions
+nothing calls), each named as such. The Changes card lists the entry points the whole
+diff affects.
 
-A diff opens showing only what changed, the focus and the journey's root; `C` (or
-`--show-unchanged`) brings back everything else. Focusing a node shows its old and new source as a line diff.
+A diff opens showing only what changed, the focus, the journey's root and the way up
+from the focus; `C` (or `--show-unchanged`) brings back everything else. `D` switches
+to **Morph**, each version laid out alone, animating between them; `T` pauses.
+`codeviz diff --summary` prints the same review as text: the entry points affected,
+the changes in reading order with how many entry points each affects, and the types
+and modules that changed, which the graph does not draw.
 
 ## Readability
 

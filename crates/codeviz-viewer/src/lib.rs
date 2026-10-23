@@ -12,6 +12,7 @@
 
 mod camera;
 mod capture;
+mod change_pane;
 mod diff_view;
 mod disclosure;
 mod explorer;
@@ -118,12 +119,11 @@ impl Viewer {
         viewer
     }
 
-    /// How a diff is drawn: `status`, `impact` or `morph`.
+    /// How a diff is drawn: `status` or `morph`.
     #[must_use]
     pub fn with_diff_style(mut self, name: &str) -> Self {
         if let Some(diff) = &mut self.diff {
             diff.style = match name {
-                "impact" => DiffStyle::Impact,
                 "morph" => DiffStyle::Morph,
                 _ => DiffStyle::Status,
             };
@@ -333,7 +333,8 @@ impl Viewer {
                 changes_only: self.changes_only,
                 ..explorer.lens()
             });
-            if !focused && let Some(tile) = view.hub() {
+            // Open on the first change to read.
+            if !focused && let Some(tile) = view.step_from(None, 1) {
                 explorer.open_at(tile);
             }
             explorer.refresh_reach();

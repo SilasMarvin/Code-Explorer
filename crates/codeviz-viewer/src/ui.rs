@@ -15,7 +15,8 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
-    diff_view::{self, DiffStyle, DiffView},
+    change_pane,
+    diff_view::{self, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side, SpanRef, Track},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
@@ -32,6 +33,7 @@ impl Plugin for UiPlugin {
             .init_resource::<KeyHelp>()
             .init_resource::<Chrome>()
             .init_resource::<Sources>()
+            .init_resource::<change_pane::Closed>()
             .add_systems(EguiPrimaryContextPass, (fallback_fonts, draw_ui).chain());
     }
 }
@@ -69,7 +71,7 @@ struct Search {
 
 /// Source files read so far; `None` when a file could not be read.
 #[derive(Resource, Debug, Default)]
-struct Sources(HashMap<PathBuf, Option<Vec<String>>>);
+pub(crate) struct Sources(HashMap<PathBuf, Option<Vec<String>>>);
 
 impl Sources {
     fn lines(&mut self, path: &Path) -> Option<&[String]> {
@@ -81,6 +83,26 @@ impl Sources {
                     .map(|text| text.lines().map(str::to_owned).collect())
             })
             .as_deref()
+    }
+
+    /// `unit`'s source as `system` has it, when it says where that is.
+    pub(crate) fn version(
+        &mut self,
+        system: &codeviz_core::System,
+        unit: &UnitId,
+    ) -> Option<source_diff::Version> {
+        let location = system.unit(unit)?.location.as_ref()?;
+        let range = location.range?;
+        let path = system.local_path(unit, &location.uri)?;
+        let lines = self.lines(&path)?;
+        let (first, last) = (range.start_line as usize, range.end_line as usize);
+        Some(source_diff::Version {
+            lines: lines
+                .get(first.checked_sub(1)?..last.min(lines.len()))?
+                .to_vec(),
+            first,
+            uri: location.uri.clone(),
+        })
     }
 }
 
@@ -106,6 +128,7 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
+    mut pane: ResMut<change_pane::Closed>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform), With<OrbitCamera>>,
@@ -132,6 +155,14 @@ fn draw_ui(
             diff.as_deref(),
             time.elapsed_secs(),
         )
+    };
+    // Under a diff, the focused change's pane takes the left, unless the side panel
+    // already shows its source.
+    let left = match diff.as_deref() {
+        Some(view) if !chrome.bare && !chrome.side && !pane.0 => {
+            change_pane::panel(&mut root_ui, &mut explorer, view, &mut sources, &mut pane.0)
+        }
+        _ => left,
     };
 
     let screen = ctx.viewport_rect();
@@ -161,7 +192,8 @@ fn draw_ui(
             transform.up().into(),
         );
         if let Some(diff) = diff.as_deref_mut().filter(|_| !chrome.bare) {
-            diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
+            let listed = chrome.side || pane.0;
+            diff_view::diff_card(ctx, graph_area, &mut explorer, diff, listed);
         }
         if chrome.search && !chrome.bare {
             search_box(
@@ -683,29 +715,26 @@ fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, sourc
             .size(15.0)
             .color(color),
     );
-    let mut side = |system: &codeviz_core::System| -> Option<(Vec<String>, usize, String)> {
-        let location = system.unit(&unit)?.location.as_ref()?;
-        let range = location.range?;
-        let path = system.local_path(&unit, &location.uri)?;
-        let lines = sources.lines(&path)?;
-        let (first, last) = (range.start_line as usize, range.end_line as usize);
-        let body = lines
-            .get(first.checked_sub(1)?..last.min(lines.len()))?
-            .to_vec();
-        Some((body, first, location.uri.clone()))
-    };
-    let (old, new) = (side(view.old()), side(explorer.system()));
+    let (old, new) = (
+        sources.version(view.old(), &unit),
+        sources.version(explorer.system(), &unit),
+    );
     let place = match (&old, &new) {
-        (Some((_, a, uri_a)), Some((_, b, uri_b))) if uri_a != uri_b || a != b => {
-            format!("was {uri_a}:{a}, now {uri_b}:{b}")
+        (Some(a), Some(b)) if a.uri != b.uri || a.first != b.first => {
+            format!("was {}:{}, now {}:{}", a.uri, a.first, b.uri, b.first)
         }
-        (_, Some((_, line, uri))) | (Some((_, line, uri)), None) => format!("{uri}:{line}"),
+        (_, Some(v)) | (Some(v), None) => format!("{}:{}", v.uri, v.first),
         (None, None) => {
             ui.label(egui::RichText::new("No source to show.").color(MUTED));
             return;
         }
     };
-    ui.label(egui::RichText::new(place).small().color(MUTED));
+    let (added, removed) = source_diff::counts(old.as_ref(), new.as_ref());
+    ui.label(
+        egui::RichText::new(format!("{place}   +{added} −{removed} lines"))
+            .small()
+            .color(MUTED),
+    );
     if let Some(was) = view.moved_from(tile) {
         ui.label(
             egui::RichText::new(format!("was {was}"))
@@ -716,14 +745,8 @@ fn changed_source(ui: &mut egui::Ui, explorer: &Explorer, view: &DiffView, sourc
     if change.is_none() {
         ui.label(egui::RichText::new("Unchanged.").small().color(MUTED));
     }
-    source_diff::show(ui, as_side(old.as_ref()), as_side(new.as_ref()));
-}
-
-fn as_side(side: Option<&(Vec<String>, usize, String)>) -> Option<source_diff::Side<'_>> {
-    side.map(|(lines, first, _)| source_diff::Side {
-        lines: lines.as_slice(),
-        first: *first,
-    })
+    let key = egui::Id::new(("side_source", tile));
+    source_diff::show(ui, old.as_ref(), new.as_ref(), false, f32::INFINITY, key);
 }
 
 fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
@@ -1220,19 +1243,19 @@ fn draw_graph_labels(
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
-    // Under a diff, what changed is named first and what it reaches next.
+    // Under a diff, what changed is named first, with the entry points the focused
+    // change reaches, then the way up to them.
     let diff_tier = |tile: usize| {
         let diff = diff?;
         if diff.presence(tile) < 0.3 {
             return Some(u8::MAX);
         }
-        match (diff.change(tile), diff.style, diff.impact(tile)) {
-            (Some(_), _, _) => Some(1),
-            (None, DiffStyle::Impact, Some(_)) if diff.affected.iter().any(|a| a.tile == tile) => {
-                Some(1)
-            }
-            (None, DiffStyle::Impact, Some(_)) => Some(3),
-            _ => None,
+        let route = diff.route()?;
+        match diff.change(tile) {
+            Some(_) => Some(1),
+            None if route.ends.contains(&tile) => Some(1),
+            None if route.tiles.contains(&tile) => Some(3),
+            None => None,
         }
     };
     let center = explorer.attention();
@@ -1376,33 +1399,31 @@ fn draw_graph_labels(
                     _ => egui::Color32::from_rgb(160, 167, 182),
                 };
                 let focused = focus.filter(|&f| center == Some(f));
-                let impacted =
-                    diff.is_some_and(|d| d.style == DiffStyle::Impact && d.impact(tile).is_some());
+                // Where the way up from the focused change ends: an entry point it
+                // affects.
+                let end = diff.filter(|d| d.route_end(tile) && tier != 0);
                 let color = match change {
                     Some(change) if tier != 0 => egui_color(diff_view::change_color(change)),
-                    _ if impacted && tier != 0 => {
-                        egui_color(diff_view::MODIFIED).gamma_multiply(0.8)
-                    }
+                    _ if end.is_some() => egui::Color32::from_rgb(225, 229, 238),
                     // Amber and blue are not drawn under a diff, and what did not change
                     // steps back.
                     _ if diff.is_some() && tier != 0 => egui::Color32::from_rgb(150, 156, 172),
                     _ => color,
                 };
-                let impact_note = diff
-                    .filter(|d| d.style == DiffStyle::Impact)
-                    .and_then(|d| d.affected.iter().find(|a| a.tile == tile))
-                    .map(|a| match a.hops {
-                        0 => "changed".to_owned(),
-                        1 => "calls a change".to_owned(),
-                        n => format!("{n} calls from a change"),
-                    });
+                let end_note = end.map(|d| {
+                    if d.roots {
+                        "nothing calls it".to_owned()
+                    } else {
+                        "entry point".to_owned()
+                    }
+                });
                 let (lead, aside) = match (relation, focused) {
                     _ if change.is_some() => (
                         change.map(|c| (diff_view::sign(c).to_owned(), color, None)),
                         diff.and_then(|d| d.moved_from(tile))
                             .map(|was| format!("was {}", tail(was))),
                     ),
-                    _ if impact_note.is_some() => (None, impact_note),
+                    _ if end_note.is_some() => (None, end_note),
                     (Some(Relation::Downstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color, None)), None)
@@ -1572,7 +1593,12 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             ui.add_space(6.0);
                         }
                         ui.label(egui::RichText::new("→").color(egui_color(graph_view::FURTHER)));
-                        ui.label(egui::RichText::new("further along").size(12.5));
+                        let further = if diffing {
+                            "further along, and up to the entry points a change affects"
+                        } else {
+                            "further along"
+                        };
+                        ui.label(egui::RichText::new(further).size(12.5));
                         ui.add_space(6.0);
                         ui.label(
                             egui::RichText::new("journey bars match their nodes")
@@ -1582,20 +1608,26 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                     });
                 });
         });
+    let hint = if diffing {
+        "N next change · Shift N back · click a node to open it · I callers · O calls \
+         · C only changes · S panel · H keys"
+    } else {
+        "click a node to open it · I callers · O calls · , . less or more of the journey \
+         · / search · S panel · H keys"
+    };
     ctx.layer_painter(egui::LayerId::background())
         .with_clip_rect(area)
         .text(
             egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
-            "click a node to open it · I callers · O calls · , . less or more of the journey \
-             · / search · S panel · H keys",
+            hint,
             egui::FontId::proportional(12.0),
             MUTED,
         );
 }
 
 /// Every key, grouped by what it moves.
-const KEYS: [(&str, &[(&str, &str)]); 4] = [
+const KEYS: [(&str, &[(&str, &str)]); 5] = [
     (
         "Journey",
         &[
@@ -1631,11 +1663,18 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("Q", "show all → 2 steps → 1 step"),
             ("L", "reveal around: focus → changes → journey"),
             ("G", "nearness by: calls → space → blend"),
-            ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
             ("F", "back to the focus, head-on"),
             ("R", "frame the whole graph"),
-            ("D", "diff: status → impact → morph"),
+        ],
+    ),
+    (
+        "Diff",
+        &[
+            ("N", "next change, callees before callers"),
+            ("Shift N", "previous change"),
+            ("C", "only what changed / everything"),
+            ("D", "status / morph"),
             ("T", "play or pause the morph"),
         ],
     ),

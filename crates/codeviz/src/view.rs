@@ -98,8 +98,6 @@ enum JourneyArg {
 enum DiffStyleArg {
     /// What changed, and the calls that came and went.
     Status,
-    /// Everything that can reach a change, out to the entry points.
-    Impact,
     /// The graph before, then after.
     Morph,
 }
@@ -184,7 +182,6 @@ pub(crate) fn open(
         let mut viewer =
             Viewer::compare(before, documents).with_diff_style(match args.diff_style {
                 DiffStyleArg::Status => "status",
-                DiffStyleArg::Impact => "impact",
                 DiffStyleArg::Morph => "morph",
             });
         if let Some(t) = args.morph {
