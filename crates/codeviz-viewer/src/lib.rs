@@ -19,6 +19,7 @@ mod graph_view;
 mod history;
 mod journey_panel;
 mod lens;
+mod names;
 mod scene;
 mod source_diff;
 mod truth;
