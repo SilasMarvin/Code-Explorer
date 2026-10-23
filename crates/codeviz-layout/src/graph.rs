@@ -74,7 +74,13 @@ pub struct ForceGraph {
     /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
     sequences: Vec<Vec<usize>>,
     config: ForceConfig,
+    /// Tiles held still while the rest move, by tile; empty when none are.
+    held: Vec<bool>,
 }
+
+/// How far from what it calls or is called by a new function starts, at most, when
+/// the graph resumes: close, but not on top of it.
+const RESUME_NUDGE: f32 = 4.0;
 
 /// Where a call is written: line, column, then declaration order as a tiebreak.
 type SiteKey = (u32, u32, usize);
@@ -164,6 +170,7 @@ impl ForceGraph {
             ghosts: Vec::new(),
             sequences,
             config,
+            held: Vec::new(),
         }
     }
 
@@ -177,6 +184,109 @@ impl ForceGraph {
         for (from, sequence) in self.sequences.iter_mut().enumerate() {
             sequence.retain(|&to| !gone.contains(&(from, to)));
         }
+    }
+
+    /// Starts from where an earlier layout of the same codebase left it, so a change to
+    /// the code moves only what it touches. A function `known` places keeps its place;
+    /// a new one starts a little way from what calls it, else from what it calls, so a
+    /// chain of new functions grows out from the old ones; one with neither starts
+    /// among the rest of its module. Everything starts at rest, and the functions it
+    /// knew are held still, so the new ones find their places before anything else
+    /// moves for them, until [`Self::release`].
+    pub fn resume(&mut self, map: &CodebaseMap, known: &HashMap<UnitId, [f32; 3]>) {
+        let count = self.positions.len();
+        let mut placed = vec![false; count];
+        for (tile, at) in map.tiles.iter().enumerate().take(count) {
+            if let Some(&known) = known.get(&at.unit) {
+                self.positions[tile] = known;
+                placed[tile] = true;
+            }
+        }
+        let nudge = |tile: usize| {
+            map.tile(tile)
+                .map_or([0.0; 3], |t| seed(t.unit.as_str(), RESUME_NUDGE))
+        };
+        let mean = |points: &[[f32; 3]]| {
+            let sum = points.iter().fold([0.0; 3], |sum, &p| add(sum, p));
+            scale(sum, 1.0 / points.len().max(1) as f32)
+        };
+        loop {
+            let ready: Vec<(usize, [f32; 3])> = (0..count)
+                .filter(|&tile| !placed[tile])
+                .filter_map(|tile| {
+                    let at = |other: usize| placed[other].then(|| self.positions[other]);
+                    let callers: Vec<[f32; 3]> = self.callers(tile).filter_map(at).collect();
+                    let near = if callers.is_empty() {
+                        self.callees(tile).filter_map(at).collect()
+                    } else {
+                        callers
+                    };
+                    (!near.is_empty()).then(|| (tile, add(mean(&near), nudge(tile))))
+                })
+                .collect();
+            if ready.is_empty() {
+                break;
+            }
+            for (tile, at) in ready {
+                self.positions[tile] = at;
+                placed[tile] = true;
+            }
+        }
+        let mut members: HashMap<usize, Vec<[f32; 3]>> = HashMap::new();
+        for tile in (0..count).filter(|&t| placed[t]) {
+            if let Some(&cluster) = self.clusters.get(tile) {
+                members
+                    .entry(cluster)
+                    .or_default()
+                    .push(self.positions[tile]);
+            }
+        }
+        for tile in (0..count).filter(|&t| !placed[t]) {
+            if let Some(points) = self.clusters.get(tile).and_then(|c| members.get(c)) {
+                self.positions[tile] = add(mean(points), nudge(tile));
+            }
+        }
+        self.velocities = vec![[0.0; 3]; count];
+        self.held = map
+            .tiles
+            .iter()
+            .take(count)
+            .map(|tile| known.contains_key(&tile.unit))
+            .collect();
+    }
+
+    /// Lets go of what [`Self::resume`] held still.
+    pub fn release(&mut self) {
+        self.held.clear();
+    }
+
+    /// Numbers the clusters as `previous` did wherever they stand for the same module,
+    /// and new ones after all of its, so each module keeps its color as the code
+    /// changes.
+    pub fn number_clusters_like(&mut self, previous: &ForceGraph) {
+        let mut next = previous.cluster_units.len();
+        let renumber: Vec<usize> = self
+            .cluster_units
+            .iter()
+            .map(|unit| {
+                previous
+                    .cluster_units
+                    .iter()
+                    .position(|old| old.is_some() && old == unit)
+                    .unwrap_or_else(|| {
+                        next += 1;
+                        next - 1
+                    })
+            })
+            .collect();
+        let mut units = vec![None; next];
+        for (old, &new) in renumber.iter().enumerate() {
+            units[new].clone_from(&self.cluster_units[old]);
+        }
+        for cluster in &mut self.clusters {
+            *cluster = renumber[*cluster];
+        }
+        self.cluster_units = units;
     }
 
     /// Changes the forces; the graph moves until it settles under them.
@@ -294,6 +404,28 @@ impl ForceGraph {
         self.links.binary_search(&(a.min(b), a.max(b))).is_ok()
     }
 
+    /// Every pair of nodes pushing apart, harder the closer they are.
+    fn repel(&self, forces: &mut [[f32; 3]]) {
+        let count = self.positions.len();
+        let held = |tile: usize| self.held.get(tile).copied().unwrap_or(false);
+        for i in 0..count {
+            for j in (i + 1)..count {
+                // Nothing moves between two nodes held still, so skip the work.
+                if held(i) && held(j) {
+                    continue;
+                }
+                let delta = sub(self.positions[i], self.positions[j]);
+                let distance_sq = dot(delta, delta).max(0.01);
+                let push = scale(
+                    delta,
+                    self.config.repulsion / (distance_sq * distance_sq.sqrt()),
+                );
+                forces[i] = add(forces[i], push);
+                forces[j] = sub(forces[j], push);
+            }
+        }
+    }
+
     /// Advances the simulation one step. Returns the mean speed, which falls towards
     /// zero as the graph settles.
     pub fn step(&mut self) -> f32 {
@@ -303,16 +435,7 @@ impl ForceGraph {
         }
         let config = self.config;
         let mut forces = vec![[0.0_f32; 3]; count];
-
-        for i in 0..count {
-            for j in (i + 1)..count {
-                let delta = sub(self.positions[i], self.positions[j]);
-                let distance_sq = dot(delta, delta).max(0.01);
-                let push = scale(delta, config.repulsion / (distance_sq * distance_sq.sqrt()));
-                forces[i] = add(forces[i], push);
-                forces[j] = sub(forces[j], push);
-            }
-        }
+        self.repel(&mut forces);
         for &(a, b) in &self.links {
             let delta = sub(self.positions[b], self.positions[a]);
             let distance = dot(delta, delta).sqrt().max(0.01);
@@ -390,7 +513,10 @@ impl ForceGraph {
 
         let mut speed = 0.0;
         let moving = self.velocities.iter_mut().zip(&mut self.positions);
-        for ((velocity_slot, position), force) in moving.zip(&forces) {
+        for (tile, ((velocity_slot, position), force)) in moving.zip(&forces).enumerate() {
+            if self.held.get(tile).copied().unwrap_or(false) {
+                continue;
+            }
             let velocity = scale(add(*velocity_slot, *force), config.damping);
             // Keep any one step small so a crowded start cannot fling nodes away.
             let length = dot(velocity, velocity).sqrt();
@@ -543,6 +669,140 @@ mod tests {
             stats.iter().map(|s| s.internal + s.outgoing).sum::<usize>(),
             2
         );
+    }
+
+    /// `units` as `(name, module, calls)`, each module a `group` unit `x:mod.<module>`.
+    fn modules(units: &[(&str, &str, &[&str])]) -> System {
+        let mut modules: Vec<&str> = units.iter().map(|u| u.1).collect();
+        modules.dedup();
+        let groups = modules.iter().map(|m| {
+            format!(r#"{{ "id": "x:mod.{m}", "name": "{m}", "kind": "module", "role": "group" }}"#)
+        });
+        let functions = units.iter().map(|(name, module, calls)| {
+            let calls: Vec<String> = calls
+                .iter()
+                .map(|to| {
+                    format!(
+                        r#"{{ "key": "{to}#0", "text": "{to}", "targets": [{{ "unit": "x:{to}", "certainty": "exact" }}] }}"#
+                    )
+                })
+                .collect();
+            format!(
+                r#"{{ "id": "x:{name}", "name": "{name}", "kind": "fn", "role": "invocable", "parent": "x:mod.{module}", "calls": [{}] }}"#,
+                calls.join(",")
+            )
+        });
+        let units: Vec<String> = groups.chain(functions).collect();
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        System::new([Document::from_json(&json).unwrap()])
+    }
+
+    /// Where each function sits once `graph` has settled, by unit.
+    fn places(graph: &mut ForceGraph, map: &CodebaseMap) -> HashMap<UnitId, [f32; 3]> {
+        for _ in 0..300 {
+            graph.step();
+        }
+        map.tiles
+            .iter()
+            .zip(&graph.positions)
+            .map(|(tile, &at)| (tile.unit.clone(), at))
+            .collect()
+    }
+
+    #[test]
+    fn resuming_keeps_old_places_and_starts_new_functions_by_their_callers() {
+        let before = modules(&[
+            ("a", "m", &["b"]),
+            ("b", "m", &[]),
+            ("far", "n", &[]),
+            ("other", "n", &["far"]),
+        ]);
+        let old_map = map(&before, &MapConfig::default());
+        let mut old = ForceGraph::new(&before, &old_map, ForceConfig::default());
+        let known = places(&mut old, &old_map);
+
+        // `fresh` is new, called by b; `alone` is new and calls nothing in reach.
+        let after = modules(&[
+            ("a", "m", &["b"]),
+            ("alone", "n", &[]),
+            ("b", "m", &["fresh"]),
+            ("far", "n", &[]),
+            ("fresh", "m", &[]),
+            ("other", "n", &["far"]),
+        ]);
+        let new_map = map(&after, &MapConfig::default());
+        let mut graph = ForceGraph::new(&after, &new_map, ForceConfig::default());
+        graph.resume(&new_map, &known);
+        let at = |name: &str| graph.positions[new_map.tile_of(&UnitId::new(name)).unwrap()];
+        for name in ["x:a", "x:b", "x:far", "x:other"] {
+            assert_eq!(at(name), known[&UnitId::new(name)], "{name} stays put");
+        }
+        let distance = |a: [f32; 3], b: [f32; 3]| dot(sub(a, b), sub(a, b)).sqrt();
+        assert!(
+            distance(at("x:fresh"), at("x:b")) <= RESUME_NUDGE,
+            "a new function starts by its caller"
+        );
+        let n_middle = scale(add(at("x:far"), at("x:other")), 0.5);
+        assert!(
+            distance(at("x:alone"), n_middle) <= RESUME_NUDGE,
+            "one with no calls starts among its module"
+        );
+        assert!(
+            graph
+                .velocities
+                .iter()
+                .flatten()
+                .all(|v| v.abs() < f32::EPSILON)
+        );
+
+        let tile = |name: &str| new_map.tile_of(&UnitId::new(name)).unwrap();
+        let (b, fresh) = (tile("x:b"), at("x:fresh"));
+        for _ in 0..20 {
+            graph.step();
+        }
+        assert_eq!(
+            graph.positions[b],
+            known[&UnitId::new("x:b")],
+            "held while new ones move"
+        );
+        assert_ne!(graph.positions[tile("x:fresh")], fresh);
+        graph.release();
+        graph.step();
+        assert_ne!(graph.positions[b], known[&UnitId::new("x:b")], "and let go");
+    }
+
+    #[test]
+    fn modules_keep_their_cluster_numbers_as_others_come_and_go() {
+        let before = modules(&[("a", "m", &[]), ("z", "z", &[])]);
+        let old_map = map(&before, &MapConfig::default());
+        let old = ForceGraph::new(&before, &old_map, ForceConfig::default());
+        let cluster_of = |graph: &ForceGraph, map: &CodebaseMap, name: &str| {
+            graph.cluster(map.tile_of(&UnitId::new(name)).unwrap())
+        };
+
+        // A module that sorts first arrives, and m goes.
+        let after = modules(&[("first", "aaa", &[]), ("z", "z", &[])]);
+        let new_map = map(&after, &MapConfig::default());
+        let mut graph = ForceGraph::new(&after, &new_map, ForceConfig::default());
+        graph.number_clusters_like(&old);
+        assert_eq!(
+            cluster_of(&graph, &new_map, "x:z"),
+            cluster_of(&old, &old_map, "x:z"),
+            "z keeps its number, and so its color"
+        );
+        let first = cluster_of(&graph, &new_map, "x:first").unwrap();
+        assert!(
+            first >= old.cluster_count(),
+            "a new module takes a new number"
+        );
+        assert_eq!(
+            graph.cluster_unit(first).map(UnitId::as_str),
+            Some("x:mod.aaa")
+        );
+        assert!(graph.cluster_count() > first);
     }
 
     #[test]
