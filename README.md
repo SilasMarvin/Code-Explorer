@@ -27,7 +27,7 @@ The codebase floats as a graph, one node per function, each module gathered in i
 ring. Click a node and the camera orbits it, and its journey opens docked as a flame
 graph: what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
 labels alike. `,`/`.` show a level less or more, a bar's `+N` opens the calls folded
-under it, and `V` switches to showing calls only as the cursor reaches them. A closure
+under it, as does the cursor wherever it lands, and `V` switches to showing calls only as the cursor reaches them. A closure
 counts as part of the function around it.
 
 Each color says one thing. A link's color says which way a call runs: violet into the

@@ -511,12 +511,42 @@ impl Explorer {
     }
 
     /// Moves the active cursor, and the focus with it. The spotlight was on the focus
-    /// it leaves, so it goes out.
+    /// it leaves, so it goes out; the calls folded over where it lands open, so its bar
+    /// shows.
     pub(crate) fn select(&mut self, span: Option<SpanId>) {
         let before = self.graph_focus();
         self.track_mut().selected = span;
         if self.graph_focus() != before {
             self.spotlight = None;
+        }
+        self.reveal_cursor();
+    }
+
+    /// Opens the calls the cursor is folded under, a level at a time, as a click on
+    /// each `+N` would: wherever the cursor goes, its bar shows, and the graph numbers
+    /// its node.
+    fn reveal_cursor(&mut self) {
+        let Some(cursor) = self.selected() else {
+            return;
+        };
+        let stack = self.stack(cursor);
+        for _ in 0..stack.len() {
+            let disclosed = self.disclosure();
+            if disclosed.shows(cursor) {
+                return;
+            }
+            // The deepest numbered call above it is shown, and folds what is below.
+            let Some(&folding) = stack
+                .iter()
+                .rev()
+                .find(|&&span| disclosed.number(span).is_some())
+            else {
+                return;
+            };
+            if !self.expanded.insert(folding) {
+                return;
+            }
+            self.disclosure_epoch += 1;
         }
     }
 
@@ -1643,6 +1673,26 @@ pub(crate) mod tests {
                 .label(explorer.selected().unwrap())
                 .contains("one of 2"),
             "no 9th call"
+        );
+    }
+
+    #[test]
+    fn the_cursor_opens_what_it_is_folded_under() {
+        let mut explorer = explorer();
+        explorer.step(Step::Into);
+        let a = explorer.selected().unwrap();
+        assert_eq!(explorer.disclosure().folded(a), 1, "c is folded under a");
+        explorer.step(Step::Child);
+        assert_eq!(at(&explorer), "c");
+        assert_eq!(
+            explorer.disclosure().number(explorer.selected().unwrap()),
+            Some("1.1"),
+            "and shows, numbered, once the cursor is on it"
+        );
+        explorer.toggle_expanded(a);
+        assert!(
+            !explorer.disclosed(explorer.selected().unwrap()),
+            "folding it again by hand still folds it"
         );
     }
 

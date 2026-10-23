@@ -775,9 +775,9 @@ pub(crate) struct Followed {
 /// Turns to the node the journey starts at whenever the view is pointed somewhere by
 /// hand: a node clicked, searched for, numbered or picked from the changes, going back
 /// or forward, another journey. Moving the cursor never turns it: at most the camera
-/// pulls back, around the same node, so the cursor's node stays on screen, and not
-/// even that once the viewer has panned or zoomed away. A level more or less of the
-/// journey refits the view to what shows.
+/// pulls back, around the same node, so the cursor's node and whatever opened for it
+/// stay on screen, and not even that once the viewer has panned or zoomed away. A
+/// level more or less of the journey refits the view to what shows.
 pub(crate) fn follow_focus(
     explorer: Res<Explorer>,
     mut last: Local<Followed>,
@@ -815,14 +815,14 @@ pub(crate) fn follow_focus(
             .and_then(|t| explorer.tile_point(t))
             .into_iter()
             .collect();
-        let needed = fit_distance(&cursor, at, transform.rotation, perspective);
+        let mut needed = fit_distance(&cursor, at, transform.rotation, perspective);
         if opened {
-            let fits = needed.max(orbit_distance(journey_reach(&explorer, at)));
-            // Stepping through time only ever pulls back, so the view does not pump.
-            if explorer.disclose() != Disclose::Time || fits > camera.distance {
-                camera.glide_to(at, fits);
-            }
-        } else if needed > camera.distance {
+            needed = needed.max(orbit_distance(journey_reach(&explorer, at)));
+        }
+        // A level more or less refits either way; anything the cursor did only ever
+        // pulls back, so stepping never pumps the view in and out.
+        let refit = opened && !moved && explorer.disclose() != Disclose::Time;
+        if refit || needed > camera.distance {
             camera.glide_to(at, needed);
         }
     }
