@@ -56,7 +56,7 @@ less or more around a starting point, the focus, a diff's changes or the active
 journey (`L` switches), measured in calls, distance in the graph, or a blend of both
 (`G` switches); what is out of reach dims, then shrinks to a speck. `Q` jumps between
 everything, two steps and one. In the journey, `←`/`→` move between calls by the same
-caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a function,
+caller, `↓`/`↑` go in and out (in opens what is folded there), `[`/`]` step through time. `/` searches for a function,
 `S` opens the side panel (the view's settings, outcomes, source and details), `H`
 lists every key.
 
