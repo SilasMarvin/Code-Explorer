@@ -385,18 +385,21 @@ impl Lowerer<'_, '_, '_> {
         out.push(Step::Branch { guard: None, arms });
     }
 
-    /// The label of a `raise`: the exception class, or `re-raise` for a bare `raise`.
+    /// The label of a `raise`: the exception as constructed, message and all, so that
+    /// each place that raises it reads apart; `re-raise` for a bare `raise`.
     fn raised(&self, node: Node<'_>) -> String {
+        const MAX: usize = 80;
         let cause = field(node, "cause").map(|cause| cause.id());
         let exception = named_children(node)
             .into_iter()
             .find(|child| Some(child.id()) != cause && child.kind() != "comment");
-        match exception {
-            None => "re-raise".into(),
-            Some(call) if call.kind() == "call" => {
-                field(call, "function").map_or_else(String::new, |f| compact(f, self.source))
-            }
-            Some(exception) => compact(exception, self.source),
+        let Some(exception) = exception else {
+            return "re-raise".into();
+        };
+        let raised = collapsed(exception, self.source);
+        match raised.char_indices().nth(MAX) {
+            Some((cut, _)) => format!("{}…", &raised[..cut]),
+            None => raised,
         }
     }
 

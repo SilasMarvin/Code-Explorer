@@ -260,7 +260,10 @@ def f(x, items):
                                 arm("yes", vec![call_step("b#0"), exit(ExitKind::Return, None)]),
                                 arm(
                                     "no",
-                                    vec![call_step("Oops#0"), exit(ExitKind::Error, Some("Oops"))],
+                                    vec![
+                                        call_step("Oops#0"),
+                                        exit(ExitKind::Error, Some("Oops(x)")),
+                                    ],
                                 ),
                             ],
                         },
