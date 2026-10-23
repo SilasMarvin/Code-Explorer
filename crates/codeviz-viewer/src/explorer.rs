@@ -1150,12 +1150,14 @@ impl Explorer {
         };
         // Going into a call opens what is folded under it, so the cursor lands on a
         // bar.
+        // The nearest numbered call holds it; a closure has no number of its own.
         let caller = next
-            .filter(|&n| step == Step::Child && !disclosed.shows(n))
-            .and_then(|hidden| {
-                std::iter::successors(Some(hidden), |&s| journey.span(s)?.parent)
+            .filter(|_| step == Step::Child)
+            .and_then(|next| {
+                std::iter::successors(journey.span(next)?.parent, |&s| journey.span(s)?.parent)
                     .find(|&s| disclosed.number(s).is_some())
-            });
+            })
+            .filter(|&caller| disclosed.folded(caller) > 0);
         if let Some(caller) = caller.filter(|_| matches!(self.disclose, Disclose::Depth(_))) {
             self.expanded.insert(caller);
             self.disclosure_epoch += 1;
