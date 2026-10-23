@@ -36,7 +36,8 @@ its module, the same color as its ring; under a diff it says what changed instea
 journey bar is filled exactly like its node, and its number sits on a badge of that
 color beside the node, so a bar finds its node at a glance; hovering a bar draws a
 dotted line to it. The camera frames what it shows in the room the docked journey, the
-legend and any cards leave clear, so nothing that matters sits under them; a click
+legend and any cards leave clear, so nothing that matters sits under them, and centers
+what it frames there, even when that leaves the node it orbits off to one side; a click
 folds the legend down to one line. `I` picks out everything that calls the focus and `O` everything it calls,
 pulling the camera back only as far as it takes to show them all.
 

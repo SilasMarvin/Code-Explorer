@@ -570,7 +570,7 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F turns to face the graph head-on, centered on the focus again; R pulls back to
+/// F turns to face the graph head-on, framed around the focus again; R pulls back to
 /// take in the whole graph.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
@@ -672,7 +672,7 @@ pub(crate) fn frame_reveal(
 }
 
 /// When the spotlight comes on, pulls back just far enough that everything it picks
-/// out is on screen, keeping the focus in the middle; when it all already shows, the
+/// out is on screen, still orbiting the focus; when it all already shows, the
 /// view stays put.
 pub(crate) fn frame_spotlight(
     explorer: Res<Explorer>,
@@ -726,8 +726,8 @@ fn frame_points(
     camera.frame(middle, points, MIN_ORBIT_DISTANCE);
 }
 
-/// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
-/// follows it as the graph moves.
+/// Keeps the anchor, the node you clicked, where framing put it on screen: the camera
+/// orbits it and follows it as the graph moves.
 /// Not once the viewer has panned or zoomed away.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
     let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {

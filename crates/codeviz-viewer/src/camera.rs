@@ -58,11 +58,14 @@ pub(crate) struct OrbitCamera {
     /// Angles being eased towards, until the viewer orbits by hand.
     goal_angles: Option<(f32, f32)>,
     /// Whether the viewer has panned or zoomed away from the focused node, so the
-    /// camera stops holding it in the middle.
+    /// camera stops holding it in place.
     pub(crate) free: bool,
     /// The part of the view left clear of what floats over it.
     room: Room,
-    /// Where on screen the point orbited sits, easing towards the room's middle.
+    /// Where on screen the point orbited sits, from the room's middle: off it when
+    /// what is framed spreads further one way than the other, so that is centered.
+    aim: Vec2,
+    /// Where on screen the point orbited sits, easing towards where it is aimed.
     shift: Vec2,
     /// What was last framed, refitted when the room changes until the viewer zooms or
     /// pans.
@@ -124,6 +127,7 @@ impl Default for OrbitCamera {
             goal_angles: None,
             free: false,
             room: Room::default(),
+            aim: Vec2::ZERO,
             shift: Vec2::ZERO,
             framed: None,
             fov: PerspectiveProjection::default().fov,
@@ -140,37 +144,97 @@ impl OrbitCamera {
         self.free = false;
     }
 
-    /// Eases towards looking at `target` from just far enough back to show all of
-    /// `points` in the room, and no nearer than `nearest`. Refits them if the room
-    /// changes, until the viewer zooms or pans.
+    /// Eases towards orbiting `target` from just far enough back to show all of
+    /// `points` in the room, and no nearer than `nearest`, with what they span centered
+    /// in it. Refits them if the room changes, until the viewer moves the camera.
     pub(crate) fn frame(&mut self, target: Vec3, points: Vec<Vec3>, nearest: f32) {
-        let distance = self.fit_distance(&points, target).max(nearest);
+        let (aim, distance) = self.aim_at(&points, target, nearest);
+        self.aim = aim;
         self.glide_to(target, distance);
         self.framed = Some(Framed { points, nearest });
     }
 
-    /// How far back, looking at `center` and turned where it is turning to, the camera
+    /// How far back, orbiting `center` and turned where it is turning to, the camera
     /// must be for every one of `points` to sit inside the room, clear of its edges.
     pub(crate) fn fit_distance(&self, points: &[Vec3], center: Vec3) -> f32 {
-        // The share of the room a point may use: the rest is room for its name.
-        const MARGIN: f32 = 0.8;
+        self.fit_aimed(points, center, self.aim)
+    }
+
+    /// Where to put the point orbited, `center`, and how far back to be, so `points`
+    /// are centered in the room and fit it, no nearer than `nearest`.
+    fn aim_at(&self, points: &[Vec3], center: Vec3, nearest: f32) -> (Vec2, f32) {
+        // The point orbited stays inside the part of the room what is framed may use.
+        let limit = self.room.half * MARGIN * 0.99;
+        let mut aim = Vec2::ZERO;
+        let mut distance = self.fit_aimed(points, center, aim).max(nearest);
+        // Centered, they need the camera back only as far as what they span takes to
+        // fill the room. Perspective moves where they land as the camera moves, so a
+        // few rounds settle both.
+        for _ in 0..3 {
+            let Some((low, high)) = self.on_screen(points, center, distance, aim) else {
+                break;
+            };
+            let (low, high) = (low * distance, high * distance);
+            let needed = ((high - low) / (2.0 * self.room.half * MARGIN))
+                .max_element()
+                .max(nearest);
+            aim = (-(low + high) / (2.0 * needed)).clamp(-limit, limit);
+            distance = self.fit_aimed(points, center, aim).max(nearest);
+        }
+        (aim, distance)
+    }
+
+    /// [`Self::fit_distance`] with the point orbited `aim` off the room's middle.
+    fn fit_aimed(&self, points: &[Vec3], center: Vec3, aim: Vec2) -> f32 {
         let tan = self.tangents();
-        let shift = self.room.middle * tan;
-        let half = self.room.half * tan * MARGIN;
-        let rotation = self.heading();
-        let (right, up, back) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
+        let shift = (self.room.middle + aim) * tan;
+        // How far each way a point may land from the point orbited, in tangents.
+        let reach = self.room.half * MARGIN;
+        let (low, high) = ((-reach - aim) * tan, (reach - aim) * tan);
+        let need = |v: f32, low: f32, high: f32| if v >= 0.0 { v / high } else { v / low };
+        let (right, up, back) = self.axes();
         points
             .iter()
             .map(|&p| {
                 let offset = p - center;
                 // A point this far towards the camera needs the camera that much further,
-                // and sits that much off the room's middle.
+                // and lands that much off the point orbited.
                 let toward = offset.dot(back);
-                let across = (offset.dot(right) + shift.x * toward).abs() / half.x;
-                let along = (offset.dot(up) + shift.y * toward).abs() / half.y;
-                across.max(along) + toward
+                let across = offset.dot(right) + shift.x * toward;
+                let along = offset.dot(up) + shift.y * toward;
+                need(across, low.x, high.x).max(need(along, low.y, high.y)) + toward
             })
             .fold(0.0, f32::max)
+    }
+
+    /// Where `points` land on screen, from the point orbited and in the view's
+    /// normalized coordinates, orbiting `center` from `distance` with it `aim` off the
+    /// room's middle: their least and greatest.
+    fn on_screen(
+        &self,
+        points: &[Vec3],
+        center: Vec3,
+        distance: f32,
+        aim: Vec2,
+    ) -> Option<(Vec2, Vec2)> {
+        let tan = self.tangents();
+        let shift = (self.room.middle + aim) * tan;
+        let (right, up, back) = self.axes();
+        let landed: Vec<Vec2> = points
+            .iter()
+            .filter_map(|&p| {
+                let offset = p - center;
+                let toward = offset.dot(back);
+                let depth = distance - toward;
+                (depth > 1e-3).then(|| {
+                    let at = Vec2::new(offset.dot(right), offset.dot(up)) + shift * toward;
+                    at / (depth * tan)
+                })
+            })
+            .collect();
+        let low = landed.iter().copied().reduce(Vec2::min)?;
+        let high = landed.iter().copied().reduce(Vec2::max)?;
+        Some((low, high))
     }
 
     /// The middle of `points` as the camera sees them, turned where it is turning to:
@@ -185,8 +249,7 @@ impl OrbitCamera {
         let min = local.iter().copied().fold(Vec3::INFINITY, Vec3::min);
         let max = local.iter().copied().fold(Vec3::NEG_INFINITY, Vec3::max);
         let depth = local.iter().map(|p| p.z).sum::<f32>() / local.len() as f32;
-        let middle = (min + max) / 2.0;
-        Some(rotation * middle.with_z(depth))
+        Some(rotation * ((min + max) / 2.0).with_z(depth))
     }
 
     /// Takes the room left clear of overlays, refitting what was framed when it
@@ -199,8 +262,9 @@ impl OrbitCamera {
         }
         self.room = room;
         if let Some(framed) = &self.framed {
-            let distance = self.fit_distance(&framed.points, self.target);
-            self.goal_distance = Some(distance.max(framed.nearest));
+            let (aim, distance) = self.aim_at(&framed.points, self.target, framed.nearest);
+            self.aim = aim;
+            self.goal_distance = Some(distance);
         }
     }
 
@@ -208,6 +272,12 @@ impl OrbitCamera {
     fn heading(&self) -> Quat {
         let (yaw, pitch) = self.goal_angles.unwrap_or((self.yaw, self.pitch));
         Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)
+    }
+
+    /// Right, up and back, as the camera faces once it has turned.
+    fn axes(&self) -> (Vec3, Vec3, Vec3) {
+        let rotation = self.heading();
+        (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z)
     }
 
     /// The tangents of half the field of view, across and up.
@@ -239,6 +309,7 @@ impl OrbitCamera {
     /// Turns by a drag of `delta` pixels.
     fn orbit(&mut self, delta: Vec2) {
         self.goal_angles = None;
+        self.framed = None;
         self.yaw -= delta.x * ORBIT_SPEED;
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
@@ -253,6 +324,8 @@ impl OrbitCamera {
 }
 
 const ORBIT_SPEED: f32 = 0.005;
+/// The share of the room what is framed may use: the rest is room for its names.
+const MARGIN: f32 = 0.8;
 const PITCH_LIMIT: f32 = 1.5;
 const EASING: f32 = 8.0;
 
@@ -378,7 +451,7 @@ fn apply_camera(
             camera.aspect = perspective.aspect_ratio;
         }
         camera.focus = camera.focus.lerp(camera.target, ease);
-        camera.shift = camera.shift.lerp(camera.room.middle, ease);
+        camera.shift = camera.shift.lerp(camera.room.middle + camera.aim, ease);
         if let Some(goal) = camera.goal_distance {
             camera.distance += (goal - camera.distance) * ease;
             if (goal - camera.distance).abs() < 0.01 {
@@ -459,6 +532,29 @@ mod tests {
         camera.zoom(0.9, None);
         camera.set_room(Room::default());
         assert!(camera.goal_distance.is_none());
+    }
+
+    #[test]
+    fn what_spreads_one_way_is_centered_with_the_point_orbited_off_the_middle() {
+        let mut camera = head_on();
+        let lopsided = vec![Vec3::ZERO, Vec3::new(40.0, 10.0, 0.0)];
+        let around = camera.fit_aimed(&lopsided, Vec3::ZERO, Vec2::ZERO);
+        camera.frame(Vec3::ZERO, lopsided.clone(), 1.0);
+        let distance = camera.goal_distance.unwrap();
+        assert!(
+            camera.aim.x < -0.3 && camera.aim.y < 0.0,
+            "{:?}",
+            camera.aim
+        );
+        assert!(
+            distance < around * 0.7,
+            "closer once centered: {distance} vs {around}"
+        );
+        let (low, high) = camera
+            .on_screen(&lopsided, Vec3::ZERO, distance, camera.aim)
+            .unwrap();
+        let middle = (low + high) / 2.0 + camera.aim;
+        assert!(middle.length() < 0.02, "centered in the room: {middle:?}");
     }
 
     #[test]
