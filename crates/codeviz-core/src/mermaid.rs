@@ -325,8 +325,10 @@ fn remarks(beat: &Beat) -> String {
 /// `✗ unknown sku`, or `✗ panic: overflow`.
 fn failure(ending: &Ending) -> String {
     match ending.kind {
-        ExitKind::Panic => format!("✗ panic: {}", ending.label),
-        ExitKind::Error | ExitKind::Return | ExitKind::Unknown => format!("✗ {}", ending.label),
+        ExitKind::Panic => format!("✗ panic: {}", tidy(&ending.label)),
+        ExitKind::Error | ExitKind::Return | ExitKind::Unknown => {
+            format!("✗ {}", tidy(&ending.label))
+        }
     }
 }
 
@@ -334,10 +336,10 @@ fn failure(ending: &Ending) -> String {
 /// would read as syntax (`;` ends a statement, `#` starts an entity, `%%` a comment,
 /// `<` and `>` tags) written as entities.
 fn text(raw: &str) -> String {
-    let tidy = tidy(raw);
-    let long = tidy.chars().count() > MAX_LABEL;
-    let mut out = String::with_capacity(tidy.len());
-    for c in tidy.chars().take(MAX_LABEL - usize::from(long)) {
+    let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let long = line.chars().count() > MAX_LABEL;
+    let mut out = String::with_capacity(line.len());
+    for c in line.chars().take(MAX_LABEL - usize::from(long)) {
         match c {
             '#' | ';' | '%' | '<' | '>' | '&' => {
                 let _ = write!(out, "#{};", u32::from(c));

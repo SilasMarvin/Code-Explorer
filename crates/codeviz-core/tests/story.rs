@@ -399,3 +399,30 @@ fn a_journey_is_told_as_deep_as_fits() {
         "at least one level"
     );
 }
+
+#[test]
+fn every_path_at_once_still_says_where_calls_fail() {
+    let system = demo("python-service");
+    let entry = system.find("POST /users/{user_id}/orders/bulk")[0]
+        .id
+        .clone();
+    let scenarios = scenarios(&system, &entry, &Zoom::default());
+    let journey = Journey::unroll(&system, &entry, None, JourneyOptions::default()).unwrap();
+    let numbers = number_calls(&system, &journey, u32::MAX);
+    let story = Story::new(&system, &journey, &scenarios, None, &numbers);
+    let markdown = story.markdown();
+    assert!(markdown.contains(", every path:\n"), "{markdown}");
+    assert!(!markdown.contains("(this path)"), "{markdown}");
+    let failing: Vec<&str> = story
+        .beats()
+        .filter(|b| !b.fails.is_empty())
+        .map(|b| b.short.as_str())
+        .collect();
+    assert!(failing.contains(&"unit_price"), "{markdown}");
+    assert!(
+        story
+            .beats()
+            .any(|b| b.short == "__init__" && !b.conditions.is_empty()),
+        "a call only the failing arm makes shows, with its condition:\n{markdown}"
+    );
+}
