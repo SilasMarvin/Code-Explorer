@@ -30,6 +30,13 @@ labels alike. `,`/`.` show a level less or more, a bar's `+N` opens the calls fo
 under it, and `V` switches to showing calls only as the cursor reaches them. A closure
 counts as part of the function around it.
 
+A function goes by one name everywhere, on its node, its bar, in search and in the
+details: its own, with its type, then module, then crate in front only as far as it takes
+to tell it from whatever else is in view, so `new` reads `System.new` only while another
+`new` shows. A closure goes by the function around it (`draw_ui › closure 3`), Python's
+`<module>` by its module's name, and a ring by its module's name, with its crate when
+another crate has a module of that name. Hovering a bar shows the full path.
+
 Each color says one thing. A link's color says which way a call runs: violet into the
 focus, blue out of it, with dots flowing along it. A node's fill says where it lives,
 its module, the same color as its ring; under a diff it says what changed instead. A
@@ -43,9 +50,10 @@ less or more around a starting point, the focus, a diff's changes or the active
 journey (`L` switches), measured in calls, distance in the graph, or a blend of both
 (`G` switches); what is out of reach dims, then shrinks to a speck. `Q` jumps between
 everything, two steps and one. In the journey, `←`/`→` move between calls by the same
-caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a function,
-`S` opens the side panel (the view's settings, outcomes, source and details), `H`
-lists every key.
+caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a
+function: best match first, then nearest the focus, then most called, closures only
+when the query names one (`closure`); `↑`/`↓` pick and Enter opens. `S` opens the side
+panel (the view's settings, outcomes, source and details), `H` lists every key.
 
 ## Diffs
 

@@ -928,6 +928,15 @@ impl Explorer {
             .map(|(_, reach)| reach)
     }
 
+    /// What reaches the focused node and what it reaches, once
+    /// [`Self::refresh_reach`] has run.
+    pub(crate) fn focus_reach(&self) -> Option<&Reach> {
+        self.focus_reach
+            .as_ref()
+            .filter(|(tile, _)| Some(*tile) == self.graph_focus())
+            .map(|(_, reach)| reach)
+    }
+
     /// Recomputes [`Self::reach`] when attention moved. Returns whether it did.
     pub(crate) fn refresh_reach(&mut self) -> bool {
         let focus = self.graph_focus();

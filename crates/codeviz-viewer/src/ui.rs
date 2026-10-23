@@ -65,6 +65,10 @@ pub(crate) struct KeyHelp(pub(crate) bool);
 #[derive(Resource, Debug, Default)]
 struct Search {
     query: String,
+    /// The row Up and Down move and Enter opens.
+    highlight: usize,
+    /// The query `highlight` is for; a new one starts again at the top.
+    highlighted_for: String,
 }
 
 /// Source files read so far; `None` when a file could not be read.
@@ -428,8 +432,154 @@ fn journeys(ui: &mut egui::Ui, explorer: &mut Explorer) {
     }
 }
 
-/// A box to find a function by name, over the top of the graph: Enter or a click
-/// opens it, Escape closes the box.
+/// A function search can find.
+struct Candidate {
+    id: UnitId,
+    /// What the graph calls it, without what tells it apart.
+    name: String,
+    /// Its own part of that: `closure 3` of `draw › closure 3`.
+    own: String,
+    /// Where it lives: `codeviz_core.system.System`.
+    place: String,
+    /// The route or command an entry point is reached by.
+    route: Option<String>,
+    kind: String,
+    /// Whether it is nested in another function, as a closure is, and so lives on
+    /// that function's node.
+    nested: bool,
+    /// Calls between it and the focus, more for what is further or out of reach.
+    distance: u32,
+    /// How many functions call it.
+    callers: usize,
+}
+
+/// What search knows of every function beyond its name, gathered once per frame.
+struct Census<'a> {
+    explorer: &'a Explorer,
+    /// How many nodes call each node.
+    callers: Vec<usize>,
+    routes: HashMap<&'a UnitId, &'a str>,
+}
+
+impl<'a> Census<'a> {
+    fn new(explorer: &'a Explorer) -> Self {
+        let mut callers = vec![0; explorer.map().tiles.len()];
+        for &(from, to) in &explorer.graph().calls {
+            if from != to
+                && let Some(count) = callers.get_mut(to)
+            {
+                *count += 1;
+            }
+        }
+        let routes = explorer
+            .system()
+            .entries()
+            .iter()
+            .map(|e| (&e.unit, e.label.as_str()))
+            .collect();
+        Self {
+            explorer,
+            callers,
+            routes,
+        }
+    }
+
+    fn candidate(&self, unit: &codeviz_ir::Unit) -> Candidate {
+        let explorer = self.explorer;
+        let path = explorer.unit_path(&unit.id);
+        let tile = explorer.map().tile_of(&unit.id);
+        Candidate {
+            id: unit.id.clone(),
+            name: path.short(),
+            own: path.own().to_owned(),
+            place: path.container(),
+            route: self.routes.get(&unit.id).map(|&route| route.to_owned()),
+            kind: unit.kind.clone(),
+            nested: unit
+                .parent
+                .as_ref()
+                .and_then(|p| explorer.any_unit(p))
+                .is_some_and(|p| p.role == Role::Invocable),
+            distance: tile.map_or(u32::MAX, |tile| distance(explorer, tile)),
+            callers: tile
+                .and_then(|tile| self.callers.get(tile))
+                .copied()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// How far a node is from the focus: the calls between them either way, else a step
+/// past any of those for one in the focus's module, else further still.
+fn distance(explorer: &Explorer, tile: usize) -> u32 {
+    const MODULE: u32 = 50;
+    let Some(focus) = explorer.graph_focus() else {
+        return MODULE + 1;
+    };
+    if tile == focus {
+        return 0;
+    }
+    let hops = explorer.focus_reach().and_then(|reach| {
+        [reach.upstream.get(&tile), reach.downstream.get(&tile)]
+            .into_iter()
+            .flatten()
+            .min()
+            .copied()
+    });
+    let graph = explorer.graph();
+    match hops {
+        Some(hops) => hops.min(MODULE - 1),
+        None if graph.cluster(tile) == graph.cluster(focus) => MODULE,
+        None => MODULE + 1,
+    }
+}
+
+/// The candidates `query` finds, best first: by how well it matches, then nearest the
+/// focus, then most called. A closure lives on its function's node, so a search that
+/// only finds its function's name wants the function: closures come up only when the
+/// query names them, `closure` or a nested function's own name, and then after the
+/// functions that are not nested.
+fn search_order(query: &str, candidates: &[Candidate]) -> Vec<usize> {
+    let mut found: Vec<(bool, u8, u32, std::cmp::Reverse<usize>, usize, usize)> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.nested || names_own(query, &c.own))
+        .filter_map(|(index, c)| {
+            let by_name = search_rank(query, c.id.as_str(), &c.name);
+            let by_route = c
+                .route
+                .as_deref()
+                .and_then(|route| search_rank(query, "", route));
+            let rank = by_name.into_iter().chain(by_route).min()?;
+            Some((
+                c.nested,
+                rank,
+                c.distance,
+                std::cmp::Reverse(c.callers),
+                c.name.len(),
+                index,
+            ))
+        })
+        .collect();
+    found.sort_by(|a, b| {
+        a.cmp(b)
+            .then_with(|| candidates[a.5].name.cmp(&candidates[b.5].name))
+    });
+    found.into_iter().map(|f| f.5).collect()
+}
+
+/// Whether a word of `query` is in `own`, a nested function's own name.
+fn names_own(query: &str, own: &str) -> bool {
+    let own = own.to_lowercase();
+    query
+        .to_lowercase()
+        .split(|c: char| c == '.' || c == ':' || c == '›' || c.is_whitespace())
+        .any(|word| !word.is_empty() && own.contains(word))
+}
+
+/// A box to find a function by name, over the top of the graph: Up and Down pick a
+/// row, Enter or a click opens it, Escape closes the box. Each row names the function
+/// as the graph does, with where it lives after it.
 fn search_box(
     ctx: &egui::Context,
     area: egui::Rect,
@@ -438,38 +588,37 @@ fn search_box(
     open: &mut bool,
 ) {
     let system = explorer.system();
-    let rows: Vec<(UnitId, String, String)> = if search.query.trim().is_empty() {
-        let mut rows: Vec<_> = system
+    let census = Census::new(explorer);
+    let candidates: Vec<Candidate> = if search.query.trim().is_empty() {
+        let mut entries: Vec<Candidate> = system
             .entries()
             .iter()
-            .map(|e| (e.unit.clone(), e.label.clone(), e.kind.clone()))
+            .filter_map(|e| explorer.any_unit(&e.unit))
+            .map(|unit| census.candidate(unit))
             .collect();
-        rows.sort_by(|a, b| a.1.cmp(&b.1));
-        rows
+        entries.sort_by(|a, b| a.route.cmp(&b.route));
+        entries.dedup_by(|a, b| a.id == b.id);
+        entries
     } else {
-        let entries = system
-            .entries()
-            .iter()
-            .map(|e| (&e.unit, e.label.clone(), &e.kind));
-        let units = system
+        system
             .units()
             .filter(|u| u.role == Role::Invocable)
-            .map(|u| (&u.id, explorer.unit_name(&u.id), &u.kind));
-        let mut ranked: Vec<(u8, UnitId, String, String)> = entries
-            .chain(units)
-            .filter_map(|(id, name, kind)| {
-                let rank = search_rank(&search.query, id.as_str(), &name)?;
-                Some((rank, id.clone(), name, kind.clone()))
-            })
-            .collect();
-        ranked.sort_by(|a, b| (a.0, a.2.len(), &a.2).cmp(&(b.0, b.2.len(), &b.2)));
-        ranked.dedup_by(|a, b| a.1 == b.1);
-        ranked
-            .into_iter()
-            .take(200)
-            .map(|(_, id, name, kind)| (id, name, kind))
+            .map(|unit| census.candidate(unit))
             .collect()
     };
+    let rows: Vec<&Candidate> = if search.query.trim().is_empty() {
+        candidates.iter().collect()
+    } else {
+        search_order(&search.query, &candidates)
+            .into_iter()
+            .take(200)
+            .map(|index| &candidates[index])
+            .collect()
+    };
+    if search.highlighted_for != search.query {
+        search.highlighted_for.clone_from(&search.query);
+        search.highlight = 0;
+    }
     let mut chosen = None;
     egui::Area::new("search".into())
         .pivot(egui::Align2::CENTER_TOP)
@@ -482,7 +631,22 @@ fn search_box(
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::symmetric(10, 8))
                 .show(ui, |ui| {
-                    ui.set_width(420.0);
+                    ui.set_width(460.0);
+                    // Taken before the field sees them, which would move its caret.
+                    let (up, down) = ui.input_mut(|i| {
+                        (
+                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+                        )
+                    });
+                    let last = rows.len().saturating_sub(1);
+                    if down {
+                        search.highlight = (search.highlight + 1).min(last);
+                    }
+                    if up {
+                        search.highlight = search.highlight.saturating_sub(1);
+                    }
+                    search.highlight = search.highlight.min(last);
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut search.query)
                             .hint_text("search functions…")
@@ -490,7 +654,7 @@ fn search_box(
                     );
                     field.request_focus();
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        chosen = rows.first().map(|row| row.0.clone());
+                        chosen = rows.get(search.highlight).map(|row| row.id.clone());
                     }
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         *open = false;
@@ -500,19 +664,17 @@ fn search_box(
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("units")
-                        .max_height(260.0)
+                        .max_height(280.0)
                         .show(ui, |ui| {
-                            for (id, title, kind) in &rows {
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .selectable_label(explorer.root() == Some(id), title)
-                                        .on_hover_text(id.as_str())
-                                        .clicked()
-                                    {
-                                        chosen = Some(id.clone());
-                                    }
-                                    ui.label(egui::RichText::new(kind).small().color(MUTED));
-                                });
+                            for (index, row) in rows.iter().enumerate() {
+                                let highlighted = index == search.highlight;
+                                let response = search_row(ui, explorer, row, highlighted);
+                                if highlighted && (up || down) {
+                                    response.scroll_to_me(None);
+                                }
+                                if response.clicked() {
+                                    chosen = Some(row.id.clone());
+                                }
                             }
                         });
                 });
@@ -524,6 +686,42 @@ fn search_box(
         }
         *open = false;
     }
+}
+
+/// One search result: its name, an entry point's route, where it lives and its kind,
+/// muted, all one row to click.
+fn search_row(
+    ui: &mut egui::Ui,
+    explorer: &Explorer,
+    row: &Candidate,
+    highlighted: bool,
+) -> egui::Response {
+    let font = egui::FontId::proportional(13.0);
+    let small = egui::FontId::proportional(11.5);
+    let mut job = egui::text::LayoutJob::default();
+    let text = |color| egui::TextFormat {
+        font_id: font.clone(),
+        color,
+        ..default()
+    };
+    let muted = |color| egui::TextFormat {
+        font_id: small.clone(),
+        color,
+        valign: egui::Align::Center,
+        ..default()
+    };
+    job.append(&row.name, 0.0, text(egui::Color32::WHITE));
+    if let Some(route) = &row.route {
+        job.append(route, 8.0, muted(egui::Color32::from_rgb(200, 205, 216)));
+    }
+    if !row.place.is_empty() {
+        job.append(&row.place, 8.0, muted(MUTED));
+    }
+    job.append(&row.kind, 8.0, muted(MUTED.gamma_multiply(0.7)));
+    job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width());
+    let full = explorer.unit_path(&row.id).full();
+    ui.add(egui::Button::selectable(highlighted, job).frame_when_inactive(highlighted))
+        .on_hover_text(full)
 }
 
 fn outcomes(ui: &mut egui::Ui, explorer: &mut Explorer) {
@@ -566,7 +764,7 @@ fn outcomes(ui: &mut egui::Ui, explorer: &mut Explorer) {
 /// the query in order along the path. `.` and `::` are the same, so `orders.place`
 /// finds `services::orders::place`.
 fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
-    let normal = |text: &str| text.to_lowercase().replace("::", ".");
+    let normal = |text: &str| text.to_lowercase().replace("::", ".").replace(" › ", ".");
     let query = normal(query.trim());
     let name = normal(name);
     // The path without its producer's prefix, as in `rust:`.
@@ -1657,7 +1855,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("J", "show or hide the journey"),
             ("M", "swap graph and journey"),
             ("S", "show or hide the side panel"),
-            ("/", "search for a function"),
+            ("/", "search for a function; ↑ ↓ pick, Enter opens"),
             ("H", "this list"),
         ],
     ),
@@ -1766,6 +1964,87 @@ mod tests {
         );
         assert_eq!(place("place orders"), None, "but not out of order");
         assert_eq!(place("quote"), None);
+    }
+
+    fn candidate(id: &str, own: &str, nested: bool, distance: u32, callers: usize) -> Candidate {
+        let (place, _) = id.rsplit_once("::").unwrap_or_default();
+        let name = if nested {
+            format!("{} › {own}", place.rsplit("::").next().unwrap_or_default())
+        } else {
+            own.to_owned()
+        };
+        Candidate {
+            id: UnitId::new(format!("rust:{id}")),
+            name,
+            own: own.to_owned(),
+            place: place.replace("::", "."),
+            route: None,
+            kind: "fn".to_owned(),
+            nested,
+            distance,
+            callers,
+        }
+    }
+
+    fn found(query: &str, candidates: &[Candidate]) -> Vec<String> {
+        search_order(query, candidates)
+            .into_iter()
+            .map(|index| {
+                candidates[index]
+                    .id
+                    .as_str()
+                    .trim_start_matches("rust:")
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn search_leaves_closures_out_unless_asked_for() {
+        let candidates = [
+            candidate("ui::draw_graph_labels", "draw_graph_labels", false, 9, 1),
+            candidate(
+                "ui::draw_graph_labels::{closure#3}",
+                "closure 3",
+                true,
+                9,
+                0,
+            ),
+            candidate("ui::draw_ui", "draw_ui", false, 9, 1),
+        ];
+        assert_eq!(
+            found("draw", &candidates),
+            ["ui::draw_ui", "ui::draw_graph_labels"],
+            "a closure lives on its function's node"
+        );
+        assert_eq!(
+            found("draw closure", &candidates),
+            ["ui::draw_graph_labels::{closure#3}"]
+        );
+        assert_eq!(
+            found("draw_graph_labels › closure 3", &candidates),
+            ["ui::draw_graph_labels::{closure#3}"],
+            "as the screen names it"
+        );
+    }
+
+    #[test]
+    fn search_puts_what_is_near_the_focus_first_then_what_is_most_called() {
+        let candidates = [
+            candidate("core::system::System::new", "new", false, 51, 30),
+            candidate("viewer::Viewer::new", "new", false, 51, 2),
+            candidate("viewer::explorer::Explorer::new", "new", false, 1, 0),
+            candidate("viewer::names::Names::newest", "newest", false, 0, 0),
+        ];
+        assert_eq!(
+            found("new", &candidates),
+            [
+                "viewer::explorer::Explorer::new",
+                "core::system::System::new",
+                "viewer::Viewer::new",
+                "viewer::names::Names::newest",
+            ]
+        );
     }
 
     #[test]

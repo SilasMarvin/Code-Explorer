@@ -77,6 +77,11 @@ impl Path {
         text
     }
 
+    /// Its own part of the name: `closure 3` of `draw › closure 3`.
+    pub(crate) fn own(&self) -> &str {
+        &self.name
+    }
+
     /// The name with as little in front as it always carries.
     pub(crate) fn short(&self) -> String {
         self.render(self.least)
@@ -85,6 +90,19 @@ impl Path {
     /// The whole path, crate and all.
     pub(crate) fn full(&self) -> String {
         self.render(self.outer.len())
+    }
+
+    /// Everything around the short name, outermost first: `codeviz_core.system.System`.
+    pub(crate) fn container(&self) -> String {
+        let outer = &self.outer[self.least.min(self.outer.len())..];
+        let mut text = String::new();
+        for (index, (segment, joint)) in outer.iter().enumerate().rev() {
+            text.push_str(segment);
+            if index > 0 {
+                text.push_str(joint);
+            }
+        }
+        text
     }
 }
 
@@ -312,6 +330,7 @@ mod tests {
             &UnitId::new("r:cli::ui::draw::{closure#3}"),
         );
         assert_eq!(path.full(), "cli.ui.draw › closure 3");
+        assert_eq!(path.container(), "cli.ui");
     }
 
     #[test]
