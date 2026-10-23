@@ -153,12 +153,14 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
+        let docked = panel_area.filter(|_| panel.mode == PanelMode::Docked);
         draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
             diff.as_deref(),
             transform.up().into(),
+            docked,
         );
         if let Some(diff) = diff.as_deref_mut().filter(|_| !chrome.bare) {
             diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
@@ -190,7 +192,6 @@ fn draw_ui(
                 tether(ctx, bar, node);
             }
         }
-        let docked = panel_area.filter(|_| panel.mode == PanelMode::Docked);
         orbit.set_room(room(ctx, graph_area, docked));
     }
     Ok(())
@@ -1282,6 +1283,7 @@ fn draw_graph_labels(
     explorer: &Explorer,
     diff: Option<&DiffView>,
     up: Vec3,
+    docked: Option<egui::Rect>,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1382,11 +1384,13 @@ fn draw_graph_labels(
     }
     order.sort_by_key(|&(key, _)| key);
 
-    // Labels keep off the cards over the graph, as last laid out.
+    // Labels keep off the cards over the graph, as last laid out, and the journey
+    // docked over it.
     let cards: Vec<egui::Rect> = CARDS
         .into_iter()
-        .chain(["search", "journey_panel"])
+        .chain(["search"])
         .filter_map(|id| card_rect(painter.ctx(), id))
+        .chain(docked)
         .collect();
     // And off the nodes that matter, so they never hide a neighbor.
     let mut placer = Placer::new(
