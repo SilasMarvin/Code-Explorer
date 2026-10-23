@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use bevy::prelude::*;
 use bevy_egui::{egui, input::egui_wants_any_keyboard_input};
-use codeviz_core::{Change, Diff, Review, System};
+use codeviz_core::{Change, Diff, Offstage, Review, System};
 use codeviz_layout::ForceGraph;
 
 use crate::{
@@ -111,6 +111,11 @@ pub(crate) struct DiffView {
     callers: Vec<Vec<usize>>,
     /// The way up from the focused change, and the change it starts from.
     route: Option<(usize, Route)>,
+    /// What changed that the graph does not draw, file by file, when known.
+    pub(crate) offstage: Option<Vec<Offstage>>,
+    /// What the IR says changed that the graph does not draw, the types and modules,
+    /// as `struct Order`; listed for want of `offstage`.
+    unshown: Vec<(Change, String)>,
     /// The old version, with moved functions under their new ids.
     old: System,
     /// What each moved node was called before.
@@ -182,15 +187,7 @@ impl DiffView {
             .filter_map(|unit| Some((tile(unit)?, review.reached_from(unit).to_vec())))
             .collect();
         let graph = explorer.graph();
-        let mut callers = vec![Vec::new(); map.tiles.len()];
-        for &(from, to) in graph.calls.iter().chain(&graph.ghosts) {
-            if from != to
-                && let Some(list) = callers.get_mut(to)
-            {
-                list.push(from);
-            }
-        }
-
+        let unshown = unshown(explorer, diff, &before);
         let (before_at, after_at) = versions(explorer, &before, &changes);
         Self {
             style: DiffStyle::default(),
@@ -204,8 +201,10 @@ impl DiffView {
             roots: review.roots,
             reached_from,
             affected: review.affected(),
-            callers,
+            callers: callers(graph),
             route: None,
+            offstage: None,
+            unshown,
             moved: diff
                 .moved
                 .iter()
@@ -376,6 +375,37 @@ impl DiffView {
             .map(|(a, b)| std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t))
             .collect()
     }
+}
+
+/// What calls each node, in either version.
+fn callers(graph: &ForceGraph) -> Vec<Vec<usize>> {
+    let mut callers = vec![Vec::new(); graph.positions.len()];
+    for &(from, to) in graph.calls.iter().chain(&graph.ghosts) {
+        if from != to
+            && let Some(list) = callers.get_mut(to)
+        {
+            list.push(from);
+        }
+    }
+    callers
+}
+
+/// What `diff` changed that has no node, as `struct Order`: the types and modules.
+fn unshown(explorer: &Explorer, diff: &Diff, before: &System) -> Vec<(Change, String)> {
+    let mut unshown: Vec<(Change, String)> = diff
+        .units
+        .iter()
+        .filter(|(unit, _)| explorer.map().tile_of(unit).is_none())
+        .filter_map(|(unit, &change)| {
+            let found = explorer.any_unit(unit).or_else(|| before.unit(unit))?;
+            Some((
+                change,
+                format!("{} {}", found.kind, explorer.unit_name(unit)),
+            ))
+        })
+        .collect();
+    unshown.sort();
+    unshown
 }
 
 /// The way up from `from` along `callers` to the nearest `limit` starts: breadth
@@ -809,6 +839,7 @@ pub(crate) fn diff_card(
                     });
                     match style {
                         DiffStyle::Status => {
+                            offstage_list(ui, view);
                             chosen = affected_list(ui, view);
                             if listed {
                                 let height = area.height() * 0.4;
@@ -877,6 +908,64 @@ fn totals_line(ui: &mut egui::Ui, totals: Totals) {
         .small()
         .color(MUTED),
     );
+}
+
+/// What changed that the graph does not draw: by file, with what each change sits in,
+/// when git said; else the types and modules the IR says changed. Folded away at
+/// first when there is much.
+fn offstage_list(ui: &mut egui::Ui, view: &DiffView) {
+    let (count, what) = match &view.offstage {
+        Some(files) => (files.len(), "file"),
+        None => (view.unshown.len(), "item"),
+    };
+    if count == 0 {
+        return;
+    }
+    let plural = if count == 1 { "" } else { "s" };
+    let title = format!("Also changed, not drawn: {count} {what}{plural}");
+    egui::CollapsingHeader::new(egui::RichText::new(title).size(13.0))
+        .id_salt("offstage")
+        .default_open(count <= 3)
+        .show(ui, |ui| match &view.offstage {
+            Some(files) => {
+                for file in files {
+                    let mut row = egui::text::LayoutJob::default();
+                    let format = |color, size| egui::TextFormat {
+                        color,
+                        font_id: egui::FontId::proportional(size),
+                        ..Default::default()
+                    };
+                    row.append(
+                        &file.path,
+                        0.0,
+                        format(egui::Color32::from_rgb(215, 220, 230), 13.0),
+                    );
+                    for (n, sign, color) in [(file.added, "+", ADDED), (file.removed, "−", REMOVED)]
+                    {
+                        if n > 0 {
+                            row.append(&format!("{sign}{n}"), 6.0, format(egui_color(color), 12.0));
+                        }
+                    }
+                    ui.label(row);
+                    for place in &file.places {
+                        ui.label(
+                            egui::RichText::new(format!("   {place}"))
+                                .small()
+                                .monospace()
+                                .color(MUTED),
+                        );
+                    }
+                }
+            }
+            None => {
+                for (change, name) in &view.unshown {
+                    ui.label(
+                        egui::RichText::new(format!("{} {name}", sign(*change)))
+                            .color(egui_color(change_color(*change))),
+                    );
+                }
+            }
+        });
 }
 
 /// The entry points the changes reach, those more changes reach first, folded away

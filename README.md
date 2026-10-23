@@ -74,9 +74,13 @@ diff affects.
 A diff opens showing only what changed, the focus, the journey's root and the way up
 from the focus; `C` (or `--show-unchanged`) brings back everything else. `D` switches
 to **Morph**, each version laid out alone, animating between them; `T` pauses.
-`codeviz diff --summary` prints the same review as text: the entry points affected,
-the changes in reading order with how many entry points each affects, and the types
-and modules that changed, which the graph does not draw.
+The graph draws functions alone, so the card also lists what changed besides, file by
+file: lines outside every function, each named by what holds it (`pub struct Order`,
+`const LIMIT: usize`, `mod tests`, `imports`), and files the analysis never read,
+such as manifests and docs. Without git, as under `view --before`, it lists the types
+and modules the IR says changed. `codeviz diff --summary` prints the same review as
+text: the entry points affected, the changes in reading order with how many entry
+points each affects, and what changed that the graph does not draw.
 
 ## Readability
 

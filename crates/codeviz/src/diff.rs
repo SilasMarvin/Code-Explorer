@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
-use codeviz_core::{Change, Diff, Review, System, align};
+use codeviz_core::{Change, Diff, FileChange, Offstage, Review, System, align, offstage};
 use codeviz_ir::{Document, UnitId};
 
 use crate::{ir::Source, view::Display};
@@ -91,16 +91,104 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     let (aligned, moved) = align(vec![before.clone()], &new_system);
     let old_system = System::new(aligned);
     let diff = Diff::between(&old_system, &new_system).with_moves(moved);
+    let new_root = new
+        .as_ref()
+        .map_or_else(|| path.clone(), |c| c.dir.join(&prefix));
+    let files = file_changes(
+        &path,
+        &base,
+        head.as_deref(),
+        &old.dir.join(&prefix),
+        &new_root,
+    )?;
+    let offstage = offstage(&files, &old_system, &new_system);
     if args.summary {
         let review = Review::new(&diff, &old_system, &new_system);
-        let summary = summary(&title, &diff, &review, &old_system, &new_system);
+        let summary = summary(&title, &diff, &review, &offstage);
         write!(std::io::stdout().lock(), "{summary}")?;
         return Ok(());
     }
-    if diff.is_empty() {
+    if diff.is_empty() && offstage.is_empty() {
         eprintln!("{title}: nothing changed");
     }
-    crate::view::open(vec![after], vec![before], &args.display, &title)
+    crate::view::open(
+        vec![after],
+        vec![before],
+        Some(offstage),
+        &args.display,
+        &title,
+    )
+}
+
+/// What git says changed under `dir` from `base` to `head`, or to the working tree,
+/// line by line, with each file's text on both sides read from `old` and `new`.
+/// Paths are relative to `dir`, as the analysis names files.
+fn file_changes(
+    dir: &Path,
+    base: &str,
+    head: Option<&str>,
+    old: &Path,
+    new: &Path,
+) -> anyhow::Result<Vec<FileChange>> {
+    let mut args = vec![
+        "diff",
+        "-U0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-renames",
+        "--relative",
+        base,
+    ];
+    args.extend(head);
+    args.extend(["--", "."]);
+    let mut files = parse_diff(&git(dir, &args)?);
+    let read = |root: &Path, path: &str| -> Vec<String> {
+        std::fs::read_to_string(root.join(path))
+            .map(|text| text.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    };
+    for file in &mut files {
+        file.old_text = read(old, &file.path);
+        file.new_text = read(new, &file.path);
+    }
+    Ok(files)
+}
+
+/// The files a `git diff -U0` changes, with the lines each lost and gained.
+fn parse_diff(text: &str) -> Vec<FileChange> {
+    let mut files: Vec<FileChange> = Vec::new();
+    // The lines at `start`, `count` long; a count left out is one.
+    let span = |range: &str| -> Vec<u32> {
+        let (start, count) = range.split_once(',').unwrap_or((range, "1"));
+        let (Ok(start), Ok(count)) = (start.parse::<u32>(), count.parse::<u32>()) else {
+            return Vec::new();
+        };
+        (start..start + count).collect()
+    };
+    for line in text.lines() {
+        if let Some(paths) = line.strip_prefix("diff --git ") {
+            // `a/path b/path`, until the `---` and `+++` lines say better.
+            let path = paths.split_once(" b/").map_or(paths, |(_, b)| b);
+            files.push(FileChange {
+                path: path.to_owned(),
+                ..FileChange::default()
+            });
+            continue;
+        }
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            path.clone_into(&mut file.path);
+        } else if let Some(hunk) = line.strip_prefix("@@ -") {
+            let mut ranges = hunk.split(' ');
+            if let (Some(old), Some(new)) = (ranges.next(), ranges.next()) {
+                file.removed.extend(span(old));
+                file.added.extend(span(new.trim_start_matches('+')));
+            }
+        }
+    }
+    files
 }
 
 /// One line on how far the diff has got, on stderr: each analysis can take a while.
@@ -197,8 +285,8 @@ fn save(dir: &Path, before: &Document, after: &Document) -> anyhow::Result<()> {
 }
 
 /// What changed, as text: the totals, the entry points the changes reach, the changed
-/// functions in the order to read them, and what changed besides functions.
-fn summary(title: &str, diff: &Diff, review: &Review, before: &System, after: &System) -> String {
+/// functions in the order to read them, and what changed outside functions.
+fn summary(title: &str, diff: &Diff, review: &Review, offstage: &[Offstage]) -> String {
     let count = |change| {
         diff.changed(change)
             .filter(|id| review.order.contains(id))
@@ -252,22 +340,14 @@ fn summary(title: &str, diff: &Diff, review: &Review, before: &System, after: &S
         }
         let _ = writeln!(out, "{line}");
     }
-    let mut others: Vec<(&UnitId, Change)> = diff
-        .units
-        .iter()
-        .filter(|(id, _)| !review.order.contains(id))
-        .map(|(id, &change)| (id, change))
-        .collect();
-    others.sort();
-    if !others.is_empty() {
+    if !offstage.is_empty() {
         let _ = writeln!(out, "\nalso changed, not drawn:");
     }
-    for (unit, change) in others {
-        let kind = after
-            .unit(unit)
-            .or_else(|| before.unit(unit))
-            .map_or("", |u| u.kind.as_str());
-        let _ = writeln!(out, "     {} {kind} {}", sign(change), path(unit));
+    for file in offstage {
+        let _ = writeln!(out, "     {}  +{} -{}", file.path, file.added, file.removed);
+        for place in &file.places {
+            let _ = writeln!(out, "         {place}");
+        }
     }
     out
 }
@@ -278,5 +358,46 @@ fn sign(change: Change) -> char {
         Change::Removed => '-',
         Change::Modified => '~',
         Change::Moved => '>',
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_lines_each_file_lost_and_gained() {
+        let diff = "\
+diff --git a/src/a.rs b/src/a.rs
+index 1111111..2222222 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -3 +3,2 @@ fn x() {
+-    old();
++    new();
++    more();
+@@ -10,2 +11,0 @@ fn y() {
+-    a();
+-    b();
+diff --git a/Cargo.toml b/Cargo.toml
+deleted file mode 100644
+index 3333333..0000000
+--- a/Cargo.toml
++++ /dev/null
+@@ -1,2 +0,0 @@
+-[package]
+-name = \"x\"
+";
+        let files: Vec<(String, Vec<u32>, Vec<u32>)> = parse_diff(diff)
+            .into_iter()
+            .map(|f| (f.path, f.removed, f.added))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("src/a.rs".to_owned(), vec![3, 10, 11], vec![3, 4]),
+                ("Cargo.toml".to_owned(), vec![1, 2], vec![]),
+            ]
+        );
     }
 }

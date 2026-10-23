@@ -10,6 +10,7 @@
 
 mod diff;
 mod journey;
+mod offstage;
 mod outline;
 mod review;
 mod scenario;
@@ -21,6 +22,7 @@ pub use diff::{Call, Change, Diff, Moves, align, union};
 pub use journey::{
     Condition, ExitMarker, Journey, JourneyOptions, Span, SpanId, SpanTarget, StopReason,
 };
+pub use offstage::{FileChange, Offstage, offstage};
 pub use outline::{describe_scenario, display_name, outline};
 pub use review::{Review, Start};
 pub use scenario::{Outcome, Scenario, Seg, Site, StepPath, scenarios};

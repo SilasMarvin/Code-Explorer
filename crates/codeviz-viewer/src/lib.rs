@@ -74,6 +74,7 @@ struct Comparison {
     both: Option<System>,
     style: DiffStyle,
     morph: Option<f32>,
+    offstage: Option<Vec<codeviz_core::Offstage>>,
 }
 
 impl Viewer {
@@ -115,8 +116,20 @@ impl Viewer {
             both: Some(both),
             style: DiffStyle::default(),
             morph: None,
+            offstage: None,
         });
         viewer
+    }
+
+    /// What the diff changed that the graph does not draw, file by file: lines outside
+    /// every function, and files the analysis did not read. Without it, the types and
+    /// modules the IR says changed are listed instead.
+    #[must_use]
+    pub fn with_offstage(mut self, offstage: Vec<codeviz_core::Offstage>) -> Self {
+        if let Some(diff) = &mut self.diff {
+            diff.offstage = Some(offstage);
+        }
+        self
     }
 
     /// How a diff is drawn: `status` or `morph`.
@@ -317,6 +330,7 @@ impl Viewer {
             let diff =
                 Diff::between(&comparison.before, explorer.system()).with_moves(comparison.moved);
             let mut view = DiffView::new(&mut explorer, &diff, comparison.before);
+            view.offstage = comparison.offstage;
             view.style = comparison.style;
             if let Some(t) = comparison.morph {
                 view.morph = t;

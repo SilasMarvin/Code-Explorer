@@ -148,14 +148,16 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .map(|s| s.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" + ");
-    open(documents, before, &args.display, &title)
+    open(documents, before, None, &args.display, &title)
 }
 
 /// Opens `documents`, diffed against `before` unless it is empty, and blocks until the
-/// window closes.
+/// window closes. `offstage` is what the diff changed that the graph does not draw,
+/// when known.
 pub(crate) fn open(
     documents: Vec<Document>,
     before: Vec<Document>,
+    offstage: Option<Vec<codeviz_core::Offstage>>,
     args: &Display,
     title: &str,
 ) -> anyhow::Result<()> {
@@ -186,6 +188,9 @@ pub(crate) fn open(
             });
         if let Some(t) = args.morph {
             viewer = viewer.with_morph(t);
+        }
+        if let Some(offstage) = offstage {
+            viewer = viewer.with_offstage(offstage);
         }
         viewer
     };
