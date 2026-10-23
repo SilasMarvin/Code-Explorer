@@ -59,6 +59,8 @@ pub(crate) struct OrbitCamera {
     /// Whether the viewer has panned or zoomed away from the focused node, so the
     /// camera stops holding it in the middle.
     pub(crate) free: bool,
+    /// Whether the viewer has moved the camera by hand at all.
+    pub(crate) by_hand: bool,
 }
 
 impl Default for OrbitCamera {
@@ -72,6 +74,7 @@ impl Default for OrbitCamera {
             goal_distance: None,
             goal_angles: None,
             free: false,
+            by_hand: false,
         }
     }
 }
@@ -89,6 +92,7 @@ impl OrbitCamera {
         self.target += offset;
         self.focus += offset;
         self.free = true;
+        self.by_hand = true;
     }
 
     /// Zooms by `factor` (below 1 is nearer), towards `toward` when given: the whole
@@ -100,11 +104,13 @@ impl OrbitCamera {
         }
         self.distance = distance;
         self.goal_distance = None;
+        self.by_hand = true;
     }
 
     /// Turns by a drag of `delta` pixels.
     fn orbit(&mut self, delta: Vec2) {
         self.goal_angles = None;
+        self.by_hand = true;
         self.yaw -= delta.x * ORBIT_SPEED;
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }

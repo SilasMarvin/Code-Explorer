@@ -1,6 +1,8 @@
 //! The 3D scene: one glowing sphere per function, placed by the graph simulation, with
 //! the keys that move the cursor and switch what is shown.
 
+use std::time::Duration;
+
 use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
 
@@ -10,7 +12,7 @@ use crate::{
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
-    ui::{Chrome, KeyHelp},
+    ui::{Chrome, KeyHelp, StartCard},
 };
 
 pub(crate) struct ScenePlugin;
@@ -96,6 +98,12 @@ fn spawn_nodes(
     );
     let material = materials.0.values().next().cloned().unwrap_or_default();
     let graph = explorer.graph();
+    info!(
+        "{} functions, {} calls, laid out in {:.2?}",
+        explorer.map().tiles.len(),
+        graph.calls.len(),
+        explorer.laid_out()
+    );
     for index in 0..explorer.map().tiles.len() {
         let Some(at) = explorer.tile_point(index) else {
             continue;
@@ -122,6 +130,7 @@ fn on_node_click(
     keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
     mut panel: ResMut<JourneyPanel>,
+    mut start: ResMut<StartCard>,
 ) {
     if click.button != PointerButton::Primary {
         return;
@@ -138,6 +147,7 @@ fn on_node_click(
         }
     } else {
         explorer.open_at(tile.0);
+        start.0 = false;
         // Clicking a node is asking what it does: its journey opens with it.
         if panel.mode == PanelMode::Hidden {
             panel.mode = PanelMode::Docked;
@@ -291,6 +301,7 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, alt: b
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -299,6 +310,7 @@ fn keyboard(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
+    mut start: ResMut<StartCard>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
@@ -308,7 +320,7 @@ fn keyboard(
     }
     graph_navigation(&keys, &mut explorer, alt);
     if keys.just_pressed(KeyCode::Escape) {
-        close_topmost(&mut explorer, &mut help, &mut chrome);
+        close_topmost(&mut explorer, &mut help, &mut chrome, &mut start);
     }
     // I and O pick out what calls into the focus and what it calls out to.
     for (key, side) in [
@@ -325,9 +337,20 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Enter) {
         if shift {
             explorer.pull_out_selected();
+        } else if explorer.graph_focus().is_none() {
+            // Nothing open yet: start at the best place to.
+            if explorer.open_best_start() {
+                start.0 = false;
+                if panel.mode == PanelMode::Hidden {
+                    panel.mode = PanelMode::Docked;
+                }
+            }
         } else {
             explorer.trace_from_focus();
         }
+    }
+    if keys.just_pressed(KeyCode::KeyE) {
+        start.0 = !start.0;
     }
     if keys.just_pressed(KeyCode::Tab) {
         let next = (explorer.active() + 1) % explorer.tracks().len().max(1);
@@ -363,13 +386,20 @@ fn keyboard(
     }
 }
 
-/// Escape closes whatever is on top: the search box, the key list, the spotlight,
-/// then the side panel. It never moves the view.
-fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
+/// Escape closes whatever is on top: the search box, the key list, where to start,
+/// the spotlight, then the side panel. It never moves the view.
+fn close_topmost(
+    explorer: &mut Explorer,
+    help: &mut KeyHelp,
+    chrome: &mut Chrome,
+    start: &mut StartCard,
+) {
     if chrome.search {
         chrome.search = false;
     } else if help.0 {
         help.0 = false;
+    } else if start.0 {
+        start.0 = false;
     } else if explorer.spotlight().is_some() {
         explorer.clear_spotlight();
     } else if chrome.side {
@@ -402,10 +432,32 @@ fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>) {
     }
 }
 
+/// The share of a frame the graph's simulation may take while it settles.
+const SIMULATION_BUDGET: Duration = Duration::from_millis(6);
+
 /// Lets the graph settle, moving its nodes as it does.
-fn simulate(mut explorer: ResMut<Explorer>, mut nodes: Query<(&Tile, &mut Transform)>) {
-    if !explorer.bypass_change_detection().simulate(2) {
+fn simulate(
+    mut explorer: ResMut<Explorer>,
+    mut nodes: Query<(&Tile, &mut Transform)>,
+    time: Res<Time<Real>>,
+    mut settling: Local<Option<(u32, f32)>>,
+) {
+    if !explorer
+        .bypass_change_detection()
+        .simulate(SIMULATION_BUDGET)
+    {
         return;
+    }
+    // How many frames settling takes, and how long, as a measure of its frame rate.
+    let (frames, since) = settling.get_or_insert((0, time.elapsed_secs()));
+    *frames += 1;
+    if !explorer.settling() {
+        let seconds = time.elapsed_secs() - *since;
+        info!(
+            "settled after {frames} frames in {seconds:.2} s ({:.0} fps)",
+            *frames as f32 / seconds.max(0.001)
+        );
+        *settling = None;
     }
     for (tile, mut transform) in &mut nodes {
         if let Some(at) = explorer.tile_point(tile.0) {

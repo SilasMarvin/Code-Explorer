@@ -22,6 +22,7 @@ mod lens;
 mod names;
 mod scene;
 mod source_diff;
+mod starts;
 mod truth;
 mod ui;
 
@@ -142,7 +143,8 @@ impl Viewer {
         self
     }
 
-    /// The unit to start from. Without one, the first entry is used.
+    /// The unit to start from. Without one, the viewer opens on the whole graph and
+    /// offers where to start.
     #[must_use]
     pub fn with_root(mut self, root: UnitId) -> Self {
         self.root = Some(root);
@@ -286,6 +288,12 @@ impl Viewer {
             self.root.take(),
             self.options.clone(),
         );
+        // An outcome, a step or another journey needs a journey to start with.
+        if explorer.root().is_none()
+            && (self.scenario.is_some() || self.step > 0 || !self.also.is_empty())
+        {
+            explorer.root_at_best_start();
+        }
         if self.scenario.is_some() {
             explorer.set_scenario(self.scenario);
         }
@@ -346,6 +354,13 @@ impl Viewer {
         }
         // Back starts from the view as it opens.
         explorer.forget_history();
+        // Opened on nothing in particular: the whole graph, with where to start.
+        let starts = explorer.graph_focus().is_none();
+        let panel = if starts {
+            PanelMode::Hidden
+        } else {
+            self.panel
+        };
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -364,12 +379,13 @@ impl Viewer {
             diff_view::DiffPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
-        .insert_resource(explorer)
-        .insert_resource(JourneyPanel::new(self.panel))
+        .insert_resource(JourneyPanel::new(panel))
         .insert_resource(ui::Chrome {
             bare: self.bare,
             ..default()
         })
+        .insert_resource(ui::StartCard(starts))
+        .insert_resource(explorer)
         .init_resource::<Autoplay>();
         if let Some(diff) = diff {
             app.insert_resource(diff);

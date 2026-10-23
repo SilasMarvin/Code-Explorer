@@ -23,12 +23,20 @@ codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
 ```
 
-The codebase floats as a graph, one node per function, each module gathered in its own
-ring. Click a node and the camera orbits it, and its journey opens docked as a flame
-graph: what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
+The codebase floats as a graph, one node per function, each module gathered in a ring
+of its own that no other overlaps; with several crates, each crate's modules gather
+inside a wide grey ring named for the crate. It opens on the whole graph, head-on,
+with the busiest functions named and each entry point flying a small flag (`▶` on its
+label), and a card of where to start: the entry points that reach the most of the
+codebase first, those in demo, example and test code last, or without declared
+entries the functions nothing calls. Enter opens the first, `E` or `Esc` hides the
+card. `--entry` or `--focus` opens straight on a journey instead.
+
+Click a node and the camera orbits it, and its journey opens docked as a flame graph:
+what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
 labels alike. `,`/`.` show a level less or more, a bar's `+N` opens the calls folded
-under it, as does the cursor wherever it lands, and `V` switches to showing calls only as the cursor reaches them. A closure
-counts as part of the function around it.
+under it, as does the cursor wherever it lands, and `V` switches to showing calls only
+as the cursor reaches them. A closure counts as part of the function around it.
 
 A function goes by one name everywhere, on its node, its bar, in search and in the
 details: its own, with its type, then module, then crate in front only as far as it takes
@@ -43,7 +51,9 @@ its module, the same color as its ring; under a diff it says what changed instea
 journey bar is filled exactly like its node, and its number sits on a badge of that
 color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
 to it. `I` picks out everything that calls the focus and `O` everything it calls,
-pulling the camera back only as far as it takes to show them all.
+pulling the camera back only as far as it takes to show them all. When that is more
+than fifteen, a card lists every one, grouped by module, and the graph names the first
+where it finds room.
 
 The focus is the node under the journey's cursor, ringed in white and named in the top
 bar beside how many calls it makes and takes; `I`, `O` and `Enter` (start the journey

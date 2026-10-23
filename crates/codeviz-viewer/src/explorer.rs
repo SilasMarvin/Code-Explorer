@@ -5,6 +5,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
 
 use bevy::prelude::*;
@@ -20,6 +21,7 @@ use crate::{
     history::{History, View},
     lens::{self, Lens},
     names::{Names, Path},
+    starts::{self, Start},
 };
 
 /// What a disclosure was worked out for: the journeys' revision, the active one, how
@@ -229,6 +231,9 @@ impl Clustering {
             Self::Modules => ForceConfig {
                 cohesion: 0.15,
                 separation: SEPARATION,
+                rooms: true,
+                containment: 0.3,
+                crate_cohesion: 0.15,
                 cross_spring: 0.3,
                 ..spread
             },
@@ -243,8 +248,13 @@ impl Clustering {
 /// How hard crowding containers push apart when clustered by module.
 const SEPARATION: f32 = 0.4;
 
-/// Simulation steps run before the graph is first shown, so it opens nearly settled.
+/// Simulation steps run before the graph is first shown, so it opens nearly settled,
+/// unless they take longer than [`PRESETTLE_TIME`]: a big graph opens sooner and
+/// settles in view.
 const PRESETTLE_STEPS: usize = 200;
+const PRESETTLE_TIME: Duration = Duration::from_millis(600);
+/// Steps a frame takes at most while the graph settles.
+const MAX_FRAME_STEPS: usize = 8;
 /// At most this many steps to settle at once.
 const SETTLE_NOW_STEPS: usize = 600;
 /// Below this mean speed the graph counts as settled and stops simulating.
@@ -313,6 +323,14 @@ pub(crate) struct Explorer {
     every_name: Names,
     /// Each module cluster's name, told apart from the other clusters'.
     cluster_names: Vec<String>,
+    /// How long the graph took to lay out before it was first shown.
+    laid_out: Duration,
+    /// Where to start exploring, best first.
+    starts: Vec<Start>,
+    /// The nodes of declared entry points.
+    entry_tiles: HashSet<usize>,
+    /// Every node, the most calls in and out first.
+    busiest: Vec<usize>,
 }
 
 impl Explorer {
@@ -329,14 +347,26 @@ impl Explorer {
         root: Option<UnitId>,
         options: JourneyOptions,
     ) -> Self {
-        let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
         let placed = layout.as_ref().unwrap_or(&system);
         let map = codeviz_layout::map(placed, &MapConfig::default());
         let clustering = Clustering::default();
+        let started = Instant::now();
         let mut graph = ForceGraph::new(placed, &map, clustering.forces());
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
+            if started.elapsed() >= PRESETTLE_TIME {
+                break;
+            }
         }
+        let laid_out = started.elapsed();
+        let starts = starts::starts(placed, &map, &graph);
+        let entry_tiles = placed
+            .entries()
+            .iter()
+            .filter_map(|e| map.tile_of(&e.unit))
+            .collect();
+        let mut busiest: Vec<usize> = (0..map.tiles.len()).collect();
+        busiest.sort_by_key(|&t| (std::cmp::Reverse(graph.degree(t)), t));
         let tiles = map.tiles.len();
         let mut explorer = Self {
             system,
@@ -368,6 +398,10 @@ impl Explorer {
             names_for: None,
             every_name: Names::default(),
             cluster_names: Vec::new(),
+            laid_out,
+            starts,
+            entry_tiles,
+            busiest,
         };
         explorer.name_everything();
         explorer.color_groups();
@@ -692,15 +726,66 @@ impl Explorer {
         }
     }
 
-    /// Runs the graph simulation a few steps while it is still moving. Returns whether
-    /// anything moved.
-    pub(crate) fn simulate(&mut self, steps: usize) -> bool {
+    /// How long the graph took to lay out before it was first shown.
+    pub(crate) fn laid_out(&self) -> Duration {
+        self.laid_out
+    }
+
+    /// Where to start exploring, best first.
+    pub(crate) fn starts(&self) -> &[Start] {
+        &self.starts
+    }
+
+    /// Whether a node is a declared entry point.
+    pub(crate) fn is_entry(&self, tile: usize) -> bool {
+        self.entry_tiles.contains(&tile)
+    }
+
+    /// Every node, the most calls in and out first.
+    pub(crate) fn busiest(&self) -> &[usize] {
+        &self.busiest
+    }
+
+    /// Opens the best place to start, if there is one. Returns whether there was.
+    pub(crate) fn open_best_start(&mut self) -> bool {
+        let Some(tile) = self.starts.first().map(|s| s.tile) else {
+            return false;
+        };
+        self.open_at(tile);
+        true
+    }
+
+    /// Starts the active journey at the best place to start, without focusing it.
+    pub(crate) fn root_at_best_start(&mut self) {
+        if let Some(unit) = self
+            .starts
+            .first()
+            .and_then(|s| self.tile_unit(s.tile))
+            .cloned()
+        {
+            self.replace_root(unit);
+        }
+    }
+
+    /// Whether the graph is still moving.
+    pub(crate) fn settling(&self) -> bool {
+        self.settling
+    }
+
+    /// Runs the graph simulation while it is still moving, as many steps as fit in
+    /// `budget` but at least one, so a big graph settles without stalling the frame.
+    /// Returns whether anything moved.
+    pub(crate) fn simulate(&mut self, budget: Duration) -> bool {
         if !self.settling {
             return false;
         }
-        let mut speed = 0.0;
-        for _ in 0..steps {
+        let started = Instant::now();
+        let mut speed = f32::MAX;
+        for _ in 0..MAX_FRAME_STEPS {
             speed = self.graph.step();
+            if speed <= SETTLED_SPEED || started.elapsed() >= budget {
+                break;
+            }
         }
         self.settling = speed > SETTLED_SPEED;
         true
@@ -1138,6 +1223,14 @@ impl Explorer {
             .collect();
         self.names = Names::apart(paths);
         self.names_for = Some(key);
+    }
+
+    /// A crate's (or top-level package's) name.
+    pub(crate) fn crate_name(&self, top: usize) -> String {
+        self.graph
+            .top_unit(top)
+            .and_then(|id| self.any_unit(id))
+            .map_or_else(String::new, |unit| unit.name.clone())
     }
 
     /// Gives every container a color, after those the journeys use.
