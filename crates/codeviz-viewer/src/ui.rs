@@ -1286,10 +1286,6 @@ fn draw_graph_labels(
                             .map(|was| format!("was {}", tail(was))),
                     ),
                     _ if impact_note.is_some() => (None, impact_note),
-                    // The focus says where its routes start, once they are picked out.
-                    _ if tier == 0 && focused.is_some() && !starts.is_empty() => {
-                        (None, Some(reached_from(&starts)))
-                    }
                     (Some(Relation::Downstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color, None)), None)
@@ -1314,10 +1310,17 @@ fn draw_graph_labels(
                 .into_iter()
                 .filter_map(|(on, mark)| on.then_some(mark))
                 .collect();
-                let aside = [aside, (!marks.is_empty()).then(|| marks.join(" · "))]
-                    .into_iter()
-                    .flatten()
-                    .reduce(|a, b| format!("{a} · {b}"));
+                // The focus says where its routes start, once they are picked out.
+                let routes = (tier == 0 && focused.is_some() && !starts.is_empty())
+                    .then(|| reached_from(&starts));
+                let aside = [
+                    aside,
+                    routes,
+                    (!marks.is_empty()).then(|| marks.join(" · ")),
+                ]
+                .into_iter()
+                .flatten()
+                .reduce(|a, b| format!("{a} · {b}"));
                 // A node the journey runs leads with its place in it, as its bar does.
                 let order = journey
                     .get(&tile)
