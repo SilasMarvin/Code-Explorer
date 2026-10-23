@@ -92,16 +92,14 @@ pub(crate) struct Index {
 
 impl Index {
     /// Indexes every entry and function of `system`, named by `name`, and what their
-    /// bodies say.
-    pub(crate) fn of(system: &System, name: impl Fn(&UnitId) -> String) -> Self {
+    /// bodies say. A function `name` leaves unnamed, such as a closure drawn as part
+    /// of the function around it, is found only by what it says.
+    pub(crate) fn of(system: &System, name: impl Fn(&UnitId) -> Option<String>) -> Self {
         let mut items: Vec<Item> = system.entries().iter().map(Item::entry).collect();
         for unit in system.units().filter(|u| u.role == Role::Invocable) {
-            items.push(Item::new(
-                Found::Unit,
-                &unit.id,
-                name(&unit.id),
-                unit.kind.clone(),
-            ));
+            if let Some(name) = name(&unit.id) {
+                items.push(Item::new(Found::Unit, &unit.id, name, unit.kind.clone()));
+            }
             if let Some(body) = &unit.body {
                 said(body, &unit.id, &mut items);
             }
@@ -288,9 +286,7 @@ pub(crate) fn search_box(
     open: &mut bool,
     now: f32,
 ) {
-    let index = search
-        .index
-        .get_or_insert_with(|| Index::of(explorer.system(), |id| explorer.unit_name(id)));
+    let index = search.index.get_or_insert_with(|| index(explorer));
     let rows: Vec<Item> = if search.query.trim().is_empty() {
         let mut rows: Vec<Item> = explorer
             .system()
@@ -353,6 +349,29 @@ pub(crate) fn search_box(
     }
 }
 
+/// Everything the explorer's system lets a search find, each function by the name the
+/// graph gives it.
+fn index(explorer: &Explorer) -> Index {
+    Index::of(explorer.system(), |id| {
+        let own = explorer
+            .map()
+            .tile_of(id)
+            .is_none_or(|tile| explorer.tile_unit(tile) == Some(id));
+        own.then(|| explorer.unit_name(id))
+    })
+}
+
+/// The function a node draws `unit` as part of, by name: its own, or the function
+/// around a closure.
+fn function_name(explorer: &Explorer, unit: &UnitId) -> String {
+    let drawn = explorer
+        .map()
+        .tile_of(unit)
+        .and_then(|tile| explorer.tile_unit(tile))
+        .unwrap_or(unit);
+    explorer.unit_name(drawn)
+}
+
 /// One found thing: what it says, then where it is. Returns whether it was clicked.
 fn row(ui: &mut egui::Ui, explorer: &Explorer, item: &Item) -> bool {
     let (mark, color, what) = match item.found {
@@ -373,7 +392,7 @@ fn row(ui: &mut egui::Ui, explorer: &Explorer, item: &Item) -> bool {
             .clicked();
         let note = match what {
             None => item.note.clone(),
-            Some(what) => format!("{what} in {}", explorer.unit_name(&item.unit)),
+            Some(what) => format!("{what} in {}", function_name(explorer, &item.unit)),
         };
         ui.label(egui::RichText::new(note).small().color(MUTED));
     });
@@ -444,7 +463,7 @@ mod tests {
     }
 
     fn index() -> Index {
-        Index::of(&system(), |id| path(id.as_str()).to_owned())
+        Index::of(&system(), |id| Some(path(id.as_str()).to_owned()))
     }
 
     fn found(index: &Index, query: &str) -> Vec<(Found, String)> {
@@ -534,7 +553,7 @@ mod tests {
     #[test]
     fn picking_an_error_opens_its_function_on_it_with_every_route_in() {
         let mut explorer = Explorer::new(system(), None, JourneyOptions::default());
-        let index = Index::of(explorer.system(), |id| explorer.unit_name(id));
+        let index = super::index(&explorer);
         let item = index.find("unknown sku", 1)[0].clone();
         pick(&mut explorer, &item, 0.0);
         assert_eq!(
