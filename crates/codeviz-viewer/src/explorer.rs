@@ -5,6 +5,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, PoisonError},
+    time::{Duration, Instant},
 };
 
 use bevy::prelude::*;
@@ -221,8 +222,13 @@ impl Clustering {
 /// How hard crowding containers push apart when clustered by module.
 const SEPARATION: f32 = 0.4;
 
-/// Simulation steps run before the graph is first shown, so it opens nearly settled.
+/// Simulation steps run before the graph is first shown, so it opens nearly settled,
+/// unless they take longer than [`PRESETTLE_TIME`]: a big graph opens sooner and
+/// settles in view.
 const PRESETTLE_STEPS: usize = 200;
+const PRESETTLE_TIME: Duration = Duration::from_millis(600);
+/// Steps a frame takes at most while the graph settles.
+const MAX_FRAME_STEPS: usize = 8;
 /// At most this many steps to settle at once.
 const SETTLE_NOW_STEPS: usize = 600;
 /// Below this mean speed the graph counts as settled and stops simulating.
@@ -286,6 +292,8 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever a journey is rebuilt.
     revision: u64,
+    /// How long the graph took to lay out before it was first shown.
+    laid_out: Duration,
 }
 
 impl Explorer {
@@ -306,10 +314,15 @@ impl Explorer {
         let placed = layout.as_ref().unwrap_or(&system);
         let map = codeviz_layout::map(placed, &MapConfig::default());
         let clustering = Clustering::default();
+        let started = Instant::now();
         let mut graph = ForceGraph::new(placed, &map, clustering.forces());
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
+            if started.elapsed() >= PRESETTLE_TIME {
+                break;
+            }
         }
+        let laid_out = started.elapsed();
         let tiles = map.tiles.len();
         let mut explorer = Self {
             system,
@@ -339,6 +352,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            laid_out,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -541,20 +555,30 @@ impl Explorer {
         }
     }
 
+    /// How long the graph took to lay out before it was first shown.
+    pub(crate) fn laid_out(&self) -> Duration {
+        self.laid_out
+    }
+
     /// Whether the graph is still moving.
     pub(crate) fn settling(&self) -> bool {
         self.settling
     }
 
-    /// Runs the graph simulation a few steps while it is still moving. Returns whether
-    /// anything moved.
-    pub(crate) fn simulate(&mut self, steps: usize) -> bool {
+    /// Runs the graph simulation while it is still moving, as many steps as fit in
+    /// `budget` but at least one, so a big graph settles without stalling the frame.
+    /// Returns whether anything moved.
+    pub(crate) fn simulate(&mut self, budget: Duration) -> bool {
         if !self.settling {
             return false;
         }
-        let mut speed = 0.0;
-        for _ in 0..steps {
+        let started = Instant::now();
+        let mut speed = f32::MAX;
+        for _ in 0..MAX_FRAME_STEPS {
             speed = self.graph.step();
+            if speed <= SETTLED_SPEED || started.elapsed() >= budget {
+                break;
+            }
         }
         self.settling = speed > SETTLED_SPEED;
         true

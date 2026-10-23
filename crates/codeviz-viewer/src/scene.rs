@@ -1,6 +1,8 @@
 //! The 3D scene: one glowing sphere per function, placed by the graph simulation, with
 //! the keys that move the cursor and switch what is shown.
 
+use std::time::Duration;
+
 use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
 
@@ -96,6 +98,12 @@ fn spawn_nodes(
     );
     let material = materials.0.values().next().cloned().unwrap_or_default();
     let graph = explorer.graph();
+    info!(
+        "{} functions, {} calls, laid out in {:.2?}",
+        explorer.map().tiles.len(),
+        graph.calls.len(),
+        explorer.laid_out()
+    );
     for index in 0..explorer.map().tiles.len() {
         let Some(at) = explorer.tile_point(index) else {
             continue;
@@ -394,10 +402,32 @@ fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>) {
     }
 }
 
+/// The share of a frame the graph's simulation may take while it settles.
+const SIMULATION_BUDGET: Duration = Duration::from_millis(6);
+
 /// Lets the graph settle, moving its nodes as it does.
-fn simulate(mut explorer: ResMut<Explorer>, mut nodes: Query<(&Tile, &mut Transform)>) {
-    if !explorer.bypass_change_detection().simulate(2) {
+fn simulate(
+    mut explorer: ResMut<Explorer>,
+    mut nodes: Query<(&Tile, &mut Transform)>,
+    time: Res<Time<Real>>,
+    mut settling: Local<Option<(u32, f32)>>,
+) {
+    if !explorer
+        .bypass_change_detection()
+        .simulate(SIMULATION_BUDGET)
+    {
         return;
+    }
+    // How many frames settling takes, and how long, as a measure of its frame rate.
+    let (frames, since) = settling.get_or_insert((0, time.elapsed_secs()));
+    *frames += 1;
+    if !explorer.settling() {
+        let seconds = time.elapsed_secs() - *since;
+        info!(
+            "settled after {frames} frames in {seconds:.2} s ({:.0} fps)",
+            *frames as f32 / seconds.max(0.001)
+        );
+        *settling = None;
     }
     for (tile, mut transform) in &mut nodes {
         if let Some(at) = explorer.tile_point(tile.0) {

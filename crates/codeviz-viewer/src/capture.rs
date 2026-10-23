@@ -223,6 +223,10 @@ fn capture(
     state.started.get_or_insert(now);
     match state.requested_at {
         None if state.ready(now) => {
+            info!(
+                "frame time at capture: {:.1} ms",
+                time.delta_secs() * 1000.0
+            );
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk(state.path.clone()));

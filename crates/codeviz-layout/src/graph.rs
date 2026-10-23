@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use codeviz_core::System;
 use codeviz_ir::UnitId;
 
-use crate::CodebaseMap;
+use crate::{CodebaseMap, repulsion};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ForceConfig {
@@ -73,7 +73,29 @@ pub struct ForceGraph {
     pub ghosts: Vec<(usize, usize)>,
     /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
     sequences: Vec<Vec<usize>>,
+    /// Per tile, the tiles that call it and the tiles it calls, each sorted, from
+    /// [`Self::calls`].
+    callers: Vec<Vec<usize>>,
+    callees: Vec<Vec<usize>>,
+    /// Per tile, how many links touch it.
+    degrees: Vec<usize>,
     config: ForceConfig,
+    /// Steps taken under this config, which cool the simulation as they add up.
+    age: usize,
+}
+
+/// The furthest a node moves in one step.
+const MAX_STEP: f32 = 2.0;
+/// Steps that run at full speed; small graphs settle well within them.
+const WARM_STEPS: usize = 600;
+/// How much of its reach a step keeps from the one before, once cooling.
+const COOLING: f32 = 0.995;
+
+/// The share of [`MAX_STEP`] a node may move at this age: all of it at first, then
+/// less each step, so even a graph too big to find its balance stops.
+fn cooling(age: usize) -> f32 {
+    let cooled = age.saturating_sub(WARM_STEPS);
+    COOLING.powi(i32::try_from(cooled).unwrap_or(i32::MAX))
 }
 
 /// Where a call is written: line, column, then declaration order as a tiebreak.
@@ -153,7 +175,12 @@ impl ForceGraph {
             .iter()
             .map(|tile| seed(tile.unit.as_str(), radius))
             .collect();
-        Self {
+        let mut degrees = vec![0; map.tiles.len()];
+        for &(a, b) in &links {
+            degrees[a] += 1;
+            degrees[b] += 1;
+        }
+        let mut graph = Self {
             velocities: vec![[0.0; 3]; map.tiles.len()],
             groups: map.tiles.iter().map(|t| t.group).collect(),
             clusters,
@@ -163,7 +190,25 @@ impl ForceGraph {
             calls,
             ghosts: Vec::new(),
             sequences,
+            callers: Vec::new(),
+            callees: Vec::new(),
+            degrees,
             config,
+            age: 0,
+        };
+        graph.index_calls();
+        graph
+    }
+
+    /// Lists each tile's callers and callees from [`Self::calls`].
+    fn index_calls(&mut self) {
+        let count = self.positions.len();
+        self.callers = vec![Vec::new(); count];
+        self.callees = vec![Vec::new(); count];
+        // `calls` is sorted, so each list comes out sorted.
+        for &(from, to) in &self.calls {
+            self.callees[from].push(to);
+            self.callers[to].push(from);
         }
     }
 
@@ -177,11 +222,13 @@ impl ForceGraph {
         for (from, sequence) in self.sequences.iter_mut().enumerate() {
             sequence.retain(|&to| !gone.contains(&(from, to)));
         }
+        self.index_calls();
     }
 
     /// Changes the forces; the graph moves until it settles under them.
     pub fn set_config(&mut self, config: ForceConfig) {
         self.config = config;
+        self.age = 0;
     }
 
     /// The tiles `tile` calls, in the order the calls are written, repeats kept.
@@ -194,33 +241,9 @@ impl ForceGraph {
     #[must_use]
     pub fn reach(&self, tile: usize) -> Reach {
         Reach {
-            upstream: self.walk(tile, |(caller, callee)| (callee, caller)),
-            downstream: self.walk(tile, |call| call),
+            upstream: walk(&self.callers, tile),
+            downstream: walk(&self.callees, tile),
         }
-    }
-
-    /// Breadth-first from `start` along calls turned `(from, to)` by `direction`.
-    fn walk(
-        &self,
-        start: usize,
-        direction: impl Fn((usize, usize)) -> (usize, usize),
-    ) -> HashMap<usize, u32> {
-        let mut next: HashMap<usize, Vec<usize>> = HashMap::new();
-        for &call in &self.calls {
-            let (from, to) = direction(call);
-            next.entry(from).or_default().push(to);
-        }
-        let mut found = HashMap::new();
-        let mut queue = VecDeque::from([(start, 0)]);
-        while let Some((tile, hops)) = queue.pop_front() {
-            for &to in next.get(&tile).into_iter().flatten() {
-                if to != start && !found.contains_key(&to) {
-                    found.insert(to, hops + 1);
-                    queue.push_back((to, hops + 1));
-                }
-            }
-        }
-        found
     }
 
     /// The module cluster a tile pulls into.
@@ -269,23 +292,20 @@ impl ForceGraph {
         stats
     }
 
-    /// Tiles that call `tile`.
+    /// Tiles that call `tile`, in order.
     pub fn callers(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
-        self.calls.iter().filter(move |c| c.1 == tile).map(|c| c.0)
+        self.callers.get(tile).into_iter().flatten().copied()
     }
 
-    /// Tiles `tile` calls.
+    /// Tiles `tile` calls, in order.
     pub fn callees(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
-        self.calls.iter().filter(move |c| c.0 == tile).map(|c| c.1)
+        self.callees.get(tile).into_iter().flatten().copied()
     }
 
     /// How many links touch `tile`.
     #[must_use]
     pub fn degree(&self, tile: usize) -> usize {
-        self.links
-            .iter()
-            .filter(|(a, b)| *a == tile || *b == tile)
-            .count()
+        self.degrees.get(tile).copied().unwrap_or_default()
     }
 
     /// Whether `a` and `b` are linked.
@@ -302,17 +322,7 @@ impl ForceGraph {
             return 0.0;
         }
         let config = self.config;
-        let mut forces = vec![[0.0_f32; 3]; count];
-
-        for i in 0..count {
-            for j in (i + 1)..count {
-                let delta = sub(self.positions[i], self.positions[j]);
-                let distance_sq = dot(delta, delta).max(0.01);
-                let push = scale(delta, config.repulsion / (distance_sq * distance_sq.sqrt()));
-                forces[i] = add(forces[i], push);
-                forces[j] = sub(forces[j], push);
-            }
-        }
+        let mut forces = repulsion::forces(&self.positions, config.repulsion);
         for &(a, b) in &self.links {
             let delta = sub(self.positions[b], self.positions[a]);
             let distance = dot(delta, delta).sqrt().max(0.01);
@@ -388,20 +398,23 @@ impl ForceGraph {
             force[2] -= position[2] * config.flatten;
         }
 
+        // Keep any one step small so a crowded start cannot fling nodes away, and
+        // smaller still the longer it runs, so a big graph comes to rest.
+        let limit = MAX_STEP * cooling(self.age);
+        self.age += 1;
         let mut speed = 0.0;
         let moving = self.velocities.iter_mut().zip(&mut self.positions);
         for ((velocity_slot, position), force) in moving.zip(&forces) {
             let velocity = scale(add(*velocity_slot, *force), config.damping);
-            // Keep any one step small so a crowded start cannot fling nodes away.
             let length = dot(velocity, velocity).sqrt();
-            let velocity = if length > 2.0 {
-                scale(velocity, 2.0 / length)
+            let velocity = if length > limit {
+                scale(velocity, limit / length)
             } else {
                 velocity
             };
             *velocity_slot = velocity;
             *position = add(*position, velocity);
-            speed += length.min(2.0);
+            speed += length.min(limit);
         }
         speed / count as f32
     }
@@ -421,19 +434,34 @@ fn seed(key: &str, radius: f32) -> [f32; 3] {
     [r * ring * angle.cos(), r * z, r * ring * angle.sin()]
 }
 
-fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+/// Breadth-first from `start` along `next`, each tile with the fewest steps to it.
+fn walk(next: &[Vec<usize>], start: usize) -> HashMap<usize, u32> {
+    let mut found = HashMap::new();
+    let mut queue = VecDeque::from([(start, 0)]);
+    while let Some((tile, hops)) = queue.pop_front() {
+        for &to in next.get(tile).into_iter().flatten() {
+            if to != start && !found.contains_key(&to) {
+                found.insert(to, hops + 1);
+                queue.push_back((to, hops + 1));
+            }
+        }
+    }
+    found
+}
+
+pub(crate) fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+pub(crate) fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
+pub(crate) fn scale(a: [f32; 3], s: f32) -> [f32; 3] {
     [a[0] * s, a[1] * s, a[2] * s]
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(crate) fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
@@ -543,6 +571,50 @@ mod tests {
             stats.iter().map(|s| s.internal + s.outgoing).sum::<usize>(),
             2
         );
+    }
+
+    /// `count` functions, each calling the next.
+    fn chain(count: usize) -> System {
+        let units: Vec<String> = (0..count)
+            .map(|i| {
+                format!(
+                    r#"{{ "id": "x:f{i}", "name": "f{i}", "kind": "fn", "role": "invocable",
+                      "calls": [{{ "key": "c", "text": "f", "targets": [{{ "unit": "x:f{}", "certainty": "exact" }}] }}] }}"#,
+                    (i + 1) % count
+                )
+            })
+            .collect();
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        System::new([Document::from_json(&json).unwrap()])
+    }
+
+    #[test]
+    fn a_big_graph_settles_the_same_way_every_time() {
+        let system = chain(900);
+        let map = map(&system, &MapConfig::default());
+        let settle = || {
+            let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
+            for _ in 0..20 {
+                graph.step();
+            }
+            graph.positions
+        };
+        assert_eq!(settle(), settle());
+    }
+
+    #[test]
+    fn a_big_graph_comes_to_rest() {
+        let system = chain(500);
+        let map = map(&system, &MapConfig::default());
+        let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
+        let mut steps = 0;
+        while graph.step() > 0.002 {
+            steps += 1;
+            assert!(steps < 3000, "still moving after {steps} steps");
+        }
     }
 
     #[test]
