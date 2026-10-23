@@ -100,7 +100,12 @@ pub(crate) fn show(ui: &mut egui::Ui, old: Option<Side<'_>>, new: Option<Side<'_
                 let response = ui.add(egui::Label::new(row).wrap_mode(egui::TextWrapMode::Extend));
                 if background.is_some() && first_change {
                     first_change = false;
-                    response.scroll_to_me(Some(egui::Align::Center));
+                    // By its left edge, so the line numbers stay in view.
+                    let edge = egui::Rect::from_min_size(
+                        response.rect.min,
+                        egui::vec2(1.0, response.rect.height()),
+                    );
+                    ui.scroll_to_rect(edge, Some(egui::Align::Center));
                 }
             }
         });
