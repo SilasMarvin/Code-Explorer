@@ -20,6 +20,8 @@ use crate::{
     lens::{self, Lens},
 };
 
+mod reload;
+
 /// What a disclosure was worked out for: the journeys' revision, the active one, how
 /// it discloses, the spans opened by hand, and the cursor when that matters.
 type DisclosureKey = (u64, usize, Disclose, u64, Option<SpanId>);
@@ -286,6 +288,16 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever a journey is rebuilt.
     revision: u64,
+    /// Where each function has stood in the graph, so one that comes back after an
+    /// edit took it away returns to its place.
+    places: HashMap<UnitId, [f32; 3]>,
+    /// How many times a new version of the codebase was taken in.
+    reloads: u64,
+    /// The node each node became on the last reload, by its number before.
+    renumbered: Vec<Option<usize>>,
+    /// Simulation steps left before the nodes a reload kept are let go, while the new
+    /// ones find their places.
+    holding: usize,
 }
 
 impl Explorer {
@@ -339,6 +351,10 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            places: HashMap::new(),
+            reloads: 0,
+            renumbered: Vec::new(),
+            holding: 0,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -362,6 +378,8 @@ impl Explorer {
     /// Moves every node to a given place, and stops the simulation moving them.
     pub(crate) fn place_nodes(&mut self, positions: &[[f32; 3]]) {
         self.graph.positions.clone_from_slice(positions);
+        self.graph.release();
+        self.holding = 0;
         self.settling = false;
     }
 
@@ -555,13 +573,21 @@ impl Explorer {
         let mut speed = 0.0;
         for _ in 0..steps {
             speed = self.graph.step();
+            if self.holding > 0 {
+                self.holding -= 1;
+                if self.holding == 0 {
+                    self.graph.release();
+                }
+            }
         }
-        self.settling = speed > SETTLED_SPEED;
+        self.settling = self.holding > 0 || speed > SETTLED_SPEED;
         true
     }
 
     /// Runs the simulation until the graph settles, all at once.
     pub(crate) fn settle_now(&mut self) {
+        self.holding = 0;
+        self.graph.release();
         for _ in 0..SETTLE_NOW_STEPS {
             if self.graph.step() < SETTLED_SPEED {
                 break;

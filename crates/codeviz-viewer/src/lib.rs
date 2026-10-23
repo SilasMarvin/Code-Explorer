@@ -18,18 +18,20 @@ mod explorer;
 mod graph_view;
 mod journey_panel;
 mod lens;
+mod live;
 mod scene;
 mod source_diff;
 mod truth;
 mod ui;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::mpsc::Receiver};
 
 use bevy::{prelude::*, window::WindowPlugin};
 use bevy_egui::EguiPlugin;
 use codeviz_core::{Diff, JourneyOptions, System};
 use codeviz_ir::{Document, UnitId};
 
+pub use crate::live::Update;
 use crate::{
     diff_view::{DiffStyle, DiffView},
     explorer::{Autoplay, Clustering, Explorer},
@@ -63,11 +65,15 @@ pub struct Viewer {
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
     diff: Option<Comparison>,
+    /// Where new versions come from, in a live view, and the documents it opened on.
+    updates: Option<(Vec<Document>, Receiver<Update>)>,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
 #[derive(Debug)]
 struct Comparison {
+    /// The older version's documents, as given.
+    documents: Vec<Document>,
     before: System,
     moved: codeviz_core::Moves,
     both: Option<System>,
@@ -97,6 +103,7 @@ impl Viewer {
             depth: None,
             bare: false,
             diff: None,
+            updates: None,
         }
     }
 
@@ -104,11 +111,13 @@ impl Viewer {
     #[must_use]
     pub fn compare(before: Vec<Document>, after: Vec<Document>) -> Self {
         let system = System::new(after.clone());
+        let documents = before.clone();
         // Moved functions take their new ids on both sides.
         let (before, moved) = codeviz_core::align(before, &system);
         let both = System::new(codeviz_core::union(&before, after));
         let mut viewer = Self::new(system);
         viewer.diff = Some(Comparison {
+            documents,
             before: System::new(before),
             moved,
             both: Some(both),
@@ -116,6 +125,15 @@ impl Viewer {
             morph: None,
         });
         viewer
+    }
+
+    /// Keeps the view live: each set of documents `updates` brings replaces what shows,
+    /// in place. `opened` are the documents the viewer opens on, which the first
+    /// update is compared with to say what changed.
+    #[must_use]
+    pub fn live(mut self, opened: Vec<Document>, updates: Receiver<Update>) -> Self {
+        self.updates = Some((opened, updates));
+        self
     }
 
     /// How a diff is drawn: `status`, `impact` or `morph`.
@@ -313,6 +331,10 @@ impl Viewer {
     pub fn run(mut self) -> AppExit {
         let focused = self.focus.is_some();
         let mut explorer = self.explorer();
+        let live = self.updates.take().map(|(opened, updates)| {
+            let before = self.diff.as_ref().map(|d| d.documents.clone());
+            live::Live::new(opened, before, updates)
+        });
         let diff = self.diff.take().map(|comparison| {
             let diff =
                 Diff::between(&comparison.before, explorer.system()).with_moves(comparison.moved);
@@ -358,6 +380,7 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
+            live::LivePlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
@@ -369,6 +392,9 @@ impl Viewer {
         .init_resource::<Autoplay>();
         if let Some(diff) = diff {
             app.insert_resource(diff);
+        }
+        if let Some(live) = live {
+            app.insert_resource(live);
         }
         if let Some(path) = self.screenshot {
             app.add_plugins(capture::CapturePlugin {

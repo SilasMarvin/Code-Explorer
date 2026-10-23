@@ -27,7 +27,7 @@ pub(crate) enum Resolve {
 }
 
 /// What to analyze, and how.
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub(crate) struct Source {
     /// Source language; detected from the directory when omitted.
     #[arg(short, long, value_enum)]
@@ -61,6 +61,17 @@ pub(crate) fn analyze(args: &AnalyzeArgs) -> anyhow::Result<()> {
     write(&document, args.output.as_ref())
 }
 
+impl Source {
+    /// The same, resolving calls from the syntax alone: what a live view reads with, to
+    /// keep up with every save.
+    pub(crate) fn syntax_only(&self) -> Self {
+        Self {
+            resolve: Resolve::Syntax,
+            ..self.clone()
+        }
+    }
+}
+
 /// Analyzes the source under `root`, in the language asked for or the one its files
 /// suggest. rust-analyzer builds into `target_dir` when one is given.
 pub(crate) fn analyze_dir(
@@ -68,14 +79,47 @@ pub(crate) fn analyze_dir(
     source: &Source,
     target_dir: Option<&Path>,
 ) -> anyhow::Result<Document> {
+    Ok(analyze_source(root, source, target_dir)?.document)
+}
+
+/// A document analyzed from source, and the files in it that did not wholly parse,
+/// each with the line where it stops.
+#[derive(Debug)]
+pub(crate) struct Analyzed {
+    pub(crate) document: Document,
+    pub(crate) unparsed: Vec<(PathBuf, usize)>,
+}
+
+/// [`analyze_dir`], also saying which files did not wholly parse.
+pub(crate) fn analyze_source(
+    root: &Path,
+    source: &Source,
+    target_dir: Option<&Path>,
+) -> anyhow::Result<Analyzed> {
     let language = match source.lang {
         Some(language) => language,
         None if root.join("Cargo.toml").exists() => Language::Rust,
         None => Language::Python,
     };
     if language == Language::Python {
-        return Ok(codeviz_python::analyze(root)?);
+        let analysis = codeviz_python::analyze_checked(root)?;
+        return Ok(Analyzed {
+            document: analysis.document,
+            unparsed: analysis
+                .syntax_errors
+                .iter()
+                .map(|e| (e.path.clone(), e.line))
+                .collect(),
+        });
     }
+    let rust = |analysis: codeviz_rust::Analysis| Analyzed {
+        unparsed: analysis
+            .syntax_errors
+            .iter()
+            .map(|e| (e.path.clone(), e.line))
+            .collect(),
+        document: analysis.document,
+    };
     let mut options = codeviz_rust::AnalyzeOptions {
         include_tests: source.include_tests,
         resolver: codeviz_rust::Resolver::Syntax,
@@ -86,7 +130,7 @@ pub(crate) fn analyze_dir(
         Resolve::Auto => codeviz_rust::rust_analyzer_available(),
     };
     if !use_rust_analyzer {
-        return Ok(codeviz_rust::analyze(root, &options)?.document);
+        return Ok(rust(codeviz_rust::analyze(root, &options)?));
     }
     eprintln!("rust-analyzer: resolving calls in {}", root.display());
     let syntax = options.clone();
@@ -94,10 +138,10 @@ pub(crate) fn analyze_dir(
         target_dir: target_dir.map(Path::to_path_buf),
     };
     match codeviz_rust::analyze(root, &options) {
-        Ok(analysis) => Ok(analysis.document),
+        Ok(analysis) => Ok(rust(analysis)),
         Err(error) if source.resolve == Resolve::Auto => {
             eprintln!("rust-analyzer: {error:#}; resolving from the syntax instead");
-            Ok(codeviz_rust::analyze(root, &syntax)?.document)
+            Ok(rust(codeviz_rust::analyze(root, &syntax)?))
         }
         Err(error) => Err(error.into()),
     }

@@ -762,20 +762,25 @@ fn orbit_distance(reach: f32) -> f32 {
 }
 
 /// Swings round to a newly focused node, and keeps it centered while the graph moves.
-/// As more of the journey opens, pulls back to take it in.
+/// As more of the journey opens, pulls back to take it in. A new version of the code
+/// coming in moves nothing: the focus and the journey stay what they were.
 pub(crate) fn follow_focus(
     explorer: Res<Explorer>,
     mut followed: Local<Option<usize>>,
     mut disclosed: Local<Option<Arc<Disclosed>>>,
+    mut reloads: Local<u64>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
     let focus = explorer.graph_focus();
-    let changed = focus != *followed;
+    let reloaded = *reloads != explorer.reloads();
+    *reloads = explorer.reloads();
+    let changed = focus != *followed && !reloaded;
     *followed = focus;
     let disclosure = explorer.disclosure();
-    let opened = disclosed
-        .as_ref()
-        .is_some_and(|d| !Arc::ptr_eq(d, &disclosure));
+    let opened = !reloaded
+        && disclosed
+            .as_ref()
+            .is_some_and(|d| !Arc::ptr_eq(d, &disclosure));
     *disclosed = Some(disclosure);
     for mut camera in &mut cameras {
         if changed {

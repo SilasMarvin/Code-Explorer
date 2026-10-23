@@ -211,6 +211,19 @@ impl DiffView {
         }
     }
 
+    /// Where the graph lays each node out, both versions together.
+    pub(crate) fn shared(&self) -> &[[f32; 3]] {
+        &self.shared
+    }
+
+    /// Takes over how `previous` was being drawn: its style, and where the morph was.
+    pub(crate) fn carry_from(&mut self, previous: &DiffView) {
+        self.style = previous.style;
+        self.morph = previous.morph;
+        self.playing = previous.playing;
+        self.clock = previous.clock;
+    }
+
     /// The version the diff starts from.
     pub(crate) fn old(&self) -> &System {
         &self.old

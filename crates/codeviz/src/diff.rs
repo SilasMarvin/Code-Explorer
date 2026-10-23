@@ -83,7 +83,7 @@ pub(crate) fn run(args: &DiffArgs) -> anyhow::Result<()> {
     if diff.is_empty() {
         eprintln!("{title}: nothing changed");
     }
-    crate::view::open(vec![after], vec![before], &args.display, &title)
+    crate::view::open(vec![after], vec![before], &args.display, &title, None)
 }
 
 /// The revision to compare from, and the one to compare to (the working tree if none).

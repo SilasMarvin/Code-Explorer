@@ -4,6 +4,7 @@ mod diff;
 mod ir;
 mod journey;
 mod view;
+mod watch;
 
 use std::process::ExitCode;
 
@@ -26,7 +27,7 @@ enum Command {
     Journey(journey::JourneyArgs),
     /// Open what changed between two git revisions in the 3D viewer.
     Diff(diff::DiffArgs),
-    /// Open IR documents in the 3D viewer.
+    /// Open IR documents, or source directories, in the 3D viewer; --watch keeps it live.
     View(view::ViewArgs),
     /// Check IR documents against the rules in docs/ir.md.
     Validate(ir::ValidateArgs),

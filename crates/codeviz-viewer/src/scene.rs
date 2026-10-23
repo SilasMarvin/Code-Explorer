@@ -161,14 +161,18 @@ fn on_node_out(out: On<PointerOut>, tiles: Query<&Tile>, mut explorer: ResMut<Ex
     }
 }
 
-/// Stops autoplay when a journey is rebuilt under it.
-fn stop_on_rebuild(
+/// Stops autoplay when a journey is rebuilt under it, but not when a new version of
+/// the code comes in, which keeps the cursor where it was.
+pub(crate) fn stop_on_rebuild(
     explorer: Res<Explorer>,
-    mut built: Local<Option<u64>>,
+    mut built: Local<Option<(u64, u64)>>,
     mut autoplay: ResMut<Autoplay>,
 ) {
-    if *built != Some(explorer.revision()) {
-        *built = Some(explorer.revision());
+    let now = (explorer.revision(), explorer.reloads());
+    if let Some((revision, reloads)) = built.replace(now)
+        && revision != now.0
+        && reloads == now.1
+    {
         autoplay.playing = false;
     }
 }

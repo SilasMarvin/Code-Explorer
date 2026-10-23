@@ -17,6 +17,7 @@ codeviz-python.workspace = true
 codeviz-rust.workspace = true
 codeviz-viewer.workspace = true
 serde_json.workspace = true
+walkdir.workspace = true
 
 [lints]
 workspace = true

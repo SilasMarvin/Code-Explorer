@@ -2389,6 +2389,7 @@ dependencies = [
  "codeviz-rust",
  "codeviz-viewer",
  "serde_json",
+ "walkdir",
 ]
 
 [[package]]

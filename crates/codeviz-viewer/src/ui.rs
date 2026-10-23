@@ -20,6 +20,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{self, Measure, Source},
+    live::{self, Live},
     scene::{PALETTE, accent, lane_color},
     source_diff,
 };
@@ -108,10 +109,18 @@ fn draw_ui(
     mut chrome: ResMut<Chrome>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
+    mut live: Option<ResMut<Live>>,
+    mut reloads: Local<u64>,
     mut cameras: Query<(&mut Camera, &GlobalTransform), With<OrbitCamera>>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    if *reloads != explorer.reloads() {
+        // The code changed under the source shown, and the nodes were renumbered.
+        *reloads = explorer.reloads();
+        sources.0.clear();
+        renumber_labels(ctx, &explorer);
+    }
     let mut root_ui = egui::Ui::new(
         ctx.clone(),
         "codeviz".into(),
@@ -162,6 +171,9 @@ fn draw_ui(
         );
         if let Some(diff) = diff.as_deref_mut().filter(|_| !chrome.bare) {
             diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
+        }
+        if let Some(live) = live.as_deref_mut().filter(|_| !chrome.bare) {
+            live::status_chip(ctx, graph_area, live, time.elapsed_secs());
         }
         if chrome.search && !chrome.bare {
             search_box(
@@ -1101,6 +1113,24 @@ impl<'a> Placer<'a> {
         }
         painter.galley(min, shown.galley.clone(), egui::Color32::WHITE);
     }
+}
+
+/// Moves the labels drawn last frame onto the nodes they named, as numbered after a
+/// reload, so they hold their sides instead of easing in from another node's.
+fn renumber_labels(ctx: &egui::Context, explorer: &Explorer) {
+    ctx.data_mut(|d| {
+        let Some(shown) = d.get_temp::<ShownLabels>(Placer::id()) else {
+            return;
+        };
+        let renumbered: ShownLabels = shown
+            .into_iter()
+            .filter_map(|(key, label)| match key {
+                Named::Node(tile) => Some((Named::Node(explorer.renumbered(tile)?), label)),
+                Named::Group(_) => Some((key, label)),
+            })
+            .collect();
+        d.insert_temp(Placer::id(), renumbered);
+    });
 }
 
 /// What leads a label: text in a color, on a fill when it is a badge.

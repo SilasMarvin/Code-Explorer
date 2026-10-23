@@ -1,21 +1,34 @@
 //! Opens IR documents in the Bevy viewer.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::mpsc::Receiver};
 
 use anyhow::bail;
 use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::Document;
-use codeviz_viewer::Viewer;
+use codeviz_viewer::{Update, Viewer};
+
+use crate::{
+    ir::Source,
+    watch::{self, Input},
+};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ViewArgs {
-    /// IR documents to load; later documents override earlier ones.
-    #[arg(required = true)]
-    documents: Vec<PathBuf>,
+    /// IR documents to load, or directories of source to analyze; later ones override
+    /// earlier ones.
+    #[arg(required = true, value_name = "PATH")]
+    inputs: Vec<PathBuf>,
     /// Compare against these documents, an older version of the same system, and draw
     /// what changed over the graph.
     #[arg(long, value_name = "PATH", num_args = 1..)]
     before: Vec<PathBuf>,
+    /// Keep the view live: read the inputs again whenever they change and update the
+    /// graph in place. Directories are analyzed from the syntax alone, to keep up.
+    /// With --screenshot, waits for the first change before capturing.
+    #[arg(short, long)]
+    watch: bool,
+    #[command(flatten)]
+    source: Source,
     #[command(flatten)]
     display: Display,
 }
@@ -133,33 +146,48 @@ enum ClusterArg {
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
-    let documents = args
-        .documents
+    let inputs: Vec<Input> = args.inputs.iter().map(|path| Input::new(path)).collect();
+    let source = if args.watch {
+        args.source.syntax_only()
+    } else {
+        args.source.clone()
+    };
+    let read = inputs
         .iter()
-        .map(crate::ir::read)
+        .map(|input| input.read(&source))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    for (path, line) in read.iter().flat_map(|r| &r.unparsed) {
+        eprintln!(
+            "warning: {}:{line} does not parse; analyzed what does",
+            path.display()
+        );
+    }
+    let documents = read.iter().map(|r| r.document.clone()).collect();
     let before = args
         .before
         .iter()
         .map(crate::ir::read)
         .collect::<anyhow::Result<Vec<_>>>()?;
     let title = args
-        .documents
+        .inputs
         .iter()
         .filter_map(|p| p.file_stem())
         .map(|s| s.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" + ");
-    open(documents, before, &args.display, &title)
+    let updates = args.watch.then(|| watch::spawn(inputs, source, read));
+    open(documents, before, &args.display, &title, updates)
 }
 
 /// Opens `documents`, diffed against `before` unless it is empty, and blocks until the
-/// window closes.
+/// window closes. With `updates`, the view is live: each new set of documents replaces
+/// `documents` in place.
 pub(crate) fn open(
     documents: Vec<Document>,
     before: Vec<Document>,
     args: &Display,
     title: &str,
+    updates: Option<Receiver<Update>>,
 ) -> anyhow::Result<()> {
     let system = System::new(documents.clone());
     let root = match &args.entry {
@@ -177,6 +205,7 @@ pub(crate) fn open(
         .map(|query| crate::journey::find_one(&system, query))
         .transpose()?;
     let title = format!("codeviz — {title}");
+    let opened = updates.is_some().then(|| documents.clone());
 
     let viewer = if before.is_empty() {
         Viewer::new(system)
@@ -247,6 +276,9 @@ pub(crate) fn open(
     }
     if let Some(keys) = &args.keys {
         viewer = viewer.with_keys(keys).map_err(anyhow::Error::msg)?;
+    }
+    if let (Some(opened), Some(updates)) = (opened, updates) {
+        viewer = viewer.live(opened, updates);
     }
     if viewer.run().is_error() {
         bail!("viewer exited with an error");
