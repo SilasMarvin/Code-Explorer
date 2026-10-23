@@ -1,8 +1,9 @@
 //! `W` writes up what the view shows, as Markdown on the clipboard, to paste into a
 //! pull request, a design doc or a chat thread: the active journey as far as it is
 //! disclosed, in the outcome chosen, numbered as on screen; under a diff, what the
-//! diff changes first, and the journey's changed calls marked. A screenshot run never
-//! touches the clipboard: it logs the text and writes it beside the image instead.
+//! diff changes first, and the journey's changed calls marked. Shift+W copies the
+//! journey as a Mermaid sequence diagram instead. A screenshot run never touches the
+//! clipboard: it logs the text and writes it beside the image instead.
 
 use std::collections::HashMap;
 
@@ -25,10 +26,10 @@ impl Plugin for SharePlugin {
     }
 }
 
-/// Text waiting for the clipboard, and the confirmation showing.
+/// Text waiting for the clipboard with what it is, and the confirmation showing.
 #[derive(Resource, Debug, Default)]
 struct Share {
-    pending: Option<String>,
+    pending: Option<(String, &'static str)>,
     toast: Option<(String, f32)>,
 }
 
@@ -38,9 +39,15 @@ fn share_key(
     diff: Option<Res<DiffView>>,
     mut share: ResMut<Share>,
 ) {
-    if keys.just_pressed(KeyCode::KeyW) {
-        share.pending = Some(write_up(&explorer, diff.as_deref()));
+    if !keys.just_pressed(KeyCode::KeyW) {
+        return;
     }
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    share.pending = Some(if shift {
+        (diagram(&explorer, diff.as_deref()), "a Mermaid diagram")
+    } else {
+        (write_up(&explorer, diff.as_deref()), "Markdown")
+    });
 }
 
 /// Copies what is pending, or in a screenshot run logs it and writes it beside the
@@ -53,7 +60,7 @@ fn deliver(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let now = time.elapsed_secs();
-    if let Some(text) = share.pending.take() {
+    if let Some((text, kind)) = share.pending.take() {
         let lines = text.lines().count();
         let message = if let Some(capture) = capture {
             let path = capture.path().with_extension("copied.md");
@@ -61,10 +68,10 @@ fn deliver(
             if let Err(error) = std::fs::write(&path, &text) {
                 error!("could not write {}: {error}", path.display());
             }
-            format!("Would copy {lines} lines of Markdown (screenshot: written beside it)")
+            format!("Would copy {lines} lines of {kind} (screenshot: written beside it)")
         } else {
             ctx.copy_text(text);
-            format!("Copied {lines} lines of Markdown")
+            format!("Copied {lines} lines of {kind}")
         };
         share.toast = Some((message, now));
     }
@@ -85,7 +92,10 @@ fn deliver(
             ui.set_opacity(fade);
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.label(egui::RichText::new(message).color(egui::Color32::WHITE));
-                ui.label(egui::RichText::new("W writes up the view as Markdown").color(MUTED));
+                ui.label(
+                    egui::RichText::new("W: the view as Markdown · Shift W: as a diagram")
+                        .color(MUTED),
+                );
             });
         });
     ctx.request_repaint();
@@ -104,6 +114,14 @@ pub(crate) fn write_up(explorer: &Explorer, diff: Option<&DiffView>) -> String {
     }
 }
 
+/// The active journey as a Mermaid sequence diagram, fenced to paste as it is.
+pub(crate) fn diagram(explorer: &Explorer, diff: Option<&DiffView>) -> String {
+    story(explorer, diff).map_or_else(
+        || "Nothing to draw: no journey is open.\n".to_owned(),
+        |story| format!("```mermaid\n{}```\n", story.mermaid()),
+    )
+}
+
 /// The active journey as the view tells it.
 fn story(explorer: &Explorer, diff: Option<&DiffView>) -> Option<Story> {
     let journey = explorer.journey()?;
@@ -120,7 +138,7 @@ fn story(explorer: &Explorer, diff: Option<&DiffView>) -> Option<Story> {
         &numbers,
     );
     Some(match diff {
-        Some(view) => story.with_changes(&view.diff().units),
+        Some(view) => story.with_diff(view.diff(), view.old()),
         None => story,
     })
 }
@@ -181,5 +199,11 @@ mod tests {
         );
         assert!(text.contains("\n  - 1.3 `pricing.quote` — "), "{text}");
         assert!(!text.contains("1.3.1"), "depth 2 stops there:\n{text}");
+        let diagram = diagram(&explorer, None);
+        assert!(
+            diagram.starts_with("```mermaid\nsequenceDiagram\n"),
+            "{diagram}"
+        );
+        assert!(diagram.contains(": 1.3 quote"), "{diagram}");
     }
 }

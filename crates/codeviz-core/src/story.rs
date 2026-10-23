@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use codeviz_ir::{Certainty, ExitKind, Mode, UnitId};
 
 use crate::{
-    Change, Condition, Journey, Scenario, Span, SpanId, SpanTarget, StopReason, System,
+    Change, Condition, Diff, Journey, Scenario, Span, SpanId, SpanTarget, StopReason, System,
     display_name,
 };
 
@@ -34,7 +34,8 @@ pub struct Story {
 pub struct Beat {
     /// `2.1`, as the viewer numbers it; empty for the root.
     pub number: String,
-    /// The unit called, if it resolved to exactly one.
+    /// The function called (a closure's, the function that defines it), if the call
+    /// resolved to exactly one.
     pub unit: Option<UnitId>,
     /// `orders.place`: the function with what it belongs to.
     pub name: String,
@@ -43,6 +44,8 @@ pub struct Beat {
     /// What the function belongs to (its module, class or type): `orders`.
     pub home: String,
     pub change: Option<Change>,
+    /// Calls the function made before a diff and no longer makes.
+    pub dropped: Vec<String>,
     /// Branch arms that must be taken in the caller for this call to happen.
     pub conditions: Vec<Condition>,
     /// The call sits in a loop.
@@ -150,16 +153,27 @@ impl Story {
         }
     }
 
-    /// Marks each call with how it changed, by unit.
+    /// Marks each call with how `diff` changed it, and with the calls it no longer
+    /// makes, named as in `before`, the old version.
     #[must_use]
-    pub fn with_changes(mut self, changes: &HashMap<UnitId, Change>) -> Self {
-        fn mark(beat: &mut Beat, changes: &HashMap<UnitId, Change>) {
-            beat.change = beat.unit.as_ref().and_then(|u| changes.get(u)).copied();
+    pub fn with_diff(mut self, diff: &Diff, before: &System) -> Self {
+        fn mark(beat: &mut Beat, diff: &Diff, before: &System) {
+            if let Some(unit) = &beat.unit {
+                beat.change = diff.change(unit);
+                let mut dropped: Vec<String> = diff
+                    .removed_calls
+                    .iter()
+                    .filter(|(from, _)| from == unit)
+                    .map(|(_, to)| display_name(before, to))
+                    .collect();
+                dropped.sort();
+                beat.dropped = dropped;
+            }
             for call in &mut beat.calls {
-                mark(call, changes);
+                mark(call, diff, before);
             }
         }
-        mark(&mut self.root, changes);
+        mark(&mut self.root, diff, before);
         self
     }
 
@@ -314,7 +328,7 @@ impl Teller<'_> {
     fn beat(&self, id: SpanId) -> Beat {
         let span = self.journey.span(id);
         let unit = span.and_then(|s| match &s.target {
-            SpanTarget::Unit(unit) => Some(unit.clone()),
+            SpanTarget::Unit(unit) => Some(self.system.owner(unit).clone()),
             _ => None,
         });
         let (name, short, home) = match span.map(|s| &s.target) {
@@ -364,6 +378,7 @@ impl Teller<'_> {
             short,
             home,
             change: None,
+            dropped: Vec::new(),
             conditions: self.conditions(id),
             repeats: self.through(id).any(|s| s.repeats),
             mode: span.map_or(Mode::Call, |s| s.mode),

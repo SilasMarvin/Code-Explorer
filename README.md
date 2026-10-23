@@ -18,6 +18,7 @@ codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz journey app.json -e 'POST /users/{id}/orders' --format md --depth 2   # to paste
 codeviz journey app.json -e 'POST /users/{id}/orders' --format mermaid        # a diagram
+codeviz journey new.json --before old.json -e 'POST /users' --format md   # what changed in it
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
 codeviz diff main...HEAD             # a branch as its pull request shows it
@@ -48,7 +49,8 @@ journey (`L` switches), measured in calls, distance in the graph, or a blend of 
 everything, two steps and one. In the journey, `←`/`→` move between calls by the same
 caller, `↓`/`↑` go in and out, `[`/`]` step through time. `/` searches for a function,
 `S` opens the side panel (the view's settings, outcomes, source and details), `W`
-copies the journey as Markdown (see [Sharing](#sharing)), `H` lists every key.
+copies the journey as Markdown and Shift+W as a diagram (see [Sharing](#sharing)), `H`
+lists every key.
 
 ## Diffs
 
@@ -105,7 +107,8 @@ many calls under it are not shown (`+3 calls`).
 `--format mermaid` writes the same journey as a sequence diagram for a ` ```mermaid `
 block, which GitHub draws: one participant per module or type, the calls numbered as in
 the outline, calls that need a branch arm in `opt` and `alt` blocks, loops in `loop`,
-and failures as crossed arrows back to the caller. This is `--depth 3`:
+and failures as crossed arrows back to the caller; Shift+W copies it from the viewer.
+This is `--depth 3`:
 
 ```mermaid
 sequenceDiagram
@@ -147,7 +150,10 @@ sequenceDiagram
     deactivate handlers
 ```
 
-`codeviz diff REVS --summary md` writes what a pull request changes, structurally: the
+`--before old.json` marks what changed since an older version, `new`, `rewritten` or
+`no longer calls …`, and starts the Markdown with what changed overall: the flow as a
+pull request leaves it. `codeviz diff REVS --summary md` writes that part alone, what a
+pull request changes, structurally: the
 changed functions grouped by module, the calls existing code gained or lost (calls
 inside new functions are only counted), and the entry points that can reach a change,
 nearest first. A screenshot run never touches the clipboard: `W` logs the text and

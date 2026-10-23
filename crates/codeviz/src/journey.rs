@@ -4,8 +4,8 @@ use std::{fmt::Write as _, io::Write as _, path::PathBuf};
 
 use anyhow::{Context, bail};
 use codeviz_core::{
-    Journey, JourneyOptions, Level, Scenario, Story, System, Zoom, depth_to_fit, describe_scenario,
-    number_calls, outline, scenarios,
+    Diff, Journey, JourneyOptions, Level, Scenario, Story, System, Zoom, align, depth_to_fit,
+    describe_scenario, number_calls, outline, scenarios,
 };
 use codeviz_ir::UnitId;
 
@@ -40,6 +40,10 @@ pub(crate) struct JourneyArgs {
     /// them, or as many as fit in 40 calls.
     #[arg(long)]
     depth: Option<u32>,
+    /// An older version of the documents: `md` and `mermaid` mark the calls that
+    /// changed since, and `md` begins with what changed.
+    #[arg(long, value_name = "DOCUMENT")]
+    before: Vec<PathBuf>,
 }
 
 /// Calls a told journey shows when no depth is asked for: about what a reader takes in.
@@ -133,10 +137,35 @@ fn tell(
         .unwrap_or_else(|| depth_to_fit(system, &journey, TOLD_CALLS));
     let numbers = number_calls(system, &journey, depth);
     let story = Story::new(system, &journey, scenarios, Some(index), &numbers);
+    let Some((diff, old)) = changes(system, &args.before)? else {
+        return Ok(match args.format {
+            Format::Mermaid => story.mermaid(),
+            Format::Md | Format::Text => story.markdown(),
+        });
+    };
+    let story = story.with_diff(&diff, &old);
     Ok(match args.format {
         Format::Mermaid => story.mermaid(),
-        Format::Md | Format::Text => story.markdown(),
+        Format::Md | Format::Text => {
+            format!("{}\n{}", diff.markdown(&old, system), story.markdown())
+        }
     })
+}
+
+/// What changed since the documents in `before`, with the old version aligned to the
+/// new; `None` when there are none.
+fn changes(system: &System, before: &[PathBuf]) -> anyhow::Result<Option<(Diff, System)>> {
+    if before.is_empty() {
+        return Ok(None);
+    }
+    let documents = before
+        .iter()
+        .map(crate::ir::read)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let (aligned, moved) = align(documents, system);
+    let old = System::new(aligned);
+    let diff = Diff::between(&old, system).with_moves(moved);
+    Ok(Some((diff, old)))
 }
 
 /// The journey from `entry` the arguments ask for.

@@ -239,6 +239,10 @@ impl Body<'_> {
         };
         let label = format!("{} {}{}", beat.number, beat.short, remarks(beat));
         self.line(depth, &format!("{caller}{arrow}{lane}: {}", text(&label)));
+        if !beat.dropped.is_empty() {
+            let gone = format!("no longer calls {}", beat.dropped.join(", "));
+            self.line(depth, &format!("Note right of {lane}: {}", text(&gone)));
+        }
         if !beat.calls.is_empty() {
             self.line(depth, &format!("activate {lane}"));
             self.calls(&lane, &beat.calls, depth);
@@ -375,6 +379,7 @@ mod tests {
             short: String::new(),
             home: home.to_owned(),
             change: None,
+            dropped: Vec::new(),
             conditions: Vec::new(),
             repeats: false,
             mode: Mode::Call,

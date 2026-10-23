@@ -168,6 +168,7 @@ enum Line<'a> {
     Participant(&'a str),
     Message(&'a str, &'a str, &'a str),
     Activate(&'a str),
+    Note(&'a str),
     Deactivate(&'a str),
     Open(&'a str),
     Else,
@@ -187,6 +188,11 @@ fn parse(line: &str) -> Option<Line<'_>> {
         "activate" => Some(Line::Activate(line.strip_prefix("activate ")?)),
         "deactivate" => Some(Line::Deactivate(line.strip_prefix("deactivate ")?)),
         "opt" | "alt" | "loop" => Some(Line::Open(word)),
+        "Note" => {
+            let (place, text) = line.split_once(": ")?;
+            let id = place.strip_prefix("Note right of ")?;
+            (!text.is_empty()).then_some(Line::Note(id))
+        }
         "else" => Some(Line::Else),
         "end" => Some(Line::End),
         _ => {
@@ -252,6 +258,10 @@ fn check(diagram: &str) -> Result<(), String> {
                     }
                 }
             }
+            Line::Note(id) if !participants.contains(&id) => {
+                return Err(format!("note on undeclared {id}"));
+            }
+            Line::Note(_) => {}
             Line::Activate(id) => *active.entry(id).or_default() += 1,
             Line::Deactivate(id) => {
                 let count = active.entry(id).or_default();
@@ -424,5 +434,31 @@ fn every_path_at_once_still_says_where_calls_fail() {
             .beats()
             .any(|b| b.short == "__init__" && !b.conditions.is_empty()),
         "a call only the failing arm makes shows, with its condition:\n{markdown}"
+    );
+}
+
+#[test]
+fn a_diff_marks_changed_calls_and_the_calls_they_dropped() {
+    let after = demo("axum-server-next");
+    let (before, moved) = align(vec![document("axum-server")], &after);
+    let before = System::new(before);
+    let diff = Diff::between(&before, &after).with_moves(moved);
+    let story = tell(&after, "POST /users/{id}/orders", 0, u32::MAX).with_diff(&diff, &before);
+    let markdown = story.markdown();
+    assert!(
+        markdown.contains(
+            "- 1.3.2 `pricing.apply_discount` — rewritten, no longer calls `pricing.bulk_discount`\n"
+        ),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("- 1.5 `audit.record` — new\n"),
+        "{markdown}"
+    );
+    let diagram = story.mermaid();
+    check(&diagram).unwrap();
+    assert!(
+        diagram.contains("Note right of pricing: no longer calls pricing.bulk_discount"),
+        "{diagram}"
     );
 }

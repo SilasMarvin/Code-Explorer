@@ -1617,6 +1617,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ),
             ("X", "close the journey"),
             ("W", "copy it as Markdown (under a diff, the changes too)"),
+            ("Shift W", "copy it as a Mermaid diagram"),
         ],
     ),
     (

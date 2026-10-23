@@ -100,6 +100,10 @@ fn notes(beat: &Beat) -> String {
         .map(str::to_owned)
         .into_iter()
         .collect();
+    if !beat.dropped.is_empty() {
+        let names: Vec<String> = beat.dropped.iter().map(|n| code(n)).collect();
+        notes.push(format!("no longer calls {}", names.join(", ")));
+    }
     match beat.mode {
         Mode::Spawn => notes.push("in the background".to_owned()),
         Mode::Register => notes.push("handed off, runs later".to_owned()),
