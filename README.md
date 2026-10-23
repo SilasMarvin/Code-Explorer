@@ -132,3 +132,10 @@ dropped either way. `analyze` and `diff` print how many call sites resolved exac
 many by a guess, and how many not at all, and warn when rust-analyzer is missing or
 fails. `diff` analyzes its two sides one after the other under rust-analyzer (two at
 once save little and need over a gigabyte more), side by side otherwise.
+
+`eval/resolution/compare.py` measures one resolution against another, per call site:
+analyze the same source with `--resolve syntax` and `--resolve rust-analyzer` and it
+prints the syntax's precision and recall, by certainty, and the functions with the most
+callers in each. On this repository the syntax gets 99.4% of its edges right and finds
+98.5% of rust-analyzer's; on egui and clap_builder, 98% and 95% right, finding 93% and
+88%.
