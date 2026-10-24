@@ -51,9 +51,9 @@ function, `S` opens the side panel (the view's settings, outcomes, source and de
 `H` lists every key, and `Esc` closes whichever of those is on top, or the spotlight.
 
 Every move, opening a node, a numbered call, a search result, a change, an outcome or
-a new start, is remembered: `Backspace` or `Alt+←` (or `‹` in the top bar) goes back
-to the view before it, cursor, outcome, depth, opened calls and spotlight included, and
-`Alt+→` forward again. The camera orbits where the journey starts and turns only when
+a new start, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
+before it, cursor, outcome, depth, opened calls and spotlight included, and
+`Shift+Backspace` (or `›`) forward again. The camera orbits where the journey starts and turns only when
 you move somewhere; stepping through the journey at most pulls it back to keep the
 cursor's node in sight. Pan or zoom and it stays where you put it, saying `camera free
 · F to follow` until `F` brings it back.

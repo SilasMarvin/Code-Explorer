@@ -29,16 +29,15 @@ const AFTER_KEYS_TIME: Duration = Duration::from_millis(1500);
 /// Frames to wait after capture so the file write completes.
 const DRAIN_FRAMES: u32 = 30;
 
-/// A key to press, with shift or alt held or not.
+/// A key to press, with shift held or not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Press {
     key: KeyCode,
     shift: bool,
-    alt: bool,
 }
 
 /// Keys named in words.
-const NAMED: [(&str, KeyCode); 17] = [
+const NAMED: [(&str, KeyCode); 15] = [
     ("up", KeyCode::ArrowUp),
     ("down", KeyCode::ArrowDown),
     ("left", KeyCode::ArrowLeft),
@@ -48,8 +47,6 @@ const NAMED: [(&str, KeyCode); 17] = [
     ("escape", KeyCode::Escape),
     ("space", KeyCode::Space),
     ("tab", KeyCode::Tab),
-    ("home", KeyCode::Home),
-    ("end", KeyCode::End),
     ("backspace", KeyCode::Backspace),
     ("comma", KeyCode::Comma),
     ("period", KeyCode::Period),
@@ -106,21 +103,13 @@ const TYPED: [(char, KeyCode); 43] = [
 ];
 
 impl Press {
-    /// Reads a key as `o`, `.`, `up`, `enter`, `shift+]` or `alt+left`.
+    /// Reads a key as `o`, `.`, `up`, `enter` or `shift+]`.
     pub(crate) fn parse(text: &str) -> Option<Self> {
-        let mut name = text.to_lowercase();
-        let (mut shift, mut alt) = (false, false);
-        loop {
-            if let Some(rest) = name.strip_prefix("shift+") {
-                shift = true;
-                name = rest.to_owned();
-            } else if let Some(rest) = name.strip_prefix("alt+") {
-                alt = true;
-                name = rest.to_owned();
-            } else {
-                break;
-            }
-        }
+        let text = text.to_lowercase();
+        let (shift, name) = match text.strip_prefix("shift+") {
+            Some(rest) => (true, rest),
+            None => (false, text.as_str()),
+        };
         let named = NAMED.iter().find(|(n, _)| *n == name).map(|&(_, key)| key);
         let key = named.or_else(|| {
             let mut chars = name.chars();
@@ -129,15 +118,12 @@ impl Press {
             };
             TYPED.iter().find(|(t, _)| *t == c).map(|&(_, key)| key)
         })?;
-        Some(Self { key, shift, alt })
+        Some(Self { key, shift })
     }
 
     /// The modifiers, each with whether it is held.
-    fn modifiers(self) -> [(bool, KeyCode, Key); 2] {
-        [
-            (self.shift, KeyCode::ShiftLeft, Key::Shift),
-            (self.alt, KeyCode::AltLeft, Key::Alt),
-        ]
+    fn modifiers(self) -> [(bool, KeyCode, Key); 1] {
+        [(self.shift, KeyCode::ShiftLeft, Key::Shift)]
     }
 
     /// The key as the keyboard layout reads it, and the text it types.
@@ -155,8 +141,6 @@ impl Press {
             KeyCode::Escape => Key::Escape,
             KeyCode::Space => return (Key::Space, Some(" ".to_owned())),
             KeyCode::Tab => Key::Tab,
-            KeyCode::Home => Key::Home,
-            KeyCode::End => Key::End,
             _ => Key::Backspace,
         };
         (key, None)
@@ -307,15 +291,16 @@ mod tests {
 
     #[test]
     fn reads_keys_as_written() {
-        let press = |text| Press::parse(text).map(|p| (p.key, p.shift, p.alt));
-        assert_eq!(press("o"), Some((KeyCode::KeyO, false, false)));
-        assert_eq!(press("I"), Some((KeyCode::KeyI, false, false)));
-        assert_eq!(press("."), Some((KeyCode::Period, false, false)));
-        assert_eq!(press("period"), Some((KeyCode::Period, false, false)));
-        assert_eq!(press("3"), Some((KeyCode::Digit3, false, false)));
-        assert_eq!(press("shift+]"), Some((KeyCode::BracketRight, true, false)));
-        assert_eq!(press("alt+left"), Some((KeyCode::ArrowLeft, false, true)));
-        assert_eq!(press("up"), Some((KeyCode::ArrowUp, false, false)));
+        let press = |text| Press::parse(text).map(|p| (p.key, p.shift));
+        assert_eq!(press("o"), Some((KeyCode::KeyO, false)));
+        assert_eq!(press("I"), Some((KeyCode::KeyI, false)));
+        assert_eq!(press("."), Some((KeyCode::Period, false)));
+        assert_eq!(press("period"), Some((KeyCode::Period, false)));
+        assert_eq!(press("3"), Some((KeyCode::Digit3, false)));
+        assert_eq!(press("shift+]"), Some((KeyCode::BracketRight, true)));
+        assert_eq!(press("shift+backspace"), Some((KeyCode::Backspace, true)));
+        assert_eq!(press("up"), Some((KeyCode::ArrowUp, false)));
+        assert_eq!(press("alt+left"), None, "no key takes alt");
         assert_eq!(press("oops"), None);
         assert_eq!(
             Press::parse("i").map(Press::logical),

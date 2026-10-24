@@ -1070,8 +1070,6 @@ impl Explorer {
             Step::Back => current.index().checked_sub(1).and_then(nth),
             Step::Over => after(current),
             Step::Out => span.parent.and_then(after).or(span.parent),
-            Step::Start => Some(journey.root()),
-            Step::End => journey.spans().last().map(|(id, _)| id),
             Step::Next => journey
                 .spans()
                 .skip(current.index() + 1)
@@ -1113,9 +1111,6 @@ pub(crate) enum Step {
     Out,
     /// The previous call in time.
     Back,
-    Start,
-    /// The last call in time.
-    End,
     /// The next call made by the same caller.
     Next,
     /// The previous call made by the same caller.

@@ -166,11 +166,7 @@ const DIGITS: [KeyCode; 9] = [
 /// The arrows walk the journey's call tree: left and right between the calls one
 /// caller makes, down into a call, up to its caller. The brackets step through time
 /// one call at a time, the way the journey actually runs.
-fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool, alt: bool) -> Option<Step> {
-    // With alt, the arrows go back and forward through where the view has been.
-    if alt {
-        return None;
-    }
+fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
     // With shift, ] steps over a call and ↑ steps out of it, as a debugger does.
     if shift && keys.just_pressed(KeyCode::BracketRight) {
         return Some(Step::Over);
@@ -185,26 +181,25 @@ fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool, alt: bool) -> Option<S
         (KeyCode::ArrowUp, Step::Parent),
         (KeyCode::BracketRight, Step::Into),
         (KeyCode::BracketLeft, Step::Back),
-        (KeyCode::Home, Step::Start),
-        (KeyCode::End, Step::End),
     ]
     .into_iter()
     .find(|&(key, _)| keys.just_pressed(key))
     .map(|(_, step)| step)
 }
 
-/// The graph's keys: digits open the call numbered so on screen, Backspace or Alt+←
-/// go back to the view before and Alt+→ forward again. Q, - and = narrow and widen
+/// The graph's keys: digits open the call numbered so on screen, Backspace goes back
+/// to the view before and Shift+Backspace forward again. Q, - and = narrow and widen
 /// what shows, L picks what it shows around and G how it measures nearness.
-fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, alt: bool) {
+fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
     if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key)) {
         explorer.open_numbered(index + 1);
     }
-    if keys.just_pressed(KeyCode::Backspace) || alt && keys.just_pressed(KeyCode::ArrowLeft) {
-        explorer.go_back();
-    }
-    if alt && keys.just_pressed(KeyCode::ArrowRight) {
-        explorer.go_forward();
+    if keys.just_pressed(KeyCode::Backspace) {
+        if shift {
+            explorer.go_forward();
+        } else {
+            explorer.go_back();
+        }
     }
     let lens = explorer.lens();
     let lens = if keys.just_pressed(KeyCode::KeyQ) {
@@ -278,12 +273,11 @@ fn keyboard(
     mut chrome: ResMut<Chrome>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-    if let Some(step) = journey_step(&keys, shift, alt) {
+    if let Some(step) = journey_step(&keys, shift) {
         autoplay.playing = false;
         explorer.step(step);
     }
-    graph_navigation(&keys, &mut explorer, alt);
+    graph_navigation(&keys, &mut explorer, shift);
     if keys.just_pressed(KeyCode::Escape) {
         close_topmost(&mut explorer, &mut help, &mut chrome);
     }

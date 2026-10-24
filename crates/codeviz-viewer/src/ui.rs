@@ -378,14 +378,14 @@ fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2, bright: bool) 
 fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if ui
         .add_enabled(explorer.can_go_back(), egui::Button::new("‹").small())
-        .on_hover_text("Back to the view before (Backspace, Alt+←)")
+        .on_hover_text("Back to the view before (Backspace)")
         .clicked()
     {
         explorer.go_back();
     }
     if ui
         .add_enabled(explorer.can_go_forward(), egui::Button::new("›").small())
-        .on_hover_text("Forward again (Alt+→)")
+        .on_hover_text("Forward again (Shift+Backspace)")
         .clicked()
     {
         explorer.go_forward();
@@ -817,7 +817,7 @@ fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
         }
         if ui
             .add_enabled(explorer.can_go_back(), egui::Button::new("Back"))
-            .on_hover_text("The view before (Backspace, Alt+←)")
+            .on_hover_text("The view before (Backspace)")
             .clicked()
         {
             explorer.go_back();
@@ -1666,7 +1666,6 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("[  ]", "back / forward one call in time"),
             ("Shift ]", "step over this call's calls"),
             ("Shift ↑", "step out to what runs after its caller"),
-            ("Home  End", "first / last call"),
             (",  .", "show a level less / more of it"),
             ("V", "show calls by level / as the cursor reaches them"),
             ("Space", "play"),
@@ -1679,8 +1678,8 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("I", "pick out what calls the focus, and show it all"),
             ("O", "pick out what the focus calls, and show it all"),
             ("1 – 9", "open the call with that number"),
-            ("Backspace  Alt ←", "back to the view before"),
-            ("Alt →", "forward again"),
+            ("Backspace", "back to the view before"),
+            ("Shift Backspace", "forward again"),
             ("Esc", "close search, this list, the spotlight, the panel"),
             ("- / =", "show less / more around the start"),
             ("Q", "show all → 2 steps → 1 step"),
