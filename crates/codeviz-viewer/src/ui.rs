@@ -1682,7 +1682,6 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("Shift Backspace", "forward again"),
             ("Esc", "close search, this list, the spotlight, the panel"),
             ("- / =", "show less / more around the start"),
-            ("Q", "show all → 2 steps → 1 step"),
             ("L", "reveal around: focus → changes → journey"),
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),

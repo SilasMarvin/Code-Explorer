@@ -188,7 +188,7 @@ fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
 }
 
 /// The graph's keys: digits open the call numbered so on screen, Backspace goes back
-/// to the view before and Shift+Backspace forward again. Q, - and = narrow and widen
+/// to the view before and Shift+Backspace forward again. - and = narrow and widen
 /// what shows, L picks what it shows around and G how it measures nearness.
 fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
     if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key)) {
@@ -202,15 +202,7 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
         }
     }
     let lens = explorer.lens();
-    let lens = if keys.just_pressed(KeyCode::KeyQ) {
-        // Everything, then two steps out, then one.
-        let reach = match lens.reach {
-            None => Some(2),
-            Some(2) => Some(1),
-            Some(_) => None,
-        };
-        Lens { reach, ..lens }
-    } else if keys.just_pressed(KeyCode::Minus) {
+    let lens = if keys.just_pressed(KeyCode::Minus) {
         lens.narrower()
     } else if keys.just_pressed(KeyCode::Equal) {
         lens.wider()
