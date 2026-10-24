@@ -598,6 +598,12 @@ fn canvas(
         }
     }
 
+    // With the focus on a node off the journey, the journey steps back behind it; the
+    // cursor still shows where an arrow key returns to.
+    if explorer.aside().is_some() {
+        painter.rect_filled(content, 0.0, egui::Color32::from_black_alpha(140));
+    }
+
     let mut cursor_rect = None;
     if let Some(rect) = cursor.and_then(rect_of) {
         painter.line_segment(

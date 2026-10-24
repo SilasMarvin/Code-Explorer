@@ -24,11 +24,11 @@ codeviz diff v1..v2 --summary        # print the changes instead
 ```
 
 The codebase floats as a graph, one node per function, each module gathered in its own
-ring. Click a node and the camera orbits it, and its journey opens docked as a flame
-graph: what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
+ring. The journey is what you follow: a flame graph, docked, of everything its root
+calls, what it calls directly first, numbered `1`, `2`, … on its bars and on the graph's
 labels alike. `,`/`.` show a level less or more, a bar's `+N` opens the calls folded
-under it, as does the cursor wherever it lands, and `V` switches to showing calls only as the cursor reaches them. A closure
-counts as part of the function around it.
+under it, as does the cursor wherever it lands, and `V` switches to showing calls only
+as the cursor reaches them. A closure counts as part of the function around it.
 
 Each color says one thing. A link's color says which way a call runs: violet into the
 focus, blue out of it, with dots flowing along it. A node's fill says where it lives,
@@ -38,29 +38,35 @@ color beside the node, so a bar finds its node at a glance; hovering a bar draws
 to it. `I` picks out everything that calls the focus and `O` everything it calls,
 pulling the camera back only as far as it takes to show them all.
 
-The focus is the node under the journey's cursor, ringed in white and named in the top
-bar beside how many calls it makes and takes; `I`, `O` and `Enter` (start the journey
-there) act on it. Hovering a node rings and names it without moving the focus, so the
-colors stay put. Digits open the call with that number on its badge and bar, `-` and
-`=` reveal less or more around a starting point, the focus, a diff's changes or the
-journey (`L` switches), measured in calls, distance in the graph, or a blend of both
+The focus is where you are in the journey: the node under its cursor, ringed in white
+and named in the top bar beside how many calls it makes and takes. The arrows, a digit
+(the call with that number on its badge and bar) and a click on a node the journey runs
+all move the cursor, opening whatever folds it, and never restart the journey. A click
+on a node off the journey makes it the focus for now, with the journey dimmed behind it
+and `not on this journey · Enter to follow` beside its name; an arrow or `Esc` goes back
+to the cursor. `I`, `O` and `Enter` act on the focus; `Enter` follows it, starting the
+journey there, and `Shift`-click follows a node at once. Hovering a node rings and names
+it without moving the focus, so the colors stay put.
+
+`-` and `=` reveal less or more around a starting point, the focus, a diff's changes or
+the journey (`L` switches), measured in calls, distance in the graph, or a blend of both
 (`G` switches); what is out of reach dims, then shrinks to a speck. The dial runs from
 one step out to the farthest node, which is everything, so each press moves one ring; a
 slim meter at the graph's right edge shows where it stands and what it measures from
 for a couple of seconds after `-`, `=`, `L` or `G`, and whenever the pointer is over it.
-In the journey,
-`←`/`→` move between calls by the same caller, `↓`/`↑` go in and out, `[`/`]` step
-through time. `/` searches for a
-function, `S` opens the side panel (the view's settings, outcomes, source and details),
-`H` lists every key, and `Esc` closes whichever of those is on top, or the spotlight.
+In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` go in and out,
+`[`/`]` step through time. `/` searches for a function, `S` opens the side panel (the
+view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
+whichever of those is on top, or the spotlight.
 
-Every move, opening a node, a numbered call, a search result, a change, an outcome or
-a new start, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
+Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
+`Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
 before it, cursor, outcome, depth, opened calls and spotlight included, and
-`Shift+Backspace` (or `›`) forward again. The camera orbits where the journey starts and turns only when
-you move somewhere; stepping through the journey at most pulls it back to keep the
-cursor's node in sight. Pan or zoom and it stays where you put it, saying `camera free
-· F to follow` until `F` brings it back.
+`Shift+Backspace` (or `›`) forward again. Moving the cursor is not remembered. The
+camera orbits where the journey starts and turns only when you start somewhere new;
+stepping through the journey at most pulls it back to keep the cursor's node in sight.
+Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
+brings it back.
 
 ## Diffs
 

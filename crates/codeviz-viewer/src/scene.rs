@@ -99,10 +99,12 @@ fn spawn_nodes(
     }
 }
 
-/// Click centers on a node and opens its journey.
+/// Click moves the focus to a node: the journey's cursor when it runs the node, else
+/// the node alone, for now. Shift-click follows it, starting the journey there.
 fn on_node_click(
     click: On<PointerClick>,
     tiles: Query<&Tile>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
     mut panel: ResMut<JourneyPanel>,
 ) {
@@ -115,8 +117,12 @@ fn on_node_click(
     if !explorer.shown(tile.0) {
         return;
     }
-    explorer.open_at(tile.0);
-    // Clicking a node is asking what it does: its journey opens with it.
+    if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+        explorer.open_at(tile.0);
+    } else {
+        explorer.focus_tile(tile.0);
+    }
+    // Clicking a node is asking what it does: the journey opens with it.
     if panel.mode == PanelMode::Hidden {
         panel.mode = PanelMode::Docked;
     }
@@ -318,8 +324,8 @@ fn keyboard(
     }
 }
 
-/// Escape closes whatever is on top: the search box, the key list, the spotlight,
-/// then the side panel. It never moves the view.
+/// Escape closes whatever is on top: the search box, the key list, the spotlight, a
+/// focus off the journey, then the side panel. It never moves the view.
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
     if chrome.search {
         chrome.search = false;
@@ -327,6 +333,8 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         help.0 = false;
     } else if explorer.spotlight().is_some() {
         explorer.clear_spotlight();
+    } else if explorer.aside().is_some() {
+        explorer.clear_aside();
     } else if chrome.side {
         chrome.side = false;
     }

@@ -269,6 +269,9 @@ pub(crate) struct Explorer {
     aim: u64,
     /// The node under the pointer, in the graph or as a bar in the journey.
     pub(crate) hovered_tile: Option<usize>,
+    /// A node clicked off the journey: the focus while it is set, until a journey key,
+    /// Esc or Enter, which follows it.
+    aside: Option<usize>,
     /// What calls the focus, or what it calls, picked out and brought into view: when,
     /// in seconds of app time, and for which node.
     spotlight: Option<(Side, f32, usize)>,
@@ -325,6 +328,7 @@ impl Explorer {
             disclosure_epoch: 0,
             disclosure_cache: Mutex::new(None),
             hovered_tile: None,
+            aside: None,
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
@@ -429,6 +433,7 @@ impl Explorer {
         self.disclose = view.disclose;
         self.disclosure_epoch += 1;
         self.spotlight = view.spotlight;
+        self.aside = None;
         self.aim += 1;
         self.recolor();
     }
@@ -495,6 +500,7 @@ impl Explorer {
     /// shows.
     pub(crate) fn select(&mut self, span: Option<SpanId>) {
         let before = self.graph_focus();
+        self.aside = None;
         self.track_mut().selected = span;
         if self.graph_focus() != before {
             self.spotlight = None;
@@ -537,6 +543,7 @@ impl Explorer {
 
     /// Starts the journey at `root` on its happy path, with the cursor on it.
     fn replace_root(&mut self, root: UnitId) {
+        self.aside = None;
         if self.root() == Some(&root) {
             return;
         }
@@ -574,12 +581,19 @@ impl Explorer {
         }
     }
 
-    /// Starts the journey at the focus: from where the cursor is, as its own
-    /// journey.
+    /// Follows the focus: the journey starts there, whether the focus is the cursor's
+    /// node or one clicked off the journey, remembering where it was.
     pub(crate) fn trace_from_focus(&mut self) {
-        if let Some(unit) = self.graph_focus().and_then(|t| self.tile_unit(t)).cloned() {
-            self.set_root(unit);
-        }
+        let Some(unit) = self.graph_focus().and_then(|t| self.tile_unit(t)).cloned() else {
+            return;
+        };
+        self.navigate(|explorer| {
+            if explorer.root() == Some(&unit) {
+                explorer.select(explorer.journey().map(Journey::root));
+            } else {
+                explorer.replace_root(unit);
+            }
+        });
     }
 
     pub(crate) fn toggle_zoom(&mut self, unit: UnitId) {
@@ -667,11 +681,59 @@ impl Explorer {
     }
 
     /// The focus: the node the graph lights up around, and what I, O and Enter act on.
-    /// It is the cursor's node, or the root's when the journey could not be traced.
+    /// It is a node clicked off the journey while there is one, else the cursor's node,
+    /// or the root's when the journey could not be traced.
     pub(crate) fn graph_focus(&self) -> Option<usize> {
-        self.focus()
-            .and_then(|f| self.map.tile_of(f))
-            .or_else(|| self.root_tile())
+        self.aside.or_else(|| {
+            self.focus()
+                .and_then(|f| self.map.tile_of(f))
+                .or_else(|| self.root_tile())
+        })
+    }
+
+    /// The node clicked off the journey that is the focus for now, if any.
+    pub(crate) fn aside(&self) -> Option<usize> {
+        self.aside
+    }
+
+    /// Puts the focus back on the journey's cursor. Returns whether it was off it.
+    pub(crate) fn clear_aside(&mut self) -> bool {
+        self.aside.take().is_some()
+    }
+
+    /// Moves the focus to a node, as a click does. On the journey, the cursor goes to
+    /// its call, opening what folds it; off the journey, the node is the focus for now,
+    /// and the journey stays as it was. Neither is a move to remember: Enter follows.
+    pub(crate) fn focus_tile(&mut self, tile: usize) {
+        if let Some(span) = self.span_at(tile) {
+            self.select(Some(span));
+        } else if self.aside != Some(tile) {
+            let before = self.graph_focus();
+            self.aside = Some(tile);
+            if self.graph_focus() != before {
+                self.spotlight = None;
+            }
+        }
+    }
+
+    /// The journey's call that runs a node: the cursor's when it already does, else the
+    /// first one shown, else the first at all.
+    fn span_at(&self, tile: usize) -> Option<SpanId> {
+        let unit = self.tile_unit(tile)?;
+        if self.focus() == Some(unit) {
+            return self.selected();
+        }
+        let journey = self.journey()?;
+        let runs: Vec<SpanId> = journey
+            .spans()
+            .filter(|(_, s)| s.target == SpanTarget::Unit(unit.clone()))
+            .map(|(id, _)| id)
+            .collect();
+        let disclosed = self.disclosure();
+        runs.iter()
+            .copied()
+            .find(|&span| disclosed.shows(span))
+            .or_else(|| runs.first().copied())
     }
 
     fn root_tile(&self) -> Option<usize> {
@@ -768,11 +830,10 @@ impl Explorer {
         self.map.tile(tile).map(|t| &t.unit)
     }
 
-    /// Opens the call numbered `number` on screen: by the journey's own numbering, as
-    /// its bars and its nodes' badges show it, or with nothing of the journey disclosed,
-    /// the focus's calls in the order it makes them, as `#1`, `#2` beside them. A call
-    /// that could run any of several functions has no one node to open, so the cursor
-    /// goes to its bar instead.
+    /// Moves the focus to the call numbered `number` on screen: by the journey's own
+    /// numbering, as its bars and its nodes' badges show it, or with nothing of the
+    /// journey disclosed, the focus's calls in the order it makes them, as `#1`, `#2`
+    /// beside them, as a click on that node would. The journey stays where it starts.
     pub(crate) fn open_numbered(&mut self, number: usize) {
         let Some(index) = number.checked_sub(1) else {
             return;
@@ -783,7 +844,7 @@ impl Explorer {
                 .graph_focus()
                 .and_then(|focus| self.graph.sequence(focus).get(index))
             {
-                self.open_at(tile);
+                self.focus_tile(tile);
             }
             return;
         }
@@ -794,10 +855,7 @@ impl Explorer {
         else {
             return;
         };
-        match self.unit_id(call).and_then(|unit| self.map.tile_of(unit)) {
-            Some(tile) => self.open_at(tile),
-            None => self.select(Some(call)),
-        }
+        self.select(Some(call));
     }
 
     /// What calls `tile`, each once.
@@ -1099,8 +1157,12 @@ impl Explorer {
         Some((caller, location))
     }
 
-    /// Moves the cursor. Returns the new position.
+    /// Moves the cursor. Returns the new position. With the focus off the journey, it
+    /// only goes back to the cursor.
     pub(crate) fn step(&mut self, step: Step) -> Option<SpanId> {
+        if self.clear_aside() {
+            return self.selected();
+        }
         let journey = self.journey()?;
         let current = self.selected().unwrap_or_else(|| journey.root());
         let span = journey.span(current)?;
@@ -1583,11 +1645,16 @@ pub(crate) mod tests {
 
         explorer.open_numbered(2);
         assert_eq!(
-            explorer.root().map(UnitId::as_str),
+            explorer.focus().map(UnitId::as_str),
             Some("x:d"),
-            "2 opens the node badged 2, not the second function written"
+            "2 goes to the node badged 2, not the second function written"
         );
-        explorer.go_back();
+        assert_eq!(
+            explorer.root().map(UnitId::as_str),
+            Some("x:main"),
+            "and the journey stays where it starts"
+        );
+        assert!(!explorer.can_go_back(), "moving the cursor is not a move");
         explorer.open_numbered(1);
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
         assert!(
@@ -1623,6 +1690,77 @@ pub(crate) mod tests {
             !explorer.disclosed(explorer.selected().unwrap()),
             "folding it again by hand still folds it"
         );
+    }
+
+    #[test]
+    fn clicking_a_node_on_the_journey_moves_the_cursor_there() {
+        let mut explorer = explorer();
+        let main = explorer.journey().unwrap().root();
+        let a = explorer.journey().unwrap().span(main).unwrap().children[0];
+        assert_eq!(explorer.disclosure().folded(a), 1, "c is folded under a");
+
+        explorer.focus_tile(tile(&explorer, "c"));
+        assert_eq!(at(&explorer), "c");
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
+        assert!(
+            explorer.disclosed(explorer.selected().unwrap()),
+            "its bar shows"
+        );
+        assert!(explorer.aside().is_none());
+        assert!(!explorer.can_go_back(), "no move to remember");
+    }
+
+    #[test]
+    fn a_node_off_the_journey_is_the_focus_until_followed_or_left() {
+        let mut explorer = explorer();
+        explorer.open_at(tile(&explorer, "a"));
+        explorer.forget_history();
+        let b = tile(&explorer, "b");
+
+        explorer.focus_tile(b);
+        assert_eq!(explorer.aside(), Some(b));
+        assert_eq!(explorer.graph_focus(), Some(b), "I and O act on it");
+        assert_eq!(at(&explorer), "a", "the cursor stays put");
+        explorer.toggle_spotlight(Side::Callers, 0.0);
+        assert_eq!(explorer.spotlit(), vec![tile(&explorer, "main")]);
+
+        assert_eq!(
+            explorer.step(Step::Into).map(|s| explorer.label(s)),
+            Some("a".to_owned())
+        );
+        assert!(
+            explorer.aside().is_none(),
+            "an arrow goes back to the cursor"
+        );
+        assert_eq!(at(&explorer), "a", "without stepping");
+
+        explorer.focus_tile(b);
+        assert!(explorer.clear_aside(), "Esc goes back too");
+        assert_eq!(explorer.graph_focus(), Some(tile(&explorer, "a")));
+
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "c");
+        explorer.focus_tile(b);
+        explorer.trace_from_focus();
+        assert_eq!(
+            explorer.root().map(UnitId::as_str),
+            Some("x:b"),
+            "Enter follows it"
+        );
+        assert!(explorer.aside().is_none());
+        assert!(explorer.go_back());
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
+        assert_eq!(at(&explorer), "c", "back on the journey, cursor and all");
+    }
+
+    #[test]
+    fn shift_click_follows_at_once() {
+        let mut explorer = explorer();
+        explorer.open_at(tile(&explorer, "b"));
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:b"));
+        assert!(explorer.go_back(), "one move to go back from");
+        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
+        assert!(!explorer.can_go_back());
     }
 
     #[test]

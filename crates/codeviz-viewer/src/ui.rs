@@ -829,8 +829,9 @@ fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
         if ui
             .add_enabled(can_reroot, egui::Button::new("Start here"))
             .clicked()
+            && let Some(unit) = explorer.unit_id(selected).cloned()
         {
-            explorer.trace_from_focus();
+            explorer.set_root(unit);
         }
         if ui
             .add_enabled(explorer.can_go_back(), egui::Button::new("Back"))
@@ -1542,6 +1543,7 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
     called.dedup();
     let lit = explorer.spotlight().map(|(side, _)| side);
     let mut pressed = None;
+    let mut follow = false;
     ui.horizontal(|ui| {
         for (side, count, noun, key, color) in [
             (Side::Callers, calling, "caller", "I", CALLER),
@@ -1569,9 +1571,30 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
         )
         .on_hover_text("The focus: what I, O and Enter act on. It moves with the journey's cursor");
         ui.label(egui::RichText::new("focus").small().color(MUTED));
+        if explorer.aside().is_some() {
+            let chip = egui::Button::new(
+                egui::RichText::new("not on this journey · Enter to follow")
+                    .small()
+                    .color(MUTED),
+            )
+            .corner_radius(8.0);
+            if ui
+                .add(chip)
+                .on_hover_text(
+                    "Clicked off the journey. Enter, or a click here, starts the journey \
+                     here; an arrow or Esc goes back to the journey's cursor",
+                )
+                .clicked()
+            {
+                follow = true;
+            }
+        }
     });
     if let Some(side) = pressed {
         explorer.toggle_spotlight(side, now);
+    }
+    if follow {
+        explorer.trace_from_focus();
     }
 }
 
@@ -1666,8 +1689,8 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
         .text(
             egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
-            "click a node to open it · I callers · O calls · , . less or more of the journey \
-             · Backspace back · / search · S panel · H keys",
+            "click a node to focus it · Enter follows it · I callers · O calls \
+             · , . less or more of the journey · Backspace back · / search · S panel · H keys",
             egui::FontId::proportional(12.0),
             MUTED,
         );
@@ -1687,7 +1710,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             (",  .", "show a level less / more of it"),
             ("V", "show calls by level / as the cursor reaches them"),
             ("Space", "play"),
-            ("Enter", "start the journey at the focus"),
+            ("Enter", "follow the focus: start the journey there"),
         ],
     ),
     (
@@ -1695,10 +1718,15 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("I", "pick out what calls the focus, and show it all"),
             ("O", "pick out what the focus calls, and show it all"),
-            ("1 – 9", "open the call with that number"),
+            ("click", "focus a node; off the journey, for now"),
+            ("Shift click", "start the journey at a node"),
+            ("1 – 9", "move to the call with that number"),
             ("Backspace", "back to the view before"),
             ("Shift Backspace", "forward again"),
-            ("Esc", "close search, this list, the spotlight, the panel"),
+            (
+                "Esc",
+                "close search, this list, the spotlight, a focus off the journey, the panel",
+            ),
             ("- / =", "show a ring less / more around the start"),
             ("L", "reveal around: focus → changes → journey"),
             ("G", "nearness by: calls → space → blend"),
