@@ -658,7 +658,9 @@ fn canvas(
         panel.lit_node = false;
     }
 
-    if response.clicked() {
+    // Only a pointer's click: egui also clicks a widget it focuses on Enter or Space,
+    // and those keys belong to the graph.
+    if response.clicked_by(egui::PointerButton::Primary) {
         if let Some(span) = fold_hit {
             explorer.toggle_expanded(span);
         } else if let Some((scenario, _)) = divergence_hit {
