@@ -18,12 +18,16 @@ use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConf
 use crate::{
     disclosure::{Disclose, Disclosed},
     history::{History, View},
-    lens::{self, Lens},
+    lens::{self, Distances, Lens},
 };
 
 /// What a disclosure was worked out for: the journey's revision, how it discloses,
 /// the spans opened by hand, and the cursor when that matters.
 type DisclosureKey = (u64, Disclose, u64, Option<SpanId>);
+
+/// What the lens's distances were worked out for: where it starts, how it measures,
+/// and how often calls were retired and, when measuring in space, nodes moved.
+type DistanceKey = (Vec<usize>, lens::Source, lens::Measure, u64, u64);
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +248,11 @@ pub(crate) struct Explorer {
     reach: Option<(usize, Reach)>,
     /// How much of the graph shows.
     lens: Lens,
+    distance_cache: Mutex<Option<(DistanceKey, Option<Arc<Distances>>)>>,
+    /// Bumped whenever nodes move.
+    moved: u64,
+    /// Bumped whenever calls are retired.
+    rewired: u64,
     /// How fully each node shows, by tile, eased towards what the lens says.
     visibility: Vec<f32>,
     /// A diff's changed nodes, for a lens that starts from them.
@@ -305,6 +314,9 @@ impl Explorer {
             journey_tiles: HashMap::new(),
             reach: None,
             lens: Lens::default(),
+            distance_cache: Mutex::new(None),
+            moved: 0,
+            rewired: 0,
             visibility: vec![1.0; tiles],
             changed_tiles: Vec::new(),
             history: History::default(),
@@ -339,6 +351,7 @@ impl Explorer {
     pub(crate) fn place_nodes(&mut self, positions: &[[f32; 3]]) {
         self.graph.positions.clone_from_slice(positions);
         self.settling = false;
+        self.moved += 1;
     }
 
     /// Calls the graph still lays out but that no longer run, as a diff's removed
@@ -346,6 +359,7 @@ impl Explorer {
     pub(crate) fn retire_calls(&mut self, gone: &HashSet<(usize, usize)>) {
         self.graph.retire(gone);
         self.reach = None;
+        self.rewired += 1;
     }
 
     /// The journey.
@@ -618,6 +632,7 @@ impl Explorer {
             speed = self.graph.step();
         }
         self.settling = speed > SETTLED_SPEED;
+        self.moved += 1;
         true
     }
 
@@ -629,6 +644,7 @@ impl Explorer {
             }
         }
         self.settling = false;
+        self.moved += 1;
     }
 
     /// Gives lanes and containers their colors after the journey changed, and asks
@@ -846,11 +862,44 @@ impl Explorer {
 
     /// Where the lens starts: the focus, the changes, or the journey.
     fn seeds(&self) -> Vec<usize> {
-        match self.lens.source {
+        let mut seeds: Vec<usize> = match self.lens.source {
             lens::Source::Focus => self.graph_focus().into_iter().collect(),
             lens::Source::Changes => self.changed_tiles.clone(),
             lens::Source::Journey => self.disclosed_tiles().into_keys().collect(),
+        };
+        seeds.sort_unstable();
+        seeds.dedup();
+        seeds
+    }
+
+    /// How far each node is from where the lens starts, worked out once per change of
+    /// where it starts, how it measures, or, measuring in space, where nodes sit.
+    fn distances(&self) -> Option<Arc<Distances>> {
+        let measure = self.lens.measure;
+        let moved = if measure == lens::Measure::Calls {
+            0
+        } else {
+            self.moved
+        };
+        let key = (self.seeds(), self.lens.source, measure, self.rewired, moved);
+        let mut cache = self
+            .distance_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((cached, distances)) = cache.as_ref()
+            && *cached == key
+        {
+            return distances.clone();
         }
+        let distances = self.lens.distances(&self.graph, &key.0).map(Arc::new);
+        *cache = Some((key, distances.clone()));
+        distances
+    }
+
+    /// The top of the lens's dial, where it shows everything: as far out as the
+    /// farthest node from where it starts, under how it measures.
+    pub(crate) fn lens_top(&self) -> u32 {
+        self.distances().map_or(1, |d| d.farthest())
     }
 
     /// How fully the lens would show each node, by tile, once eased there; `None`
@@ -873,7 +922,7 @@ impl Explorer {
             }
             targets
         } else {
-            self.lens.targets(&self.graph, &self.seeds())?
+            self.lens.targets(&*self.distances()?)?
         };
         // The disclosed journey always shows: it is what you opened. So does what the
         // spotlight picks out.
@@ -1290,6 +1339,33 @@ pub(crate) mod tests {
             shown(&mut explorer, changes),
             [0.3, 1.0, 0.0, 1.0],
             "from changes, only what calls them counts"
+        );
+    }
+
+    #[test]
+    fn the_dial_fits_the_graph() {
+        let mut explorer = explorer();
+        assert_eq!(explorer.lens_top(), 2, "c is two calls from main");
+        let everything = explorer.lens();
+        let narrower = everything.narrower(explorer.lens_top());
+        assert_eq!(narrower.reach, Some(1), "- from everything drops one ring");
+        assert_eq!(narrower.narrower(2).reach, Some(1), "and stops at one");
+        assert_eq!(narrower.wider(2).reach, None, "= at the top is everything");
+        assert_eq!(narrower.level(2), 1);
+        assert_eq!(everything.level(2), 2);
+
+        explorer.open_at(tile(&explorer, "c"));
+        assert_eq!(explorer.lens_top(), 2, "main is two calls up from c");
+        explorer.open_at(tile(&explorer, "b"));
+        explorer.set_lens(Lens {
+            reach: Some(5),
+            ..Lens::default()
+        });
+        assert_eq!(explorer.lens().level(explorer.lens_top()), 1);
+        assert_eq!(
+            explorer.lens().narrower(explorer.lens_top()).reach,
+            Some(1),
+            "a reach past the top narrows from the top"
         );
     }
 

@@ -203,9 +203,9 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     }
     let lens = explorer.lens();
     let lens = if keys.just_pressed(KeyCode::Minus) {
-        lens.narrower()
+        lens.narrower(explorer.lens_top())
     } else if keys.just_pressed(KeyCode::Equal) {
-        lens.wider()
+        lens.wider(explorer.lens_top())
     } else if keys.just_pressed(KeyCode::KeyL) {
         Lens {
             source: lens.source.next(),

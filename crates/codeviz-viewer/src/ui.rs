@@ -22,7 +22,7 @@ use crate::{
     explorer::{Clustering, Confidence, Explorer, Side},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
-    lens::{self, Measure, Source},
+    lens::{Measure, Source},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -1177,7 +1177,8 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
         {
             lens.reach = None;
         }
-        let mut reach = lens.reach.unwrap_or(lens::MAX_REACH + 1);
+        let top = explorer.lens_top();
+        let mut reach = lens.level(top);
         let unit = match (lens.measure, lens.reach) {
             (Measure::Calls, Some(1)) => "call",
             (Measure::Calls, _) => "calls",
@@ -1186,14 +1187,14 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
         };
         if ui
             .add(
-                egui::Slider::new(&mut reach, 0..=lens::MAX_REACH + 1)
+                egui::Slider::new(&mut reach, 1..=top)
                     .show_value(false)
                     .custom_formatter(|_, _| String::new()),
             )
             .on_hover_text("How far out from the start shows in full (- and =)")
             .changed()
         {
-            lens.reach = (reach <= lens::MAX_REACH).then_some(reach);
+            lens.reach = (reach < top).then_some(reach);
         }
         if let Some(reach) = lens.reach {
             ui.label(egui::RichText::new(format!("{reach} {unit}")).small());

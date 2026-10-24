@@ -63,8 +63,6 @@ impl Measure {
     }
 }
 
-/// The furthest the dial turns before showing everything.
-pub(crate) const MAX_REACH: u32 = 8;
 /// How bright the ring just past the reach is.
 const DIM: f32 = 0.3;
 /// Below this a node is a speck: drawn faintly, not labeled, not clickable.
@@ -89,63 +87,122 @@ pub(crate) struct Lens {
 }
 
 impl Lens {
-    /// One step further out, until everything shows.
-    pub(crate) fn wider(self) -> Self {
+    /// One step further out, until everything shows at `top`, the dial's last step.
+    pub(crate) fn wider(self, top: u32) -> Self {
         let reach = match self.reach {
-            Some(reach) if reach < MAX_REACH => Some(reach + 1),
+            Some(reach) if reach + 1 < top => Some(reach + 1),
             _ => None,
         };
         Self { reach, ..self }
     }
 
-    /// One step further in; from everything, to the start and what is next to it.
-    pub(crate) fn narrower(self) -> Self {
-        let reach = match self.reach {
-            None => Some(2),
-            Some(reach) => Some(reach.saturating_sub(1)),
-        };
-        Self { reach, ..self }
+    /// One step further in, down to the start's own calls; from everything, to the
+    /// step below `top`.
+    pub(crate) fn narrower(self, top: u32) -> Self {
+        let reach = self.reach.map_or(top, |reach| reach.min(top));
+        Self {
+            reach: Some(reach.saturating_sub(1).max(1)),
+            ..self
+        }
     }
 
-    /// How fully each node shows, by tile, given the tiles it starts from. `None` when
-    /// it shows everything, as it does with nowhere to start.
-    pub(crate) fn targets(&self, graph: &ForceGraph, seeds: &[usize]) -> Option<Vec<f32>> {
-        let reach = self.reach?;
+    /// Where the dial stands on a scale whose last step, `top`, is everything.
+    pub(crate) fn level(self, top: u32) -> u32 {
+        self.reach.map_or(top, |reach| reach.min(top))
+    }
+
+    /// How far each node is from the tiles the reveal starts from, under its measure.
+    /// `None` with nowhere to start.
+    pub(crate) fn distances(&self, graph: &ForceGraph, seeds: &[usize]) -> Option<Distances> {
         if seeds.is_empty() {
             return None;
         }
-        let upstream_only = self.source == Source::Changes;
-        let calls = call_distances(graph, seeds, upstream_only);
-        let reach_f = reach as f32;
-        let by_calls = |hops: Option<u32>| match hops {
-            Some(hops) if hops <= reach => 1.0,
-            Some(hops) if hops == reach + 1 => DIM,
-            _ => 0.0,
+        let calls = call_distances(graph, seeds, self.source == Source::Changes);
+        let steps = match self.measure {
+            Measure::Calls => calls
+                .iter()
+                .map(|hops| hops.map_or(f32::INFINITY, |h| h as f32))
+                .collect(),
+            Measure::Space => space_distances(graph, seeds),
+            Measure::Blend => calls
+                .iter()
+                .zip(space_distances(graph, seeds))
+                .map(|(&hops, steps)| {
+                    // Direct callers and callees always show.
+                    if hops.is_some_and(|h| h <= 1) {
+                        return 0.0;
+                    }
+                    let between = hops.unwrap_or(UNCONNECTED).min(UNCONNECTED) as f32;
+                    steps + between * CALL_PENALTY
+                })
+                .collect(),
         };
-        // Full out to the reach, fading to nothing over the next step.
-        let by_space = |steps: f32| (1.0 - (steps - reach_f - 0.5)).clamp(0.0, 1.0);
-        let targets = match self.measure {
-            Measure::Calls => calls.iter().map(|&hops| by_calls(hops)).collect(),
-            Measure::Space | Measure::Blend => {
-                let space = space_distances(graph, seeds);
-                calls
-                    .iter()
-                    .zip(&space)
-                    .map(|(&hops, &steps)| {
-                        if self.measure == Measure::Space {
-                            return by_space(steps);
-                        }
-                        if hops.is_some_and(|h| h <= 1) {
-                            return 1.0;
-                        }
-                        let between = hops.unwrap_or(UNCONNECTED).min(UNCONNECTED) as f32;
-                        by_space(steps + between * CALL_PENALTY)
-                    })
-                    .collect()
-            }
-        };
-        Some(targets)
+        Some(Distances::new(self.measure, steps))
     }
+
+    /// How fully each node shows, by tile, at these distances. `None` when it shows
+    /// everything.
+    pub(crate) fn targets(&self, distances: &Distances) -> Option<Vec<f32>> {
+        let reach = self.reach?;
+        let reach_f = reach as f32;
+        let targets = distances
+            .steps
+            .iter()
+            .map(|&steps| match distances.measure {
+                Measure::Calls if steps <= reach_f => 1.0,
+                Measure::Calls if steps <= reach_f + 1.0 => DIM,
+                Measure::Calls => 0.0,
+                // Full out to the reach, fading to nothing over the next step.
+                Measure::Space | Measure::Blend => (1.0 - (steps - reach_f - 0.5)).clamp(0.0, 1.0),
+            });
+        Some(targets.collect())
+    }
+}
+
+/// How far each node is from where a reveal starts, by tile, in its measure's steps:
+/// calls between, or steps of space. Unreachable is infinite.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Distances {
+    measure: Measure,
+    steps: Vec<f32>,
+    farthest: u32,
+}
+
+impl Distances {
+    fn new(measure: Measure, steps: Vec<f32>) -> Self {
+        let farthest = farthest(measure, &steps);
+        Self {
+            measure,
+            steps,
+            farthest,
+        }
+    }
+
+    /// The fewest steps out that show everything within reach in full: the top of
+    /// the dial, where it shows everything. At least one.
+    pub(crate) fn farthest(&self) -> u32 {
+        self.farthest
+    }
+}
+
+fn farthest(measure: Measure, steps: &[f32]) -> u32 {
+    let full_at = |steps: f32| match measure {
+        Measure::Calls => steps,
+        // Space shows a node in full half a step past it.
+        Measure::Space | Measure::Blend => (steps - 0.5).ceil(),
+    };
+    let top = steps
+        .iter()
+        .filter(|steps| steps.is_finite())
+        .map(|&steps| full_at(steps))
+        .fold(0.0, f32::max);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small, whole, non-negative count of steps"
+    )]
+    let top = top as u32;
+    top.max(1)
 }
 
 /// Calls from the nearest seed to each tile, counting along call chains: up through
