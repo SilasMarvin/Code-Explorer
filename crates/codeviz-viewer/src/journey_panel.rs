@@ -1,4 +1,4 @@
-//! The active journey as a flame graph over the graph: time left to right, each call
+//! The journey as a flame graph over the graph: time left to right, each call
 //! on the row below its caller. Docked in a corner while the graph has the screen, or
 //! filling the screen below a strip of graph. Each bar is painted the color of its
 //! node, and the cursor, hover and focus are shared with the graph, so a bar and its
@@ -12,10 +12,10 @@ use codeviz_ir::ExitKind;
 use crate::{
     diff_view::{DiffView, change_color, sign},
     disclosure::Disclose,
-    explorer::{Confidence, Explorer, SpanRef, is_conditional, is_handoff},
+    explorer::{Confidence, Explorer, is_conditional, is_handoff},
     graph_view::node_color,
     scene::{PALETTE, lane_color},
-    ui::{egui_color, short, track_title},
+    ui::{egui_color, journey_title, short},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -38,7 +38,7 @@ pub(crate) struct JourneyPanel {
     /// The first row shown.
     top_row: f32,
     /// The cursor the view last scrolled to.
-    followed: Option<(u64, SpanRef)>,
+    followed: Option<(u64, SpanId)>,
     /// Whether the panel set the graph's hovered node, so it can clear it again.
     lit_node: bool,
 }
@@ -110,7 +110,7 @@ struct Bar {
     shown: bool,
 }
 
-/// How many rows the active journey takes, and how many slots across.
+/// How many rows the journey takes, and how many slots across.
 pub(crate) fn extent(explorer: &Explorer) -> (usize, f32) {
     let disclosed = explorer.disclosure();
     let slots = explorer
@@ -249,10 +249,9 @@ fn header_bar(
 
 /// The journey's name and, when one is picked, the outcome it follows.
 fn title(ui: &mut egui::Ui, explorer: &Explorer) {
-    let active = explorer.active();
     ui.add(
         egui::Label::new(
-            egui::RichText::new(track_title(explorer, active))
+            egui::RichText::new(journey_title(explorer))
                 .color(egui::Color32::WHITE)
                 .strong(),
         )
@@ -349,14 +348,11 @@ fn canvas(
     }
 
     // Keep the cursor in view when it moves.
-    let cursor = track.selected().map(|span| SpanRef {
-        track: explorer.active(),
-        span,
-    });
+    let cursor = track.selected();
     let followed = cursor.map(|c| (explorer.revision(), c));
     if followed != panel.followed {
         panel.followed = followed;
-        if let Some(&(x, _, row)) = cursor.and_then(|c| placed.get(&c.span)) {
+        if let Some(&(x, _, row)) = cursor.and_then(|c| placed.get(&c)) {
             let width = content.width() / scale;
             if x < panel.left || x > panel.left + width * 0.9 {
                 panel.left = x - width * 0.15;
@@ -373,11 +369,9 @@ fn canvas(
     let y_of = |row: f32| content.min.y + (row - panel.top_row) * pitch;
 
     let map = explorer.map();
-    let cursor_enter = cursor
-        .and_then(|c| track.span(c.span))
-        .map_or(0, |s| s.enter);
+    let cursor_enter = cursor.and_then(|c| track.span(c)).map_or(0, |s| s.enter);
     let graph_focus = explorer.graph_focus();
-    let stepping = cursor.is_some_and(|c| track.journey().is_some_and(|j| j.root() != c.span));
+    let stepping = cursor.is_some_and(|c| track.journey().is_some_and(|j| j.root() != c));
     let tile_of = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
 
     let bars: Vec<Bar> = scene
@@ -550,7 +544,7 @@ fn canvas(
         let painter = painter.with_clip_rect(bar.rect.intersect(content));
         if room >= number.len() + 6 {
             let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
-            let mut label = format!("{sign}{}", explorer.label_in(track, bar.span));
+            let mut label = format!("{sign}{}", explorer.label(bar.span));
             if !number.is_empty() {
                 label = format!("{number}  {label}");
             }
@@ -580,7 +574,7 @@ fn canvas(
                 text,
             );
         }
-        if tile.is_some() && tile == graph_focus && Some(bar.span) != cursor.map(|c| c.span) {
+        if tile.is_some() && tile == graph_focus && Some(bar.span) != cursor {
             painter.rect_stroke(
                 bar.rect.expand(1.5),
                 3.0,
@@ -605,7 +599,7 @@ fn canvas(
     }
 
     let mut cursor_rect = None;
-    if let Some(rect) = cursor.and_then(|c| rect_of(c.span)) {
+    if let Some(rect) = cursor.and_then(rect_of) {
         painter.line_segment(
             [
                 egui::pos2(rect.min.x, content.min.y),
@@ -635,7 +629,7 @@ fn canvas(
                 egui::StrokeKind::Outside,
             );
         }
-        let mut tip = explorer.label_in(track, span);
+        let mut tip = explorer.label(span);
         if let Some(span) = track.span(span) {
             for condition in &span.conditions {
                 let guard = condition.guard.as_deref().unwrap_or("?");
@@ -653,14 +647,7 @@ fn canvas(
         .and_then(rect_of)
         .filter(|rect| content.intersects(*rect));
     // Hovering a bar lights its node in the graph.
-    let hovered_ref = hovered.map(|span| SpanRef {
-        track: explorer.active(),
-        span,
-    });
     let hovered_tile = hovered.and_then(tile_of);
-    if explorer.hovered != hovered_ref {
-        explorer.hovered = hovered_ref;
-    }
     if hovered_tile.is_some() {
         if explorer.hovered_tile != hovered_tile {
             explorer.hovered_tile = hovered_tile;
@@ -672,16 +659,12 @@ fn canvas(
     }
 
     if response.clicked() {
-        let shift = ui.input(|i| i.modifiers.shift);
         if let Some(span) = fold_hit {
             explorer.toggle_expanded(span);
         } else if let Some((scenario, _)) = divergence_hit {
             explorer.set_scenario(Some(scenario));
-        } else if let Some(at) = hovered_ref {
-            explorer.select_in(at);
-            if shift {
-                explorer.pull_out_selected();
-            }
+        } else if let Some(span) = hovered {
+            explorer.select(Some(span));
         }
     }
     Tethers {

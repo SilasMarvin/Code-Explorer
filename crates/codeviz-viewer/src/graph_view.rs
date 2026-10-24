@@ -260,7 +260,7 @@ pub(crate) fn track_attention(mut explorer: ResMut<Explorer>) {
     }
 }
 
-/// Restyles nodes when the focus or the journeys change.
+/// Restyles nodes when the focus or the journey changes.
 pub(crate) fn style_nodes(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
@@ -339,7 +339,7 @@ pub(crate) fn draw_graph(
 }
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
-/// them; calls further along, nearer or further from it and on the active journey's
+/// them; calls further along, nearer or further from it and on the journey's
 /// path, are pale arrows fading with distance; everything else is faint.
 fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();

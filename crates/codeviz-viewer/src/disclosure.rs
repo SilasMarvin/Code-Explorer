@@ -1,4 +1,4 @@
-//! How much of the active journey shows. A journey opens with only what its root calls
+//! How much of the journey shows. A journey opens with only what its root calls
 //! directly; more opens a level at a time, under one call by hand, or call by call as
 //! the cursor moves through time. A closure is part of the function that defines it:
 //! it takes no level of its own, and the calls made inside it count as its caller's.
@@ -14,7 +14,7 @@ use codeviz_layout::CodebaseMap;
 
 use crate::explorer::{Track, is_conditional};
 
-/// How much of the active journey shows.
+/// How much of the journey shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Disclose {
     /// Calls this many levels below the root.

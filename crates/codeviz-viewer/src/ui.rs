@@ -1,4 +1,4 @@
-//! egui around the graph: call stack and journeys on top, and a side panel, hidden at
+//! egui around the graph: call stack and the journey on top, and a side panel, hidden at
 //! first, with the view's settings, outcomes, source and details; on the canvas, the
 //! focus with what calls it and what it calls, names beside nodes, a key to the
 //! colors, and a search box on `/`.
@@ -19,11 +19,11 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 use crate::{
     camera::OrbitCamera,
     diff_view::{self, DiffStyle, DiffView},
-    explorer::{Clustering, Confidence, Explorer, Side, SpanRef, Track},
+    explorer::{Clustering, Confidence, Explorer, Side},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{self, Measure, Source},
-    scene::{PALETTE, accent, lane_color},
+    scene::{PALETTE, lane_color},
     source_diff,
 };
 
@@ -421,7 +421,6 @@ fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPan
             }
         }
         ui.separator();
-        journeys(ui, explorer);
         let Some(selected) = explorer.selected() else {
             ui.label("Pick a unit on the left.");
             return;
@@ -445,44 +444,6 @@ fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPan
             explorer.select(Some(frame));
         }
     });
-}
-
-/// One chip per open journey, in its accent: click to make it active, × to close.
-/// Shown once there is more than one.
-fn journeys(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    let count = explorer.tracks().len();
-    if count < 2 {
-        return;
-    }
-    let mut activate = None;
-    let mut close = None;
-    for index in 0..count {
-        let text = egui::RichText::new(format!("■ {}", track_title(explorer, index)))
-            .color(egui_color(accent(index)));
-        if ui
-            .selectable_label(index == explorer.active(), text)
-            .on_hover_text("Make active (Tab cycles)")
-            .clicked()
-        {
-            activate = Some(index);
-        }
-        if ui
-            .small_button("×")
-            .on_hover_text("Close (X closes the active one)")
-            .clicked()
-        {
-            close = Some(index);
-        }
-    }
-    ui.separator();
-    if let Some(track) = activate
-        && let Some(span) = explorer.tracks().get(track).and_then(Track::selected)
-    {
-        explorer.select_in(SpanRef { track, span });
-    }
-    if let Some(index) = close {
-        explorer.close_track(index);
-    }
 }
 
 /// A box to find a function by name, over the top of the graph: Enter or a click
@@ -902,8 +863,8 @@ fn fit_viewport(camera: &mut Camera, window: &Window, central: egui::Rect) {
 }
 
 /// The journey's entry route when it starts at one, else its root's name.
-pub(crate) fn track_title(explorer: &Explorer, index: usize) -> String {
-    let Some(root) = explorer.tracks().get(index).and_then(|t| t.root()) else {
+pub(crate) fn journey_title(explorer: &Explorer) -> String {
+    let Some(root) = explorer.root() else {
         return String::new();
     };
     explorer
@@ -1709,13 +1670,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             (",  .", "show a level less / more of it"),
             ("V", "show calls by level / as the cursor reaches them"),
             ("Space", "play"),
-            ("Tab", "next open journey"),
             ("Enter", "start the journey at the focus"),
-            (
-                "Shift Enter",
-                "pull the cursor's call out as its own journey",
-            ),
-            ("X", "close the journey"),
         ],
     ),
     (

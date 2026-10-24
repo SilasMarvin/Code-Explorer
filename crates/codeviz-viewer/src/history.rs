@@ -16,8 +16,6 @@ const LIMIT: usize = 200;
 /// Everything that says what the view is looking at.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct View {
-    /// The active journey.
-    pub(crate) track: usize,
     pub(crate) root: Option<UnitId>,
     pub(crate) scenario: Option<usize>,
     pub(crate) cursor: Option<SpanId>,

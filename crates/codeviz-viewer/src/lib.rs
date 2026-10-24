@@ -50,7 +50,6 @@ pub struct Viewer {
     keys: Vec<capture::Press>,
     scenario: Option<usize>,
     step: usize,
-    also: Vec<UnitId>,
     panel: PanelMode,
     clustering: Clustering,
     lens: Lens,
@@ -88,7 +87,6 @@ impl Viewer {
             keys: Vec::new(),
             scenario: None,
             step: 0,
-            also: Vec::new(),
             panel: PanelMode::default(),
             clustering: Clustering::default(),
             lens: Lens::default(),
@@ -159,14 +157,6 @@ impl Viewer {
     #[must_use]
     pub fn with_step(mut self, step: usize) -> Self {
         self.step = step;
-        self
-    }
-
-    /// Opens another journey from `root` below the first, with its cursor on the
-    /// first journey's cursor unit when it reaches it.
-    #[must_use]
-    pub fn also(mut self, root: UnitId) -> Self {
-        self.also.push(root);
         self
     }
 
@@ -293,9 +283,6 @@ impl Viewer {
             for _ in 0..self.step {
                 explorer.step(explorer::Step::Into);
             }
-        }
-        for root in self.also.drain(..) {
-            explorer.add_track(root);
         }
         explorer.set_clustering(self.clustering);
         explorer.set_lens(self.lens);

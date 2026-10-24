@@ -38,9 +38,6 @@ pub(crate) struct Display {
     /// Open with the cursor this many steps into the journey.
     #[arg(long, default_value_t = 0)]
     step: usize,
-    /// Also open journeys from these entries.
-    #[arg(long, value_name = "ENTRY")]
-    also: Vec<String>,
     /// How the journey shows over the graph.
     #[arg(long, value_enum, default_value_t = JourneyArg::Docked)]
     journey: JourneyArg,
@@ -166,11 +163,6 @@ pub(crate) fn open(
         Some(query) => Some(crate::journey::find_one(&system, query)?),
         None => None,
     };
-    let also = args
-        .also
-        .iter()
-        .map(|query| crate::journey::find_one(&system, query))
-        .collect::<anyhow::Result<Vec<_>>>()?;
     let focus = args
         .focus
         .as_ref()
@@ -199,9 +191,6 @@ pub(crate) fn open(
     });
     if let Some(root) = root {
         viewer = viewer.with_root(root);
-    }
-    for root in also {
-        viewer = viewer.also(root);
     }
     if let Some(focus) = focus {
         viewer = viewer.with_focus(focus);

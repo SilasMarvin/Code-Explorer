@@ -1,5 +1,5 @@
-//! Viewer state that is independent of rendering: the loaded system, the open
-//! journeys and their cursors, and the codebase as a graph of calls with the node at
+//! Viewer state that is independent of rendering: the loaded system, the journey
+//! and its cursor, and the codebase as a graph of calls with the node at
 //! the center of attention and what reaches it.
 
 use std::{
@@ -21,9 +21,9 @@ use crate::{
     lens::{self, Lens},
 };
 
-/// What a disclosure was worked out for: the journeys' revision, the active one, how
-/// it discloses, the spans opened by hand, and the cursor when that matters.
-type DisclosureKey = (u64, usize, Disclose, u64, Option<SpanId>);
+/// What a disclosure was worked out for: the journey's revision, how it discloses,
+/// the spans opened by hand, and the cursor when that matters.
+type DisclosureKey = (u64, Disclose, u64, Option<SpanId>);
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,15 +53,8 @@ pub(crate) struct Divergence {
     pub(crate) label: String,
 }
 
-/// A span in one of the open journeys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SpanRef {
-    pub(crate) track: usize,
-    pub(crate) span: SpanId,
-}
-
-/// One open journey: where it starts, which outcome it shows, its own cursor, and its
-/// layout in time and depth.
+/// The journey: where it starts, which outcome it shows, its cursor, and its layout
+/// in time and depth.
 #[derive(Debug, Default)]
 pub(crate) struct Track {
     root: Option<UnitId>,
@@ -73,7 +66,7 @@ pub(crate) struct Track {
     selected: Option<SpanId>,
     /// Spans opened one level past the disclosed depth, by hand or by the cursor.
     expanded: HashSet<SpanId>,
-    /// The color of each of the scene's lanes, shared with the other journeys.
+    /// The color of each of the scene's lanes, by module.
     colors: Vec<usize>,
 }
 
@@ -110,8 +103,7 @@ impl Track {
         }
     }
 
-    /// The color index for a span's bar: the same module has the same color in
-    /// every journey.
+    /// The color index for a span's bar: its module's.
     pub(crate) fn color(&self, id: SpanId) -> usize {
         self.scene
             .nodes
@@ -119,15 +111,6 @@ impl Track {
             .and_then(|placed| self.colors.get(placed.lane))
             .copied()
             .unwrap_or_default()
-    }
-
-    /// The first span that runs `unit`.
-    pub(crate) fn find(&self, unit: &UnitId) -> Option<SpanId> {
-        self.journey.as_ref().and_then(|j| {
-            j.spans()
-                .find(|(_, s)| s.target == SpanTarget::Unit(unit.clone()))
-                .map(|(id, _)| id)
-        })
     }
 
     fn reroot(&mut self, system: &System, options: &JourneyOptions, layout: &LayoutConfig) {
@@ -246,11 +229,8 @@ pub(crate) struct Explorer {
     layout_system: Option<System>,
     pub(crate) options: JourneyOptions,
     pub(crate) layout: LayoutConfig,
-    /// Open journeys.
-    tracks: Vec<Track>,
     /// The journey the cursor keys, the panel and the outline follow.
-    active: usize,
-    pub(crate) hovered: Option<SpanRef>,
+    track: Track,
     /// Every function, grouped by container; graph nodes are its tiles.
     map: CodebaseMap,
     /// The codebase as a graph of calls.
@@ -258,8 +238,8 @@ pub(crate) struct Explorer {
     clustering: Clustering,
     /// Whether the graph is still moving.
     settling: bool,
-    /// Map tiles each journey runs, with the color each is drawn in there.
-    journey_tiles: Vec<HashMap<usize, usize>>,
+    /// Map tiles the journey runs, with the color each is drawn in there.
+    journey_tiles: HashMap<usize, usize>,
     /// What reaches the focus, and what it reaches.
     reach: Option<(usize, Reach)>,
     /// How much of the graph shows.
@@ -268,9 +248,9 @@ pub(crate) struct Explorer {
     visibility: Vec<f32>,
     /// A diff's changed nodes, for a lens that starts from them.
     changed_tiles: Vec<usize>,
-    /// How much of the active journey shows.
+    /// How much of the journey shows.
     disclose: Disclose,
-    /// Bumped whenever a journey's opened spans change.
+    /// Bumped whenever the journey's opened spans change.
     disclosure_epoch: u64,
     disclosure_cache: Mutex<Option<(DisclosureKey, Arc<Disclosed>)>>,
     /// Where the view has been, to go back and forward.
@@ -283,9 +263,9 @@ pub(crate) struct Explorer {
     /// What calls the focus, or what it calls, picked out and brought into view: when,
     /// in seconds of app time, and for which node.
     spotlight: Option<(Side, f32, usize)>,
-    /// Lane label to color index, in order of first appearance across journeys.
+    /// Lane label to color index, in order of first appearance.
     lane_colors: HashMap<String, usize>,
-    /// Bumped whenever a journey is rebuilt.
+    /// Bumped whenever the journey is rebuilt.
     revision: u64,
 }
 
@@ -317,14 +297,12 @@ impl Explorer {
             layout_system: layout,
             options,
             layout: LayoutConfig::default(),
-            tracks: vec![Track::default()],
-            active: 0,
-            hovered: None,
+            track: Track::default(),
             map,
             graph,
             clustering,
             settling: true,
-            journey_tiles: Vec::new(),
+            journey_tiles: HashMap::new(),
             reach: None,
             lens: Lens::default(),
             visibility: vec![1.0; tiles],
@@ -350,7 +328,7 @@ impl Explorer {
         &self.system
     }
 
-    /// A unit of the journeys' system, or else of the wider one the graph lays out.
+    /// A unit of the journey's system, or else of the wider one the graph lays out.
     pub(crate) fn any_unit(&self, id: &UnitId) -> Option<&Unit> {
         self.system
             .unit(id)
@@ -370,23 +348,13 @@ impl Explorer {
         self.reach = None;
     }
 
-    pub(crate) fn tracks(&self) -> &[Track] {
-        &self.tracks
-    }
-
-    pub(crate) fn active(&self) -> usize {
-        self.active
-    }
-
-    /// The active journey.
+    /// The journey.
     pub(crate) fn track(&self) -> &Track {
-        // `tracks` is never empty.
-        &self.tracks[self.active.min(self.tracks.len() - 1)]
+        &self.track
     }
 
     fn track_mut(&mut self) -> &mut Track {
-        let index = self.active.min(self.tracks.len() - 1);
-        &mut self.tracks[index]
+        &mut self.track
     }
 
     pub(crate) fn root(&self) -> Option<&UnitId> {
@@ -417,7 +385,6 @@ impl Explorer {
     /// The view as it is now, to come back to.
     fn view(&self) -> View {
         View {
-            track: self.active,
             root: self.root().cloned(),
             scenario: self.scenario(),
             cursor: self.selected(),
@@ -430,9 +397,7 @@ impl Explorer {
     /// Puts the view back as it was, all of it: the journey, its outcome and cursor,
     /// how much of it shows, and the spotlight.
     fn restore(&mut self, view: View) {
-        self.active = view.track.min(self.tracks.len() - 1);
-        let index = self.active;
-        let track = &mut self.tracks[index];
+        let track = &mut self.track;
         if track.root != view.root {
             track.root = view.root;
             track.reroot(&self.system, &self.options, &self.layout);
@@ -506,12 +471,12 @@ impl Explorer {
         self.aim
     }
 
-    /// The span the active journey's cursor is on.
+    /// The span the journey's cursor is on.
     pub(crate) fn selected(&self) -> Option<SpanId> {
         self.track().selected
     }
 
-    /// Moves the active cursor, and the focus with it. The spotlight was on the focus
+    /// Moves the cursor, and the focus with it. The spotlight was on the focus
     /// it leaves, so it goes out; the calls folded over where it lands open, so its bar
     /// shows.
     pub(crate) fn select(&mut self, span: Option<SpanId>) {
@@ -551,23 +516,12 @@ impl Explorer {
         }
     }
 
-    /// Makes `track` active with its cursor on `span`.
-    pub(crate) fn select_in(&mut self, at: SpanRef) {
-        if at.track < self.tracks.len() {
-            if self.active != at.track {
-                self.active = at.track;
-                self.refresh_journey_tiles();
-            }
-            self.select(Some(at.span));
-        }
-    }
-
-    /// Starts the active journey at `root`, remembering where it was.
+    /// Starts the journey at `root`, remembering where it was.
     pub(crate) fn set_root(&mut self, root: UnitId) {
         self.navigate(|explorer| explorer.replace_root(root));
     }
 
-    /// Starts the active journey at `root` on its happy path, with the cursor on it.
+    /// Starts the journey at `root` on its happy path, with the cursor on it.
     fn replace_root(&mut self, root: UnitId) {
         if self.root() == Some(&root) {
             return;
@@ -576,13 +530,10 @@ impl Explorer {
         self.reroot();
     }
 
-    /// Recomputes outcomes for the active journey's root and opens on the happy path,
-    /// with the cursor on the root.
+    /// Recomputes outcomes for the journey's root and opens on the happy path, with
+    /// the cursor on the root.
     fn reroot(&mut self) {
-        let index = self.active.min(self.tracks.len() - 1);
-        if let Some(track) = self.tracks.get_mut(index) {
-            track.reroot(&self.system, &self.options, &self.layout);
-        }
+        self.track.reroot(&self.system, &self.options, &self.layout);
         self.recolor();
     }
 
@@ -609,7 +560,7 @@ impl Explorer {
         }
     }
 
-    /// Starts the active journey at the focus: from where the cursor is, as its own
+    /// Starts the journey at the focus: from where the cursor is, as its own
     /// journey.
     pub(crate) fn trace_from_focus(&mut self) {
         if let Some(unit) = self.graph_focus().and_then(|t| self.tile_unit(t)).cloned() {
@@ -623,18 +574,13 @@ impl Explorer {
             Level::Detail => Level::Summary,
         };
         self.options.zoom.set(unit, level);
-        for track in &mut self.tracks {
-            track.reroot(&self.system, &self.options, &self.layout);
-        }
-        self.recolor();
+        self.reroot();
     }
 
-    /// Rebuilds the active journey.
+    /// Rebuilds the journey.
     pub(crate) fn rebuild(&mut self) {
-        let index = self.active.min(self.tracks.len() - 1);
-        if let Some(track) = self.tracks.get_mut(index) {
-            track.rebuild(&self.system, &self.options, &self.layout);
-        }
+        self.track
+            .rebuild(&self.system, &self.options, &self.layout);
         self.recolor();
     }
 
@@ -685,60 +631,23 @@ impl Explorer {
         self.settling = false;
     }
 
-    /// Gives lanes and containers their colors after the journeys changed, and asks
+    /// Gives lanes and containers their colors after the journey changed, and asks
     /// for a redraw.
     fn recolor(&mut self) {
-        for track in &mut self.tracks {
-            let colors = &mut self.lane_colors;
-            track.colors = track
-                .scene
-                .lanes
-                .iter()
-                .map(|lane| {
-                    let next = colors.len();
-                    *colors.entry(lane.label.clone()).or_insert(next)
-                })
-                .collect();
-        }
+        let colors = &mut self.lane_colors;
+        self.track.colors = self
+            .track
+            .scene
+            .lanes
+            .iter()
+            .map(|lane| {
+                let next = colors.len();
+                *colors.entry(lane.label.clone()).or_insert(next)
+            })
+            .collect();
         self.color_groups();
         self.refresh_journey_tiles();
-        self.hovered = None;
         self.revision += 1;
-    }
-
-    /// Opens another journey from `unit` and makes it active. Its cursor lands on the
-    /// unit the active cursor was on, when it reaches it.
-    pub(crate) fn add_track(&mut self, unit: UnitId) {
-        let focus = self.focus().cloned();
-        let mut track = Track {
-            root: Some(unit),
-            ..Track::default()
-        };
-        track.reroot(&self.system, &self.options, &self.layout);
-        if let Some(landing) = focus.and_then(|f| track.find(&f)) {
-            track.selected = Some(landing);
-        }
-        self.tracks.push(track);
-        self.active = self.tracks.len() - 1;
-        self.recolor();
-    }
-
-    /// Opens the selected span's unit as another journey.
-    pub(crate) fn pull_out_selected(&mut self) {
-        if let Some(unit) = self.focus().cloned() {
-            self.add_track(unit);
-        }
-    }
-
-    /// Closes a journey; the last one stays open.
-    pub(crate) fn close_track(&mut self, index: usize) {
-        if self.tracks.len() > 1 && index < self.tracks.len() {
-            self.tracks.remove(index);
-            if self.active >= index && self.active > 0 {
-                self.active -= 1;
-            }
-            self.recolor();
-        }
     }
 
     /// The focus: the node the graph lights up around, and what I, O and Enter act on.
@@ -753,13 +662,13 @@ impl Explorer {
         self.root().and_then(|u| self.map.tile_of(u))
     }
 
-    /// The node the camera orbits: where the active journey starts. Stepping through
+    /// The node the camera orbits: where the journey starts. Stepping through
     /// the journey leaves it put.
     pub(crate) fn anchor(&self) -> Option<usize> {
         self.root_tile().or_else(|| self.graph_focus())
     }
 
-    /// Centers on a node and opens its journey: the active journey restarts there, with
+    /// Centers on a node and opens its journey: the journey restarts there, with
     /// what it calls directly disclosed and the rest folded away. Opening the node the
     /// journey already starts at puts the cursor back on it.
     pub(crate) fn open_at(&mut self, tile: usize) {
@@ -799,11 +708,10 @@ impl Explorer {
         self.disclosure_epoch += 1;
     }
 
-    /// What the active journey discloses, worked out once per change.
+    /// What the journey discloses, worked out once per change.
     pub(crate) fn disclosure(&self) -> Arc<Disclosed> {
         let key = (
             self.revision,
-            self.active,
             self.disclose,
             self.disclosure_epoch,
             (self.disclose == Disclose::Time)
@@ -829,7 +737,7 @@ impl Explorer {
         disclosed
     }
 
-    /// Whether a span of the active journey shows.
+    /// Whether a span of the journey shows.
     pub(crate) fn disclosed(&self, span: SpanId) -> bool {
         self.disclosure().shows(span)
     }
@@ -936,7 +844,7 @@ impl Explorer {
         self.changed_tiles = tiles;
     }
 
-    /// Where the lens starts: the focus, the changes, or the active journey.
+    /// Where the lens starts: the focus, the changes, or the journey.
     fn seeds(&self) -> Vec<usize> {
         match self.lens.source {
             lens::Source::Focus => self.graph_focus().into_iter().collect(),
@@ -1043,7 +951,7 @@ impl Explorer {
             .map_or_else(String::new, |unit| unit.name.clone())
     }
 
-    /// Gives every container a color, after those the journeys use.
+    /// Gives every container a color, after those the journey uses.
     fn color_groups(&mut self) {
         for group in &self.map.groups {
             if let Some(unit) = &group.unit {
@@ -1054,19 +962,14 @@ impl Explorer {
     }
 
     fn refresh_journey_tiles(&mut self) {
-        self.journey_tiles = self
-            .tracks
+        let track = &self.track;
+        self.journey_tiles = track
+            .scene
+            .nodes
             .iter()
-            .map(|track| {
-                track
-                    .scene
-                    .nodes
-                    .iter()
-                    .filter_map(|placed| {
-                        let unit = track.unit_id(placed.span)?;
-                        Some((self.map.tile_of(unit)?, track.color(placed.span)))
-                    })
-                    .collect()
+            .filter_map(|placed| {
+                let unit = track.unit_id(placed.span)?;
+                Some((self.map.tile_of(unit)?, track.color(placed.span)))
             })
             .collect();
     }
@@ -1075,12 +978,12 @@ impl Explorer {
         &self.map
     }
 
-    /// The color a node is drawn in on the active journey, if it runs it.
+    /// The color a node is drawn in on the journey, if it runs it.
     pub(crate) fn journey_lane(&self, tile: usize) -> Option<usize> {
-        self.journey_tiles.get(self.active)?.get(&tile).copied()
+        self.journey_tiles.get(&tile).copied()
     }
 
-    /// The unit under the active cursor.
+    /// The unit under the cursor.
     pub(crate) fn focus(&self) -> Option<&UnitId> {
         let track = self.track();
         track.selected.and_then(|id| track.unit_id(id))
@@ -1090,7 +993,7 @@ impl Explorer {
         self.track().span(id)
     }
 
-    /// The unit a span of the active journey runs, if it resolved to exactly one.
+    /// The unit a span of the journey runs, if it resolved to exactly one.
     pub(crate) fn unit_id(&self, id: SpanId) -> Option<&UnitId> {
         self.track().unit_id(id)
     }
@@ -1100,11 +1003,7 @@ impl Explorer {
     }
 
     pub(crate) fn label(&self, id: SpanId) -> String {
-        self.label_in(self.track(), id)
-    }
-
-    pub(crate) fn label_in(&self, track: &Track, id: SpanId) -> String {
-        let Some(span) = track.span(id) else {
+        let Some(span) = self.span(id) else {
             return String::new();
         };
         let name = match &span.target {
@@ -1136,7 +1035,7 @@ impl Explorer {
         }
     }
 
-    /// The call stack at a span of the active journey, outermost first.
+    /// The call stack at a span of the journey, outermost first.
     pub(crate) fn stack(&self, id: SpanId) -> Vec<SpanId> {
         let mut stack: Vec<SpanId> =
             std::iter::successors(Some(id), |s| self.span(*s).and_then(|s| s.parent)).collect();
@@ -1151,7 +1050,7 @@ impl Explorer {
         Some((caller, location))
     }
 
-    /// Moves the active cursor. Returns the new position.
+    /// Moves the cursor. Returns the new position.
     pub(crate) fn step(&mut self, step: Step) -> Option<SpanId> {
         let journey = self.journey()?;
         let current = self.selected().unwrap_or_else(|| journey.root());
@@ -1317,9 +1216,6 @@ pub(crate) mod tests {
             "b",
             "out leaves a and lands on what follows it"
         );
-
-        explorer.step(Step::Start);
-        assert_eq!(at(&explorer), "main");
     }
 
     #[test]
@@ -1337,8 +1233,6 @@ pub(crate) mod tests {
         assert_eq!(explorer.step(Step::Child), None);
         explorer.step(Step::Parent);
         assert_eq!(at(&explorer), "a");
-        explorer.step(Step::End);
-        assert_eq!(at(&explorer), "b");
     }
 
     #[test]
@@ -1481,42 +1375,6 @@ pub(crate) mod tests {
         let reach = explorer.reach().unwrap();
         assert_eq!(reach.upstream.get(&tile("x:a")), Some(&1));
         assert_eq!(reach.upstream.get(&tile("x:main")), Some(&2));
-    }
-
-    #[test]
-    fn pulling_out_a_journey_gives_it_its_own_cursor() {
-        let mut explorer = explorer();
-        explorer.step(Step::Into);
-        explorer.step(Step::Into);
-        assert_eq!(at(&explorer), "c");
-
-        explorer.add_track(UnitId::new("x:a"));
-        assert_eq!(explorer.tracks().len(), 2);
-        assert_eq!(explorer.active(), 1);
-        assert_eq!(at(&explorer), "c", "lands on the unit the cursor was on");
-        let [first, second] = explorer.tracks() else {
-            panic!("two journeys");
-        };
-        assert_eq!(
-            first.color(first.find(&UnitId::new("x:c")).unwrap()),
-            second.color(second.find(&UnitId::new("x:c")).unwrap()),
-            "one module, one color, in every journey"
-        );
-
-        explorer.step(Step::Back);
-        assert_eq!(at(&explorer), "a");
-        let first_cursor = explorer.tracks()[0].selected();
-        assert_eq!(
-            first_cursor.map(|s| explorer.label_in(&explorer.tracks()[0], s)),
-            Some("c".to_owned()),
-            "each journey keeps its own cursor"
-        );
-
-        explorer.close_track(1);
-        assert_eq!(explorer.tracks().len(), 1);
-        assert_eq!(at(&explorer), "c");
-        explorer.close_track(0);
-        assert_eq!(explorer.tracks().len(), 1, "the last journey stays");
     }
 
     #[test]
@@ -1694,27 +1552,6 @@ pub(crate) mod tests {
             !explorer.disclosed(explorer.selected().unwrap()),
             "folding it again by hand still folds it"
         );
-    }
-
-    #[test]
-    fn each_journey_keeps_its_own_opened_calls() {
-        let mut explorer = explorer();
-        let main = explorer.journey().unwrap().root();
-        let a = explorer.journey().unwrap().span(main).unwrap().children[0];
-        let c = explorer.journey().unwrap().span(a).unwrap().children[0];
-        explorer.toggle_expanded(a);
-        assert!(explorer.disclosed(c));
-
-        explorer.add_track(UnitId::new("x:main"));
-        assert!(
-            !explorer.disclosed(c),
-            "the same journey opened again starts folded"
-        );
-        explorer.select_in(SpanRef {
-            track: 0,
-            span: main,
-        });
-        assert!(explorer.disclosed(c), "and the first keeps what it opened");
     }
 
     #[test]

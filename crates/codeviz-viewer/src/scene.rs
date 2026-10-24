@@ -6,7 +6,7 @@ use bevy_egui::input::egui_wants_any_keyboard_input;
 
 use crate::{
     disclosure::Disclose,
-    explorer::{Autoplay, Clustering, Explorer, Side, SpanRef, Step, Track},
+    explorer::{Autoplay, Clustering, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
@@ -40,21 +40,6 @@ impl Plugin for ScenePlugin {
                 .chain(),
         );
     }
-}
-
-/// Each journey's accent: its chip, and its path through the graph. Saturated, and
-/// clear of the amber and blue that mark what calls in and out, so a path stands out
-/// from the pale container colors.
-pub(crate) const ACCENTS: [(f32, f32, f32); 4] = [
-    (0.3, 1.0, 0.62),
-    (1.0, 0.42, 0.86),
-    (0.68, 0.52, 1.0),
-    (0.78, 1.0, 0.32),
-];
-
-pub(crate) fn accent(track: usize) -> Color {
-    let (r, g, b) = ACCENTS[track % ACCENTS.len()];
-    Color::srgb(r, g, b)
 }
 
 /// A function in the graph, by index into the codebase map's tiles.
@@ -114,12 +99,10 @@ fn spawn_nodes(
     }
 }
 
-/// Click centers on a node and opens its journey; shift-click opens it as another
-/// journey alongside.
+/// Click centers on a node and opens its journey.
 fn on_node_click(
     click: On<PointerClick>,
     tiles: Query<&Tile>,
-    keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
     mut panel: ResMut<JourneyPanel>,
 ) {
@@ -132,16 +115,10 @@ fn on_node_click(
     if !explorer.shown(tile.0) {
         return;
     }
-    if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-        if let Some(unit) = explorer.tile_unit(tile.0).cloned() {
-            explorer.add_track(unit);
-        }
-    } else {
-        explorer.open_at(tile.0);
-        // Clicking a node is asking what it does: its journey opens with it.
-        if panel.mode == PanelMode::Hidden {
-            panel.mode = PanelMode::Docked;
-        }
+    explorer.open_at(tile.0);
+    // Clicking a node is asking what it does: its journey opens with it.
+    if panel.mode == PanelMode::Hidden {
+        panel.mode = PanelMode::Docked;
     }
 }
 
@@ -323,21 +300,7 @@ fn keyboard(
         autoplay.playing = !autoplay.playing;
     }
     if keys.just_pressed(KeyCode::Enter) {
-        if shift {
-            explorer.pull_out_selected();
-        } else {
-            explorer.trace_from_focus();
-        }
-    }
-    if keys.just_pressed(KeyCode::Tab) {
-        let next = (explorer.active() + 1) % explorer.tracks().len().max(1);
-        if let Some(span) = explorer.tracks().get(next).and_then(Track::selected) {
-            explorer.select_in(SpanRef { track: next, span });
-        }
-    }
-    if keys.just_pressed(KeyCode::KeyX) {
-        let active = explorer.active();
-        explorer.close_track(active);
+        explorer.trace_from_focus();
     }
     if keys.just_pressed(KeyCode::KeyJ) {
         panel.mode = if panel.mode == PanelMode::Hidden {

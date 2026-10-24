@@ -1,5 +1,5 @@
 //! How much of the graph shows. A reveal starts from something, the focused function,
-//! a diff's changes or the active journey's functions, and shows what is near it,
+//! a diff's changes or the journey's functions, and shows what is near it,
 //! out to a distance the dial sets. Nearness is counted in calls, in space, or both:
 //! space with each call between counting against it. What is in reach shows in full,
 //! what is just past it dims, and the rest shrinks to specks that keep the shape of
@@ -18,7 +18,7 @@ pub(crate) enum Source {
     Focus,
     /// A diff's changes; nearness counts only towards callers, as Impact does.
     Changes,
-    /// The functions the active journey runs.
+    /// The functions the journey runs.
     Journey,
 }
 
