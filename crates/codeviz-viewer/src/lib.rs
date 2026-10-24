@@ -12,6 +12,7 @@
 
 mod camera;
 mod capture;
+mod depth_meter;
 mod diff_view;
 mod disclosure;
 mod explorer;

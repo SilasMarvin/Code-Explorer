@@ -18,6 +18,7 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
+    depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
@@ -127,12 +128,14 @@ const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 
 /// What draws around the graph: everything, or bare, with only the graph and the
-/// journey; and whether the side panel and the search box are open.
+/// journey; whether the side panel and the search box are open; and when a key last
+/// turned the reveal's dial, for the depth meter.
 #[derive(Resource, Default)]
 pub(crate) struct Chrome {
     pub(crate) bare: bool,
     pub(crate) side: bool,
     pub(crate) search: bool,
+    pub(crate) dial_turned: Option<f32>,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -198,8 +201,22 @@ fn draw_ui(
             diff.as_deref(),
             transform.up().into(),
         );
+        // The graph's right edge clear of the diff card above and a docked journey
+        // below, for the depth meter.
+        let mut clear = above(graph_area, panel_area);
         if let Some(diff) = diff.as_deref_mut().filter(|_| !chrome.bare) {
-            diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
+            let card = diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
+            clear.min.y = clear.min.y.max(card.max.y);
+        }
+        let only_changes = explorer.lens().changes_only && diff.is_some();
+        if !chrome.bare && !help.0 && !only_changes {
+            depth_meter::draw(
+                ctx,
+                clear,
+                &explorer,
+                chrome.dial_turned,
+                time.elapsed_secs(),
+            );
         }
         if chrome.search && !chrome.bare {
             search_box(
@@ -1682,7 +1699,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("Backspace", "back to the view before"),
             ("Shift Backspace", "forward again"),
             ("Esc", "close search, this list, the spotlight, the panel"),
-            ("- / =", "show less / more around the start"),
+            ("- / =", "show a ring less / more around the start"),
             ("L", "reveal around: focus → changes → journey"),
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),

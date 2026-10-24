@@ -44,7 +44,11 @@ there) act on it. Hovering a node rings and names it without moving the focus, s
 colors stay put. Digits open the call with that number on its badge and bar, `-` and
 `=` reveal less or more around a starting point, the focus, a diff's changes or the
 journey (`L` switches), measured in calls, distance in the graph, or a blend of both
-(`G` switches); what is out of reach dims, then shrinks to a speck. In the journey,
+(`G` switches); what is out of reach dims, then shrinks to a speck. The dial runs from
+one step out to the farthest node, which is everything, so each press moves one ring; a
+slim meter at the graph's right edge shows where it stands and what it measures from
+for a couple of seconds after `-`, `=`, `L` or `G`, and whenever the pointer is over it.
+In the journey,
 `←`/`→` move between calls by the same caller, `↓`/`↑` go in and out, `[`/`]` step
 through time. `/` searches for a
 function, `S` opens the side panel (the view's settings, outcomes, source and details),

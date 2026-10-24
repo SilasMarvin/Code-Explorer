@@ -653,16 +653,16 @@ pub(crate) fn change_color(change: Change) -> Color {
 }
 
 /// What changed, how it is drawn, and what it reaches: top right of the graph.
-/// Rows focus their node.
+/// Rows focus their node. Returns where it was drawn.
 pub(crate) fn diff_card(
     ctx: &egui::Context,
     area: egui::Rect,
     explorer: &mut Explorer,
     view: &mut DiffView,
-) {
+) -> egui::Rect {
     let mut chosen = None;
     let mut style = view.style;
-    egui::Area::new("diff_card".into())
+    let card = egui::Area::new("diff_card".into())
         .pivot(egui::Align2::RIGHT_TOP)
         .fixed_pos(egui::pos2(area.max.x - 12.0, area.min.y + 10.0))
         .order(egui::Order::Middle)
@@ -739,13 +739,16 @@ pub(crate) fn diff_card(
                         }
                     }
                 });
-        });
+        })
+        .response
+        .rect;
     if style != view.style {
         view.style = style;
     }
     if let Some(tile) = chosen {
         explorer.open_at(tile);
     }
+    card
 }
 
 /// How many functions changed each way, and how many calls came and went.

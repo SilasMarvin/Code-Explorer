@@ -189,8 +189,9 @@ fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
 
 /// The graph's keys: digits open the call numbered so on screen, Backspace goes back
 /// to the view before and Shift+Backspace forward again. - and = narrow and widen
-/// what shows, L picks what it shows around and G how it measures nearness.
-fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
+/// what shows, L picks what it shows around and G how it measures nearness. Returns
+/// whether one of those four was pressed, for the depth meter.
+fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) -> bool {
     if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key)) {
         explorer.open_numbered(index + 1);
     }
@@ -202,6 +203,8 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
         }
     }
     let lens = explorer.lens();
+    let dialed =
+        keys.any_just_pressed([KeyCode::Minus, KeyCode::Equal, KeyCode::KeyL, KeyCode::KeyG]);
     let lens = if keys.just_pressed(KeyCode::Minus) {
         lens.narrower(explorer.lens_top())
     } else if keys.just_pressed(KeyCode::Equal) {
@@ -253,6 +256,7 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
         };
         explorer.set_clustering(next);
     }
+    dialed
 }
 
 fn keyboard(
@@ -269,7 +273,9 @@ fn keyboard(
         autoplay.playing = false;
         explorer.step(step);
     }
-    graph_navigation(&keys, &mut explorer, shift);
+    if graph_navigation(&keys, &mut explorer, shift) {
+        chrome.dial_turned = Some(time.elapsed_secs());
+    }
     if keys.just_pressed(KeyCode::Escape) {
         close_topmost(&mut explorer, &mut help, &mut chrome);
     }
