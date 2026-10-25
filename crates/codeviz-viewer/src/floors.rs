@@ -1259,11 +1259,19 @@ fn name_call(
             + 3.0
             <= rise
     };
+    // Past the cap, the aside shortens to its first number rather than go: that a
+    // sibling's function runs again elsewhere is what matches it to its other tiles.
+    let short = also
+        .as_deref()
+        .and_then(|also| also.split([',', ' ']).next())
+        .map(|first| format!("{text}  · also {first}"));
     let with_also = also.map(|also| format!("{text}  · also {also}"));
-    let (text, flat) = match with_also {
-        Some(long) if fits(&long) => (long, true),
-        _ if fits(&text) => (text, true),
-        Some(long) if slants(&long) => (long, false),
+    let (text, flat) = match (with_also, short) {
+        (Some(long), _) if fits(&long) => (long, true),
+        (_, Some(short)) if fits(&short) => (short, true),
+        (None, None) if fits(&text) => (text, true),
+        (Some(long), _) if slants(&long) => (long, false),
+        (_, Some(short)) => (short, false),
         _ => (text, false),
     };
     let galley = painter.layout_no_wrap(text, font, color);
