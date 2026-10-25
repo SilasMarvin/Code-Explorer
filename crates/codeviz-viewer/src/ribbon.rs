@@ -491,9 +491,13 @@ pub(crate) fn shadow_shape(rise: f32) -> (f32, f32) {
     (1.8 + 2.6 * rise, 0.9 - 0.45 * rise)
 }
 
-/// How many pixels across a marker's ball is at `nearness`, the cursor's bigger.
-pub(crate) fn marker_radius(nearness: f32, cursor: bool) -> f32 {
-    let base = if cursor { 10.0 } else { 7.0 };
+/// How many pixels across a marker's ball is at `nearness`, of `count` calls, the
+/// cursor's bigger.
+pub(crate) fn marker_radius(nearness: f32, cursor: bool, count: usize) -> f32 {
+    // A long journey's balls are smaller, so a crowd of them doesn't clump.
+    #[expect(clippy::cast_precision_loss, reason = "a small count")]
+    let crowd = (24.0 / count.max(1) as f32).sqrt().clamp(0.5, 1.0);
+    let base = if cursor { 10.0 } else { 7.0 * crowd };
     (base * nearness).clamp(base * 0.85, base * 2.0)
 }
 
@@ -521,8 +525,11 @@ pub(crate) fn draw_markers(
         };
         let middle = pair[0].marker.lerp(pair[1].marker, 0.5);
         let width = (1.4 * eye.nearness(middle)).clamp(0.8, 3.5);
-        let strength = thread_strength(index, ribbon.cursor) * fade * 0.7;
-        let color = cues::mix(THREAD, backdrop, eye.haze(middle)).gamma_multiply(strength);
+        // Faded towards the background rather than made see-through, which over the
+        // overlay darkens a pale line instead of thinning it.
+        let strength = 0.3 + 0.5 * thread_strength(index, ribbon.cursor);
+        let color = cues::mix(THREAD, backdrop, 1.0 - strength * (1.0 - eye.haze(middle)))
+            .gamma_multiply(fade);
         painter.line_segment([a, b], egui::Stroke::new(width, color));
     }
     // Farthest first, so nearer balls cover them; the cursor's over all.
@@ -537,11 +544,22 @@ pub(crate) fn draw_markers(
             continue;
         };
         let cursor = ribbon.cursor == Some(index);
-        let radius = marker_radius(eye.nearness(call.marker), cursor);
+        let radius = marker_radius(eye.nearness(call.marker), cursor, ribbon.calls.len());
         let light = to_screen(call.marker + LIGHT.normalize())
             .map_or(egui::vec2(-0.6, -0.8), |p| (p - at).normalized());
+        // Far along the journey from the cursor, a ball steps back into the haze, as
+        // its thread fades.
+        let near = ribbon.cursor.map_or(1.0, |c| {
+            let away = if index < c {
+                index
+            } else {
+                index.saturating_sub(1)
+            };
+            0.55 + 0.45 * thread_strength(away, Some(c))
+        });
+        let haze = 1.0 - (1.0 - eye.haze(call.marker)) * near;
         let fill = egui_color(node_color(explorer, None, call.tile));
-        let fill = cues::mix(fill, backdrop, eye.haze(call.marker));
+        let fill = cues::mix(fill, backdrop, haze);
         if cursor {
             painter.circle_filled(at, radius + 4.0, egui::Color32::from_white_alpha(36));
         }
@@ -768,5 +786,15 @@ mod tests {
             "the rest have footprints"
         );
         assert!(drop_alphas(None).0 < 1e-6);
+    }
+
+    #[test]
+    fn a_crowd_of_balls_is_smaller_but_not_the_cursors() {
+        assert!(marker_radius(1.0, false, 200) < marker_radius(1.0, false, 10));
+        assert!((marker_radius(1.0, true, 200) - marker_radius(1.0, true, 10)).abs() < 1e-6);
+        assert!(
+            marker_radius(1.5, false, 10) > marker_radius(1.0, false, 10),
+            "nearer, bigger"
+        );
     }
 }
