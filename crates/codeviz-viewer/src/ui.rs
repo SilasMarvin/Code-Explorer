@@ -199,7 +199,7 @@ fn draw_ui(
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
         let eye = cues::Eye::of(transform, orbit.distance);
-        draw_graph_labels(
+        let named = draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
@@ -207,7 +207,7 @@ fn draw_ui(
             transform.up().into(),
             ribbon.showing(),
         );
-        ribbon::draw_markers(&painter, &to_screen, &explorer, &ribbon, eye);
+        ribbon::draw_markers(&painter, &to_screen, &explorer, &ribbon, eye, &named);
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
         let mut clear = above(graph_area, panel_area);
@@ -1276,6 +1276,7 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 /// its callers note where in their own calls they call it. A name tries each side of
 /// its node and is left out when none is free, and never covers a node that matters;
 /// zooming in makes room for more. Container names fill whatever space is left.
+/// Returns what the names and the nodes that matter cover, for the ribbon to keep off.
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
@@ -1284,7 +1285,7 @@ fn draw_graph_labels(
     diff: Option<&DiffView>,
     up: Vec3,
     quiet: bool,
-) {
+) -> Vec<egui::Rect> {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
     let diff_tier = |tile: usize| {
@@ -1566,10 +1567,12 @@ fn draw_graph_labels(
             }
         }
     }
+    let taken = placer.taken.clone();
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
+    taken
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it

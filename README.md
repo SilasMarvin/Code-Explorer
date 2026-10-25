@@ -76,10 +76,13 @@ ribbon slides against it; it rests while you turn, pan or zoom and for a second 
 (`Shift Z` holds it still; `--rock-at 0.25` and `0.75` hold a screenshot at either end).
 While the ribbon is up the map steps back: links draw fainter, and only the journey's
 functions, the focus's neighbors and the modules the journey runs through are named. The
-cursor's call is ringed in white and named, with a drop line and a ring round its node;
-its neighbors are named and drop part way, the first and last calls are named too, and
-every few calls between where there is room, every other call carries its number, and
-other calls to the cursor's function are ringed and numbered. A long journey packs its
+cursor's call is ringed in white, with a drop line and a ring round its node, and its
+neighbors drop part way. Every call is named, number and full name, wherever its name
+finds room clear of the other names, balls and the map's names: the cursor's first, then
+its neighbors', then the rest from the start of the journey. A name sits beside its
+ball; where balls crowd, names alternate sides along the thread, and one with no room
+there steps up or down along a slant on a short leader. A call with no room left carries
+its number alone. Other calls to the cursor's function are ringed and named in white. A long journey packs its
 calls closer under a height cap, except the few steps either side of the cursor, which
 keep room to read, so the ribbon opens round the cursor as it moves.
 

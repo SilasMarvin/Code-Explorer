@@ -99,12 +99,12 @@ impl Ribbon {
             .is_some_and(|c| c != index && tile(c).is_some() && tile(c) == tile(index))
     }
 
-    /// Which label call `index` carries: as [`label`] says, except that other calls
-    /// to the cursor's function are numbered as such.
-    pub(crate) fn label_of(&self, index: usize) -> Option<Label> {
-        let kind = label(index, self.calls.len(), self.cursor);
-        if kind != Some(Label::Cursor) && self.again(index) {
-            Some(Label::Again)
+    /// How call `index` is named: as [`label`] says, except that other calls to the
+    /// cursor's function are picked out as such.
+    pub(crate) fn label_of(&self, index: usize) -> Label {
+        let kind = label(index, self.cursor);
+        if kind != Label::Cursor && self.again(index) {
+            Label::Again
         } else {
             kind
         }
@@ -244,47 +244,41 @@ pub(crate) fn heights(count: usize, cursor: Option<usize>) -> Vec<f32> {
         .collect()
 }
 
-/// How much a call's label says, if it has one.
+/// How a call's name is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Label {
-    /// The cursor's call, in full.
+    /// The cursor's call, biggest and brightest.
     Cursor,
-    /// Calls either side of the cursor, by number and name.
+    /// Calls either side of the cursor, a little brighter than the rest.
     Near,
-    /// The first and last calls, so the ribbon's ends say where it runs from and to.
-    End,
-    /// Another call to the cursor's function, by number.
+    /// Another call to the cursor's function, as bright as the cursor's.
     Again,
-    /// Every few calls along the rest, by number and name, so the climb is named
-    /// end to end.
-    Mark,
+    /// Every other call.
+    Rest,
 }
 
-/// Calls named along the ribbon besides the cursor's and its ends, about.
-const MARKS: usize = 6;
-
-/// How many calls apart the marks along a ribbon of `count` calls are named.
-pub(crate) fn marks_every(count: usize) -> usize {
-    count.div_ceil(MARKS).max(2)
-}
-
-/// Calls either side of the cursor that are named.
+/// Calls either side of the cursor that are picked out.
 const NEAR: usize = 2;
 
-/// Which label call `index` of `count` carries with the cursor at `cursor`.
-pub(crate) fn label(index: usize, count: usize, cursor: Option<usize>) -> Option<Label> {
-    if cursor == Some(index) {
-        return Some(Label::Cursor);
+/// How call `index` is named with the cursor at `cursor`.
+pub(crate) fn label(index: usize, cursor: Option<usize>) -> Label {
+    match cursor.map(|c| c.abs_diff(index)) {
+        Some(0) => Label::Cursor,
+        Some(1..=NEAR) => Label::Near,
+        _ => Label::Rest,
     }
-    if cursor.is_some_and(|c| c.abs_diff(index) <= NEAR) {
-        return Some(Label::Near);
-    }
-    if index == 0 || index + 1 == count {
-        return Some(Label::End);
-    }
-    index
-        .is_multiple_of(marks_every(count))
-        .then_some(Label::Mark)
+}
+
+/// The order calls claim room for their names in: the cursor's, its neighbors', then
+/// the rest from the first call on, so the start of the journey reads before its end.
+pub(crate) fn naming_order(count: usize, cursor: Option<usize>) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by_key(|&i| match label(i, cursor) {
+        Label::Cursor => (0, i),
+        Label::Near => (1, i),
+        Label::Again | Label::Rest => (2, i),
+    });
+    order
 }
 
 /// How strongly the thread from call `index` to the next draws with the cursor at
@@ -542,8 +536,8 @@ pub(crate) fn marker_radius(nearness: f32, cursor: bool, count: usize) -> f32 {
 }
 
 /// Draws the thread from call to call, each call's marker as a ball lit from above,
-/// filled with its node's color as its bar is, and the labels the cursor and its
-/// neighbors carry. Nearer markers are bigger and cover farther ones; haze dims them
+/// filled with its node's color as its bar is, and every call's name that finds
+/// room. Nearer markers are bigger and cover farther ones; haze dims them
 /// with distance.
 pub(crate) fn draw_markers(
     painter: &egui::Painter,
@@ -551,6 +545,7 @@ pub(crate) fn draw_markers(
     explorer: &Explorer,
     ribbon: &Ribbon,
     eye: Eye,
+    named: &[egui::Rect],
 ) {
     if !ribbon.showing() {
         return;
@@ -573,6 +568,18 @@ pub(crate) fn draw_markers(
         painter.line_segment([a, b], egui::Stroke::new(width, color));
     }
     // Farthest first, so nearer balls cover them; the cursor's over all.
+    let radii: Vec<f32> = ribbon
+        .calls
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            marker_radius(
+                eye.nearness(c.marker),
+                ribbon.cursor == Some(i),
+                ribbon.calls.len(),
+            )
+        })
+        .collect();
     let mut order: Vec<usize> = (0..ribbon.calls.len()).collect();
     order.sort_by(|&a, &b| {
         let near = |i: usize| eye.nearness(ribbon.calls[i].marker);
@@ -584,7 +591,7 @@ pub(crate) fn draw_markers(
             continue;
         };
         let cursor = ribbon.cursor == Some(index);
-        let radius = marker_radius(eye.nearness(call.marker), cursor, ribbon.calls.len());
+        let radius = radii[index];
         let light = to_screen(call.marker + LIGHT.normalize())
             .map_or(egui::vec2(-0.6, -0.8), |p| (p - at).normalized());
         // Far along the journey from the cursor, a ball steps back into the haze, as
@@ -613,84 +620,204 @@ pub(crate) fn draw_markers(
             );
         }
     }
-    let placed = name_calls(painter, explorer, ribbon, &screen, fade);
-    number_calls(painter, ribbon, &screen, fade, placed);
+    let (placed, unnamed) = name_calls(painter, explorer, ribbon, &screen, &radii, named, fade);
+    number_calls(painter, ribbon, &screen, fade, placed, unnamed);
 }
 
 /// Ribbon labels are light pills with dark text, the map's inverted, so a name over
 /// the map reads as the ribbon's and not another node's.
 const INK: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
 
-/// Names the calls [`Ribbon::label_of`] picks, the cursor's first so it always wins,
-/// each on a light pill right of its marker, else left, else not at all. Returns
-/// where the pills went.
+/// A name waiting for room beside its call's marker.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Tag {
+    /// The call it names.
+    pub(crate) call: usize,
+    /// Its marker on screen.
+    pub(crate) at: egui::Pos2,
+    /// The pill's size.
+    pub(crate) size: egui::Vec2,
+    /// How far from the marker's middle the pill starts.
+    pub(crate) gap: f32,
+    /// Whether it would rather sit left of the marker.
+    pub(crate) left: bool,
+    /// Whether it is placed even where nothing is free.
+    pub(crate) forced: bool,
+}
+
+/// How many pill heights up or down a name may step from its marker to find room, and
+/// how much further out each step sets it, so a stack of them slants away from the
+/// thread and its leaders don't run along it.
+const STACK: usize = 6;
+const SLANT: f32 = 10.0;
+
+/// Where `tag`'s pill may go, best first: beside its marker on its side, then the
+/// other, then stepped further up and down, out along a slant.
+pub(crate) fn spots(tag: &Tag) -> Vec<egui::Rect> {
+    let mut spots = Vec::new();
+    for step in 0..=STACK {
+        #[expect(clippy::cast_precision_loss, reason = "a small count")]
+        let k = step as f32;
+        let rises: &[f32] = if step == 0 { &[0.0] } else { &[-1.0, 1.0] };
+        for &rise in rises {
+            for left in [tag.left, !tag.left] {
+                let out = tag.gap + k * SLANT;
+                let x = if left {
+                    tag.at.x - out - tag.size.x
+                } else {
+                    tag.at.x + out
+                };
+                let y = tag.at.y - tag.size.y / 2.0 + rise * k * (tag.size.y + 1.0);
+                spots.push(egui::Rect::from_min_size(egui::pos2(x, y), tag.size));
+            }
+        }
+    }
+    spots
+}
+
+/// Places `tags`, in the order given, each at its first spot inside `bounds` that
+/// covers no pill placed before it, nothing `taken` (the map's names) and no other
+/// call's ball in `balls`; a tag with no such spot is left out, unless it is forced.
+pub(crate) fn place(
+    tags: &[Tag],
+    balls: &[(usize, egui::Rect)],
+    taken: &[egui::Rect],
+    bounds: egui::Rect,
+) -> Vec<Option<egui::Rect>> {
+    let mut placed: Vec<egui::Rect> = taken.to_vec();
+    tags.iter()
+        .map(|tag| {
+            let options = spots(tag);
+            let free = |pill: &egui::Rect| {
+                bounds.contains_rect(*pill)
+                    && !placed.iter().any(|p| p.intersects(*pill))
+                    // The cursor's name may cover balls, drawn over them, to stay beside
+                    // its own.
+                    && (tag.forced
+                        || !balls
+                            .iter()
+                            .any(|&(call, ball)| call != tag.call && ball.intersects(*pill)))
+            };
+            let spot = options
+                .iter()
+                .copied()
+                .find(free)
+                .or_else(|| tag.forced.then(|| options[0]))?;
+            placed.push(spot);
+            Some(spot)
+        })
+        .collect()
+}
+
+/// Whether markers sit so close on screen that names side by side would collide, one
+/// `line` tall: then names alternate sides along the thread.
+pub(crate) fn crowded(screen: &[egui::Pos2], line: f32) -> bool {
+    let pairs = screen.len().saturating_sub(1);
+    let close = screen
+        .windows(2)
+        .filter(|w| (w[0].y - w[1].y).abs() < line && (w[0].x - w[1].x).abs() < line * 6.0)
+        .count();
+    pairs > 0 && close * 4 >= pairs
+}
+
+/// Names every call it finds room for, in [`naming_order`], each on a light pill beside
+/// its marker: alternating sides when the markers are crowded, else stepped up or down
+/// on a short leader. Returns where the pills went and which calls went unnamed.
 fn name_calls(
     painter: &egui::Painter,
     explorer: &Explorer,
     ribbon: &Ribbon,
     screen: &[Option<egui::Pos2>],
+    radii: &[f32],
+    named: &[egui::Rect],
     fade: f32,
-) -> Vec<egui::Rect> {
-    let mut placed: Vec<egui::Rect> = Vec::new();
-    let mut labelled: Vec<(usize, Label)> = (0..ribbon.calls.len())
-        .filter_map(|i| ribbon.label_of(i).map(|l| (i, l)))
-        .collect();
-    // The cursor's first, then its function's other calls, its neighbors, the ends,
-    // and the marks between where room is left.
-    let rank = |l: Label| match l {
-        Label::Cursor => 0,
-        Label::Again => 1,
-        Label::Near => 2,
-        Label::End => 3,
-        Label::Mark => 4,
-    };
-    labelled.sort_by_key(|&(i, l)| (rank(l), i));
-    for (index, kind) in labelled {
+) -> (Vec<egui::Rect>, Vec<usize>) {
+    let font =
+        |kind: Label| egui::FontId::proportional(if kind == Label::Cursor { 13.0 } else { 11.0 });
+    let pad = egui::vec2(4.0, 1.5);
+    let line = painter
+        .layout_no_wrap("0".into(), font(Label::Rest), INK)
+        .size()
+        .y
+        + pad.y * 2.0;
+    let shown: Vec<egui::Pos2> = screen.iter().flatten().copied().collect();
+    let alternate = crowded(&shown, line);
+    let mut tags = Vec::new();
+    let mut galleys = HashMap::new();
+    for index in naming_order(ribbon.calls.len(), ribbon.cursor) {
         let (Some(call), Some(at)) = (ribbon.calls.get(index), screen[index]) else {
             continue;
         };
-        let text = match kind {
-            Label::Again => call.number.clone(),
-            _ if call.number.is_empty() => node_name(explorer, call.tile),
-            _ => format!("{} {}", call.number, node_name(explorer, call.tile)),
+        let kind = ribbon.label_of(index);
+        let name = node_name(explorer, call.tile);
+        let text = if call.number.is_empty() {
+            name
+        } else {
+            format!("{} {name}", call.number)
         };
+        let galley = painter.layout_no_wrap(text, font(kind), INK);
+        tags.push(Tag {
+            call: index,
+            at,
+            size: galley.size() + pad * 2.0,
+            gap: radii[index] + 3.0,
+            left: alternate && index % 2 == 1,
+            forced: kind == Label::Cursor,
+        });
+        galleys.insert(index, (galley, kind));
+    }
+    let balls: Vec<(usize, egui::Rect)> = screen
+        .iter()
+        .enumerate()
+        .filter_map(|(i, at)| {
+            let ball = egui::Rect::from_center_size((*at)?, egui::Vec2::splat(radii[i] * 1.6));
+            Some((i, ball))
+        })
+        .collect();
+    let spots = place(&tags, &balls, named, painter.clip_rect());
+    let leader = egui::Color32::from_rgb(150, 156, 170).gamma_multiply(0.7 * fade);
+    // The numbers of calls left unnamed keep off the map's names too.
+    let mut placed = named.to_vec();
+    let mut unnamed = Vec::new();
+    for (tag, spot) in tags.iter().zip(spots) {
+        let Some((galley, kind)) = galleys.remove(&tag.call) else {
+            continue;
+        };
+        let Some(spot) = spot else {
+            unnamed.push(tag.call);
+            continue;
+        };
+        if (spot.center().y - tag.at.y).abs() > 1.0 {
+            let edge = if spot.center().x < tag.at.x {
+                spot.right()
+            } else {
+                spot.left()
+            };
+            let end = egui::pos2(edge, spot.center().y);
+            painter.line_segment([tag.at, end], egui::Stroke::new(1.0, leader));
+        }
         let pill = match kind {
             Label::Cursor | Label::Again => egui::Color32::from_rgb(245, 247, 252),
             Label::Near => egui::Color32::from_rgb(178, 184, 198),
-            Label::End | Label::Mark => egui::Color32::from_rgb(120, 127, 142),
+            Label::Rest => egui::Color32::from_rgb(120, 127, 142),
         };
-        let size = if kind == Label::Cursor { 13.0 } else { 11.0 };
-        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(size), INK);
-        let pad = egui::vec2(4.0, 1.5);
-        let gap = if kind == Label::Cursor { 11.0 } else { 8.0 };
-        let width = galley.size().x + pad.x * 2.0;
-        let spot = [at.x + gap, at.x - gap - width].into_iter().find_map(|x| {
-            let pill = egui::Rect::from_min_size(
-                egui::pos2(x, at.y - galley.size().y / 2.0 - pad.y),
-                galley.size() + pad * 2.0,
-            );
-            (kind == Label::Cursor || !placed.iter().any(|p| p.intersects(pill))).then_some(pill)
-        });
-        let Some(spot) = spot else { continue };
-        placed.push(spot);
         painter.rect_filled(spot, 3.0, pill.gamma_multiply(fade));
         painter.galley(spot.min + pad, galley, INK);
+        placed.push(spot);
     }
-    placed
+    (placed, unnamed)
 }
 
-/// Every call left unnamed carries its number alone, as its bar does, nearest the
-/// cursor first, where there is room.
+/// Calls left unnamed carry their number alone, as their bars do, nearest the cursor
+/// first, where there is room.
 fn number_calls(
     painter: &egui::Painter,
     ribbon: &Ribbon,
     screen: &[Option<egui::Pos2>],
     fade: f32,
     mut placed: Vec<egui::Rect>,
+    mut rest: Vec<usize>,
 ) {
-    let mut rest: Vec<usize> = (0..ribbon.calls.len())
-        .filter(|&i| ribbon.label_of(i).is_none())
-        .collect();
     rest.sort_by_key(|&i| ribbon.cursor.map_or(i, |c| c.abs_diff(i)));
     let tag = egui::Color32::from_rgb(196, 202, 216).gamma_multiply(fade);
     for index in rest {
@@ -786,24 +913,116 @@ mod tests {
     }
 
     #[test]
-    fn the_cursor_and_its_neighbors_are_named() {
-        let kinds: Vec<Option<Label>> = (0..10).map(|i| label(i, 10, Some(5))).collect();
-        assert_eq!(kinds[5], Some(Label::Cursor));
-        assert_eq!(kinds[3], Some(Label::Near));
-        assert_eq!(kinds[7], Some(Label::Near));
-        assert_eq!(kinds[1], None);
+    fn the_cursor_and_its_neighbors_are_named_first_then_from_the_start() {
+        assert_eq!(label(5, Some(5)), Label::Cursor);
+        assert_eq!(label(3, Some(5)), Label::Near);
+        assert_eq!(label(7, Some(5)), Label::Near);
+        assert_eq!(label(0, Some(5)), Label::Rest);
+        assert_eq!(label(0, None), Label::Rest);
         assert_eq!(
-            kinds[2],
-            Some(Label::Mark),
-            "every other call in a short one"
+            naming_order(10, Some(5)),
+            vec![5, 3, 4, 6, 7, 0, 1, 2, 8, 9]
         );
-        assert_eq!(kinds[0], Some(Label::End));
-        assert_eq!(kinds[9], Some(Label::End));
-        assert_eq!(
-            label(0, 10, Some(0)),
-            Some(Label::Cursor),
-            "the cursor wins"
+        assert_eq!(naming_order(3, None), vec![0, 1, 2]);
+    }
+
+    fn tag(call: usize, y: f32, left: bool) -> Tag {
+        Tag {
+            call,
+            at: egui::pos2(500.0, y),
+            size: egui::vec2(80.0, 16.0),
+            gap: 8.0,
+            left,
+            forced: false,
+        }
+    }
+
+    fn screen() -> egui::Rect {
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 1000.0))
+    }
+
+    #[test]
+    fn a_name_sits_beside_its_marker_when_there_is_room() {
+        let placed = place(
+            &[tag(0, 100.0, false), tag(1, 200.0, true)],
+            &[],
+            &[],
+            screen(),
         );
+        let right = placed[0].expect("placed");
+        assert!(right.left() > 500.0 && (right.center().y - 100.0).abs() < 1e-3);
+        let left = placed[1].expect("placed");
+        assert!(left.right() < 500.0 && (left.center().y - 200.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn crowded_names_take_the_other_side_then_step_away_without_overlap() {
+        // Five markers a few pixels apart, all wanting the right.
+        let tags: Vec<Tag> = (0..5)
+            .map(|i| tag(i, 300.0 + 3.0 * i as f32, false))
+            .collect();
+        let placed = place(&tags, &[], &[], screen());
+        let spots: Vec<egui::Rect> = placed.iter().map(|p| p.expect("all fit")).collect();
+        assert!(spots[1].right() < 500.0, "the second goes left");
+        for (i, a) in spots.iter().enumerate() {
+            for b in &spots[i + 1..] {
+                assert!(!a.intersects(*b), "no two overlap");
+            }
+        }
+        assert!(
+            spots[4].left() > spots[0].left() || spots[4].right() < spots[1].right(),
+            "a stepped name slants further out"
+        );
+    }
+
+    #[test]
+    fn names_keep_off_other_balls_and_the_screen_edge() {
+        let ball = egui::Rect::from_center_size(egui::pos2(540.0, 100.0), egui::vec2(10.0, 10.0));
+        let placed = place(
+            &[tag(0, 100.0, false)],
+            &[(1, ball), (0, ball)],
+            &[],
+            screen(),
+        );
+        assert!(
+            placed[0].expect("placed").right() < 500.0,
+            "around the other ball"
+        );
+        let edge = Tag {
+            at: egui::pos2(990.0, 100.0),
+            ..tag(0, 100.0, false)
+        };
+        assert!(screen().contains_rect(place(&[edge], &[], &[], screen())[0].expect("placed")));
+    }
+
+    #[test]
+    fn names_keep_off_the_maps_names() {
+        let map = egui::Rect::from_min_size(egui::pos2(505.0, 90.0), egui::vec2(100.0, 20.0));
+        let placed = place(&[tag(0, 100.0, false)], &[], &[map], screen());
+        assert!(placed[0].expect("placed").right() < 500.0);
+    }
+
+    #[test]
+    fn a_name_with_no_room_is_dropped_unless_forced() {
+        let tiny = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(50.0, 50.0));
+        let lost = tag(0, 20.0, false);
+        assert_eq!(place(&[lost], &[], &[], tiny), vec![None]);
+        let forced = Tag {
+            forced: true,
+            ..lost
+        };
+        assert!(place(&[forced], &[], &[], tiny)[0].is_some());
+    }
+
+    #[test]
+    fn markers_close_on_screen_are_crowded() {
+        let apart: Vec<egui::Pos2> = (0..10)
+            .map(|i| egui::pos2(100.0, 40.0 * i as f32))
+            .collect();
+        assert!(!crowded(&apart, 16.0));
+        let close: Vec<egui::Pos2> = (0..10).map(|i| egui::pos2(100.0, 5.0 * i as f32)).collect();
+        assert!(crowded(&close, 16.0));
+        assert!(!crowded(&[], 16.0));
     }
 
     #[test]
@@ -850,16 +1069,6 @@ mod tests {
             marker_radius(1.5, false, 10) > marker_radius(1.0, false, 10),
             "nearer, bigger"
         );
-    }
-
-    #[test]
-    fn marks_name_the_climb_end_to_end() {
-        assert_eq!(marks_every(19), 4);
-        assert_eq!(marks_every(5), 2, "never every call");
-        let marked: Vec<usize> = (0..19)
-            .filter(|&i| label(i, 19, Some(10)) == Some(Label::Mark))
-            .collect();
-        assert_eq!(marked, vec![4, 16], "8 and 12 are the cursor's neighbors");
     }
 
     #[test]
