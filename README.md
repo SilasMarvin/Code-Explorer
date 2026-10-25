@@ -59,20 +59,24 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`Z` swings the camera a quarter turn to see the journey's calls in time (`--time side`
-opens there, `--time half` halfway round; the top bar says which). Time runs along
-depth: every disclosed call gets a marker at its function's node, pushed back by when it
-runs, evenly spaced, so head-on the map is unchanged, and from the side the calls read
-left to right at their nodes' heights, a function called twice appearing twice. The
-markers unfold as the camera turns, tied to their nodes by dotted strings mid-swing,
-while the map's nodes, links and names fade, so swinging back folds each call into its
-node. Each call hangs from its caller's lifeline, which runs along time for as long as
-the caller does; every call of the cursor's function is white, the link into the
-cursor's call violet and its own calls' links blue. Calls are named on a slant, all of
-them where there is room, else only those around the cursor's; the modules they reach
-are named down the left edge, level with their rings on the map. The side view is near
-orthographic, fits up to 60 calls across and pans along time to keep the cursor's call
-in sight, and clicking a call moves the cursor to it.
+`Z` steps the camera from the map to a 3D view of the journey's calls in time, then to
+the side, and back (`--time 3d` or `--time side` opens on one; the top bar says which).
+Time runs along depth: every disclosed call gets a marker at its function's node, pushed
+out of the map by when it runs, evenly spaced, so head-on the map is unchanged. Each call
+hangs from its caller's lifeline, a rail running out from the caller's node for as long
+as it runs. The 3D view, turned 45° in perspective with fog, shows the map quieted (links
+a little over half, names only on the journey's nodes, the focus's neighbors and the
+modules the journey runs through) and the calls standing out of it, each with a
+footprint ring at its node and a dotted string back to it. From the side, near
+orthographic, the calls read left to right as a sequence diagram at their nodes'
+heights, a function called twice appearing twice, with the modules named down the left
+edge; the view fits up to 60 calls across and pans along time to keep the cursor's call
+in sight. Every angle in between unfolds as far as the camera has turned, and turning
+back folds each call into its node. Every call of the cursor's function is white, the
+link into the cursor's call violet and its own calls' links blue; calls are named on a
+slant around the cursor's, and all of them from the side where there is room. Pointing
+at a call rings its node and every other call it runs, pointing at a node rings all its
+calls, and clicking a call moves the cursor to it.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

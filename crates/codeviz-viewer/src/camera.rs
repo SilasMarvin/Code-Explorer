@@ -143,6 +143,11 @@ fn spawn_camera(
         OrbitCamera::default(),
         Projection::Perspective(PerspectiveProjection::default()),
         Transform::default(),
+        // Clear until the timeline's 3D views thicken it.
+        DistanceFog {
+            color: Color::NONE,
+            ..default()
+        },
         Bloom::NATURAL,
     ));
     // egui gets its own full-window camera so the 3D camera's viewport can shrink to

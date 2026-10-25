@@ -4,15 +4,18 @@
 //! has moved. Swing the camera a quarter turn to look along the map's x axis and depth
 //! becomes the screen's horizontal: the journey reads left to right, each call at its
 //! node's height, so modules keep their bands, and a function called twice is there
-//! twice. Under a lens that narrows as the camera swings, the side view is near
+//! twice. Under a lens that narrows as the camera nears the side, that view is near
 //! orthographic, so the calls stay evenly spaced on screen.
 //!
-//! The markers unfold with the swing and the map's nodes, links and rings fade with
-//! it, so turning back shows each call folding into its node. A call hangs from its
-//! caller's lifeline, which runs along time at the caller's node for as long as it
-//! runs: seen from the side, a sequence diagram; head-on, the map's own links.
+//! In between, at any angle, is a 3D view worth stopping at: the map in perspective,
+//! quieted, and the calls standing out of it along time, each caller's lifeline a rail
+//! running out from its node, each call dropping from its caller's rail to its marker,
+//! with a footprint on the map where it came from and fog to say what is further. A
+//! call hangs from its caller's lifeline for as long as the caller runs: from the side
+//! a sequence diagram; head-on, the map's own links. Turning back folds each call into
+//! its node.
 //!
-//! `Z` swings between the two views; [`Chrome`] holds which.
+//! `Z` steps from the map to the 3D view to the side and back; [`Chrome`] holds which.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
@@ -33,35 +36,38 @@ pub(crate) enum TimeView {
     /// The map as the simulation lays it out; time folded away.
     #[default]
     Map,
+    /// Turned 45° and looking down a little: the map in perspective, the calls
+    /// standing out of it along time.
+    Rails,
     /// Swung a quarter turn: time runs left to right.
     Side,
-    /// Halfway round, to see the calls unfold from their nodes.
-    Half,
 }
 
 impl TimeView {
-    /// `Z` swings between the map and the side.
+    /// `Z` steps from the map to the 3D view to the side, and back to the map.
     pub(crate) fn next(self) -> Self {
         match self {
-            Self::Map => Self::Side,
-            Self::Side | Self::Half => Self::Map,
+            Self::Map => Self::Rails,
+            Self::Rails => Self::Side,
+            Self::Side => Self::Map,
         }
     }
 
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Map => "map",
+            Self::Rails => "3d",
             Self::Side => "side",
-            Self::Half => "half",
         }
     }
 
-    /// The camera's yaw and pitch for this view: looking along x, time to the right.
+    /// The camera's yaw and pitch for this view: from the side looking along x, time
+    /// to the right.
     fn angles(self) -> (f32, f32) {
         match self {
             Self::Map => FRONT,
+            Self::Rails => (-0.8, -0.22),
             Self::Side => (-std::f32::consts::FRAC_PI_2, 0.0),
-            Self::Half => (-std::f32::consts::FRAC_PI_6, -0.12),
         }
     }
 }
@@ -91,7 +97,7 @@ pub(crate) struct Timeline {
     step: f32,
     /// The plane across x the calls settle into from the side: the start's node's.
     plane: f32,
-    /// How far along time the camera looks, from the timeline's middle, unfolded.
+    /// How far along time from the map the camera looks, unfolded.
     pub(crate) pan: f32,
     /// The cursor's call, by index.
     cursor: Option<usize>,
@@ -99,6 +105,16 @@ pub(crate) struct Timeline {
 }
 
 impl Timeline {
+    /// How far into the side view the camera has come: 0 until it is nearly there.
+    pub(crate) fn side(&self) -> f32 {
+        side(self.unfold)
+    }
+
+    /// The calls a node runs, by index.
+    pub(crate) fn calls_of(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
+        calls_of(self.calls.iter().map(|c| c.tile), tile)
+    }
+
     /// Where call `index` is drawn: its node's place, pushed back along time as far
     /// as the view has unfolded.
     pub(crate) fn point(&self, explorer: &Explorer, index: usize) -> Option<Vec3> {
@@ -142,7 +158,7 @@ impl Timeline {
     fn at(&self, home: Vec3, index: usize) -> Vec3 {
         #[expect(clippy::cast_precision_loss, reason = "a call index")]
         let depth = self.start + self.step * index as f32;
-        let settle = self.unfold.powi(4);
+        let settle = side(self.unfold);
         Vec3::new(
             home.x + (self.plane - home.x) * settle,
             home.y,
@@ -161,6 +177,7 @@ impl Plugin for TimelinePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Timeline>()
             .init_gizmo_group::<TimeGizmos>()
+            .init_gizmo_group::<RailGizmos>()
             .add_systems(Startup, line_widths);
     }
 }
@@ -169,8 +186,13 @@ impl Plugin for TimelinePlugin {
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub(crate) struct TimeGizmos;
 
+/// The lifelines, drawn heavier: the rails the calls hang from.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub(crate) struct RailGizmos;
+
 fn line_widths(mut store: ResMut<GizmoConfigStore>) {
     store.config_mut::<TimeGizmos>().0.line.width = 1.5;
+    store.config_mut::<RailGizmos>().0.line.width = 3.0;
 }
 
 /// The calls under `root` in the order they run, depth first, each with the index of
@@ -208,11 +230,34 @@ pub(crate) fn time_length(count: usize, reach: f32) -> f32 {
     (reach * 3.0).max(gaps * MIN_STEP)
 }
 
-/// How far the camera's lens narrows as time unfolds: by the side it looks from eight
-/// times as far, through an eighth of the angle, nearly flat, so calls are evenly
-/// spaced however near the camera they are.
+/// How far into the side view `unfold` is: nothing short of about 35° from it, all of
+/// it the last few degrees, so every angle on the way stays in perspective.
+pub(crate) fn side(unfold: f32) -> f32 {
+    let t = ((unfold - 0.82) / 0.15).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How quiet the map has gone, from 0 head-on to all of it by about 35° round.
+fn quiet(unfold: f32) -> f32 {
+    (unfold / 0.6).min(1.0)
+}
+
+/// Which of the calls, given the node each runs, run `tile`, by index.
+pub(crate) fn calls_of(
+    tiles: impl Iterator<Item = usize>,
+    tile: usize,
+) -> impl Iterator<Item = usize> {
+    tiles
+        .enumerate()
+        .filter(move |&(_, t)| t == tile)
+        .map(|(i, _)| i)
+}
+
+/// How far the camera's lens narrows as time unfolds: only near the side, where it
+/// looks from eight times as far, through an eighth of the angle, nearly flat, so
+/// calls are evenly spaced however near the camera they are. Elsewhere, perspective.
 pub(crate) fn lens(unfold: f32) -> f32 {
-    1.0 + 7.0 * unfold
+    1.0 + 7.0 * side(unfold)
 }
 
 /// Where along time to look, from its middle, to keep the cursor's call in sight when
@@ -270,9 +315,9 @@ pub(crate) fn swing(
     explorer: Res<Explorer>,
     mut timeline: ResMut<Timeline>,
     mut last: Local<Option<TimeView>>,
-    mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
+    mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection, &mut DistanceFog)>,
 ) {
-    let Ok((mut camera, view, projection)) = cameras.single_mut() else {
+    let Ok((mut camera, view, projection, mut fog)) = cameras.single_mut() else {
         return;
     };
     let wanted = chrome.time;
@@ -298,6 +343,14 @@ pub(crate) fn swing(
     let unfold = (timeline.weight * view.back().x.abs()).clamp(0.0, 1.0);
     timeline.unfold = if unfold < 1e-3 { 0.0 } else { unfold };
     camera.lens = lens(timeline.unfold);
+    // Fog in the 3D views, so what is further reads as further; none head-on, where
+    // nothing is, nor from the side, where everything is as far.
+    let depth = camera.distance * camera.lens;
+    fog.falloff = FogFalloff::Linear {
+        start: depth * 0.85,
+        end: depth * 1.9,
+    };
+    fog.color = FOG.with_alpha(0.85 * timeline.unfold * (1.0 - timeline.side()));
 
     timeline.calls = calls;
     let anchor = explorer.anchor().and_then(|t| explorer.tile_point(t));
@@ -315,7 +368,10 @@ pub(crate) fn swing(
     #[expect(clippy::cast_precision_loss, reason = "a call count")]
     let gaps = count.saturating_sub(1).max(1) as f32;
     timeline.step = length / gaps;
-    timeline.start = anchor.z - length / 2.0;
+    // Time runs out of the map, towards the camera head-on, from a little clear of it
+    // so the first calls stand apart from the map in the 3D views.
+    let gap = length * GAP;
+    timeline.start = anchor.z + gap;
     timeline.plane = anchor.x;
     // On a call the timeline leaves out, as a closure, the nearest call it is under.
     let stack = explorer
@@ -345,7 +401,11 @@ pub(crate) fn swing(
             .or(heights.last())
             .copied()
             .unwrap_or_default();
-        let distance = time_distance(length, count, height, aspect);
+        let mut distance = time_distance(length, count, height, aspect);
+        if wanted == TimeView::Rails {
+            // Room for the map as well as the calls, which it sees across.
+            distance = distance.max(reach * 2.6) * 1.1;
+        }
         if (camera.goal_distance().unwrap_or(camera.distance) - distance).abs() > distance * 0.01 {
             let target = camera.target;
             camera.glide_to(target, distance);
@@ -356,8 +416,14 @@ pub(crate) fn swing(
     let at = timeline
         .cursor
         .map_or(0.0, |i| timeline.step * i as f32 - length / 2.0);
-    timeline.pan = time_pan(at, length, half_width) * timeline.unfold;
+    timeline.pan = (gap + length / 2.0 + time_pan(at, length, half_width)) * timeline.unfold;
 }
+
+/// How far clear of the map time starts, as a share of its length.
+const GAP: f32 = 0.3;
+
+/// The fog's color: the background's.
+const FOG: Color = Color::srgb(0.06, 0.07, 0.09);
 
 /// Calls the side view takes in across its width at most; a longer journey pans.
 const CALLS_ACROSS: f32 = 60.0;
@@ -403,13 +469,15 @@ pub(crate) fn place_markers(
     if unfold > 0.0 || *shrunk {
         let graph = explorer.graph();
         let disclosed = explorer.disclosure();
+        let gone = 1.0 - side(unfold);
         for (tile, mut transform) in &mut nodes {
             let size = node_scale(&explorer, tile.0) * node_size(graph, tile.0);
-            // What the journey runs stays a little longer, for its calls to unfold from.
+            // The map stays a map until the side, what the journey runs in full and
+            // the rest quieter; from the side the map's nodes would only pile up.
             let left = if disclosed.tiles().contains_key(&tile.0) {
-                1.0 - unfold
+                gone
             } else {
-                (1.0 - unfold).powi(3)
+                (1.0 - 0.35 * quiet(unfold)) * gone
             };
             transform.scale = Vec3::splat(size * left.max(0.001));
         }
@@ -529,7 +597,9 @@ fn on_marker_out(
 pub(crate) fn draw_lines(
     timeline: Res<Timeline>,
     explorer: Res<Explorer>,
+    cameras: Query<&Transform, With<OrbitCamera>>,
     mut gizmos: Gizmos<TimeGizmos>,
+    mut rails: Gizmos<RailGizmos>,
 ) {
     let unfold = timeline.unfold;
     if unfold <= 0.0 {
@@ -537,7 +607,9 @@ pub(crate) fn draw_lines(
     }
     let graph = explorer.graph();
     let pale = FURTHER.with_alpha(0.4 * unfold);
-    let string = FURTHER.with_alpha(0.35 * string_strength(unfold));
+    let string = FURTHER.with_alpha(0.18 * string_strength(unfold));
+    let footprint = 0.5 * unfold * (1.0 - timeline.side());
+    let mut stepped: Vec<usize> = Vec::new();
     for (index, call) in timeline.calls.iter().enumerate() {
         let Some(home) = explorer.tile_point(call.tile) else {
             continue;
@@ -550,6 +622,16 @@ pub(crate) fn draw_lines(
                 dashed(&mut gizmos, home, at, radius, string);
             }
         }
+        // A footprint on the map, once a node, where its calls stand out from.
+        if footprint > 0.02 && !stepped.contains(&call.tile) {
+            stepped.push(call.tile);
+            let color = crate::scene::lane_color(explorer.tile_color(call.tile));
+            gizmos.circle(
+                Isometry3d::from_translation(home),
+                radius * 1.5,
+                color.with_alpha(footprint),
+            );
+        }
         // The lifeline: from the call to the last call under it.
         if call.last > index {
             let (from, to) = (timeline.at(home, index), timeline.at(home, call.last));
@@ -558,13 +640,13 @@ pub(crate) fn draw_lines(
             } else {
                 pale
             };
-            gizmos.line(from, to, color);
+            rails.line(from, to, color);
             // The journey's own lifeline ends in an arrowhead: time runs this way.
             if index == 0 {
                 let size = timeline.step.min(4.0) * 0.5;
                 let back = Vec3::NEG_Z * size;
-                gizmos.line(to, to + back + Vec3::Y * size * 0.6, color);
-                gizmos.line(to, to + back - Vec3::Y * size * 0.6, color);
+                rails.line(to, to + back + Vec3::Y * size * 0.6, color);
+                rails.line(to, to + back - Vec3::Y * size * 0.6, color);
             }
         }
         let Some(caller) = call.caller.and_then(|c| timeline.calls.get(c)) else {
@@ -589,6 +671,20 @@ pub(crate) fn draw_lines(
         };
         gizmos.line(from, to, color);
     }
+    // The node under the pointer: every call it runs and its place on the map, ringed.
+    let (Some(tile), Ok(view)) = (explorer.hovered_tile, cameras.single()) else {
+        return;
+    };
+    let ring = Color::WHITE.with_alpha(0.9 * unfold);
+    let facing = |at: Vec3| Isometry3d::new(at, view.rotation);
+    if let Some(home) = explorer.tile_point(tile) {
+        gizmos.circle(facing(home), node_size(graph, tile), ring);
+    }
+    for index in timeline.calls_of(tile) {
+        if let Some(at) = timeline.point(&explorer, index) {
+            gizmos.circle(facing(at), timeline.marker_size(graph, index), ring);
+        }
+    }
 }
 
 /// A line of dashes `dash` long, from `a` to `b`.
@@ -605,15 +701,17 @@ fn dashed(gizmos: &mut Gizmos<TimeGizmos>, a: Vec3, b: Vec3, dash: f32, color: C
     }
 }
 
-/// How strongly the map's links and rings draw: they fade as time unfolds.
+/// How strongly the map's links and rings draw: quieter as time unfolds, to a little
+/// over half by 35° round so the map stays a map under the calls, and gone from the
+/// side, where they would collapse into a column.
 pub(crate) fn map_strength(timeline: &Timeline) -> f32 {
-    (1.0 - timeline.unfold).powi(2)
+    (1.0 - 0.45 * quiet(timeline.unfold)) * (1.0 - timeline.side())
 }
 
-/// How strongly a call's string back to its node draws: most mid-swing, where it
-/// says which node a call came from, and not at all on the map or from the side.
+/// How strongly a call's string back to its node draws: through the 3D views, where
+/// it says which node a call came from, and not at all on the map or from the side.
 pub(crate) fn string_strength(unfold: f32) -> f32 {
-    4.0 * unfold * (1.0 - unfold)
+    unfold * (1.0 - side(unfold))
 }
 
 /// Names the calls on the timeline, angled up from each marker so neighbors fit:
@@ -625,7 +723,7 @@ pub(crate) fn draw_labels(
     explorer: &Explorer,
     timeline: &Timeline,
 ) {
-    let alpha = ((timeline.unfold - 0.5) * 2.0).clamp(0.0, 1.0);
+    let alpha = ((timeline.unfold - 0.25) / 0.3).clamp(0.0, 1.0);
     if alpha <= 0.0 {
         return;
     }
@@ -643,7 +741,12 @@ pub(crate) fn draw_labels(
         .chain((0..first).rev())
         .find_map(|i| Some((pixels(i)?, pixels(i + 1)?)))
         .is_some_and(|(a, b)| (b.x - a.x).abs() < 16.0);
-    let order = if crowded { &order[..near] } else { &order[..] };
+    // In the 3D views the map is named too, so only the calls around the cursor's.
+    let order = if crowded || timeline.side() < 0.5 {
+        &order[..near]
+    } else {
+        &order[..]
+    };
     let mut taken: Vec<(egui::Pos2, f32)> = Vec::new();
     for &index in order {
         let call = timeline.calls[index];
@@ -691,7 +794,8 @@ pub(crate) fn draw_labels(
         taken.push((start, width));
         painter.add(egui::epaint::TextShape::new(start, galley, color).with_angle(LABEL_ANGLE));
     }
-    draw_modules(painter, to_screen, explorer, timeline, alpha);
+    // The map's rings name its modules until the side, where they fold away.
+    draw_modules(painter, to_screen, explorer, timeline, timeline.side());
 }
 
 /// Names the modules the calls reach down the left edge, each level with the middle
@@ -873,12 +977,39 @@ mod tests {
     }
 
     #[test]
-    fn the_lens_flattens_only_as_time_unfolds() {
+    fn the_lens_flattens_only_near_the_side() {
         assert!(
             (lens(0.0) - 1.0).abs() < 1e-6,
             "the map keeps its perspective"
         );
-        assert!(lens(1.0) > lens(0.5) && lens(0.5) > 1.0);
+        let three_d = std::f32::consts::FRAC_PI_4.sin();
+        assert!((lens(three_d) - 1.0).abs() < 1e-6, "so does the 3D view");
+        assert!(lens(1.0) > 7.0, "the side is near flat");
+        assert!(
+            lens(0.9) > 1.0 && lens(0.9) < lens(1.0),
+            "eased in on the way"
+        );
+    }
+
+    #[test]
+    fn the_map_stays_a_map_until_the_side() {
+        let at = |unfold: f32| {
+            map_strength(&Timeline {
+                unfold,
+                ..default()
+            })
+        };
+        assert!((at(0.0) - 1.0).abs() < 1e-6);
+        assert!((at(0.7) - 0.55).abs() < 0.01, "a little over half in 3D");
+        assert!(at(1.0) < 1e-3, "gone from the side");
+    }
+
+    #[test]
+    fn a_node_lights_every_call_it_runs() {
+        let tiles = [4, 7, 4, 9, 4];
+        let lit: Vec<usize> = calls_of(tiles.into_iter(), 4).collect();
+        assert_eq!(lit, vec![0, 2, 4]);
+        assert_eq!(calls_of(tiles.into_iter(), 5).count(), 0);
     }
 
     #[test]

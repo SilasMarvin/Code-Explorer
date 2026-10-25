@@ -567,7 +567,8 @@ fn draw_regions(explorer: &Explorer, strength: f32, gizmos: &mut Gizmos) {
             .circle(
                 Isometry3d::from_translation(middle),
                 radius,
-                color.with_alpha(0.22 * strength),
+                // Rings quiet faster than links: there are many, and they are big.
+                color.with_alpha(0.22 * strength * strength),
             )
             .resolution(64);
     }

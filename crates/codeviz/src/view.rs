@@ -130,8 +130,9 @@ enum TimeArg {
     Map,
     /// Swung a quarter turn: the journey's calls run left to right.
     Side,
-    /// Halfway round, the calls unfolding from their nodes.
-    Half,
+    /// Turned 45°: the map in perspective, the calls standing out of it in time.
+    #[value(name = "3d")]
+    Rails,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -248,7 +249,7 @@ pub(crate) fn open(
         viewer = viewer.with_time(match time {
             TimeArg::Map => "map",
             TimeArg::Side => "side",
-            TimeArg::Half => "half",
+            TimeArg::Rails => "3d",
         });
     }
     if let Some(path) = &args.screenshot {

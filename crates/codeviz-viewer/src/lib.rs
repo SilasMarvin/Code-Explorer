@@ -237,13 +237,14 @@ impl Viewer {
         self
     }
 
-    /// Opens looking along the journey's time: `side` swung a quarter turn so calls
-    /// run left to right, `half` halfway round; anything else, the map.
+    /// Opens looking along the journey's time: `3d` turned 45° with the calls standing
+    /// out of the map, `side` swung a quarter turn so they run left to right; anything
+    /// else, the map.
     #[must_use]
     pub fn with_time(mut self, view: &str) -> Self {
         self.time = match view {
             "side" => timeline::TimeView::Side,
-            "half" => timeline::TimeView::Half,
+            "3d" => timeline::TimeView::Rails,
             _ => timeline::TimeView::Map,
         };
         self

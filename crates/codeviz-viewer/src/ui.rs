@@ -305,8 +305,9 @@ fn panels(
                             format!("View: {}", chrome.time.name()),
                         )
                         .on_hover_text(
-                            "Swing the camera between the map and the side, where the \
-                             journey's calls run left to right in time (Z)",
+                            "Turn the camera from the map to a 3D view, where the journey's \
+                             calls stand out of it in time, to the side, where they run \
+                             left to right (Z)",
                         )
                         .clicked()
                     {
@@ -379,8 +380,10 @@ fn draw_names(
     timeline: &Timeline,
     up: Vec3,
 ) {
-    if timeline.unfold < 0.5 {
-        draw_graph_labels(painter, to_screen, explorer, diff, up);
+    // Turning towards time, only the journey, the focus's neighbors and the modules.
+    if timeline.side() < 0.5 {
+        let quiet = timeline.unfold > 0.15;
+        draw_graph_labels(painter, to_screen, explorer, diff, up, quiet);
     }
     timeline::draw_labels(painter, to_screen, explorer, timeline);
 }
@@ -1298,6 +1301,7 @@ fn draw_graph_labels(
     explorer: &Explorer,
     diff: Option<&DiffView>,
     up: Vec3,
+    quiet: bool,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1372,6 +1376,9 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
+        if quiet && tier > 1 {
+            continue;
+        }
         order.push((
             (tier, std::cmp::Reverse(graph.degree(tile)), tile),
             Named::Node(tile),
@@ -1385,6 +1392,10 @@ fn draw_graph_labels(
     };
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
+            // Quieted, only the modules the journey runs through.
+            if quiet && !journey.keys().any(|&t| graph.cluster(t) == Some(cluster)) {
+                continue;
+            }
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1773,7 +1784,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("Z", "swing between the map and calls in time"),
+            ("Z", "view: map → 3D calls in time → side"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
