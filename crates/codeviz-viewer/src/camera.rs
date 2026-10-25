@@ -144,8 +144,10 @@ fn spawn_camera(
         RenderLayers::none(),
         Camera {
             order: 1,
+            // egui hands over premultiplied colour: blending it as straight alpha
+            // applies the alpha twice and darkens every translucent stroke.
             output_mode: CameraOutputMode::Write {
-                blend_state: Some(BlendState::ALPHA_BLENDING),
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 clear_color: ClearColorConfig::None,
             },
             clear_color: ClearColorConfig::Custom(Color::NONE),
