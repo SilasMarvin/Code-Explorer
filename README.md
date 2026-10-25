@@ -59,16 +59,20 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`E` shows call order on the graph itself, cycling off, fan and route (`--order fan` or
-`--order route` opens on one; the top bar says which). The fan lines the focus's calls
-up in a column beside it, first at the top, in the screen's plane whatever the orbit,
-opening them in the journey so they carry its numbers; a function called more than once
-sits at its first call marked `×2`, and everything else stays put. The route moves
-nothing: it threads the disclosed journey through its nodes in the order it runs, one
-pale line with chevrons, solid where a call goes in and dotted where execution returns
-and moves on to the next call, with the other links faded back. Passes over the same
-pair of nodes run side by side, the line fades away from the cursor, and a marker rides
-it to the cursor's stop.
+`Z` shows the journey's call order in depth, as a deck of cards, cycling off, fan and
+stack (`--time fan` or `--time stack` opens on one; the top bar says which). Each call
+the disclosed journey makes is a card, a faint copy of the map's footprint that draws
+only that call: its caller and callee where the map has them, the call between them,
+and the rings of their modules. The cursor's card lies on the map itself, so nothing on
+the map moves; the cards either side, up to five each way, step away from it in the
+order the calls run and fade the further they are in time, so a function called twice
+is on two cards. The fan looks at the map head-on and steps each later card right, a
+little up and back, like a fanned hand; the stack steps each later card straight back
+along depth and turns to a gentle angle to show it (head-on, the stack collapses onto
+the map). Cards near the cursor name their calls, further ones show only their numbers.
+While the deck shows, the map steps back: its links and rings draw at half strength
+under a light veil, and it names only the focus and what touches it. Stepping through
+the journey leafs through the deck.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

@@ -18,13 +18,13 @@ use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
     camera::{FRONT, OrbitCamera},
+    deck::map_strength,
     diff_view::{
         ADDED, DiffView, MODIFIED, MOVED, REMOVED, change_color, diff_look, draw_diff_graph,
     },
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
-    order::link_strength,
     scene::{PALETTE, Tile, lane_color},
     ui::Chrome,
 };
@@ -331,11 +331,12 @@ pub(crate) fn draw_graph(
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
-    draw_regions(&explorer, &mut gizmos);
+    let strength = map_strength(&chrome);
+    draw_regions(&explorer, strength, &mut gizmos);
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, link_strength(&chrome), &mut gizmos),
+        None => draw_calls(&explorer, time, strength, &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
     draw_attention(&explorer, &mut gizmos);
@@ -344,7 +345,7 @@ pub(crate) fn draw_graph(
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
 /// path, are pale arrows fading with distance; everything else is faint. All of them
-/// draw at `strength`, less while the route is drawn over them.
+/// draw at `strength`, less while the deck is drawn over them.
 fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
@@ -554,15 +555,15 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
         .collect()
 }
 
-/// A faint ring round each module's region, in its color.
-fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
+/// A faint ring round each module's region, in its color, at `strength`.
+fn draw_regions(explorer: &Explorer, strength: f32, gizmos: &mut Gizmos) {
     for (cluster, middle, radius) in regions(explorer) {
         let color = lane_color(cluster % PALETTE.len());
         gizmos
             .circle(
                 Isometry3d::from_translation(middle),
                 radius,
-                color.with_alpha(0.22),
+                color.with_alpha(0.22 * strength),
             )
             .resolution(64);
     }

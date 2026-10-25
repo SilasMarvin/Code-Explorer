@@ -632,17 +632,6 @@ impl Explorer {
         self.graph.positions.get(tile).map(|&p| Vec3::from(p))
     }
 
-    /// Draws nodes away from where the simulation puts them, by tile; the rest go
-    /// back to their places.
-    pub(crate) fn set_nudges(&mut self, nudges: HashMap<usize, Vec3>) {
-        self.nudges = nudges;
-    }
-
-    /// The nodes drawn away from their places.
-    pub(crate) fn nudged(&self) -> impl Iterator<Item = usize> + '_ {
-        self.nudges.keys().copied()
-    }
-
     pub(crate) fn clustering(&self) -> Clustering {
         self.clustering
     }
@@ -805,20 +794,6 @@ impl Explorer {
             expanded.insert(span);
         }
         self.disclosure_epoch += 1;
-    }
-
-    /// Opens the calls under one span, past the disclosed depth, unless they show.
-    /// Returns whether it opened them.
-    pub(crate) fn open_calls(&mut self, span: SpanId) -> bool {
-        let disclosed = self.disclosure();
-        if disclosed.children(span).iter().all(|&c| disclosed.shows(c)) {
-            return false;
-        }
-        if !self.track_mut().expanded.insert(span) {
-            return false;
-        }
-        self.disclosure_epoch += 1;
-        true
     }
 
     /// What the journey discloses, worked out once per change.

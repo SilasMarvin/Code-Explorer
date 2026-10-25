@@ -18,13 +18,13 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
+    deck::{self, Dealt, Deck, TimeMode},
     depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    order::{self, Order, OrderMode},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -137,8 +137,8 @@ pub(crate) struct Chrome {
     pub(crate) side: bool,
     pub(crate) search: bool,
     pub(crate) dial_turned: Option<f32>,
-    /// How call order shows on the graph (E).
-    pub(crate) order: OrderMode,
+    /// How the journey's call order shows in depth (Z).
+    pub(crate) time: TimeMode,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -150,7 +150,7 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    order: Res<Order>,
+    deck: Res<Deck>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
@@ -188,22 +188,24 @@ fn draw_ui(
         journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
     if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
-        let to_screen = |position: Vec3| {
+        // The deck reaches past the graph's edge; the painter clips it.
+        let project = |position: Vec3| {
             camera
                 .world_to_viewport(transform, position)
                 .ok()
                 .map(|p| egui::pos2(p.x, p.y))
-                .filter(|p| graph_area.contains(*p))
         };
+        let to_screen = |position: Vec3| project(position).filter(|p| graph_area.contains(*p));
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
+        let dealt = deck::draw(&painter, &project, &explorer, diff.as_deref(), &deck);
         draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
             diff.as_deref(),
-            &order.fanned,
+            &dealt,
             transform.up().into(),
         );
         // The graph's right edge clear of the diff card above and a docked journey
@@ -296,16 +298,16 @@ fn panels(
                     }
                     if ui
                         .selectable_label(
-                            chrome.order != OrderMode::Off,
-                            format!("Order: {}", chrome.order.name()),
+                            chrome.time != TimeMode::Off,
+                            format!("Time: {}", chrome.time.name()),
                         )
                         .on_hover_text(
-                            "Call order on the graph: off → fan (the focus's calls lined up \
-                             beside it) → route (the journey as one line) (E)",
+                            "The journey's calls as a deck of cards in depth: off → fan \
+                             (head-on, fanned right) → stack (back along depth) (Z)",
                         )
                         .clicked()
                     {
-                        chrome.order = chrome.order.next();
+                        chrome.time = chrome.time.next();
                     }
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -914,8 +916,8 @@ pub(crate) fn journey_title(explorer: &Explorer) -> String {
 const CALLER_TEXT: egui::Color32 = egui::Color32::from_rgb(206, 170, 255);
 const CALLEE_TEXT: egui::Color32 = egui::Color32::from_rgb(130, 196, 255);
 /// Text on a bar or a badge filled with a node's color.
-const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
-const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
+pub(crate) const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
+pub(crate) const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
 
 /// The 1-based places in `caller`'s calls, in written order, where it calls `callee`.
 fn call_steps(explorer: &Explorer, from: usize, to_tile: usize) -> Vec<usize> {
@@ -1163,7 +1165,7 @@ impl<'a> Placer<'a> {
 type Lead = (String, egui::Color32, Option<egui::Color32>);
 
 /// A label in two parts: the name, then a quieter note.
-fn label_job(
+pub(crate) fn label_job(
     lead: Option<Lead>,
     name: &str,
     note: Option<String>,
@@ -1274,10 +1276,11 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    fanned: &[(usize, usize)],
+    dealt: &Dealt,
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
+    let quiet = dealt.showing;
     // Under a diff, what changed is named first and what it reaches next.
     let diff_tier = |tile: usize| {
         let diff = diff?;
@@ -1336,6 +1339,10 @@ fn draw_graph_labels(
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
+            // While the deck shows, the map names only what touches the focus: the
+            // cards name the journey's calls.
+            Some(Relation::Upstream(1) | Relation::Downstream(1)) if quiet => 1,
+            _ if quiet => continue,
             _ if journey.contains_key(&tile) => 1,
             // A change is named even where the journey folds it away, after what the
             // journey shows.
@@ -1388,6 +1395,7 @@ fn draw_graph_labels(
         painter,
         cards
             .into_iter()
+            .chain(dealt.names.iter().copied())
             .chain(
                 order
                     .iter()
@@ -1542,7 +1550,6 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    order::draw_marks(painter, &discs, fanned);
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1752,7 +1759,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("E", "call order: off → fan → route"),
+            ("Z", "call order in depth: off → fan → stack"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
