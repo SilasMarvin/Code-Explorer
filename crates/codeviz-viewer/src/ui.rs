@@ -455,7 +455,7 @@ struct LensSpot {
     shown: egui::Pos2,
 }
 
-/// The nodes of the cursor's call and the calls either side of it in time, spread
+/// The nodes of the cursor's call and the call after it in time, spread
 /// apart about their middle as a magnifier would when any two sit closer than a badge
 /// on screen, so which way one lies from another reads; none when they stand apart.
 /// While there is a lens, these nodes are numbered in it and not on the map.
@@ -469,7 +469,9 @@ fn cursor_lens(
     };
     let disclosed = explorer.disclosure();
     let mut spots: Vec<LensSpot> = Vec::new();
-    for index in cursor.saturating_sub(1)..=cursor + 1 {
+    // The cursor's and the next call's, which is where a reader looks: the previous
+    // one beside the cursor's reads as the next.
+    for index in cursor..=cursor + 1 {
         let Some(call) = timeline.calls.get(index) else {
             continue;
         };
