@@ -80,14 +80,17 @@ its rim, and the calls standing out of it in one faint upright sheet from the jo
 so each call drops straight from its caller's rail and none crosses another. Rails and
 calls are lit tubes that thicken towards the eye and grey into the fog, the calls lit
 balls; a faint dotted string runs back to its node from the cursor's call and each
-call it makes (others would fan out past following), and each node glows with a soft
+call it makes, and a fainter one from each other call its caller makes (the rest would
+fan out past following), and each node glows with a soft
 pool of its color, brightest for the cursor's. The camera rocks a few degrees about the
 map so the calls slide against it (`Shift Z` holds it still; `--rock-at 0.25` holds a
 screenshot at one end). Balls are never drawn larger than a
 small share of the view however near the camera. From the side, near
 orthographic, the calls read left to right as a sequence diagram at their nodes'
 heights, a function called twice appearing twice, with the modules named down the left
-edge. The window's first calls stand a little wider apart in 3D, so perspective does
+edge. Time runs shorter in 3D than from the side and, on a rail of up to 20 calls, the view
+stands nearer and further towards the map, so the map keeps about half the screen.
+The window's first calls stand a little wider apart in 3D, so perspective does
 not bunch them against the map, and the docked journey panel widens while time is in
 view so its bars carry whole names. A journey of more than 40 calls stands out only 40 at a time round the
 cursor's, the view fitted to them and sliding along as the cursor steps, with how many

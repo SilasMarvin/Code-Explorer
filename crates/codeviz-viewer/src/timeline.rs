@@ -591,7 +591,8 @@ pub(crate) fn swing(
         .map(|p| p.truncate().distance(anchor.truncate()))
         .fold(10.0, f32::max);
     let count = timeline.window().len();
-    let length = time_length(count, reach);
+    // In the 3D view time runs shorter, so the map keeps half the screen.
+    let length = time_length(count, reach) * (1.0 - (1.0 - RAILS_LENGTH) * timeline.depth_view());
     #[expect(clippy::cast_precision_loss, reason = "a call count")]
     let gaps = count.saturating_sub(1).max(1) as f32;
     timeline.step = length / gaps;
@@ -621,7 +622,7 @@ pub(crate) fn swing(
         let mut distance = time_distance(length, count, height, aspect);
         if wanted == TimeView::Rails {
             // Room for the map as well as the calls, which it sees across.
-            distance = distance.max(reach * 2.6) * 1.3;
+            distance = distance.max(reach * rails_room(count)) * 1.3;
         }
         if (camera.goal_distance().unwrap_or(camera.distance) - distance).abs() > distance * 0.01 {
             let target = camera.target;
@@ -635,10 +636,29 @@ pub(crate) fn swing(
     });
     // From the side, the middle of time; in 3D, a little back towards the map, so
     // both stay in view.
-    let towards_map = 0.82 + 0.18 * timeline.side();
+    let towards_map = rails_toward_map(count) + (1.0 - rails_toward_map(count)) * timeline.side();
     timeline.pan = (gap + length / 2.0 + time_pan(at, length, half_width))
         * sheet(timeline.unfold)
         * towards_map;
+}
+
+/// How long time runs in the 3D view, as a share of its length from the side.
+const RAILS_LENGTH: f32 = 0.7;
+
+/// How many calls a rail holds and still lets the map take about half the 3D view.
+const SHORT_RAIL: usize = 20;
+
+/// How far back the 3D view stands at least, in the map's reach from the journey's
+/// start: nearer for a short rail, so the map takes about half the screen; further for
+/// a long window, whose rail needs the room.
+fn rails_room(count: usize) -> f32 {
+    if count <= SHORT_RAIL { 2.2 } else { 2.6 }
+}
+
+/// How far along time from the map the 3D view looks, as a share of the way to time's
+/// middle: further back towards the map on a short rail.
+fn rails_toward_map(count: usize) -> f32 {
+    if count <= SHORT_RAIL { 0.72 } else { 0.82 }
 }
 
 /// How far clear of the map time starts, as a share of its length.
@@ -851,8 +871,12 @@ pub(crate) fn draw_lines(
         };
         let radius = node_size(graph, call.tile) * 0.5;
         // Strung back to its node only where it matters, so strings do not fan out
-        // past following: the cursor's call and its own calls, and the node under
-        // the pointer's, lit.
+        // past following: the cursor's call and its own calls, faintly the other calls
+        // its caller makes, and the node under the pointer's, lit.
+        let sibling = timeline
+            .cursor
+            .and_then(|c| timeline.calls[c].caller)
+            .is_some_and(|up| call.caller == Some(up));
         let string = if explorer.hovered_tile == Some(call.tile) {
             Color::WHITE.with_alpha(0.7 * strength)
         } else if timeline
@@ -860,6 +884,8 @@ pub(crate) fn draw_lines(
             .is_some_and(|c| c == index || call.caller == Some(c))
         {
             FURTHER.with_alpha(0.35 * strength)
+        } else if sibling {
+            FURTHER.with_alpha(0.13 * strength)
         } else {
             continue;
         };
