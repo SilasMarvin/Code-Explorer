@@ -189,11 +189,8 @@ fn draw_ui(
     if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
-            camera
-                .world_to_viewport(transform, position)
-                .ok()
-                .map(|p| egui::pos2(p.x, p.y))
-                .filter(|p| graph_area.contains(*p))
+            let p = camera.world_to_viewport(transform, position).ok()?;
+            Some(egui::pos2(p.x, p.y)).filter(|p| graph_area.contains(*p))
         };
         let painter = ctx
             .layer_painter(egui::LayerId::background())
@@ -201,6 +198,7 @@ fn draw_ui(
         draw_graph_labels(
             &painter,
             &to_screen,
+            panel_area,
             &explorer,
             diff.as_deref(),
             transform.up().into(),
@@ -1303,6 +1301,7 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 fn draw_graph_labels(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    panel: Option<egui::Rect>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
     up: Vec3,
@@ -1354,11 +1353,29 @@ fn draw_graph_labels(
                 .filter(|_| explorer.visibility(tile) >= 0.5)?;
             let world = tags.get(&tile).copied().unwrap_or(world);
             let node = to_screen(world)?;
+            // A deck call's node under the docked journey keeps its badge, nudged up
+            // above the journey's edge.
+            let node = panel
+                .filter(|_| on_deck.contains(&tile))
+                .and_then(|panel| nudged(node, panel))
+                .unwrap_or(node);
             let radius = graph_view::node_size(graph, tile) / 2.0;
             let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
             Some((node, edge))
         })
         .collect();
+
+    // A short leader from each nudged badge down to the journey's edge, under it.
+    if let Some(panel) = panel {
+        for &(node, _) in discs.iter().flatten() {
+            if (panel.min.y - node.y - NUDGE).abs() < 0.5 && panel.x_range().contains(node.x) {
+                painter.line_segment(
+                    [node, egui::pos2(node.x, panel.min.y)],
+                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(110)),
+                );
+            }
+        }
+    }
 
     // Lower ranks are placed first and win any overlap.
     let mut order: Vec<(LabelRank, Named)> = Vec::new();
@@ -1608,6 +1625,17 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
+}
+
+/// How far above the docked journey's top edge a badge for a node under it sits.
+const NUDGE: f32 = 18.0;
+
+/// Where a badge for a node at `node` sits if the docked journey `panel` covers it:
+/// just above the panel's top edge.
+fn nudged(node: egui::Pos2, panel: egui::Rect) -> Option<egui::Pos2> {
+    panel
+        .contains(node)
+        .then(|| egui::pos2(node.x, panel.min.y - NUDGE))
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1917,6 +1945,16 @@ pub(crate) fn egui_color(color: Color) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_badge_under_the_journey_is_nudged_above_it() {
+        let panel = egui::Rect::from_min_max(egui::pos2(600.0, 800.0), egui::pos2(1500.0, 1000.0));
+        assert_eq!(
+            nudged(egui::pos2(700.0, 900.0), panel),
+            Some(egui::pos2(700.0, 800.0 - NUDGE))
+        );
+        assert_eq!(nudged(egui::pos2(500.0, 900.0), panel), None, "beside it");
+    }
 
     /// Runs one frame that places a label for `key` at `node` with `blocked` taken,
     /// and returns the side it took and where its text was drawn from the node.

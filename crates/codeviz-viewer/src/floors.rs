@@ -234,13 +234,19 @@ impl Floors {
         })
     }
 
-    /// How call `index`'s string is drawn: the cursor's call and the calls it makes
-    /// are tethered to their nodes; the rest are left to their number badges.
+    /// How call `index`'s string is drawn: the cursor's call, the calls it makes and
+    /// other calls to its function are tethered to their nodes; the rest are left to
+    /// their number badges.
     pub(crate) fn tether(&self, index: usize) -> Tether {
         let cursor = self
             .cursor
             .map(|c| (c, self.calls.get(c).map_or(c, |call| call.end)));
-        tether_of(cursor, index)
+        // Other calls to the cursor's function are tethered too, as hovering its node
+        // tethers them, so each meets the cursor's string at the node.
+        match tether_of(cursor, index) {
+            Tether::Other if self.again(index) => Tether::Made,
+            tether => tether,
+        }
     }
 
     /// The nodes the bright strings land on: the cursor's call's and those of the
@@ -452,14 +458,18 @@ pub(crate) enum Tether {
 }
 
 /// How call `index`'s string is drawn, for a cursor on the call that runs from its
-/// index to the end of the calls it makes.
+/// index to the end of the calls it makes: the cursor's call, and the calls it makes,
+/// The first `TETHERS` of them, if it makes more.
 pub(crate) fn tether_of(cursor: Option<(usize, usize)>, index: usize) -> Tether {
     match cursor {
         Some((start, _)) if index == start => Tether::Cursor,
-        Some((start, end)) if index > start && index <= end => Tether::Made,
+        Some((start, end)) if index > start && index <= end.min(start + TETHERS) => Tether::Made,
         _ => Tether::Other,
     }
 }
+
+/// The most calls under the cursor's that hang strings; the rest go by their badges.
+pub(crate) const TETHERS: usize = 12;
 
 /// How strongly a string draws at the deck, and how much of that it loses by the
 /// time it reaches the map; none for the others unless they are asked for.
@@ -991,7 +1001,7 @@ pub(crate) fn draw_deck(
             let width = if floors.cursor == Some(index) {
                 1.8
             } else {
-                1.2
+                1.6
             };
             painter.add(egui::Shape::closed_line(
                 vec![a, b, c, d],
@@ -1339,6 +1349,9 @@ mod tests {
             None,
             "left to badges"
         );
+        let many = Some((0, 40));
+        assert_eq!(tether_of(many, TETHERS), Tether::Made);
+        assert_eq!(tether_of(many, TETHERS + 1), Tether::Other, "capped");
         assert!(
             string_strength(Tether::Other, true).unwrap().0 < made.0,
             "faint"
