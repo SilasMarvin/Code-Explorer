@@ -79,6 +79,10 @@ pub(crate) struct Display {
     /// `60,10`, in place of the view's own angle.
     #[arg(long, value_name = "YAW,PITCH", value_parser = parse_angle)]
     angle: Option<(f32, f32)>,
+    /// With --time 3d, hold the camera's rock at this share of a cycle (0.25 one way,
+    /// 0.75 the other) rather than rocking.
+    #[arg(long, value_name = "PHASE")]
+    rock_at: Option<f32>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -258,6 +262,9 @@ pub(crate) fn open(
     }
     if let Some((yaw, pitch)) = args.angle {
         viewer = viewer.with_angle(yaw, pitch);
+    }
+    if let Some(phase) = args.rock_at {
+        viewer = viewer.with_rock_at(phase);
     }
     if let Some(time) = args.time {
         viewer = viewer.with_time(match time {

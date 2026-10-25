@@ -22,6 +22,7 @@ mod journey_panel;
 mod lens;
 mod scene;
 mod source_diff;
+mod stage;
 mod timeline;
 mod truth;
 mod ui;
@@ -67,6 +68,7 @@ pub struct Viewer {
     diff: Option<Comparison>,
     time: timeline::TimeView,
     angle: Option<(f32, f32)>,
+    rock_at: Option<f32>,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -102,6 +104,7 @@ impl Viewer {
             diff: None,
             time: timeline::TimeView::Map,
             angle: None,
+            rock_at: None,
         }
     }
 
@@ -236,6 +239,14 @@ impl Viewer {
     #[must_use]
     pub fn bare(mut self) -> Self {
         self.bare = true;
+        self
+    }
+
+    /// Holds the 3D view's camera rock at `phase`, a share of a cycle, so a screenshot
+    /// can show one moment of it.
+    #[must_use]
+    pub fn with_rock_at(mut self, phase: f32) -> Self {
+        self.rock_at = Some(phase);
         self
     }
 
@@ -376,6 +387,7 @@ impl Viewer {
             ui::UiPlugin,
             diff_view::DiffPlugin,
             timeline::TimelinePlugin,
+            stage::StagePlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
@@ -384,6 +396,10 @@ impl Viewer {
             bare: self.bare,
             time: self.time,
             angle: self.angle,
+            ..default()
+        })
+        .insert_resource(stage::Rock {
+            held_at: self.rock_at,
             ..default()
         })
         .init_resource::<Autoplay>();

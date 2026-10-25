@@ -269,6 +269,7 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     dialed
 }
 
+#[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
@@ -277,6 +278,7 @@ fn keyboard(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
+    mut rock: ResMut<crate::stage::Rock>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     if let Some(step) = journey_step(&keys, shift) {
@@ -324,7 +326,11 @@ fn keyboard(
         chrome.side = !chrome.side;
     }
     if keys.just_pressed(KeyCode::KeyZ) {
-        chrome.time = chrome.time.next();
+        if shift {
+            rock.still = !rock.still;
+        } else {
+            chrome.time = chrome.time.next();
+        }
     }
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;

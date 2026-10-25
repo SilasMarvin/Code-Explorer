@@ -63,6 +63,12 @@ pub(crate) struct OrbitCamera {
     /// through a field as much narrower, so what it frames keeps its size but flattens
     /// towards orthographic.
     pub(crate) lens: f32,
+    /// A turn of the whole view, sideways about `pivot`, as the 3D view's rock; it
+    /// leaves the yaw and pitch where they are.
+    pub(crate) sway: f32,
+    /// Where the sway turns about, from the point orbited: points near it hold still
+    /// on screen while what stands nearer the eye slides across them.
+    pub(crate) pivot: Vec3,
 }
 
 impl Default for OrbitCamera {
@@ -77,6 +83,8 @@ impl Default for OrbitCamera {
             goal_angles: None,
             free: false,
             lens: 1.0,
+            sway: 0.0,
+            pivot: Vec3::ZERO,
         }
     }
 }
@@ -270,8 +278,12 @@ fn apply_camera(
         }
         let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
         let lens = camera.lens.max(1.0);
-        transform.translation = camera.focus + rotation * Vec3::Z * camera.distance * lens;
-        transform.rotation = rotation;
+        let at = camera.focus + rotation * Vec3::Z * camera.distance * lens;
+        // The sway turns the whole view about its pivot, round the screen's upright.
+        let turn = Quat::from_axis_angle(rotation * Vec3::Y, camera.sway);
+        let pivot = camera.focus + camera.pivot;
+        transform.translation = pivot + turn * (at - pivot);
+        transform.rotation = turn * rotation;
         if let Projection::Perspective(perspective) = &mut *projection {
             let fov = 2.0 * ((crate::timeline::FIELD / 2.0).tan() / lens).atan();
             if (perspective.fov - fov).abs() > 1e-5 {

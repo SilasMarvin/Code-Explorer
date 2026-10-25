@@ -108,6 +108,8 @@ pub(crate) struct Timeline {
     /// Where the camera stands, and its lens, as of the last frame.
     eye: Vec3,
     lens: f32,
+    /// How far from the eye the fog starts and is thickest.
+    haze: (f32, f32),
     markers: Vec<Entity>,
 }
 
@@ -115,6 +117,26 @@ impl Timeline {
     /// How far into the side view the camera has come: 0 until it is nearly there.
     pub(crate) fn side(&self) -> f32 {
         side(self.unfold)
+    }
+
+    /// How much the view is the 3D one: none on the map or from the side.
+    pub(crate) fn depth_view(&self) -> f32 {
+        quiet(self.unfold) * (1.0 - self.side())
+    }
+
+    /// Where the camera stood as of the last frame.
+    pub(crate) fn eye(&self) -> Vec3 {
+        self.eye
+    }
+
+    /// The cursor's call, by index.
+    pub(crate) fn cursor(&self) -> Option<usize> {
+        self.cursor
+    }
+
+    /// How far from the eye haze starts and thickens to its most.
+    pub(crate) fn haze_range(&self) -> (f32, f32) {
+        self.haze
     }
 
     /// The calls a node runs, by index.
@@ -147,8 +169,9 @@ impl Timeline {
     /// How wide call `index`'s marker is drawn: larger than its node on the map, as the
     /// side view is sparse, but clear of its neighbors, and growing as time unfolds.
     /// Never more than a small share of the view, so a call near the camera does not
-    /// balloon.
-    fn marker_size(&self, explorer: &Explorer, index: usize) -> f32 {
+    /// balloon; in the 3D view never less than half that, so a lit ball reads as one
+    /// however small its node.
+    pub(crate) fn marker_size(&self, explorer: &Explorer, index: usize) -> f32 {
         let Some(call) = self.calls.get(index) else {
             return 0.0;
         };
@@ -160,23 +183,103 @@ impl Timeline {
         };
         let size = size * self.unfold.sqrt();
         match self.point(explorer, index) {
-            Some(at) => size.min(marker_cap(self.eye.distance(at), self.lens)),
+            Some(at) => {
+                let cap = marker_cap(self.eye.distance(at), self.lens);
+                size.max(cap * 0.5 * self.depth_view())
+                    .min(cap)
+                    .min(self.step * 0.8)
+            }
             None => size,
         }
     }
 
-    /// `home` moved to call `index`'s moment. Near the side, calls also settle into
-    /// one plane across x, which the camera looks straight through, so no call sits
-    /// nearer than another and every link down from a lifeline is upright.
-    fn at(&self, home: Vec3, index: usize) -> Vec3 {
+    /// `home` moved to call `index`'s moment. As time unfolds, calls also settle into
+    /// one sheet across x, standing out of the map from the start's node: every call
+    /// down from a lifeline is upright, so none crosses another, and from the side the
+    /// camera looks straight through it, so no call sits nearer than another.
+    pub(crate) fn at(&self, home: Vec3, index: usize) -> Vec3 {
         #[expect(clippy::cast_precision_loss, reason = "a call index")]
         let depth = self.start + self.step * index as f32;
-        let settle = side(self.unfold);
+        let settle = sheet(self.unfold);
         Vec3::new(
             home.x + (self.plane - home.x) * settle,
             home.y,
-            home.z + (depth - home.z) * self.unfold,
+            // All the way out by the 3D view, so the map's own slight depth does not
+            // tilt a call down from its lifeline.
+            home.z + (depth - home.z) * settle,
         )
+    }
+}
+
+/// One of the timeline's straight lines: a caller's lifeline, or a call down from it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Line {
+    pub(crate) from: Vec3,
+    pub(crate) to: Vec3,
+    pub(crate) color: Color,
+    /// A lifeline, drawn heavier.
+    pub(crate) rail: bool,
+}
+
+impl Timeline {
+    /// Each caller's lifeline along time and each call down or up from it to its
+    /// marker, faded in as time unfolds. Calls into and out of the cursor's call take
+    /// the caller and callee colors; the rest are pale.
+    pub(crate) fn lines(&self, explorer: &Explorer) -> Vec<Line> {
+        let unfold = self.unfold;
+        let mut lines = Vec::new();
+        if unfold <= 0.0 {
+            return lines;
+        }
+        let graph = explorer.graph();
+        let pale = FURTHER.with_alpha(0.4 * unfold);
+        for (index, call) in self.calls.iter().enumerate() {
+            let Some(home) = explorer.tile_point(call.tile) else {
+                continue;
+            };
+            // The lifeline: from the call to the last call under it.
+            if call.last > index {
+                let color = if self.cursor == Some(index) {
+                    CALLEE.with_alpha(0.7 * unfold)
+                } else {
+                    pale
+                };
+                lines.push(Line {
+                    from: self.at(home, index),
+                    to: self.at(home, call.last),
+                    color,
+                    rail: true,
+                });
+            }
+            let Some(source) = call
+                .caller
+                .and_then(|c| self.calls.get(c))
+                .and_then(|caller| explorer.tile_point(caller.tile))
+            else {
+                continue;
+            };
+            // At this call's moment, from the caller's lifeline to this call's marker.
+            let radius = node_size(graph, call.tile) * 0.5;
+            let (from, to) = (self.at(source, index), self.at(home, index));
+            let length = from.distance(to);
+            if length <= radius {
+                continue;
+            }
+            let color = if self.cursor == Some(index) {
+                CALLER.with_alpha(0.9 * unfold)
+            } else if self.cursor == call.caller {
+                CALLEE.with_alpha(0.9 * unfold)
+            } else {
+                pale
+            };
+            lines.push(Line {
+                from,
+                to: from + (to - from) * ((length - radius) / length),
+                color,
+                rail: false,
+            });
+        }
+        lines
     }
 }
 
@@ -248,6 +351,18 @@ pub(crate) fn time_length(count: usize, reach: f32) -> f32 {
 pub(crate) fn side(unfold: f32) -> f32 {
     let t = ((unfold - 0.82) / 0.15).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// How far calls have settled into the one sheet they stand in out of the map: none
+/// on the map, all of it well before the 3D view.
+pub(crate) fn sheet(unfold: f32) -> f32 {
+    let t = ((unfold - 0.1) / 0.55).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How much haze lies `distance` from the eye, given where it starts and is thickest.
+pub(crate) fn haze(distance: f32, (start, end): (f32, f32)) -> f32 {
+    ((distance - start) / (end - start).max(1e-3)).clamp(0.0, 1.0)
 }
 
 /// How quiet the map has gone, from 0 head-on to all of it by about 35° round.
@@ -373,6 +488,7 @@ pub(crate) fn swing(
     // Fog in the 3D views, so what is further reads as further; none head-on, where
     // nothing is, nor from the side, where everything is as far.
     let depth = camera.distance * camera.lens;
+    timeline.haze = (depth * 0.85, depth * 1.9);
     fog.falloff = FogFalloff::Linear {
         start: depth * 0.85,
         end: depth * 1.9,
@@ -446,8 +562,9 @@ pub(crate) fn swing(
     // From the side, the middle of time; in 3D, a little back towards the map, so
     // both stay in view.
     let towards_map = 0.82 + 0.18 * timeline.side();
-    timeline.pan =
-        (gap + length / 2.0 + time_pan(at, length, half_width)) * timeline.unfold * towards_map;
+    timeline.pan = (gap + length / 2.0 + time_pan(at, length, half_width))
+        * sheet(timeline.unfold)
+        * towards_map;
 }
 
 /// How far clear of the map time starts, as a share of its length.
@@ -639,9 +756,8 @@ fn on_marker_out(
     }
 }
 
-/// Draws each caller's lifeline along time and each call down or up from it to its
-/// marker, faded in as time unfolds. Calls into and out of the cursor's call take the
-/// caller and callee colors; the rest are pale.
+/// Draws each call's string back to its node, and its [`Timeline::lines`] as lines
+/// on the map and from the side.
 pub(crate) fn draw_lines(
     timeline: Res<Timeline>,
     explorer: Res<Explorer>,
@@ -654,10 +770,7 @@ pub(crate) fn draw_lines(
         return;
     }
     let graph = explorer.graph();
-    let pale = FURTHER.with_alpha(0.4 * unfold);
     let string = FURTHER.with_alpha(0.18 * string_strength(unfold));
-    let footprint = 0.5 * unfold * (1.0 - timeline.side());
-    let mut stepped: Vec<usize> = Vec::new();
     for (index, call) in timeline.calls.iter().enumerate() {
         let Some(home) = explorer.tile_point(call.tile) else {
             continue;
@@ -670,54 +783,27 @@ pub(crate) fn draw_lines(
                 dashed(&mut gizmos, home, at, radius, string);
             }
         }
-        // A footprint on the map, once a node, where its calls stand out from.
-        if footprint > 0.02 && !stepped.contains(&call.tile) {
-            stepped.push(call.tile);
-            let color = crate::scene::lane_color(explorer.tile_color(call.tile));
-            gizmos.circle(
-                Isometry3d::from_translation(home),
-                radius * 1.5,
-                color.with_alpha(footprint),
-            );
-        }
-        // The lifeline: from the call to the last call under it.
-        if call.last > index {
-            let (from, to) = (timeline.at(home, index), timeline.at(home, call.last));
-            let color = if timeline.cursor == Some(index) {
-                CALLEE.with_alpha(0.7 * unfold)
-            } else {
-                pale
-            };
-            rails.line(from, to, color);
-            // The journey's own lifeline ends in an arrowhead: time runs this way.
-            if index == 0 {
-                let size = timeline.step.min(4.0) * 0.5;
-                let back = Vec3::NEG_Z * size;
-                rails.line(to, to + back + Vec3::Y * size * 0.6, color);
-                rails.line(to, to + back - Vec3::Y * size * 0.6, color);
-            }
-        }
-        let Some(caller) = call.caller.and_then(|c| timeline.calls.get(c)) else {
-            continue;
-        };
-        let Some(source) = explorer.tile_point(caller.tile) else {
-            continue;
-        };
-        // At this call's moment, from the caller's lifeline to this call's marker.
-        let (from, to) = (timeline.at(source, index), timeline.at(home, index));
-        let length = from.distance(to);
-        if length <= radius {
-            continue;
-        }
-        let to = from + (to - from) * ((length - radius) / length);
-        let color = if timeline.cursor == Some(index) {
-            CALLER.with_alpha(0.9 * unfold)
-        } else if timeline.cursor == call.caller {
-            CALLEE.with_alpha(0.9 * unfold)
+    }
+    // In the 3D view the rails and calls are tubes in space instead.
+    let flat = 1.0 - timeline.depth_view();
+    for line in timeline.lines(&explorer) {
+        let color = line.color.with_alpha(line.color.alpha() * flat);
+        if line.rail {
+            rails.line(line.from, line.to, color);
         } else {
-            pale
-        };
-        gizmos.line(from, to, color);
+            gizmos.line(line.from, line.to, color);
+        }
+    }
+    // The journey's own lifeline ends in an arrowhead: time runs this way.
+    if let Some(first) = timeline.calls.first().filter(|c| c.last > 0)
+        && let Some(home) = explorer.tile_point(first.tile)
+    {
+        let to = timeline.at(home, first.last);
+        let size = timeline.step.min(4.0) * 0.5;
+        let back = Vec3::NEG_Z * size;
+        let color = FURTHER.with_alpha(0.5 * unfold);
+        rails.line(to, to + back + Vec3::Y * size * 0.6, color);
+        rails.line(to, to + back - Vec3::Y * size * 0.6, color);
     }
     // The node under the pointer: every call it runs and its place on the map, ringed.
     let (Some(tile), Ok(view)) = (explorer.hovered_tile, cameras.single()) else {
@@ -1037,6 +1123,21 @@ mod tests {
             lens(0.9) > 1.0 && lens(0.9) < lens(1.0),
             "eased in on the way"
         );
+    }
+
+    #[test]
+    fn calls_settle_into_one_sheet_by_the_3d_view() {
+        assert!(sheet(0.0) < 1e-6, "on their nodes head-on");
+        let three_d = RAILS_YAW.to_radians().sin();
+        assert!((sheet(three_d) - 1.0).abs() < 1e-6, "all in the sheet in 3D");
+        assert!((sheet(1.0) - 1.0).abs() < 1e-6, "and from the side");
+    }
+
+    #[test]
+    fn haze_thickens_only_past_where_it_starts() {
+        assert!(haze(5.0, (10.0, 20.0)) < 1e-6);
+        assert!((haze(15.0, (10.0, 20.0)) - 0.5).abs() < 1e-6);
+        assert!((haze(50.0, (10.0, 20.0)) - 1.0).abs() < 1e-6);
     }
 
     #[test]
