@@ -150,7 +150,7 @@ fn line_widths(mut store: ResMut<GizmoConfigStore>) {
 /// (shadows, haze, size, the rock) more than by the angle.
 pub(crate) const RIBBON_VIEW: (f32, f32) = (-0.2, 0.6);
 /// How far back to stand, in ribbon heights, to see it whole.
-const FIT: f32 = 2.4;
+const FIT: f32 = 2.6;
 
 // ---- layout ----
 
@@ -488,7 +488,7 @@ pub(crate) fn rise_share(ribbon: &Ribbon, index: usize) -> f32 {
 /// its middle, for a call `rise` of the way up the ribbon: the higher it floats the
 /// wider and fainter its footprint, as under a broad light.
 pub(crate) fn shadow_shape(rise: f32) -> (f32, f32) {
-    (2.2 + 3.0 * rise, 0.9 - 0.45 * rise)
+    (1.8 + 2.6 * rise, 0.9 - 0.45 * rise)
 }
 
 /// How many pixels across a marker's ball is at `nearness`, the cursor's bigger.

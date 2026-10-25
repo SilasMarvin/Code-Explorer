@@ -286,6 +286,30 @@ pub(crate) fn spot_alpha(distance: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// How many calls from the cursor's call `index` is, the cursor's function called
+/// again counting as the cursor.
+fn away(ribbon: &Ribbon, index: usize) -> Option<usize> {
+    let cursor = ribbon.cursor?;
+    Some(if ribbon.again(index) {
+        0
+    } else {
+        cursor.abs_diff(index)
+    })
+}
+
+/// How brightly a footprint `away` calls from the cursor's glows, of `count` calls:
+/// the cursor's in full, its neighbors' less, the rest faintly, and fainter in a long
+/// journey, so the pools under a crowd of calls don't run together.
+pub(crate) fn pool_share(away: Option<usize>, count: usize) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "a small count")]
+    let crowd = (12.0 / count.max(1) as f32).clamp(0.5, 1.0);
+    match away {
+        Some(0) => 1.0,
+        Some(1..=2) => 0.7,
+        _ => 0.6 * crowd,
+    }
+}
+
 /// A white spot fading out to its edge, `size` pixels across.
 fn spot_image(size: u32) -> Image {
     let mut data = Vec::new();
@@ -316,19 +340,17 @@ fn spot_image(size: u32) -> Image {
 
 /// Lays each call's footprint on the floor under its node, wider and fainter the
 /// higher the call floats.
-#[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn cast_footprints(
     mut commands: Commands,
     explorer: Res<Explorer>,
     ribbon: Res<Ribbon>,
-    floor: Res<Floor>,
     mut footprints: ResMut<Footprints>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut drawn: Query<(&mut Transform, &mut Visibility), With<Footprint>>,
     cameras: Query<(&Camera, &GlobalTransform, &OrbitCamera, &Projection)>,
 ) {
     let lift = ribbon.lift();
-    let count = if ribbon.showing() && floor.laid {
+    let count = if ribbon.showing() {
         ribbon.calls.len()
     } else {
         0
@@ -382,7 +404,11 @@ fn cast_footprints(
             Transform::from_translation(at).with_scale(Vec3::new(radius * 2.0, radius * 2.0, 1.0));
         if let Some(mut material) = materials.get_mut(material) {
             let tint = node_color(&explorer, None, call.tile).mix(&Color::WHITE, 0.4);
-            let strength = FOOTPRINT * strength * lift * (1.0 - eye.haze(at));
+            let strength = FOOTPRINT
+                * strength
+                * pool_share(away(&ribbon, index), ribbon.calls.len())
+                * lift
+                * (1.0 - eye.haze(at));
             material.base_color = tint.with_alpha(strength);
         }
     }
@@ -542,6 +568,17 @@ mod tests {
         assert!(spot_alpha(0.5) < spot_alpha(0.2));
         assert!(spot_alpha(1.0).abs() < 1e-6);
         assert!(spot_alpha(1.5).abs() < 1e-6, "nothing past it");
+    }
+
+    #[test]
+    fn the_cursors_pool_glows_brightest_and_a_crowd_dimmer() {
+        assert!(pool_share(Some(0), 10) > pool_share(Some(1), 10));
+        assert!(pool_share(Some(1), 10) > pool_share(Some(5), 10));
+        assert!(
+            pool_share(Some(5), 50) < pool_share(Some(5), 10),
+            "a crowd dims"
+        );
+        assert!(pool_share(None, 500) > 0.0, "never gone");
     }
 
     #[test]
