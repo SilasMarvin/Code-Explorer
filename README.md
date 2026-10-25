@@ -59,28 +59,27 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`Z` puts call order in depth (`--time ribbon` opens with it; the top bar says which).
-No node moves: the disclosed journey rises over the map as a ribbon, one marker per call
-(a function called three times has three, stacked over its node), a lit ball filled with
+`Z` puts call order in depth (`--time ribbon` opens with it; the top bar says which). No
+node moves: the disclosed journey rises over the map as a ribbon, one marker per call (a
+function called three times has three, stacked over its node), a lit ball filled with
 its node's color, floating higher the later it runs and joined to the next by a pale
 thread, thicker where it is nearer the eye. Away from the cursor the thread and balls
-step back into the haze, and a long journey's balls are smaller, so a crowd stays apart. The camera tilts gently, so the map keeps its shape, and depth cues carry the
-height instead of a steep angle: the map lies on a faintly gridded floor that fades out
-at its rim; each call
-leaves a soft pool of its color's light round its node, wider and fainter the higher
-the call floats and brightest for the cursor's, so its height is the gap between ball
-and pool; haze dims what is
-farther from the eye; nearer balls are bigger and cover farther ones; and the view rocks
-a few degrees from side to side about the map, so the ribbon slides against it
-(`Shift Z` holds it still; `--rock-at 0.25` and `0.75` hold a screenshot at either end).
-While the ribbon is up the map steps back: links draw fainter, and only the journey's
-functions, the focus's neighbors and the modules the journey runs through are named.
-The cursor's call is ringed in white and named, with a drop line and a ring round its
-node; its neighbors are named and drop part way, the first and last calls are named too,
-every other call carries its number, and other calls to the cursor's function are
-ringed and numbered. A long journey packs its calls closer under a height cap, except
-the few steps either side of the cursor, which keep room to read, so the ribbon opens
-round the cursor as it moves.
+step back into the haze, and a long journey's balls are smaller, so a crowd stays apart.
+The camera tilts gently, so the map keeps its shape, and depth cues carry the height
+instead of a steep angle: the map lies on a faintly gridded floor that fades out at its
+rim; each call leaves a soft pool of its color's light round its node, wider and fainter
+the higher the call floats and brightest for the cursor's, so its height is the gap
+between ball and pool; haze dims what is farther from the eye; nearer balls are bigger
+and cover farther ones; and the view rocks a few degrees from side to side about the
+map, so the ribbon slides against it (`Shift Z` holds it still; `--rock-at 0.25` and
+`0.75` hold a screenshot at either end). While the ribbon is up the map steps back:
+links draw fainter, and only the journey's functions, the focus's neighbors and the
+modules the journey runs through are named. The cursor's call is ringed in white and
+named, with a drop line and a ring round its node; its neighbors are named and drop part
+way, the first and last calls are named too, every other call carries its number, and
+other calls to the cursor's function are ringed and numbered. A long journey packs its
+calls closer under a height cap, except the few steps either side of the cursor, which
+keep room to read, so the ribbon opens round the cursor as it moves.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
