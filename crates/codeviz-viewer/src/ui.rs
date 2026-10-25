@@ -22,9 +22,9 @@ use crate::{
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
+    helix::{self, Helix, TimeMode},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    order::{self, Order, OrderMode},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -137,8 +137,8 @@ pub(crate) struct Chrome {
     pub(crate) side: bool,
     pub(crate) search: bool,
     pub(crate) dial_turned: Option<f32>,
-    /// How call order shows on the graph (E).
-    pub(crate) order: OrderMode,
+    /// How call order shows in depth (Z).
+    pub(crate) time: TimeMode,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -150,7 +150,7 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    order: Res<Order>,
+    helix: Res<Helix>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
@@ -198,13 +198,15 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
+        // The helix's markers first, and the map's names keep off them.
+        let markers = helix::draw_labels(&painter, &to_screen, transform.translation(), &helix);
         draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
             diff.as_deref(),
-            &order.fanned,
             transform.up().into(),
+            helix::up(&helix).then_some(&markers),
         );
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
@@ -296,16 +298,16 @@ fn panels(
                     }
                     if ui
                         .selectable_label(
-                            chrome.order != OrderMode::Off,
-                            format!("Order: {}", chrome.order.name()),
+                            chrome.time != TimeMode::Off,
+                            format!("Time: {}", chrome.time.name()),
                         )
                         .on_hover_text(
-                            "Call order on the graph: off → fan (the focus's calls lined up \
-                             beside it) → route (the journey as one line) (E)",
+                            "Call order in depth: the calls the cursor steps through stand round \
+                             a clock face over their caller, rising as a spiral stair (Z)",
                         )
                         .clicked()
                     {
-                        chrome.order = chrome.order.next();
+                        chrome.time = chrome.time.next();
                     }
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1267,16 +1269,21 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 /// over links and glow. The focus's callees lead with the order it calls them in, and
 /// its callers note where in their own calls they call it. A name tries each side of
 /// its node and is left out when none is free, and never covers a node that matters;
-/// zooming in makes room for more. Container names fill whatever space is left.
+/// zooming in makes room for more. Container names fill whatever space is left. With
+/// the helix up, the map goes quiet, clear of its `markers`: only what the journey
+/// touches is named, and the modules it runs through; a call the helix names shows
+/// only its number.
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    fanned: &[(usize, usize)],
     up: Vec3,
+    markers: Option<&helix::Drawn>,
 ) {
+    let quiet = markers.is_some();
+    let on_helix = |tile: usize| markers.is_some_and(|m| m.tiles.contains(&tile));
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
     let diff_tier = |tile: usize| {
@@ -1350,6 +1357,10 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
+        // With the helix up, the map names only what the journey touches.
+        if quiet && tier > 2 {
+            continue;
+        }
         order.push((
             (tier, std::cmp::Reverse(graph.degree(tile)), tile),
             Named::Node(tile),
@@ -1361,8 +1372,18 @@ fn draw_graph_labels(
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
+    // With the helix up, only the modules the journey runs through.
+    let runs_through = |cluster: usize| {
+        journey
+            .keys()
+            .chain(center.iter())
+            .any(|&tile| graph.cluster(tile) == Some(cluster))
+    };
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
+            if quiet && !runs_through(cluster) {
+                continue;
+            }
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1382,6 +1403,7 @@ fn draw_graph_labels(
     let cards: Vec<egui::Rect> = ["diff_card", "legend", "search", "camera_free"]
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
+        .chain(markers.iter().flat_map(|m| m.rects.iter().copied()))
         .collect();
     // And off the nodes that matter, so they never hide a neighbor.
     let mut placer = Placer::new(
@@ -1511,6 +1533,13 @@ fn draw_graph_labels(
                     (Some(order), None) => Some((format!(" {order} "), ON_FILL, Some(fill))),
                     (None, _) => lead,
                 };
+                // Quiet, a journey node says no more than its place in it, and what
+                // the helix names, only its number.
+                let (name, aside) = match () {
+                    () if quiet && tier != 0 && on_helix(tile) => (String::new(), None),
+                    () if quiet && tier != 0 => (name, None),
+                    () => (name, aside),
+                };
                 let size = match tier {
                     0 => 14.0,
                     1 => 12.0,
@@ -1542,7 +1571,6 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    order::draw_marks(painter, &discs, fanned);
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1752,7 +1780,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("E", "call order: off → fan → route"),
+            ("Z", "call order as a helix: on / off"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

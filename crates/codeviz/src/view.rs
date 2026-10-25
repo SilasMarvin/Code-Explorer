@@ -72,9 +72,13 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
-    /// Show call order on the graph (E cycles it).
+    /// Show call order in depth (Z toggles it).
     #[arg(long, value_enum)]
-    order: Option<OrderArg>,
+    time: Option<TimeArg>,
+    /// How far the camera tilts up from below while time shows, in radians; 0 is
+    /// head-on.
+    #[arg(long, value_name = "RADIANS")]
+    time_tilt: Option<f32>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -125,11 +129,10 @@ enum NearArg {
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum OrderArg {
-    /// The focus's calls lined up beside it, first at the top.
-    Fan,
-    /// The disclosed journey as one line through its nodes, in the order it runs.
-    Route,
+enum TimeArg {
+    /// The cursor's list of calls round a clock face over their caller, rising as a
+    /// spiral stair.
+    Helix,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -242,11 +245,13 @@ pub(crate) fn open(
     if args.bare {
         viewer = viewer.bare();
     }
-    if let Some(order) = args.order {
-        viewer = viewer.with_order(match order {
-            OrderArg::Fan => "fan",
-            OrderArg::Route => "route",
+    if let Some(time) = args.time {
+        viewer = viewer.with_time(match time {
+            TimeArg::Helix => "helix",
         });
+    }
+    if let Some(pitch) = args.time_tilt {
+        viewer = viewer.with_time_tilt(pitch);
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
