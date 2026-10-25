@@ -14,7 +14,7 @@ use codeviz_core::SpanId;
 use crate::{explorer::Explorer, journey_panel::JourneyPanel};
 
 /// Height of the strip of calls along the top of the journey.
-pub(crate) const STRIP: f32 = 20.0;
+pub(crate) const STRIP: f32 = 24.0;
 /// How many calls either side of the cursor's get a beam.
 const REACH: usize = 2;
 /// Height each beam rises before it may bend, and the step between beams' bends.
@@ -170,39 +170,62 @@ fn cubic(controls: [egui::Pos2; 4], at: f32) -> egui::Pos2 {
 }
 
 /// The beams from the strip to their nodes, given where a node is on screen and how
-/// far its edge is from its middle.
+/// far its edge is from its middle, and where its name sits. A beam to a node crowded
+/// by another beam's lands on the name instead, which the labels spread apart.
 pub(crate) fn shapes(
     ticks: &[Tick],
     cursor: Option<usize>,
     node_at: impl Fn(usize) -> Option<(egui::Pos2, f32)>,
+    tag_at: impl Fn(usize) -> Option<egui::Rect>,
 ) -> Vec<egui::Shape> {
     let tiles: Vec<Option<usize>> = ticks.iter().map(|t| t.tile).collect();
-    let beams: Vec<(egui::Pos2, (egui::Pos2, f32), Beam)> = beamed(&tiles, cursor)
+    let beams: Vec<(egui::Pos2, usize, (egui::Pos2, f32), Beam)> = beamed(&tiles, cursor)
         .into_iter()
         .filter_map(|(index, beam)| {
             let tick = ticks.get(index)?;
-            let node = node_at(tick.tile?)?;
-            Some((tick.rect.center_top(), node, beam))
+            let tile = tick.tile?;
+            Some((tick.rect.center_top(), tile, node_at(tile)?, beam))
         })
+        .collect();
+    let crowd = crowded(
+        &beams
+            .iter()
+            .map(|&(_, tile, (node, _), _)| (tile, node))
+            .collect::<Vec<_>>(),
+    );
+    let landings: Vec<Landing> = beams
+        .iter()
+        .zip(&crowd)
+        .map(
+            |(&(_, tile, (node, edge), _), &crowded)| match tag_at(tile).filter(|_| crowded) {
+                Some(tag) => Landing::Tag(tag),
+                None => Landing::Node(node, edge + 3.0),
+            },
+        )
         .collect();
     let levels = bend_levels(
         &beams
             .iter()
-            .map(|(from, (to, _), _)| (from.x, to.x))
+            .zip(&landings)
+            .map(|(&(from, ..), landing)| (from.x, landing.point().x))
             .collect::<Vec<_>>(),
     );
     let mut shapes = Vec::new();
     // The faintest first, so the cursor's draws over the rest.
     let mut order: Vec<usize> = (0..beams.len()).collect();
-    order.sort_by(|&a, &b| beams[a].2.strength().total_cmp(&beams[b].2.strength()));
+    order.sort_by(|&a, &b| beams[a].3.strength().total_cmp(&beams[b].3.strength()));
     for i in order {
-        let (from, (to, edge), beam) = beams[i];
+        let (from, _, _, beam) = beams[i];
+        let landing = landings[i];
         let strength = beam.strength();
         let rise = RISE + RISE_STEP * levels[i] as f32;
-        let gap = edge + 3.0;
         let width = 1.0 + strength * 1.2;
         let color = egui::Color32::WHITE.gamma_multiply(strength * 0.92);
-        let points = path(from, rise, to, gap);
+        let gap = match landing {
+            Landing::Node(_, gap) => gap,
+            Landing::Tag(_) => 0.0,
+        };
+        let points = path(from, rise, landing.point(), gap);
         // A soft halo sets a beam apart from the straight links it crosses.
         shapes.push(egui::Shape::line(
             points.clone(),
@@ -217,13 +240,52 @@ pub(crate) fn shapes(
         } else {
             shapes.push(egui::Shape::line(points, egui::Stroke::new(width, color)));
         }
-        shapes.push(egui::Shape::circle_stroke(
-            to,
-            gap,
-            egui::Stroke::new(width, color),
-        ));
+        shapes.push(match landing {
+            Landing::Node(node, gap) => {
+                egui::Shape::circle_stroke(node, gap, egui::Stroke::new(width, color))
+            }
+            Landing::Tag(tag) => egui::Shape::rect_stroke(
+                tag.expand(1.0),
+                4.0,
+                egui::Stroke::new(width, color),
+                egui::StrokeKind::Outside,
+            ),
+        });
     }
     shapes
+}
+
+/// Where a beam ends: around its node, so far out, or under its name.
+#[derive(Debug, Clone, Copy)]
+enum Landing {
+    Node(egui::Pos2, f32),
+    Tag(egui::Rect),
+}
+
+impl Landing {
+    /// The point the beam runs to: the node's middle, or under the name's number.
+    fn point(self) -> egui::Pos2 {
+        match self {
+            Landing::Node(node, _) => node,
+            Landing::Tag(tag) => egui::pos2(tag.min.x + (tag.width() / 2.0).min(10.0), tag.max.y),
+        }
+    }
+}
+
+/// Pixels within which another beam's node crowds one.
+const CROWD: f32 = 40.0;
+
+/// Which beams' nodes sit so near another beam's node that the two beams would end
+/// in the same spot.
+pub(crate) fn crowded(targets: &[(usize, egui::Pos2)]) -> Vec<bool> {
+    targets
+        .iter()
+        .map(|&(tile, at)| {
+            targets
+                .iter()
+                .any(|&(other, there)| other != tile && there.distance(at) < CROWD)
+        })
+        .collect()
 }
 
 /// How strongly the ordinary graph's links draw: they step back while beams show.
@@ -293,6 +355,14 @@ mod tests {
             (50.0, 0.0),
         ]);
         assert_eq!(levels, [2, 1, 0, 0, 1]);
+    }
+
+    #[test]
+    fn beams_to_nodes_close_together_are_crowded() {
+        let at = |x: f32| egui::pos2(x, 100.0);
+        // Two calls of one node never crowd each other; a node 20 pixels off does.
+        let targets = [(1, at(0.0)), (1, at(0.0)), (2, at(20.0)), (3, at(300.0))];
+        assert_eq!(crowded(&targets), [true, true, true, false]);
     }
 
     #[test]

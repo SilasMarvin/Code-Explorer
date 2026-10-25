@@ -409,8 +409,10 @@ fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos
         let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
         match lit {
             // Stop at the callee's surface so the head stays visible.
+            // While beams show, the focus's own links step back further: the beams
+            // carry the journey.
             Some((color, 1)) => {
-                let color = color.with_alpha(fade(1) * shown);
+                let color = color.with_alpha(fade(1) * shown * strength);
                 gizmos.arrow(a, b - back, color).with_tip_length(1.1);
                 flow(gizmos, a, b - back, color, time, index);
             }

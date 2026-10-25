@@ -199,7 +199,7 @@ fn draw_ui(
         // kept now, and they are drawn once the journey says where its calls are.
         let beam_slot = painter.add(egui::Shape::Noop);
         let up: Vec3 = transform.up().into();
-        draw_graph_labels(
+        let tags = draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
@@ -247,8 +247,9 @@ fn draw_ui(
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
             let beaming = panel.beaming();
+            let nodes = |tile: usize| node_disc(&explorer, &to_screen, tile, up);
             tie(
-                &painter, beam_slot, &tethers, &explorer, beaming, &to_screen, up,
+                &painter, beam_slot, &tethers, &explorer, beaming, nodes, &tags,
             );
         }
     }
@@ -264,24 +265,27 @@ fn tie(
     tethers: &journey_panel::Tethers,
     explorer: &Explorer,
     beaming: bool,
-    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
-    up: Vec3,
+    node_at: impl Fn(usize) -> Option<(egui::Pos2, f32)>,
+    tags: &HashMap<usize, egui::Rect>,
 ) {
     let ctx = painter.ctx();
+    let focus = explorer
+        .focus()
+        .and_then(|unit| explorer.map().tile_of(unit));
     if beaming {
-        let node_at = |tile: usize| node_disc(explorer, to_screen, tile, up);
+        let tag_at = |tile: usize| tags.get(&tile).copied();
         painter.set(
             beam_slot,
-            beams::shapes(&tethers.ticks, tethers.cursor_tick, node_at),
+            beams::shapes(&tethers.ticks, tethers.cursor_tick, &node_at, tag_at),
         );
-    } else if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(explorer, to_screen)) {
+    } else if let (Some(bar), Some((node, _))) = (tethers.cursor, focus.and_then(&node_at)) {
         tether(ctx, bar, node, false);
     }
     // The bar under the pointer, to the node it stands for.
     let hovered = explorer
         .hovered_tile
-        .and_then(|tile| explorer.tile_point(tile))
-        .and_then(to_screen);
+        .and_then(&node_at)
+        .map(|(node, _)| node);
     if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
         tether(ctx, bar, node, true);
     }
@@ -400,18 +404,6 @@ fn node_disc(
     let radius = graph_view::node_size(explorer.graph(), tile) / 2.0;
     let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
     Some((node, edge))
-}
-
-/// Where the cursor's node is on screen, for the tether from its bar.
-fn cursor_node(
-    explorer: &Explorer,
-    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
-) -> Option<egui::Pos2> {
-    explorer
-        .focus()
-        .and_then(|unit| explorer.map().tile_of(unit))
-        .and_then(|tile| explorer.tile_point(tile))
-        .and_then(to_screen)
 }
 
 /// Shows or hides the beams, bringing the journey back when it is hidden.
@@ -1153,7 +1145,11 @@ impl<'a> Placer<'a> {
 
     /// Draws what was placed, and fades out what was not where its node, found by
     /// `anchor`, still shows. Remembers it all for the next frame.
-    fn finish(mut self, anchor: impl Fn(Named) -> Option<egui::Pos2>) {
+    /// Paints the labels, and returns where each node's sits.
+    fn finish(
+        mut self,
+        anchor: impl Fn(Named) -> Option<egui::Pos2>,
+    ) -> HashMap<usize, egui::Rect> {
         let mut leaving = Vec::new();
         for (key, mut shown) in std::mem::take(&mut self.last) {
             if self.next.contains_key(&key) {
@@ -1175,12 +1171,24 @@ impl<'a> Placer<'a> {
                 self.paint(node, shown);
             }
         }
+        let tags = self
+            .next
+            .iter()
+            .filter_map(|(key, shown)| match key {
+                Named::Node(tile) => self.anchors.get(key).map(|&node| {
+                    let pill = egui::Rect::from_min_size(node + shown.offset, shown.galley.size());
+                    (*tile, pill.expand2(PILL_PAD))
+                }),
+                Named::Group(_) => None,
+            })
+            .collect();
         self.next
             .extend(leaving.into_iter().map(|(key, _, shown)| (key, shown)));
         let next = self.next;
         self.painter
             .ctx()
             .data_mut(|d| d.insert_temp(Self::id(), next));
+        tags
     }
 
     /// A label on its pill, at its eased place beside `node`.
@@ -1314,6 +1322,7 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 /// its callers note where in their own calls they call it. A name tries each side of
 /// its node and is left out when none is free, and never covers a node that matters;
 /// zooming in makes room for more. Container names fill whatever space is left.
+/// Returns where each node's name sits.
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
@@ -1322,7 +1331,7 @@ fn draw_graph_labels(
     diff: Option<&DiffView>,
     up: Vec3,
     beamed: Option<&HashSet<usize>>,
-) {
+) -> HashMap<usize, egui::Rect> {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
     let diff_tier = |tile: usize| {
@@ -1604,7 +1613,7 @@ fn draw_graph_labels(
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
-    });
+    })
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
