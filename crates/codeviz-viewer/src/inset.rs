@@ -1,5 +1,5 @@
 //! A lens on a crowded cursor. Where the nodes of the cursor's call and the call just
-//! before or after it sit close together in a crowd of the map's nodes, which way one lies
+//! after it sit close together in a crowd of the map's nodes, which way one lies
 //! from the other can't be read; a small inset at the map's lower left shows that
 //! patch magnified, each of those calls numbered in its node's color, the cursor's in
 //! white, with a ring and a leader from the patch on the map.
@@ -32,8 +32,8 @@ const MOST: f32 = 16.0;
 /// How large the lens is on screen.
 const INSET: egui::Vec2 = egui::vec2(220.0, 150.0);
 
-/// The nodes of the cursor's call and the calls either side of it in time that crowd
-/// the cursor's on screen; none when they stand apart.
+/// The nodes of the cursor's call and the call after it in time, where the two crowd
+/// together on screen; none when they stand apart.
 fn spots(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
@@ -43,11 +43,9 @@ fn spots(
         return Vec::new();
     };
     let mut spots: Vec<Spot> = Vec::new();
-    // The call after the cursor's first: it is where the journey goes next.
-    for index in [Some(cursor), Some(cursor + 1), cursor.checked_sub(1)]
-        .into_iter()
-        .flatten()
-    {
+    // Only the call after the cursor's: where the journey goes next. The call before
+    // it beside the cursor would read as the next.
+    for index in [cursor, cursor + 1] {
         let Some(call) = floors.calls.get(index) else {
             continue;
         };
@@ -73,11 +71,6 @@ fn spots(
         return Vec::new();
     };
     spots.retain(|s| s.current || s.at.distance(here) < NEAR);
-    // Where the next call crowds the cursor's, it alone joins it: two neighbors
-    // either side read as one before and one after only with care.
-    if spots.len() > 2 {
-        spots.truncate(2);
-    }
     let around = (0..explorer.map().tiles.len())
         .filter_map(|tile| explorer.tile_point(tile).and_then(to_screen))
         .filter(|at| at.distance(here) < NEAR)
