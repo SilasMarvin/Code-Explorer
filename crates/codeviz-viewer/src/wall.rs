@@ -28,6 +28,9 @@ use crate::{
 pub(crate) struct TimeWall {
     pub(crate) on: bool,
     lit: bool,
+    /// The stretch of the journey, in slots, the wall widens around the cursor, as it
+    /// eases after it.
+    lens: Option<(f32, f32)>,
 }
 
 impl TimeWall {
@@ -171,8 +174,54 @@ pub(crate) fn running_order<K: Copy>(placed: &HashMap<K, (f32, f32, usize)>) -> 
     order.into_iter().map(|(key, _, _)| key).collect()
 }
 
-/// Calls either side of the cursor that get a beam.
-const NEAR: usize = 3;
+/// Slots across past which a journey is too crowded to name every call evenly, and
+/// the wall widens the stretch around the cursor instead.
+const CROWDED: f32 = 24.0;
+/// That stretch, in slots before and after the cursor's start: more ahead, where
+/// stepping goes next.
+const BEHIND: f32 = 3.0;
+const AHEAD: f32 = 9.0;
+/// The least share of the wall's length the stretch gets.
+const FOCUS: f32 = 0.55;
+
+/// Where slot `slot` of `total` falls along the wall, as a share of its length: evenly,
+/// or with the stretch `lens` given at least [`FOCUS`] of the length and the rest
+/// sharing what is left, so the calls around the cursor have room for their names
+/// while the whole journey still shows.
+pub(crate) fn warp(slot: f32, total: f32, lens: Option<(f32, f32)>) -> f32 {
+    let Some((from, to)) = lens.filter(|_| total > 0.0) else {
+        return slot / total.max(1.0);
+    };
+    let inside = to - from;
+    let outside = total - inside;
+    if inside <= 0.0 || outside <= 0.0 {
+        return slot / total;
+    }
+    let focus = FOCUS.max(inside / total);
+    let rest = 1.0 - focus;
+    let before = from / outside * rest;
+    if slot < from {
+        slot / outside * rest
+    } else if slot <= to {
+        before + (slot - from) / inside * focus
+    } else {
+        before + focus + (slot - to) / outside * rest
+    }
+}
+
+/// The stretch to widen around the cursor's call starting at `start`, in a journey
+/// `total` slots across; none when every call has room as it is.
+pub(crate) fn lens_around(start: f32, total: f32) -> Option<(f32, f32)> {
+    (total > CROWDED).then(|| {
+        let from = (start - BEHIND).max(0.0);
+        let to = (from + BEHIND + AHEAD).min(total);
+        ((to - BEHIND - AHEAD).max(0.0), to)
+    })
+}
+
+/// Calls either side of the cursor that get a beam: enough to see where it came from
+/// and goes next; more cross the wall in a tangle.
+const NEAR: usize = 2;
 
 /// How strongly the bar `index` along the running order beams to its node with the
 /// cursor on bar `cursor`: in full for the cursor's, fading over the few either side,
@@ -184,7 +233,7 @@ pub(crate) fn beam_strength(index: usize, cursor: usize) -> f32 {
     }
     #[expect(clippy::cast_precision_loss, reason = "a small count")]
     let away = away as f32;
-    1.0 - away * 0.22
+    1.0 - away * 0.3
 }
 
 /// How strongly the other calls to the cursor's function beam to it, so a function
@@ -370,10 +419,13 @@ impl Standing {
     fn of(
         explorer: &Explorer,
         diff: Option<&DiffView>,
+        (wall, placed, slots): &(Wall, Placed, f32),
+        lens: Option<(f32, f32)>,
         project: &impl Fn(Vec3) -> Option<egui::Pos2>,
         pointer: Option<egui::Pos2>,
     ) -> Option<Self> {
-        let (wall, placed, slots) = stand(explorer)?;
+        let (wall, slots) = (*wall, *slots);
+        let along = |slot: f32| warp(slot, slots, lens);
         let on_screen = |corners: [Vec3; 4]| -> Option<[egui::Pos2; 4]> {
             Some([
                 project(corners[0])?,
@@ -392,9 +444,10 @@ impl Standing {
         let stepping =
             cursor_span.is_some_and(|c| explorer.journey().is_some_and(|j| j.root() != c));
         let mut bars = Vec::new();
-        for span in running_order(&placed) {
+        for span in running_order(placed) {
             let (left, width, row) = placed[&span];
-            let Some(quad) = on_screen(wall.bar(left / slots, width / slots, row)) else {
+            let (start, end) = (along(left), along(left + width));
+            let Some(quad) = on_screen(wall.bar(start, end - start, row)) else {
                 continue;
             };
             let future = stepping && track.span(span).is_some_and(|s| s.enter > cursor_enter);
@@ -420,8 +473,8 @@ impl Standing {
             let (left, _, _) = placed[&bars[index].span];
             let top = wall.top();
             Some([
-                project(wall.at(left / slots, 0.0))?,
-                project(wall.at(left / slots, top))?,
+                project(wall.at(along(left), 0.0))?,
+                project(wall.at(along(left), top))?,
             ])
         });
         let hovered = pointer.and_then(|p| bars.iter().position(|b| inside(p, &b.quad)));
@@ -594,10 +647,24 @@ pub(crate) fn draw(
     let hover = ctx
         .pointer_hover_pos()
         .filter(|p| area.contains(*p) && !ctx.egui_is_using_pointer());
-    let standing = wall
-        .on
-        .then(|| Standing::of(explorer, diff, project, hover))
-        .flatten();
+    let stood = wall.on.then(|| stand(explorer)).flatten();
+    // The stretch around the cursor eases after it as it moves.
+    let goal = stood.as_ref().and_then(|(_, placed, slots)| {
+        let cursor = explorer.selected()?;
+        lens_around(placed.get(&cursor)?.0, *slots)
+    });
+    wall.lens = match (wall.lens, goal) {
+        (Some(lens), Some(goal)) => {
+            let ease = 1.0 - (-8.0 * ctx.input(|i| i.stable_dt).min(0.1)).exp();
+            Some((
+                lens.0 + (goal.0 - lens.0) * ease,
+                lens.1 + (goal.1 - lens.1) * ease,
+            ))
+        }
+        (_, goal) => goal,
+    };
+    let standing =
+        stood.and_then(|stood| Standing::of(explorer, diff, &stood, wall.lens, project, hover));
     let Some(standing) = standing else {
         if wall.lit {
             explorer.hovered_tile = None;
@@ -734,6 +801,45 @@ mod tests {
     }
 
     #[test]
+    fn the_lens_widens_the_stretch_round_the_cursor_and_keeps_the_rest() {
+        let lens = Some((10.0, 22.0));
+        let width = |a: f32, b: f32| warp(b, 100.0, lens) - warp(a, 100.0, lens);
+        assert!(warp(0.0, 100.0, lens).abs() < 1e-6);
+        assert!(
+            (warp(100.0, 100.0, lens) - 1.0).abs() < 1e-6,
+            "the whole journey shows"
+        );
+        assert!(width(10.0, 22.0) >= FOCUS - 1e-6);
+        assert!(
+            width(11.0, 12.0) > 4.0 * width(50.0, 51.0),
+            "a call near the cursor gets room"
+        );
+        let mut last = -1.0;
+        for slot in 0..=100 {
+            #[expect(clippy::cast_precision_loss, reason = "small numbers")]
+            let at = warp(slot as f32, 100.0, lens);
+            assert!(at > last, "in order");
+            last = at;
+        }
+        assert!(
+            (warp(30.0, 100.0, None) - 0.3).abs() < 1e-6,
+            "evenly without it"
+        );
+    }
+
+    #[test]
+    fn a_short_journey_needs_no_lens_and_a_long_one_looks_ahead() {
+        assert_eq!(lens_around(3.0, 10.0), None);
+        assert_eq!(lens_around(40.0, 100.0), Some((37.0, 49.0)));
+        assert_eq!(
+            lens_around(0.0, 100.0),
+            Some((0.0, 12.0)),
+            "held inside the start"
+        );
+        assert_eq!(lens_around(99.0, 100.0), Some((88.0, 100.0)), "and the end");
+    }
+
+    #[test]
     fn calls_run_in_the_order_they_start_a_caller_first() {
         let placed = HashMap::from([
             ('a', (0.0, 3.0, 0)),
@@ -749,8 +855,8 @@ mod tests {
         assert!((beam_strength(5, 5) - 1.0).abs() < f32::EPSILON);
         assert!(beam_strength(4, 5) < 1.0);
         assert!((beam_strength(4, 5) - beam_strength(6, 5)).abs() < f32::EPSILON);
-        assert!(beam_strength(8, 5) > 0.0);
-        assert!(beam_strength(9, 5).abs() < f32::EPSILON, "no hairball");
+        assert!(beam_strength(7, 5) > 0.0);
+        assert!(beam_strength(8, 5).abs() < f32::EPSILON, "no hairball");
     }
 
     #[test]

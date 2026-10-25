@@ -66,9 +66,12 @@ each level of calls a row up the wall, the root a short footing. Bars carry thei
 color, number and name, along the bar or up it where it is narrow. The graph does not
 move. The camera turns to look into the corner the two make, with a narrower lens so the
 wall's near end does not loom, and holds that view until you pan or zoom; `Z` again
-turns back. Pale beams tie the cursor's bar and the three calls either side of it to
+turns back. Pale beams tie the cursor's bar and the two calls either side of it to
 their nodes, fading away from the cursor, and every other call to the cursor's function
-beams faintly too, so a function called more than once shows each time. Hovering a bar
+beams faintly too, so a function called more than once shows each time. A journey too
+long to name every call evenly widens the stretch around the cursor, a few calls back
+and more ahead, to over half the wall, the rest squeezed either side, and the stretch
+eases after the cursor as it steps. Hovering a bar
 lights its node and a click moves the cursor there. The docked journey hides while the
 wall stands.
 
