@@ -8,9 +8,10 @@
 //! orthographic, so the calls stay evenly spaced on screen.
 //!
 //! In between, at any angle, is a 3D view worth stopping at: the map in perspective,
-//! quieted, and the calls standing out of it along time, each caller's lifeline a rail
-//! running out from its node, each call dropping from its caller's rail to its marker,
-//! with a footprint on the map where it came from and fog to say what is further. A
+//! quieted, and the calls standing out of it along time in one upright sheet, each
+//! caller's lifeline a rail running out from the map, each call dropping straight from
+//! its caller's rail to its marker, a string back to its node, and fog to say what is
+//! further; [`crate::stage`] lights it so it reads as space. A
 //! call hangs from its caller's lifeline for as long as the caller runs: from the side
 //! a sequence diagram; head-on, the map's own links. Turning back folds each call into
 //! its node.
@@ -1129,7 +1130,10 @@ mod tests {
     fn calls_settle_into_one_sheet_by_the_3d_view() {
         assert!(sheet(0.0) < 1e-6, "on their nodes head-on");
         let three_d = RAILS_YAW.to_radians().sin();
-        assert!((sheet(three_d) - 1.0).abs() < 1e-6, "all in the sheet in 3D");
+        assert!(
+            (sheet(three_d) - 1.0).abs() < 1e-6,
+            "all in the sheet in 3D"
+        );
         assert!((sheet(1.0) - 1.0).abs() < 1e-6, "and from the side");
     }
 

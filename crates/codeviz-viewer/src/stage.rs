@@ -41,8 +41,6 @@ impl Plugin for StagePlugin {
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub(crate) struct GridGizmos;
 
-/// The window's background.
-const BACKDROP: Color = Color::srgb(0.06, 0.07, 0.09);
 /// The map's plane: a shade lighter than the background, so the map reads as lying on
 /// something and the pools have somewhere to fall.
 const SURFACE: Color = Color::srgb(0.13, 0.14, 0.175);
@@ -83,9 +81,12 @@ fn spawn_stage(
     stage.quad = meshes.add(Rectangle::new(1.0, 1.0));
     stage.spot = images.add(spot_image(64));
     let material = materials.add(StandardMaterial {
-        base_color: BACKDROP,
+        base_color: SURFACE.with_alpha(0.0),
         base_color_texture: Some(images.add(plane_image(128))),
+        alpha_mode: AlphaMode::Blend,
         unlit: true,
+        // Its own rim fades it; fog over a map far back would take it away.
+        fog_enabled: false,
         ..default()
     });
     commands.spawn((
@@ -109,9 +110,6 @@ pub(crate) fn plane_glow(u: f32, v: f32) -> f32 {
     let t = ((rim - 0.55) / 0.45).clamp(0.0, 1.0);
     1.0 - t * t * (3.0 - 2.0 * t)
 }
-
-/// What the plane's surface is scaled by at its rim, in linear light.
-const PLANE_RIM: f32 = 0.3;
 
 /// A square image `size` pixels across, each pixel's channels from `pixel` given its
 /// place from -1 to 1 across.
@@ -148,11 +146,11 @@ fn channel(share: f32) -> u8 {
     value
 }
 
-/// The plane's shading: white over the middle, darkening to the background at the rim.
+/// The plane's shading: solid over the middle, clearing to nothing at the rim, so
+/// it melts into the background whatever the renderer does to near-black.
 fn plane_image(size: u32) -> Image {
     square_image(size, TextureFormat::Rgba8Unorm, |u, v| {
-        let shade = channel(PLANE_RIM + (1.0 - PLANE_RIM) * plane_glow(u, v));
-        [shade, shade, shade, 255]
+        [255, 255, 255, channel(plane_glow(u, v))]
     })
 }
 
@@ -162,7 +160,7 @@ const GRID_PIECES: usize = 10;
 /// How strongly the grid draws where nothing dims it.
 const GRID: f32 = 0.14;
 
-/// Fits the plane behind the nodes showing, fades it in with the 3D view, and draws
+/// Fits the plane behind the journey's nodes, fades it in with the 3D view, and draws
 /// its grid.
 fn lay_plane(
     time: Res<Time>,
@@ -177,9 +175,12 @@ fn lay_plane(
     let Ok((mut transform, mut visibility)) = planes.single_mut() else {
         return;
     };
-    let points: Vec<Vec3> = (0..explorer.map().tiles.len())
-        .filter(|&tile| explorer.visibility(tile) >= 0.5)
-        .filter_map(|tile| explorer.tile_point(tile))
+    // Round the nodes the calls come from, so on a big map it lights the part the
+    // journey runs in and its rim stays in view.
+    let points: Vec<Vec3> = timeline
+        .calls
+        .iter()
+        .filter_map(|call| explorer.tile_point(call.tile))
         .collect();
     if strength < 0.01 || points.is_empty() {
         *visibility = Visibility::Hidden;
@@ -190,7 +191,7 @@ fn lay_plane(
         (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN), f32::MAX),
         |(min, max, low), p| (min.min(p.truncate()), max.max(p.truncate()), low.min(p.z)),
     );
-    let margin = (max - min).max_element() * 0.2 + 4.0;
+    let margin = (max - min).max_element() * 0.45 + 8.0;
     let (min, max, z) = (min - margin, max + margin, low - 1.5);
     if stage.laid {
         let ease = 1.0 - (-time.delta_secs() * 3.0).exp();
@@ -205,7 +206,7 @@ fn lay_plane(
     *visibility = Visibility::Visible;
     *transform = Transform::from_translation(middle.extend(stage.z)).with_scale(size.extend(1.0));
     if let Some(mut material) = materials.get_mut(&stage.material) {
-        material.base_color = BACKDROP.mix(&SURFACE, strength);
+        material.base_color = SURFACE.with_alpha(strength);
     }
     let eye = timeline.eye();
     let range = timeline.haze_range();
@@ -214,7 +215,7 @@ fn lay_plane(
     let shade = |p: Vec3| {
         let across = (p.truncate() - middle) / (size / 2.0);
         let glow = plane_glow(across.x, across.y);
-        Color::WHITE.with_alpha(GRID * strength * glow * (1.0 - 0.8 * haze(eye.distance(p), range)))
+        Color::WHITE.with_alpha(GRID * strength * glow * (1.0 - 0.4 * haze(eye.distance(p), range)))
     };
     let mut line = |from: Vec3, to: Vec3| {
         #[expect(clippy::cast_precision_loss, reason = "a few pieces")]
@@ -345,7 +346,7 @@ fn light_pools(
             let glow = POOL
                 * pool_share(away, timeline.calls.len())
                 * strength
-                * (1.0 - 0.7 * haze(eye.distance(at), range));
+                * (1.0 - 0.4 * haze(eye.distance(at), range));
             material.base_color = tint.with_alpha(glow);
         }
     }

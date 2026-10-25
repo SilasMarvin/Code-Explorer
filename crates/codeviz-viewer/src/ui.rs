@@ -1796,6 +1796,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
             ("Z", "view: map → 3D calls in time → side"),
+            ("Shift Z", "hold the 3D view's rock still"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

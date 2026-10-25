@@ -68,8 +68,14 @@ hangs from its caller's lifeline, a rail running out from the caller's node for 
 as it runs. The 3D view, turned 55° and level so time runs flat across the screen, in perspective
 with fog, shows the map quieted (links a little over half, the journey's nodes only
 numbered, as their calls carry the names, and names only on the focus's neighbors and
-the modules the journey runs through) and the calls standing out of it, each with a
-footprint ring at its node and a dotted string back to it, none drawn larger than a
+the modules the journey runs through) on a lit plane with a faint grid that fades out at
+its rim, and the calls standing out of it in one upright sheet from the journey's start,
+so each call drops straight from its caller's rail and none crosses another. Rails and
+calls are lit tubes that thicken towards the eye and grey into the fog, the calls lit
+balls; a faint dotted string runs from each back to its node, which glows with a soft
+pool of its color, brightest for the cursor's. The camera rocks a few degrees about the
+map so the calls slide against it (`Shift Z` holds it still; `--rock-at 0.25` holds a
+screenshot at one end). Balls are never drawn larger than a
 small share of the view however near the camera. From the side, near
 orthographic, the calls read left to right as a sequence diagram at their nodes'
 heights, a function called twice appearing twice, with the modules named down the left
