@@ -89,6 +89,8 @@ pub(crate) struct Timeline {
     /// The depth the first call sits at, unfolded, and the step to the next.
     start: f32,
     step: f32,
+    /// The plane across x the calls settle into from the side: the start's node's.
+    plane: f32,
     /// How far along time the camera looks, from the timeline's middle, unfolded.
     pub(crate) pan: f32,
     /// The cursor's call, by index.
@@ -134,11 +136,18 @@ impl Timeline {
         size * self.unfold.sqrt()
     }
 
-    /// `home` moved to call `index`'s moment.
+    /// `home` moved to call `index`'s moment. Near the side, calls also settle into
+    /// one plane across x, which the camera looks straight through, so no call sits
+    /// nearer than another and every link down from a lifeline is upright.
     fn at(&self, home: Vec3, index: usize) -> Vec3 {
         #[expect(clippy::cast_precision_loss, reason = "a call index")]
         let depth = self.start + self.step * index as f32;
-        home.with_z(home.z + (depth - home.z) * self.unfold)
+        let settle = self.unfold.powi(4);
+        Vec3::new(
+            home.x + (self.plane - home.x) * settle,
+            home.y,
+            home.z + (depth - home.z) * self.unfold,
+        )
     }
 }
 
@@ -307,20 +316,35 @@ pub(crate) fn swing(
     let gaps = count.saturating_sub(1).max(1) as f32;
     timeline.step = length / gaps;
     timeline.start = anchor.z - length / 2.0;
-    let cursor = explorer.selected();
-    timeline.cursor = timeline.calls.iter().position(|c| Some(c.span) == cursor);
+    timeline.plane = anchor.x;
+    // On a call the timeline leaves out, as a closure, the nearest call it is under.
+    let stack = explorer
+        .selected()
+        .map(|s| explorer.stack(s))
+        .unwrap_or_default();
+    timeline.cursor = stack
+        .iter()
+        .rev()
+        .find_map(|&span| timeline.calls.iter().position(|c| c.span == span));
     let aspect = match projection {
         Projection::Perspective(p) => p.aspect_ratio,
         _ => 1.6,
     };
     // Turned to time, the view fits it, until the viewer pans or zooms away.
     if wanted != TimeView::Map && !camera.free {
-        let height = timeline
+        // Most of the calls: a few far outliers do not push the view back.
+        let mut heights: Vec<f32> = timeline
             .calls
             .iter()
             .filter_map(|c| explorer.tile_point(c.tile))
             .map(|p| (p.y - anchor.y).abs())
-            .fold(0.0, f32::max);
+            .collect();
+        heights.sort_by(f32::total_cmp);
+        let height = heights
+            .get(heights.len() * 9 / 10)
+            .or(heights.last())
+            .copied()
+            .unwrap_or_default();
         let distance = time_distance(length, count, height, aspect);
         if (camera.goal_distance().unwrap_or(camera.distance) - distance).abs() > distance * 0.01 {
             let target = camera.target;
@@ -345,7 +369,8 @@ pub(crate) fn time_distance(length: f32, count: usize, height: f32, aspect: f32)
     let tan = (FIELD / 2.0).tan();
     #[expect(clippy::cast_precision_loss, reason = "a call count")]
     let share = (CALLS_ACROSS / count.max(1) as f32).min(1.0);
-    let across = (length * share / 2.0) * 1.15 / (tan * aspect);
+    // Room beside time for the modules' names on the left and the last call's.
+    let across = (length * share / 2.0) * 1.3 / (tan * aspect);
     let tall = height * 1.3 / tan;
     across.max(tall).max(20.0)
 }
@@ -714,13 +739,20 @@ fn draw_modules(
         taken.push(y);
         let color =
             crate::ui::egui_color(crate::scene::lane_color(cluster)).gamma_multiply(0.75 * alpha);
-        painter.text(
-            egui::pos2(left, y),
-            egui::Align2::LEFT_CENTER,
+        // On a backing, for when the view has panned along time under them.
+        let galley = painter.layout_no_wrap(
             explorer.cluster_name(cluster).to_uppercase(),
             egui::FontId::proportional(11.0),
             color,
         );
+        let at = egui::pos2(left, y - galley.size().y / 2.0);
+        let backing = egui::Rect::from_min_size(at, galley.size()).expand(3.0);
+        painter.rect_filled(
+            backing,
+            3.0,
+            egui::Color32::from_rgb(15, 17, 23).gamma_multiply(0.8 * alpha),
+        );
+        painter.galley(at, galley, color);
     }
 }
 

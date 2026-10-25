@@ -198,17 +198,15 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
-        // Seen from the side the map's names would pile up; the calls are named.
-        if timeline.unfold < 0.5 {
-            draw_graph_labels(
-                &painter,
-                &to_screen,
-                &explorer,
-                diff.as_deref(),
-                transform.up().into(),
-            );
-        }
-        timeline::draw_labels(&painter, &to_screen, &explorer, &timeline);
+        let up = transform.up().into();
+        draw_names(
+            &painter,
+            &to_screen,
+            &explorer,
+            diff.as_deref(),
+            &timeline,
+            up,
+        );
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
         let mut clear = above(graph_area, panel_area);
@@ -247,7 +245,10 @@ fn draw_ui(
         if let Some(area) = panel_area {
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            let node = cursor_node(&explorer, &timeline, &to_screen);
+            // From the side the journey and the timeline run in the same order, and the
+            // cursor's call is lit and named: a tether across the view adds nothing.
+            let node =
+                cursor_node(&explorer, &timeline, &to_screen).filter(|_| timeline.unfold < 0.5);
             if let (Some(bar), Some(node)) = (tethers.cursor, node) {
                 tether(ctx, bar, node, false);
             }
@@ -366,6 +367,22 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     if clustering != explorer.clustering() {
         explorer.set_clustering(clustering);
     }
+}
+
+/// Names the map, or seen from the side, where the map's names would pile up, the
+/// journey's calls.
+fn draw_names(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+    diff: Option<&DiffView>,
+    timeline: &Timeline,
+    up: Vec3,
+) {
+    if timeline.unfold < 0.5 {
+        draw_graph_labels(painter, to_screen, explorer, diff, up);
+    }
+    timeline::draw_labels(painter, to_screen, explorer, timeline);
 }
 
 /// Where the cursor's node is on screen, for the tether from its bar: its call's
