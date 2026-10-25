@@ -71,7 +71,7 @@ little up and back, like a fanned hand; the stack steps each later card straight
 along depth and turns to a gentle angle to show it (head-on, the stack collapses onto
 the map). Cards near the cursor name their calls, further ones show only their numbers.
 While the deck shows, the map steps back: its links and rings draw at half strength
-under a light veil, and it names only the focus and what touches it. Stepping through
+under a light veil, and it names only the focus and what calls it. Stepping through
 the journey leafs through the deck.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or

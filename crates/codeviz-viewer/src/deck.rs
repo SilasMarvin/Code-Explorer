@@ -317,6 +317,8 @@ pub(crate) fn draw(
         egui::Color32::from_black_alpha(VEIL),
     );
     let regions = graph_view::regions(explorer);
+    draw_thread(painter, project, explorer, deck, mode, &order);
+    draw_ends(painter, project, deck, mode, &order);
     // Each card's call as it lands on screen, for its names after.
     let mut dealt: Vec<(usize, f32, Option<Ends>)> = Vec::new();
     for &(index, away) in &order {
@@ -324,10 +326,15 @@ pub(crate) fn draw(
         let shift = offset(mode, away, deck.step);
         let s = strength(away);
         let on_map = away.abs() < 0.5;
-        if !on_map {
-            let modules = [card.caller, card.callee].map(|t| explorer.graph().cluster(t));
-            draw_footprint(painter, project, deck, &regions, &modules, shift, s);
-        }
+        // The cursor's card is the map itself: only its outline, so it reads as the
+        // top of the deck.
+        let modules = if on_map {
+            [None, None]
+        } else {
+            [card.caller, card.callee].map(|t| explorer.graph().cluster(t))
+        };
+        let outline = if on_map { 0.6 } else { s };
+        draw_footprint(painter, project, deck, &regions, &modules, shift, outline);
         let ends = ends(explorer, project, card, shift);
         if let Some(ends) = ends {
             let line = egui::Color32::from_white_alpha(alpha(if on_map { 1.0 } else { 0.85 * s }));
@@ -375,6 +382,44 @@ pub(crate) fn draw(
     }
 }
 
+/// A faint thread from each card to the next in time, from where its call is made
+/// to where the next one is, so the deck's order reads as one line through it.
+fn draw_thread(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+    deck: &Deck,
+    mode: TimeMode,
+    order: &[(usize, f32)],
+) {
+    let mut by_time = order.to_vec();
+    by_time.sort_by_key(|&(index, _)| index);
+    for pair in by_time.windows(2) {
+        let ((this, away), (next, next_away)) = (pair[0], pair[1]);
+        if next != this + 1 {
+            continue;
+        }
+        let (card, after) = (&deck.cards[this], &deck.cards[next]);
+        // The next call is made inside this one, by its callee, or beside it.
+        let from = if after.caller == card.callee {
+            card.callee
+        } else {
+            card.caller
+        };
+        let point = |tile: usize, away: f32| {
+            project(explorer.tile_point(tile)? + offset(mode, away, deck.step))
+        };
+        let (Some(a), Some(b)) = (point(from, away), point(after.caller, next_away)) else {
+            continue;
+        };
+        let s = strength(away).min(strength(next_away));
+        painter.line_segment(
+            [a, b],
+            egui::Stroke::new(1.5, egui::Color32::from_white_alpha(alpha(0.5 * s))),
+        );
+    }
+}
+
 /// A call's two ends on screen, each a node's middle and how far its edge is from it.
 type Ends = ((egui::Pos2, f32), (egui::Pos2, f32));
 
@@ -404,6 +449,50 @@ fn alpha(share: f32) -> u8 {
     )]
     let byte = (share.clamp(0.0, 1.0) * 255.0).round() as u8;
     byte
+}
+
+/// Which way time runs through the deck: `earlier` over the furthest card back in
+/// time, `later` over the furthest ahead, each at its card's top corner.
+fn draw_ends(
+    painter: &egui::Painter,
+    project: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    deck: &Deck,
+    mode: TimeMode,
+    order: &[(usize, f32)],
+) {
+    let Some((low, high)) = deck.frame else {
+        return;
+    };
+    let first = order.iter().map(|o| o.1).fold(f32::INFINITY, f32::min);
+    let last = order.iter().map(|o| o.1).fold(f32::NEG_INFINITY, f32::max);
+    let ends = [
+        (
+            first,
+            Vec3::new(low.x, high.y, low.z),
+            egui::Align2::LEFT_BOTTOM,
+            "← earlier",
+        ),
+        (
+            last,
+            high.with_z(low.z),
+            egui::Align2::RIGHT_BOTTOM,
+            "later →",
+        ),
+    ];
+    for (away, corner, align, text) in ends {
+        if away.abs() < 0.5 || !away.is_finite() {
+            continue;
+        }
+        if let Some(at) = project(corner + offset(mode, away, deck.step)) {
+            painter.text(
+                at + egui::vec2(0.0, -3.0),
+                align,
+                text,
+                egui::FontId::proportional(11.0),
+                ui::MUTED,
+            );
+        }
+    }
 }
 
 /// A card's outline, and the map's module rings faintly on it, moved by `shift`.
@@ -447,7 +536,7 @@ fn draw_footprint(
         if ring.len() > 1 {
             painter.add(egui::Shape::line(
                 ring,
-                egui::Stroke::new(1.0, color.gamma_multiply(0.7 * s)),
+                egui::Stroke::new(1.0, color.gamma_multiply(0.4 * s)),
             ));
         }
     }

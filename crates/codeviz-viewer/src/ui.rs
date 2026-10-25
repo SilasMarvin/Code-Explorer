@@ -1339,9 +1339,9 @@ fn draw_graph_labels(
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
-            // While the deck shows, the map names only what touches the focus: the
-            // cards name the journey's calls.
-            Some(Relation::Upstream(1) | Relation::Downstream(1)) if quiet => 1,
+            // While the deck shows, the map names only the focus and what calls it:
+            // the cards name the calls the journey makes.
+            Some(Relation::Upstream(1)) if quiet => 1,
             _ if quiet => continue,
             _ if journey.contains_key(&tile) => 1,
             // A change is named even where the journey folds it away, after what the
