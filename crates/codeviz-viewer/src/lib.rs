@@ -12,6 +12,7 @@
 
 mod camera;
 mod capture;
+mod cues;
 mod depth_meter;
 mod diff_view;
 mod disclosure;
@@ -66,6 +67,7 @@ pub struct Viewer {
     bare: bool,
     diff: Option<Comparison>,
     time: ribbon::TimeMode,
+    rock_at: Option<f32>,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -100,6 +102,7 @@ impl Viewer {
             bare: false,
             diff: None,
             time: ribbon::TimeMode::Off,
+            rock_at: None,
         }
     }
 
@@ -248,6 +251,14 @@ impl Viewer {
         self
     }
 
+    /// Holds the time view's camera rock at `phase`, a share of a cycle, so a
+    /// screenshot can show one moment of it.
+    #[must_use]
+    pub fn with_rock_at(mut self, phase: f32) -> Self {
+        self.rock_at = Some(phase);
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -364,6 +375,7 @@ impl Viewer {
             ui::UiPlugin,
             diff_view::DiffPlugin,
             ribbon::RibbonPlugin,
+            cues::CuesPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
@@ -371,6 +383,10 @@ impl Viewer {
         .insert_resource(ui::Chrome {
             bare: self.bare,
             time: self.time,
+            ..default()
+        })
+        .insert_resource(cues::Rock {
+            held_at: self.rock_at,
             ..default()
         })
         .init_resource::<Autoplay>();
