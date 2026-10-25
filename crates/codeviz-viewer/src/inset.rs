@@ -43,7 +43,11 @@ fn spots(
         return Vec::new();
     };
     let mut spots: Vec<Spot> = Vec::new();
-    for index in cursor.saturating_sub(1)..=cursor + 1 {
+    // The call after the cursor's first: it is where the journey goes next.
+    for index in [Some(cursor), Some(cursor + 1), cursor.checked_sub(1)]
+        .into_iter()
+        .flatten()
+    {
         let Some(call) = floors.calls.get(index) else {
             continue;
         };
@@ -69,6 +73,11 @@ fn spots(
         return Vec::new();
     };
     spots.retain(|s| s.current || s.at.distance(here) < NEAR);
+    // Where the next call crowds the cursor's, it alone joins it: two neighbors
+    // either side read as one before and one after only with care.
+    if spots.len() > 2 {
+        spots.truncate(2);
+    }
     let around = (0..explorer.map().tiles.len())
         .filter_map(|tile| explorer.tile_point(tile).and_then(to_screen))
         .filter(|at| at.distance(here) < NEAR)

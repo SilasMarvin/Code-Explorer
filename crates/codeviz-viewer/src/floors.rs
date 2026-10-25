@@ -413,13 +413,13 @@ const WIDE: f32 = 0.95;
 /// view across, so more of its names lie level, short of running off its sides.
 const ACROSS: f32 = 0.8;
 /// How deep a row is, as a share of a column's width.
-const ROW: f32 = 0.8;
+const ROW: f32 = 0.6;
 /// How deep the deck is at most, as a share of its width.
-const SHALLOW: f32 = 0.3;
+const SHALLOW: f32 = 0.2;
 /// How high the deck floats over the map, as a share of its width, and at least.
 const HEIGHT: f32 = 0.45;
 const LOWEST: f32 = 14.0;
-const CLEAR: f32 = 0.9;
+const CLEAR: f32 = 1.0;
 const HIGHEST: f32 = 1.0;
 
 /// How far a standing deck leans up from flat, in radians: nearly upright, tipped
