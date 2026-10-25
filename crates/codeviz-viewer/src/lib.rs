@@ -10,6 +10,7 @@
     reason = "Bevy system parameters are taken by value"
 )]
 
+mod beams;
 mod camera;
 mod capture;
 mod depth_meter;
@@ -20,7 +21,6 @@ mod graph_view;
 mod history;
 mod journey_panel;
 mod lens;
-mod order;
 mod scene;
 mod source_diff;
 mod truth;
@@ -52,7 +52,7 @@ pub struct Viewer {
     keys: Vec<capture::Press>,
     scenario: Option<usize>,
     step: usize,
-    panel: PanelMode,
+    panel: JourneyPanel,
     clustering: Clustering,
     lens: Lens,
     /// Whether the lens's starting point was chosen, rather than left to the default.
@@ -65,7 +65,6 @@ pub struct Viewer {
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
     diff: Option<Comparison>,
-    order: order::OrderMode,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -90,7 +89,7 @@ impl Viewer {
             keys: Vec::new(),
             scenario: None,
             step: 0,
-            panel: PanelMode::default(),
+            panel: JourneyPanel::default(),
             clustering: Clustering::default(),
             lens: Lens::default(),
             lens_source: false,
@@ -99,7 +98,6 @@ impl Viewer {
             depth: None,
             bare: false,
             diff: None,
-            order: order::OrderMode::Off,
         }
     }
 
@@ -167,11 +165,18 @@ impl Viewer {
     /// How the journey shows: `hidden`, `docked` over the graph, or `full` below it.
     #[must_use]
     pub fn with_journey(mut self, mode: &str) -> Self {
-        self.panel = match mode {
+        self.panel.mode = match mode {
             "hidden" => PanelMode::Hidden,
             "full" => PanelMode::Full,
             _ => PanelMode::Docked,
         };
+        self
+    }
+
+    /// Shows the journey's order on the graph: `beams` ties its calls to their nodes.
+    #[must_use]
+    pub fn with_time(mut self, mode: &str) -> Self {
+        self.panel.beams = mode == "beams";
         self
     }
 
@@ -234,18 +239,6 @@ impl Viewer {
     #[must_use]
     pub fn bare(mut self) -> Self {
         self.bare = true;
-        self
-    }
-
-    /// Shows call order on the graph: `fan` lines the focus's calls up beside it,
-    /// `route` threads the journey through the nodes in the order it runs.
-    #[must_use]
-    pub fn with_order(mut self, mode: &str) -> Self {
-        self.order = match mode {
-            "fan" => order::OrderMode::Fan,
-            "route" => order::OrderMode::Route,
-            _ => order::OrderMode::Off,
-        };
         self
     }
 
@@ -364,14 +357,12 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
-            order::OrderPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
-        .insert_resource(JourneyPanel::new(self.panel))
+        .insert_resource(self.panel)
         .insert_resource(ui::Chrome {
             bare: self.bare,
-            order: self.order,
             ..default()
         })
         .init_resource::<Autoplay>();

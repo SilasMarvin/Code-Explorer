@@ -59,16 +59,13 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`E` shows call order on the graph itself, cycling off, fan and route (`--order fan` or
-`--order route` opens on one; the top bar says which). The fan lines the focus's calls
-up in a column beside it, first at the top, in the screen's plane whatever the orbit,
-opening them in the journey so they carry its numbers; a function called more than once
-sits at its first call marked `×2`, and everything else stays put. The route moves
-nothing: it threads the disclosed journey through its nodes in the order it runs, one
-pale line with chevrons, solid where a call goes in and dotted where execution returns
-and moves on to the next call, with the other links faded back. Passes over the same
-pair of nodes run side by side, the line fades away from the cursor, and a marker rides
-it to the cursor's stop.
+`Z` ties the journey's order to the graph with beams (`--time beams` opens with them;
+the top bar's `Beams` shows they are on). The journey docks along the bottom, full
+width, under a strip that holds every disclosed call once, in the order they run, and
+pale beams rise from the strip to the nodes: brightest from the cursor's call, fainter
+from the two calls either side of it in time, and faint from the other calls of the
+cursor's function. While they show, the graph's links step back and only the journey's
+nodes and the modules are named, the nodes the beams reach brighter than the rest.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

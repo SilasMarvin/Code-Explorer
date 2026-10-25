@@ -10,6 +10,7 @@ use codeviz_core::{Change, SpanId};
 use codeviz_ir::ExitKind;
 
 use crate::{
+    beams::{self, Tick},
     diff_view::{DiffView, change_color, sign},
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
@@ -41,14 +42,14 @@ pub(crate) struct JourneyPanel {
     followed: Option<(u64, SpanId)>,
     /// Whether the panel set the graph's hovered node, so it can clear it again.
     lit_node: bool,
+    /// Whether beams tie the journey's calls to their nodes (Z).
+    pub(crate) beams: bool,
 }
 
 impl JourneyPanel {
-    pub(crate) fn new(mode: PanelMode) -> Self {
-        Self {
-            mode,
-            ..Self::default()
-        }
+    /// Whether beams show: they need the journey on screen.
+    pub(crate) fn beaming(&self) -> bool {
+        self.beams && self.mode != PanelMode::Hidden
     }
 }
 
@@ -72,12 +73,27 @@ const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 /// Where the graph renders and where the panel sits, within the space between the
 /// side panels.
 pub(crate) fn split(
-    mode: PanelMode,
+    panel: &JourneyPanel,
     area: egui::Rect,
     (rows, slots): (usize, f32),
 ) -> (egui::Rect, Option<egui::Rect>) {
-    match mode {
+    match panel.mode {
         PanelMode::Hidden => (area, None),
+        // Beams rise from the journey's top edge, so it takes the bottom full width,
+        // as tall as it needs, and the graph the space above it.
+        PanelMode::Docked if panel.beams => {
+            let height = (beams::STRIP + HEADER + PAD * 2.0 + rows.max(2) as f32 * (ROW + ROW_GAP))
+                .min((area.height() * 0.4).max(160.0))
+                .min(area.height() * 0.6);
+            let top = area.max.y - height;
+            (
+                egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, top)),
+                Some(egui::Rect::from_min_max(
+                    egui::pos2(area.min.x, top),
+                    area.max,
+                )),
+            )
+        }
         PanelMode::Docked => {
             let size = egui::vec2(
                 // Wide enough to name each call, up to the whole width.
@@ -119,11 +135,14 @@ pub(crate) fn extent(explorer: &Explorer) -> (usize, f32) {
     (disclosed.rows(), slots)
 }
 
-/// The bars a tether runs from: the cursor's, and the one under the pointer.
+/// The bars a tether runs from: the cursor's, and the one under the pointer; and
+/// while beams show, the strip of calls they rise from, with the cursor's place on it.
 #[derive(Default)]
 pub(crate) struct Tethers {
     pub(crate) cursor: Option<egui::Rect>,
     pub(crate) hovered: Option<egui::Rect>,
+    pub(crate) ticks: Vec<Tick>,
+    pub(crate) cursor_tick: Option<usize>,
 }
 
 /// Draws the panel and handles its input. Returns the bars to tether to their nodes
@@ -142,7 +161,7 @@ pub(crate) fn draw(
         .show(ctx, |ui| {
             ui.set_clip_rect(rect);
             ui.allocate_rect(rect, egui::Sense::hover());
-            let rounding = if panel.mode == PanelMode::Full {
+            let rounding = if panel.mode == PanelMode::Full || panel.beams {
                 0.0
             } else {
                 8.0
@@ -154,14 +173,89 @@ pub(crate) fn draw(
                 egui::Stroke::new(1.0, egui::Color32::from_white_alpha(28)),
                 egui::StrokeKind::Inside,
             );
-            let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER));
+            let strip = if panel.beams { beams::STRIP } else { 0.0 };
+            let header = egui::Rect::from_min_size(
+                rect.min + egui::vec2(0.0, strip),
+                egui::vec2(rect.width(), HEADER),
+            );
             header_bar(ui, header.shrink2(egui::vec2(10.0, 2.0)), explorer, panel);
-            let content =
-                egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.min.y + HEADER), rect.max)
-                    .shrink(PAD);
+            let content = egui::Rect::from_min_max(egui::pos2(rect.min.x, header.max.y), rect.max)
+                .shrink(PAD);
             tethers = canvas(ui, content, explorer, panel, diff);
+            if panel.beams {
+                let strip = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), strip));
+                (tethers.ticks, tethers.cursor_tick) = draw_strip(ui, strip, explorer, diff);
+            }
         });
     tethers
+}
+
+/// Every disclosed call once, in the order they run, each filled like its bar; what
+/// runs after the cursor dims, as its bars do. Returns where each call sits on it and
+/// which is the cursor's.
+fn draw_strip(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    explorer: &Explorer,
+    diff: Option<&DiffView>,
+) -> (Vec<Tick>, Option<usize>) {
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(90));
+    let track = explorer.track();
+    let disclosed = explorer.disclosure();
+    let (calls, cursor) = beams::calls(explorer);
+    let inner = rect.shrink2(egui::vec2(PAD, 3.0));
+    let pitch = inner.width() / calls.len().max(1) as f32;
+    let gap = if pitch > 5.0 { 1.0 } else { 0.0 };
+    let ticks: Vec<Tick> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, &(span, tile))| Tick {
+            span,
+            rect: egui::Rect::from_min_size(
+                egui::pos2(inner.min.x + index as f32 * pitch, inner.min.y),
+                egui::vec2((pitch - gap).max(1.0), inner.height()),
+            ),
+            tile,
+        })
+        .collect();
+    for (index, tick) in ticks.iter().enumerate() {
+        let base = egui_color(tick.tile.map_or_else(
+            || lane_color(track.color(tick.span) % PALETTE.len()),
+            |tile| node_color(explorer, diff, tile),
+        ));
+        let future = cursor.is_some_and(|c| index > c);
+        let fill = if future {
+            base.gamma_multiply(0.38)
+        } else {
+            base
+        };
+        painter.rect_filled(tick.rect, 2.0, fill);
+        let number = disclosed.number(tick.span).unwrap_or_default();
+        if !number.is_empty() && tick.rect.width() >= 6.5 * number.len() as f32 + 4.0 {
+            let text = if future {
+                egui::Color32::from_rgb(200, 205, 216)
+            } else {
+                egui::Color32::from_rgb(14, 16, 22)
+            };
+            painter.text(
+                tick.rect.center(),
+                egui::Align2::CENTER_CENTER,
+                number,
+                egui::FontId::proportional(11.0),
+                text,
+            );
+        }
+    }
+    if let Some(tick) = cursor.and_then(|c| ticks.get(c)) {
+        painter.rect_stroke(
+            tick.rect.expand(1.0),
+            2.0,
+            egui::Stroke::new(2.0, egui::Color32::WHITE),
+            egui::StrokeKind::Outside,
+        );
+    }
+    (ticks, cursor)
 }
 
 /// How much of the journey shows: levels of calls below the root, or everything up to
@@ -678,6 +772,7 @@ fn canvas(
     Tethers {
         cursor: cursor_rect,
         hovered: hovered_rect,
+        ..Tethers::default()
     }
 }
 

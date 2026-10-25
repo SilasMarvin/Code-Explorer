@@ -10,7 +10,6 @@ use crate::{
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
-    order,
     ui::{Chrome, KeyHelp},
 };
 
@@ -30,7 +29,6 @@ impl Plugin for ScenePlugin {
                 autoplay,
                 graph_view::track_attention,
                 simulate,
-                order::fan,
                 reveal,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::follow_focus,
@@ -38,7 +36,6 @@ impl Plugin for ScenePlugin {
                 graph_view::frame_spotlight,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
-                order::draw_route,
             )
                 .chain(),
         );
@@ -310,6 +307,9 @@ fn keyboard(
             PanelMode::Hidden
         };
     }
+    if keys.just_pressed(KeyCode::KeyZ) {
+        crate::ui::toggle_beams(&mut panel);
+    }
     if keys.just_pressed(KeyCode::KeyM) {
         panel.mode = match panel.mode {
             PanelMode::Full => PanelMode::Docked,
@@ -321,9 +321,6 @@ fn keyboard(
     }
     if keys.just_pressed(KeyCode::KeyS) {
         chrome.side = !chrome.side;
-    }
-    if keys.just_pressed(KeyCode::KeyE) {
-        chrome.order = chrome.order.next();
     }
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;

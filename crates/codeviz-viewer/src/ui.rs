@@ -4,7 +4,7 @@
 //! colors, and a search box on `/`.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -17,6 +17,7 @@ use codeviz_core::{Change, Level, SpanTarget};
 use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
+    beams,
     camera::OrbitCamera,
     depth_meter,
     diff_view::{self, DiffStyle, DiffView},
@@ -24,7 +25,6 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    order::{self, Order, OrderMode},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -137,8 +137,6 @@ pub(crate) struct Chrome {
     pub(crate) side: bool,
     pub(crate) search: bool,
     pub(crate) dial_turned: Option<f32>,
-    /// How call order shows on the graph (E).
-    pub(crate) order: OrderMode,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -150,7 +148,6 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    order: Res<Order>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
@@ -185,7 +182,7 @@ fn draw_ui(
         egui::pos2(screen.max.x - right, screen.max.y - bottom),
     );
     let (graph_area, panel_area) =
-        journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
+        journey_panel::split(&panel, central, journey_panel::extent(&explorer));
     if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
@@ -198,13 +195,17 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
+        // Beams go under the names, which keep their pills over them; their place is
+        // kept now, and they are drawn once the journey says where its calls are.
+        let beam_slot = painter.add(egui::Shape::Noop);
+        let up: Vec3 = transform.up().into();
         draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
             diff.as_deref(),
-            &order.fanned,
-            transform.up().into(),
+            up,
+            panel.beaming().then(|| beams::lit(&explorer)).as_ref(),
         );
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
@@ -232,7 +233,8 @@ fn draw_ui(
                 &mut chrome.search,
             );
         }
-        if panel.mode != PanelMode::Full && !chrome.bare {
+        // Beams rise through where the legend sits.
+        if panel.mode != PanelMode::Full && !chrome.bare && !panel.beaming() {
             legend(ctx, above(graph_area, panel_area), diff.is_some());
         }
         if orbit.free && !chrome.bare {
@@ -244,20 +246,45 @@ fn draw_ui(
         if let Some(area) = panel_area {
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(&explorer, &to_screen)) {
-                tether(ctx, bar, node, false);
-            }
-            // The bar under the pointer, to the node it stands for.
-            let hovered = explorer
-                .hovered_tile
-                .and_then(|tile| explorer.tile_point(tile))
-                .and_then(to_screen);
-            if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
-                tether(ctx, bar, node, true);
-            }
+            let beaming = panel.beaming();
+            tie(
+                &painter, beam_slot, &tethers, &explorer, beaming, &to_screen, up,
+            );
         }
     }
     Ok(())
+}
+
+/// Ties the journey to the graph: beams from its calls to their nodes while they
+/// show, else a tether from the cursor's bar; and a bright tether from the bar under
+/// the pointer.
+fn tie(
+    painter: &egui::Painter,
+    beam_slot: egui::layers::ShapeIdx,
+    tethers: &journey_panel::Tethers,
+    explorer: &Explorer,
+    beaming: bool,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    up: Vec3,
+) {
+    let ctx = painter.ctx();
+    if beaming {
+        let node_at = |tile: usize| node_disc(explorer, to_screen, tile, up);
+        painter.set(
+            beam_slot,
+            beams::shapes(&tethers.ticks, tethers.cursor_tick, node_at),
+        );
+    } else if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(explorer, to_screen)) {
+        tether(ctx, bar, node, false);
+    }
+    // The bar under the pointer, to the node it stands for.
+    let hovered = explorer
+        .hovered_tile
+        .and_then(|tile| explorer.tile_point(tile))
+        .and_then(to_screen);
+    if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
+        tether(ctx, bar, node, true);
+    }
 }
 
 /// The panels around the graph, and how much of each edge they take: top, bottom, left
@@ -295,17 +322,14 @@ fn panels(
                         chrome.search = !chrome.search;
                     }
                     if ui
-                        .selectable_label(
-                            chrome.order != OrderMode::Off,
-                            format!("Order: {}", chrome.order.name()),
-                        )
+                        .selectable_label(panel.beams, "Beams")
                         .on_hover_text(
-                            "Call order on the graph: off → fan (the focus's calls lined up \
-                             beside it) → route (the journey as one line) (E)",
+                            "Tie the journey's calls to their nodes: beams rise from the \
+                             cursor's call and its neighbors in time (Z)",
                         )
                         .clicked()
                     {
-                        chrome.order = chrome.order.next();
+                        toggle_beams(panel);
                     }
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -364,6 +388,20 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     }
 }
 
+/// Where a node is on screen and how far its edge is from its middle.
+fn node_disc(
+    explorer: &Explorer,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    tile: usize,
+    up: Vec3,
+) -> Option<(egui::Pos2, f32)> {
+    let world = explorer.tile_point(tile)?;
+    let node = to_screen(world)?;
+    let radius = graph_view::node_size(explorer.graph(), tile) / 2.0;
+    let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
+    Some((node, edge))
+}
+
 /// Where the cursor's node is on screen, for the tether from its bar.
 fn cursor_node(
     explorer: &Explorer,
@@ -374,6 +412,14 @@ fn cursor_node(
         .and_then(|unit| explorer.map().tile_of(unit))
         .and_then(|tile| explorer.tile_point(tile))
         .and_then(to_screen)
+}
+
+/// Shows or hides the beams, bringing the journey back when it is hidden.
+pub(crate) fn toggle_beams(panel: &mut JourneyPanel) {
+    panel.beams = !panel.beams;
+    if panel.beams && panel.mode == PanelMode::Hidden {
+        panel.mode = PanelMode::Docked;
+    }
 }
 
 /// The part of the graph above a docked journey, for what sits at its bottom.
@@ -1274,8 +1320,8 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    fanned: &[(usize, usize)],
     up: Vec3,
+    beamed: Option<&HashSet<usize>>,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1312,13 +1358,10 @@ fn draw_graph_labels(
     let discs: Vec<Option<(egui::Pos2, f32)>> = (0..map.tiles.len())
         .map(|tile| {
             // Only what the lens shows at least half way gets a name.
-            let world = explorer
-                .tile_point(tile)
-                .filter(|_| explorer.visibility(tile) >= 0.5)?;
-            let node = to_screen(world)?;
-            let radius = graph_view::node_size(graph, tile) / 2.0;
-            let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
-            Some((node, edge))
+            if explorer.visibility(tile) < 0.5 {
+                return None;
+            }
+            node_disc(explorer, to_screen, tile, up)
         })
         .collect();
 
@@ -1337,6 +1380,8 @@ fn draw_graph_labels(
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
             _ if journey.contains_key(&tile) => 1,
+            // While beams show, the journey's nodes alone are named, and the modules.
+            _ if beamed.is_some() => continue,
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
@@ -1446,6 +1491,11 @@ fn draw_graph_labels(
                     _ if diff.is_some() && tier != 0 => egui::Color32::from_rgb(150, 156, 172),
                     _ => color,
                 };
+                // While beams show, the nodes they reach stand out from the rest of
+                // the journey.
+                let dim = beamed.is_some_and(|lit| tier != 0 && !lit.contains(&tile));
+                let fade = |c: egui::Color32| if dim { c.gamma_multiply(0.4) } else { c };
+                let color = fade(color);
                 let impact_note = diff
                     .filter(|d| d.style == DiffStyle::Impact)
                     .and_then(|d| d.affected.iter().find(|a| a.tile == tile))
@@ -1501,7 +1551,7 @@ fn draw_graph_labels(
                     });
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one; what changed after it.
-                let fill = egui_color(graph_view::node_color(explorer, diff, tile));
+                let fill = fade(egui_color(graph_view::node_color(explorer, diff, tile)));
                 let lead = match (order, change) {
                     (Some(order), Some(change)) => Some((
                         format!(" {order} {} ", diff_view::sign(change)),
@@ -1530,10 +1580,14 @@ fn draw_graph_labels(
                 };
                 // What is gone is struck through, which reads at any size.
                 let struck = change == Some(Change::Removed);
+                let stroke = stroke.map(fade);
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
                 // are named come what may.
-                let force = tier == 0 || hovered == Some(tile) || spotlit.contains(&tile);
+                let force = tier == 0
+                    || hovered == Some(tile)
+                    || spotlit.contains(&tile)
+                    || beamed.is_some_and(|lit| lit.contains(&tile));
                 placer.place(named, node, edge, job, stroke, force);
             }
         }
@@ -1542,7 +1596,6 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    order::draw_marks(painter, &discs, fanned);
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1752,7 +1805,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("E", "call order: off → fan → route"),
+            ("Z", "beams from the journey's calls to their nodes"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
