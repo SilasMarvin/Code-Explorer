@@ -21,7 +21,7 @@ use crate::{
     depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
-    fly::{self, Flight, TimeMode},
+    fly::{Flight, TimeMode},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
@@ -1552,7 +1552,7 @@ fn draw_graph_labels(
                     0 => 14.0,
                     1 => 12.0,
                     _ => 11.0,
-                } * flight.step(tile).map_or(1.0, fly::apparent_size);
+                } * flight.size(tile);
                 // The pill's border says which way it relates to the focus, as its link
                 // does.
                 let stroke = match relation {
@@ -1570,7 +1570,10 @@ fn draw_graph_labels(
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
                 // are named come what may.
-                let force = tier == 0 || hovered == Some(tile) || spotlit.contains(&tile);
+                let force = tier == 0
+                    || hovered == Some(tile)
+                    || spotlit.contains(&tile)
+                    || flight.next() == Some(tile);
                 placer.place(named, node, edge, job, stroke, force);
             }
         }
@@ -1789,6 +1792,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
             ("Z", "time as depth: off → fly → held"),
+            ("Shift Z", "time as depth: what is to come deeper / nearer"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

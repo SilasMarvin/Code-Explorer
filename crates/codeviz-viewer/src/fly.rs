@@ -1,9 +1,11 @@
 //! Time as depth: the journey's calls lie along the line of sight in the order they
 //! run, so stepping through the journey flies through it. The camera faces the map
-//! head-on; the cursor's call sits on the map's plane at its usual size, calls already
-//! made recede behind it, darker and smaller, and calls still to come hang nearer,
-//! larger and see-through. Everything off the journey stays on the plane, so the map
-//! reads as it always does.
+//! head-on; the cursor's call sits on the map's plane at its usual size, calls still to
+//! come lie deeper ahead, smaller and hazed, receding towards the middle of the view
+//! along a thread that joins the next few in order, and calls already made come nearer,
+//! larger and see-through, as if passed by. `Shift Z` turns time the other way round.
+//! Everything off the journey stays on the plane, so the map reads as it always does;
+//! a soft pool of light marks the cursor's node on it.
 //!
 //! A node is one function but may be called several times; it sits at whichever of its
 //! calls is nearest the cursor's, so it comes back towards the plane as its next call
@@ -18,12 +20,13 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use bevy_egui::input::egui_wants_any_keyboard_input;
 use codeviz_core::SpanId;
 
 use crate::{
     camera::{FRONT, OrbitCamera},
     explorer::Explorer,
-    graph_view::{LEVELS, NodeLook, NodeMaterials, node_look, node_size},
+    graph_view::{LEVELS, NodeLook, NodeMaterials, node_color, node_look, node_size},
     scene::Tile,
     ui::Chrome,
 };
@@ -65,6 +68,35 @@ impl TimeMode {
     }
 }
 
+/// Which way time runs along the line of sight.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Ahead {
+    /// Calls to come lie deeper, receding into the distance, and calls made come
+    /// nearer as they are passed: stepping on flies forward into the journey.
+    #[default]
+    Deep,
+    /// Calls to come hang nearer, and calls made sink behind the map.
+    Near,
+}
+
+impl Ahead {
+    pub(crate) fn flip(self) -> Self {
+        match self {
+            Self::Deep => Self::Near,
+            Self::Near => Self::Deep,
+        }
+    }
+
+    /// How many calls nearer the eye than the cursor's a call `step` calls from it
+    /// stands, measured as steps: positive is towards the eye.
+    pub(crate) fn nearness(self, step: f32) -> f32 {
+        match self {
+            Self::Deep => -step,
+            Self::Near => step,
+        }
+    }
+}
+
 /// Where time puts each node, eased as the cursor moves.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct Flight {
@@ -81,6 +113,10 @@ pub(crate) struct Flight {
     nearest: HashMap<usize, (String, usize)>,
     /// The map's plane, as far along the head-on view as the node the camera orbits.
     plane: f32,
+    /// Which way time runs (`Shift Z`).
+    pub(crate) ahead: Ahead,
+    /// The cursor's node, then the nodes of the next few calls, in the order they run.
+    corridor: Vec<usize>,
 }
 
 impl Flight {
@@ -116,13 +152,34 @@ impl Flight {
     pub(crate) fn step(&self, tile: usize) -> Option<f32> {
         self.steps.get(&tile).copied()
     }
+
+    /// How much larger than on the map a node looks, for sizing its name.
+    pub(crate) fn size(&self, tile: usize) -> f32 {
+        self.step(tile)
+            .map_or(1.0, |step| apparent_size(self.ahead.nearness(step)))
+    }
+
+    /// The node of the call right after the cursor's, whose name always shows.
+    pub(crate) fn next(&self) -> Option<usize> {
+        self.corridor.get(1).copied()
+    }
 }
 
 pub(crate) struct FlyPlugin;
 
 impl Plugin for FlyPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Flight>();
+        app.init_resource::<Flight>()
+            .init_gizmo_group::<CorridorGizmos>()
+            .add_systems(Startup, (spawn_pool, corridor_width))
+            .add_systems(
+                Update,
+                (
+                    flip_ahead.run_if(not(egui_wants_any_keyboard_input)),
+                    haze,
+                    light_pool,
+                ),
+            );
     }
 }
 
@@ -161,22 +218,22 @@ pub(crate) fn steps_from(calls: &[usize], cursor: usize) -> HashMap<usize, i32> 
     steps
 }
 
-/// How far towards the camera a call `step` calls from the cursor's sits, as a share
-/// of the camera's distance: past calls fall away behind the map, quickly at first,
-/// future ones rise towards the eye but never even half way, so none fills
-/// the view.
-pub(crate) fn depth(step: f32) -> f32 {
-    if step >= 0.0 {
-        NEAREST * (1.0 - (-step / 2.5).exp())
+/// How far towards the camera a call `near` calls nearer the eye than the cursor's
+/// sits (see [`Ahead::nearness`]), as a share of the camera's distance: calls on the
+/// far side fall away behind the map, quickly at first, those on the near side rise
+/// towards the eye but never even half way, so none fills the view.
+pub(crate) fn depth(near: f32) -> f32 {
+    if near >= 0.0 {
+        NEAREST * (1.0 - (-near / 2.5).exp())
     } else {
-        -DEEPEST * (1.0 - (step / 3.0).exp())
+        -DEEPEST * (1.0 - (near / 3.0).exp())
     }
 }
 
-/// How much larger than on the map a call `step` calls from the cursor's looks, for
+/// How much larger than on the map a call `near` calls nearer the eye looks, for
 /// sizing its name as its node: within reason, so a name stays legible.
-pub(crate) fn apparent_size(step: f32) -> f32 {
-    (1.0 / (1.0 - depth(step))).clamp(0.8, 1.3)
+pub(crate) fn apparent_size(near: f32) -> f32 {
+    (1.0 / (1.0 - depth(near))).clamp(0.8, 1.3)
 }
 
 /// The furthest towards the eye a call comes, and the furthest behind the map it falls,
@@ -184,12 +241,12 @@ pub(crate) fn apparent_size(step: f32) -> f32 {
 const NEAREST: f32 = 0.45;
 const DEEPEST: f32 = 1.4;
 
-/// How strongly a call `step` calls from the cursor's draws: in full at the cursor,
-/// fading with each call, to a trace four or five calls away.
-pub(crate) fn strength(step: f32) -> f32 {
-    let away = step.abs();
-    // What is to come fades faster: it is nearer, and would hide the map.
-    let rate = if step > 0.0 { 0.22 } else { 0.16 };
+/// How strongly a call `near` calls nearer the eye than the cursor's draws: in full
+/// at the cursor, fading with each call, to a trace four or five calls away.
+pub(crate) fn strength(near: f32) -> f32 {
+    let away = near.abs();
+    // What is nearer fades faster: it would hide the map.
+    let rate = if near > 0.0 { 0.22 } else { 0.16 };
     (1.0 - away * rate).clamp(TRACE, 1.0)
 }
 
@@ -272,6 +329,32 @@ fn nearest_numbers(
         .collect()
 }
 
+/// The corridor ahead of the cursor: its node, then the nodes of the calls after it in
+/// the order they run, a node called twice running only once, up to [`CORRIDOR`] on.
+pub(crate) fn corridor(from: &[usize]) -> Vec<usize> {
+    let mut path: Vec<usize> = Vec::new();
+    for &tile in from {
+        if path.len() > CORRIDOR {
+            break;
+        }
+        if path.last() != Some(&tile) {
+            path.push(tile);
+        }
+    }
+    path
+}
+
+/// The corridor's thread, drawn thicker than links.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub(crate) struct CorridorGizmos;
+
+fn corridor_width(mut store: ResMut<GizmoConfigStore>) {
+    store.config_mut::<CorridorGizmos>().0.line.width = 3.5;
+}
+
+/// Calls after the cursor's the corridor runs through.
+const CORRIDOR: usize = 4;
+
 /// Where a point on the map's plane at `flat` is drawn `rise` towards the eye: straight
 /// up off the plane, or held on its line of sight so it stays on its spot on screen.
 fn lift(mode: TimeMode, flat: Vec3, rise: f32, eye: Vec3) -> Vec3 {
@@ -323,6 +406,10 @@ pub(crate) fn fly(
         None => HashMap::new(),
     };
     flight.nearest = nearest_numbers(explorer_ref, &calls, cursor, &steps);
+    flight.corridor = match cursor.filter(|_| mode != TimeMode::Off) {
+        Some(cursor) => corridor(&tiles[cursor..]),
+        None => Vec::new(),
+    };
     // The map's plane: through the node the camera orbits, square to the head-on view.
     let plane = explorer_ref
         .anchor()
@@ -351,7 +438,10 @@ pub(crate) fn fly(
             Vec3::ZERO
         } else {
             let flat = Vec3::new(home.x, home.y, plane);
-            let rise = flight.steps.get(&tile).map_or(0.0, |&s| depth(s) * reach);
+            let rise = flight
+                .steps
+                .get(&tile)
+                .map_or(0.0, |&s| depth(flight.ahead.nearness(s)) * reach);
             lift(mode, flat, rise, eye) - home
         };
         let offset = offsets.entry(tile).or_insert(Vec3::ZERO);
@@ -364,7 +454,7 @@ pub(crate) fn fly(
     // Fades ease too; one left at full is dropped once it has been drawn so.
     for (&tile, &step) in &flight.steps {
         let fade = flight.fades.entry(tile).or_insert(1.0);
-        *fade += (strength(step) - *fade) * ease;
+        *fade += (strength(flight.ahead.nearness(step)) - *fade) * ease;
     }
     for (&tile, fade) in &mut flight.fades {
         if !flight.steps.contains_key(&tile) {
@@ -382,8 +472,8 @@ pub(crate) fn fly(
         if !styling {
             continue;
         }
-        let step = flight.steps.get(&tile.0).copied();
-        let Some((look, level)) = time_look(explorer_ref, tile.0, fade, step) else {
+        let near = flight.steps.get(&tile.0).map(|&s| flight.ahead.nearness(s));
+        let Some((look, level)) = time_look(explorer_ref, tile.0, fade, near) else {
             continue;
         };
         if let Some(wanted) = materials.0.get(&(look, level))
@@ -401,25 +491,30 @@ pub(crate) fn fly(
     }
 }
 
-/// How a node `step` calls from the cursor's is drawn, at `fade`: what is still to come
-/// is a see-through ghost, so it never hides the map behind it. Nothing for a node the
-/// lens leaves out.
+/// How a node `near` calls nearer the eye than the cursor's is drawn, at `fade`: what
+/// stands nearer is a see-through ghost, so it never hides the map behind it, and the
+/// rest of the journey a lit ball, shaded by the light, so it reads as solid. Nothing
+/// for a node the lens leaves out.
 fn time_look(
     explorer: &Explorer,
     tile: usize,
     fade: f32,
-    step: Option<f32>,
+    near: Option<f32>,
 ) -> Option<(NodeLook, u8)> {
     let look = node_look(explorer, tile);
     if look == NodeLook::Hidden {
         return None;
     }
-    let ahead = step.is_some_and(|s| s > 0.5);
-    let look = match look {
-        NodeLook::Near(color, _) | NodeLook::Faded(color) | NodeLook::Plain(color) if ahead => {
+    let look = match (look, near) {
+        (NodeLook::Near(color, _) | NodeLook::Faded(color) | NodeLook::Plain(color), Some(n))
+            if n > 0.5 =>
+        {
             NodeLook::Ghost(color)
         }
-        look => look,
+        (NodeLook::Near(color, _) | NodeLook::Faded(color) | NodeLook::Plain(color), Some(_)) => {
+            NodeLook::Lit(color)
+        }
+        (look, _) => look,
     };
     let shown = explorer.visibility(tile) * fade;
     #[expect(
@@ -434,20 +529,37 @@ fn time_look(
 }
 
 /// From each call off the map's plane, a pale stem down to its spot on the map, so it
-/// is plain where it belongs however far it has drifted.
+/// is plain where it belongs however far it has drifted; and a thread from the
+/// cursor's call through the next few, in order, so the way ahead reads as a path.
 pub(crate) fn draw_flight(
     flight: Res<Flight>,
     explorer: Res<Explorer>,
-    cameras: Query<&Transform, With<OrbitCamera>>,
+    cameras: Query<(&Transform, &OrbitCamera)>,
     mut gizmos: Gizmos,
+    mut thread: Gizmos<CorridorGizmos>,
 ) {
     if !flight.on() {
         return;
     }
-    let Ok(view) = cameras.single() else {
+    let Ok((view, camera)) = cameras.single() else {
         return;
     };
     let graph = explorer.graph();
+    let facing = |at: Vec3| Isometry3d::new(at, view.rotation);
+    let points: Vec<(Vec3, f32)> = flight
+        .corridor
+        .iter()
+        .filter_map(|&tile| Some((explorer.tile_point(tile)?, flight.fade(tile))))
+        .collect();
+    for (index, pair) in points.windows(2).enumerate() {
+        let ((a, fa), (b, fb)) = (pair[0], pair[1]);
+        #[expect(clippy::cast_precision_loss, reason = "a few legs")]
+        let along = 1.0 - index as f32 / CORRIDOR as f32;
+        let color = |fade: f32| Color::srgba(0.92, 0.94, 1.0, 0.85 * along * fade.max(0.5));
+        thread.line_gradient(a, b, color(fa), color(fb));
+        // A ring where the thread reaches each call, so its stations read.
+        thread.circle(facing(b), camera.distance * 0.006, color(fb));
+    }
     for &tile in flight.steps.keys() {
         let fade = flight.fade(tile);
         let (Some(home), Some(at)) = (explorer.force_point(tile), explorer.tile_point(tile)) else {
@@ -460,13 +572,156 @@ pub(crate) fn draw_flight(
         }
         let color = Color::srgba(0.85, 0.88, 0.95, 0.15 + 0.4 * fade);
         gizmos.line(home, at, color);
-        gizmos.circle(
-            Isometry3d::new(home, view.rotation),
-            node_size(graph, tile) * 0.22,
-            color,
-        );
+        gizmos.circle(facing(home), node_size(graph, tile) * 0.22, color);
     }
 }
+
+/// `Shift Z` turns which way time runs along the line of sight.
+fn flip_ahead(keys: Res<ButtonInput<KeyCode>>, mut flight: ResMut<Flight>) {
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if shift && keys.just_pressed(KeyCode::KeyZ) {
+        flight.ahead = flight.ahead.flip();
+    }
+}
+
+/// The window's background, which haze fades towards.
+const BACKDROP: Color = Color::srgb(0.06, 0.07, 0.09);
+
+/// Haze on the scene while time shows as depth: none on the map's plane, thickening
+/// behind it, so calls deep in the distance grey into the background.
+fn haze(
+    mut commands: Commands,
+    flight: Res<Flight>,
+    cameras: Query<(Entity, &OrbitCamera, Option<&DistanceFog>)>,
+) {
+    for (entity, camera, fog) in &cameras {
+        if !flight.on() {
+            if fog.is_some() {
+                commands.entity(entity).remove::<DistanceFog>();
+            }
+            continue;
+        }
+        commands.entity(entity).insert(DistanceFog {
+            color: BACKDROP.with_alpha(HAZE),
+            directional_light_color: Color::NONE,
+            directional_light_exponent: 8.0,
+            falloff: FogFalloff::Linear {
+                start: camera.distance * 1.02,
+                end: camera.distance * (1.0 + DEEPEST),
+            },
+        });
+    }
+}
+
+/// The most haze there is: the deepest calls dim and grey but never vanish.
+const HAZE: f32 = 0.8;
+
+/// The soft pool of light on the map round the cursor's node.
+#[derive(Component)]
+struct Pool;
+
+fn spawn_pool(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let material = materials.add(StandardMaterial {
+        base_color_texture: Some(images.add(spot_image(64))),
+        alpha_mode: AlphaMode::Add,
+        unlit: true,
+        fog_enabled: false,
+        ..default()
+    });
+    commands.spawn((
+        Pool,
+        Mesh3d(meshes.add(Rectangle::new(1.0, 1.0))),
+        MeshMaterial3d(material),
+        Transform::default(),
+        Visibility::Hidden,
+        bevy::picking::Pickable::IGNORE,
+    ));
+}
+
+/// How opaque a soft round spot is `distance` from its middle, 1 being its edge.
+pub(crate) fn spot_alpha(distance: f32) -> f32 {
+    let t = (1.0 - distance).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A white spot fading out to its edge, `size` pixels across.
+fn spot_image(size: u32) -> Image {
+    use bevy::{
+        asset::RenderAssetUsages,
+        render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    };
+    let across = |i: u32| {
+        #[expect(clippy::cast_precision_loss, reason = "a small image")]
+        let at = (i as f32 + 0.5) / size as f32;
+        at * 2.0 - 1.0
+    };
+    let mut data = Vec::new();
+    for y in 0..size {
+        for x in 0..size {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "within a channel"
+            )]
+            let alpha = (spot_alpha(across(x).hypot(across(y))) * 255.0).round() as u8;
+            data.extend([255, 255, 255, alpha]);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+/// Lays the pool of light on the map round the cursor's node, in its color, so where
+/// the journey is now reads at a glance.
+fn light_pool(
+    flight: Res<Flight>,
+    explorer: Res<Explorer>,
+    mut pools: Query<
+        (
+            &mut Transform,
+            &mut Visibility,
+            &MeshMaterial3d<StandardMaterial>,
+        ),
+        With<Pool>,
+    >,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    cameras: Query<&OrbitCamera>,
+) {
+    let reach = cameras.single().map_or(60.0, |c| c.distance);
+    let Ok((mut transform, mut visibility, material)) = pools.single_mut() else {
+        return;
+    };
+    let cursor = flight.corridor.first().copied().filter(|_| flight.on());
+    let Some((tile, home)) = cursor.and_then(|t| Some((t, explorer.force_point(t)?))) else {
+        *visibility = Visibility::Hidden;
+        return;
+    };
+    let size = node_size(explorer.graph(), tile);
+    *visibility = Visibility::Visible;
+    *transform = Transform::from_translation(Vec3::new(home.x, home.y, flight.plane - size))
+        .with_scale(Vec3::splat(POOL * reach).with_z(1.0));
+    if let Some(mut material) = materials.get_mut(&material.0) {
+        let tint = node_color(&explorer, None, tile).mix(&Color::WHITE, 0.25);
+        material.base_color = tint.with_alpha(0.22);
+    }
+}
+
+/// The pool's width, as a share of the camera's distance, so it reads at any zoom.
+const POOL: f32 = 0.07;
 
 #[cfg(test)]
 mod tests {
@@ -529,6 +784,20 @@ mod tests {
         assert!((apparent_size(0.0) - 1.0).abs() < 1e-6);
         assert!(apparent_size(1.0) > 1.0 && apparent_size(-1.0) < 1.0);
         assert!(apparent_size(50.0) <= 1.3 && apparent_size(-50.0) >= 0.8);
+    }
+
+    #[test]
+    fn the_corridor_runs_on_from_the_cursor_a_few_calls() {
+        assert_eq!(corridor(&[3, 5, 5, 7, 3, 9, 11, 13]), vec![3, 5, 7, 3, 9]);
+        assert_eq!(corridor(&[3]), vec![3]);
+    }
+
+    #[test]
+    fn ahead_deep_puts_what_is_to_come_behind_the_map() {
+        assert!(depth(Ahead::Deep.nearness(2.0)) < 0.0, "to come is deeper");
+        assert!(depth(Ahead::Deep.nearness(-2.0)) > 0.0, "passed is nearer");
+        assert!(depth(Ahead::Near.nearness(2.0)) > 0.0);
+        assert_eq!(Ahead::Deep.flip(), Ahead::Near);
     }
 
     #[test]

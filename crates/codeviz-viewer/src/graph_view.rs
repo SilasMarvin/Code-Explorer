@@ -58,6 +58,9 @@ pub(crate) enum NodeLook {
     /// A call still to come while time shows as depth: see-through, so it never hides
     /// what lies behind it, in its module's color.
     Ghost(usize),
+    /// A call on the journey away from the cursor while time shows as depth: a solid
+    /// ball shaded by the light rather than glowing, so it reads as a thing in space.
+    Lit(usize),
     /// Anything while nothing is focused, in its container's color.
     Plain(usize),
     /// Added, removed or rewritten, when showing a diff.
@@ -177,6 +180,16 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
     for color in 0..PALETTE.len() {
         let base = lane_color(color);
         table.insert(NodeLook::Plain(color), glow(base, 0.6));
+        table.insert(
+            NodeLook::Lit(color),
+            StandardMaterial {
+                base_color: base,
+                emissive: LinearRgba::from(base) * 0.08,
+                perceptual_roughness: 0.4,
+                reflectance: 0.6,
+                ..default()
+            },
+        );
         table.insert(
             NodeLook::Ghost(color),
             StandardMaterial {

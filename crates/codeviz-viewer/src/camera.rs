@@ -145,7 +145,8 @@ fn spawn_camera(
         Camera {
             order: 1,
             output_mode: CameraOutputMode::Write {
-                blend_state: Some(BlendState::ALPHA_BLENDING),
+                // egui hands over colors already multiplied by their alpha.
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 clear_color: ClearColorConfig::None,
             },
             clear_color: ClearColorConfig::Custom(Color::NONE),

@@ -61,18 +61,22 @@ whichever of those is on top, or the spotlight.
 
 `Z` shows the journey's order as depth, so stepping through it flies through it
 (`--time fly` or `--time held` opens on one; the top bar says which). The camera turns
-to face the map; the cursor's call sits on the map's plane at its usual size, calls
-that already ran recede behind it, smaller and darker, and calls still to come hang
-nearer, larger and see-through, each fading with every call further from the cursor
-until only a trace and no name is left. Everything off the journey stays on the plane.
-A function called more than once sits at its call nearest the cursor's. `fly` moves
-calls straight off the plane, so what is to come drifts out from the middle of the
-view as it nears; `held` slides each along the line of sight instead, so it keeps its
-spot on the map and only its size and fade say when it runs. While it shows, the camera
-holds the cursor's neighborhood in time in the middle, so stepping glides along the
-journey, pulling back when the calls either side of the cursor need more room and
-flying in once they need far less; and each name leads with the number of the call its
-node sits at, with `×n` when the journey calls it more than once.
+to face the map; the cursor's call sits on the map's plane at its usual size, with a
+soft pool of light round its node. Calls still to come lie deeper ahead, smaller and
+hazed, receding towards the middle of the view, with a pale thread joining the next
+four in the order they run; calls already made come nearer, larger and see-through, as
+if passed by. `Shift Z` turns time the other way round, what is to come nearer. Each
+call fades with every call further from the cursor until only a trace and no name is
+left, and calls away from the cursor are lit balls rather than glowing ones.
+Everything off the journey stays on the plane. A function called more than once sits
+at its call nearest the cursor's. `fly` moves calls straight off the plane, with a
+stem back to their spot on the map; `held` slides each along the line of sight
+instead, so it keeps its spot on the map and only its size and fade say when it runs.
+While it shows, the camera holds the cursor's neighborhood in time in the middle, so
+stepping glides along the journey, pulling back when the calls either side of the
+cursor need more room and flying in once they need far less; each name leads with the
+number of the call its node sits at, with `×n` when the journey calls it more than
+once, and the next call's name always shows.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

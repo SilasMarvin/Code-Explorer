@@ -322,7 +322,7 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyS) {
         chrome.side = !chrome.side;
     }
-    if keys.just_pressed(KeyCode::KeyZ) {
+    if keys.just_pressed(KeyCode::KeyZ) && !shift {
         chrome.time = chrome.time.next();
     }
     if keys.just_pressed(KeyCode::Slash) {
