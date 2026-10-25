@@ -55,6 +55,8 @@ pub(crate) struct Rail {
     before: Option<(f32, f32)>,
     /// Where the rail lies, while it shows.
     pub(crate) stage: Option<Stage>,
+    /// Where the camera looks while it shows.
+    aim: Vec3,
     /// How deep the rail's tiles reach towards the eye, in world units, as last drawn.
     pub(crate) depth: f32,
     floor: Floor,
@@ -72,6 +74,8 @@ pub(crate) struct Stage {
     pub(crate) z: f32,
     pub(crate) middle: Vec3,
     pub(crate) size: f32,
+    /// How deep the journey and its rail reach, back to front.
+    pub(crate) depth: f32,
 }
 
 /// How far in front of the journey's nearest node the rail lies, as a share of how
@@ -104,6 +108,7 @@ pub(crate) fn stage(points: &[Vec3], count: usize, z: f32) -> Option<Stage> {
         z,
         middle: Vec3::new(center, f32::midpoint(front, max.y), z.max(0.0)),
         size,
+        depth: max.y - front,
     })
 }
 
@@ -146,20 +151,20 @@ pub(crate) fn tile(
 /// further it goes, and a step higher at each `level`, so arcs crossing one another
 /// part.
 pub(crate) fn apex(from: Vec3, to: Vec3, level: usize, size: f32) -> f32 {
-    from.truncate().distance(to.truncate()) * 0.18 + size * (0.04 + 0.04 * level as f32)
+    from.truncate().distance(to.truncate()) * 0.26 + size * (0.08 + 0.05 * level as f32)
 }
 
 /// The points along an arc: up out of `from`, over, and down onto `to`, `height`
 /// above the higher of them at most.
 pub(crate) fn arc(from: Vec3, to: Vec3, height: f32) -> Vec<Vec3> {
     let top = from.z.max(to.z) + height;
-    // Straight up out of the tile, and down onto the node from the rail's side, so
-    // it never hooks round behind the node.
-    let back = to.truncate().lerp(from.truncate(), 0.4);
+    // Up out of the tile leaning a little towards the node, and down onto the node
+    // from the rail's side, so it never hooks round behind the node.
+    let (start, end) = (from.truncate(), to.truncate());
     let controls = [
         from,
-        from.with_z(top * 1.25 - from.z * 0.25),
-        back.extend(top),
+        start.lerp(end, 0.15).extend(top * 1.25 - from.z * 0.25),
+        end.lerp(start, 0.4).extend(top),
         to,
     ];
     (0..=ARC_POINTS)
@@ -238,20 +243,27 @@ fn stand(
         if camera.free && !turned {
             continue;
         }
-        let needed = graph_view::fit_distance(&reach, stage.middle, rotation, perspective);
-        camera.glide_to(stage.middle, needed * 0.9);
+        let distance = graph_view::fit_distance(&reach, stage.middle, rotation, perspective) * 0.9;
+        // When the journey is wider than it is deep, the view has floor to spare above
+        // and below it: look further in, so the rail sits low and more of the map
+        // behind the journey shows.
+        let half = distance * (perspective.fov / 2.0).tan() / RAIL_VIEW.1.cos();
+        let spare = (half - stage.depth / 2.0).max(0.0);
+        rail.aim = stage.middle + Vec3::Y * spare * 0.4;
+        camera.glide_to(rail.aim, distance);
     }
 }
 
 /// While the rail shows, the camera looks at the middle of the journey and its rail
 /// rather than at where the journey starts.
 pub(crate) fn aim_view(rail: Res<Rail>, mut cameras: Query<&mut OrbitCamera>) {
-    let (Some(stage), lift) = (rail.stage, rail.lift) else {
+    if rail.stage.is_none() {
         return;
-    };
+    }
+    let lift = rail.lift;
     for mut camera in &mut cameras {
         if !camera.free {
-            camera.target = camera.target.lerp(stage.middle, lift);
+            camera.target = camera.target.lerp(rail.aim, lift);
         }
     }
 }
@@ -604,13 +616,17 @@ impl Rail {
 
 /// Pixels deep a row of tiles stands on screen, and the largest a name is drawn.
 const ROW_PIXELS: f32 = 24.0;
-const NAME_SIZE: f32 = 12.5;
+const NAME_SIZE: f32 = 12.0;
+/// How thick a tile stands off the floor, as a share of how deep it is.
+const THICK: f32 = 0.4;
 
 /// One call's tile on screen.
 pub(crate) struct Placed {
     pub(crate) span: SpanId,
     pub(crate) tile: Option<usize>,
     pub(crate) corners: [egui::Pos2; 4],
+    /// Its front face, below its top's near edge.
+    face: [egui::Pos2; 4],
 }
 
 impl Placed {
@@ -683,7 +699,7 @@ fn draw(
         .collect();
     let longest = names
         .iter()
-        .map(|n| n.chars().count() as f32 * 6.6 + 12.0)
+        .map(|n| n.chars().count() as f32 * 6.2 + 10.0)
         .fold(0.0, f32::max);
     let rows = rows(count, left.distance(right), longest);
     rail.depth = row_depth * (rows as f32 * 1.12);
@@ -691,17 +707,26 @@ fn draw(
         .iter()
         .enumerate()
         .filter_map(|(index, &(span, tile))| {
-            let corners = self::tile(&stage, index, count, rows, row_depth);
+            // A block on the floor: its top, and the face it shows the eye.
+            let floor = self::tile(&stage, index, count, rows, row_depth);
+            let top = floor.map(|c| c + Vec3::Z * row_depth * THICK);
             let corners = [
-                project(corners[0])?,
-                project(corners[1])?,
-                project(corners[2])?,
-                project(corners[3])?,
+                project(top[0])?,
+                project(top[1])?,
+                project(top[2])?,
+                project(top[3])?,
+            ];
+            let face = [
+                corners[3],
+                corners[2],
+                project(floor[2])?,
+                project(floor[3])?,
             ];
             Some(Placed {
                 span,
                 tile,
                 corners,
+                face,
             })
         })
         .collect();
@@ -745,6 +770,11 @@ fn paint_tile(
     } else {
         base
     };
+    painter.add(egui::Shape::convex_polygon(
+        placed.face.to_vec(),
+        shaded(fill).gamma_multiply(alpha),
+        egui::Stroke::NONE,
+    ));
     painter.add(egui::Shape::convex_polygon(
         placed.corners.to_vec(),
         fill.gamma_multiply(alpha),
@@ -795,6 +825,21 @@ fn paint_tile(
         );
 }
 
+/// A block's face in shade, as lit from above.
+fn shaded(fill: egui::Color32) -> egui::Color32 {
+    let [r, g, b, a] = fill.to_array();
+    let shade = |c: u8| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "within a channel"
+        )]
+        let value = (f32::from(c) * 0.45).round() as u8;
+        value
+    };
+    egui::Color32::from_rgba_premultiplied(shade(r), shade(g), shade(b), a)
+}
+
 /// The arcs from the rail to the nodes: the cursor's call's brightest, the two calls
 /// either side fainter, and the cursor's function's other calls dotted.
 #[expect(clippy::too_many_arguments, reason = "what an arc is drawn from")]
@@ -815,7 +860,8 @@ fn arcs(
         .into_iter()
         .filter_map(|(index, beam)| {
             let tile = tiles[index]?;
-            let [back_left, back_right, ..] = self::tile(stage, index, count, rows, row_depth);
+            let [back_left, back_right, ..] = self::tile(stage, index, count, rows, row_depth)
+                .map(|c| c + Vec3::Z * row_depth * THICK);
             let node = explorer.tile_point(tile)?;
             let top = node + Vec3::Z * node_size(explorer.graph(), tile) * 0.5;
             Some((back_left.midpoint(back_right), tile, top, beam))
@@ -847,6 +893,16 @@ fn arcs(
         }
         let width = 1.0 + strength * 1.4;
         let color = egui::Color32::WHITE.gamma_multiply(strength * 0.92);
+        // Its trace on the floor straight under it, faint, so how high it climbs
+        // reads as the gap between the two.
+        if let (Some(start), Some(end)) =
+            (project(from.with_z(stage.z)), project(to.with_z(stage.z)))
+        {
+            shapes.push(egui::Shape::line_segment(
+                [start, end],
+                egui::Stroke::new(1.0, egui::Color32::WHITE.gamma_multiply(strength * 0.3)),
+            ));
+        }
         shapes.push(egui::Shape::line(
             points.clone(),
             egui::Stroke::new(

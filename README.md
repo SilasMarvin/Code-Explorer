@@ -72,6 +72,17 @@ in the graph outlines its calls. While beams show, the graph's links step back a
 only the journey's nodes and the modules are named, the nodes the beams reach brighter
 than the rest.
 
+`Z` again stands the beams in 3D (`--time rail` opens so; the top bar says `Beams 3D`),
+and once more turns them off. The camera tilts gently back, the map is pressed flat
+onto a faint gridded floor that fades at its rim, and haze dims its far side. The
+strip becomes a rail of tiles lying along the floor's front edge, in front of the
+journey: the same calls in the same order, left to right, each named in full, staggered
+into a second or third row when the names would not fit in one. The beams are arcs
+that rise from their tiles, up and over, and land on their nodes in a soft pool of the
+node's light, the cursor's widest; an arc to a farther node climbs higher, with a faint
+trace on the floor under it. Hovering a tile lights its node and clicking it moves the
+cursor there, as on the strip.
+
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
 before it, cursor, outcome, depth, opened calls and spotlight included, and
