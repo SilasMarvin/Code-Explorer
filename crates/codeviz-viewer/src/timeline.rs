@@ -106,6 +106,10 @@ pub(crate) struct Timeline {
     pub(crate) pan: f32,
     /// The cursor's call, by index.
     cursor: Option<usize>,
+    /// The calls standing out, by index: a long journey shows only those round the
+    /// cursor's, and [`Self::slide`] eases towards where they start.
+    window: (usize, usize),
+    slide: f32,
     /// Where the camera stands, and its lens, as of the last frame.
     eye: Vec3,
     lens: f32,
@@ -140,15 +144,25 @@ impl Timeline {
         self.haze
     }
 
-    /// The calls a node runs, by index.
+    /// The calls a node runs that stand out, by index.
     pub(crate) fn calls_of(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
-        calls_of(self.calls.iter().map(|c| c.tile), tile)
+        calls_of(self.calls.iter().map(|c| c.tile), tile).filter(|&i| self.shown(i))
+    }
+
+    /// The calls standing out, by index.
+    pub(crate) fn window(&self) -> std::ops::Range<usize> {
+        self.window.0..self.window.1
+    }
+
+    /// Whether call `index` stands out: in the window round the cursor's.
+    pub(crate) fn shown(&self, index: usize) -> bool {
+        self.window().contains(&index)
     }
 
     /// Where call `index` is drawn: its node's place, pushed back along time as far
-    /// as the view has unfolded.
+    /// as the view has unfolded; nowhere outside the window.
     pub(crate) fn point(&self, explorer: &Explorer, index: usize) -> Option<Vec3> {
-        let call = self.calls.get(index)?;
+        let call = self.calls.get(index).filter(|_| self.shown(index))?;
         let home = explorer.tile_point(call.tile)?;
         Some(self.at(home, index))
     }
@@ -160,7 +174,7 @@ impl Timeline {
             return explorer.tile_point(tile);
         }
         let cursor = self.cursor.filter(|&c| self.calls[c].tile == tile);
-        let index = cursor.or_else(|| self.calls.iter().position(|c| c.tile == tile));
+        let index = cursor.or_else(|| self.calls_of(tile).next());
         match index {
             Some(index) => self.point(explorer, index),
             None => explorer.tile_point(tile),
@@ -200,7 +214,14 @@ impl Timeline {
     /// camera looks straight through it, so no call sits nearer than another.
     pub(crate) fn at(&self, home: Vec3, index: usize) -> Vec3 {
         #[expect(clippy::cast_precision_loss, reason = "a call index")]
-        let depth = self.start + self.step * index as f32;
+        let moment = index as f32;
+        self.at_moment(home, moment)
+    }
+
+    /// `home` moved to `moment`, counted in calls from the journey's start; the
+    /// window's first call stands where the first would.
+    fn at_moment(&self, home: Vec3, moment: f32) -> Vec3 {
+        let depth = self.start + self.step * (moment - self.slide);
         let settle = sheet(self.unfold);
         Vec3::new(
             home.x + (self.plane - home.x) * settle,
@@ -209,6 +230,21 @@ impl Timeline {
             // tilt a call down from its lifeline.
             home.z + (depth - home.z) * settle,
         )
+    }
+}
+
+impl Timeline {
+    /// A long journey stands out only round the cursor's call, sliding along as it
+    /// steps; at once when the view swings or the window jumps far.
+    fn slide_window(&mut self, swung: bool, ease: f32) {
+        self.window = window(self.calls.len(), self.cursor, WINDOW);
+        #[expect(clippy::cast_precision_loss, reason = "a call index")]
+        let (first, half) = (self.window.0 as f32, WINDOW as f32 / 2.0);
+        if swung || (first - self.slide).abs() > half {
+            self.slide = first;
+        } else {
+            self.slide += (first - self.slide) * ease;
+        }
     }
 }
 
@@ -234,23 +270,28 @@ impl Timeline {
         }
         let graph = explorer.graph();
         let pale = FURTHER.with_alpha(0.4 * unfold);
+        let (first, end) = self.window;
         for (index, call) in self.calls.iter().enumerate() {
             let Some(home) = explorer.tile_point(call.tile) else {
                 continue;
             };
-            // The lifeline: from the call to the last call under it.
-            if call.last > index {
+            // The lifeline: from the call to the last call under it, inside the window.
+            let (from, to) = (index.max(first), call.last.min(end.saturating_sub(1)));
+            if call.last > index && to > from {
                 let color = if self.cursor == Some(index) {
                     CALLEE.with_alpha(0.7 * unfold)
                 } else {
                     pale
                 };
                 lines.push(Line {
-                    from: self.at(home, index),
-                    to: self.at(home, call.last),
+                    from: self.at(home, from),
+                    to: self.at(home, to),
                     color,
                     rail: true,
                 });
+            }
+            if !self.shown(index) {
+                continue;
             }
             let Some(source) = call
                 .caller
@@ -333,6 +374,23 @@ pub(crate) fn run_order<S: Copy>(
         stack.extend(children(call).into_iter().rev().map(|c| (c, Some(index))));
     }
     calls
+}
+
+/// The most calls that stand out at once; a longer journey shows that many round the
+/// cursor's.
+pub(crate) const WINDOW: usize = 40;
+
+/// Which of `count` calls stand out, by index from and to: all of them when no more
+/// than `size`, else `size` of them with the cursor's a third of the way in.
+pub(crate) fn window(count: usize, cursor: Option<usize>, size: usize) -> (usize, usize) {
+    if count <= size {
+        return (0, count);
+    }
+    let first = cursor
+        .unwrap_or(0)
+        .saturating_sub(size / 3)
+        .min(count - size);
+    (first, first + size)
 }
 
 /// The fewest world units between two calls, so neighbors never touch.
@@ -501,22 +559,6 @@ pub(crate) fn swing(
     let Some(anchor) = anchor else {
         return;
     };
-    let reach = timeline
-        .calls
-        .iter()
-        .filter_map(|c| explorer.tile_point(c.tile))
-        .map(|p| p.truncate().distance(anchor.truncate()))
-        .fold(10.0, f32::max);
-    let count = timeline.calls.len();
-    let length = time_length(count, reach);
-    #[expect(clippy::cast_precision_loss, reason = "a call count")]
-    let gaps = count.saturating_sub(1).max(1) as f32;
-    timeline.step = length / gaps;
-    // Time runs out of the map, towards the camera head-on, from a little clear of it
-    // so the first calls stand apart from the map in the 3D views.
-    let gap = length * GAP;
-    timeline.start = anchor.z + gap;
-    timeline.plane = anchor.x;
     // On a call the timeline leaves out, as a closure, the nearest call it is under.
     let stack = explorer
         .selected()
@@ -526,6 +568,22 @@ pub(crate) fn swing(
         .iter()
         .rev()
         .find_map(|&span| timeline.calls.iter().position(|c| c.span == span));
+    timeline.slide_window(swung, ease);
+    let reach = timeline
+        .window()
+        .filter_map(|i| explorer.tile_point(timeline.calls[i].tile))
+        .map(|p| p.truncate().distance(anchor.truncate()))
+        .fold(10.0, f32::max);
+    let count = timeline.window().len();
+    let length = time_length(count, reach);
+    #[expect(clippy::cast_precision_loss, reason = "a call count")]
+    let gaps = count.saturating_sub(1).max(1) as f32;
+    timeline.step = length / gaps;
+    // Time runs out of the map, towards the camera head-on, from a little clear of it
+    // so the first calls stand apart from the map in the 3D views.
+    let gap = length * GAP;
+    timeline.start = anchor.z + gap;
+    timeline.plane = anchor.x;
     let aspect = match projection {
         Projection::Perspective(p) => p.aspect_ratio,
         _ => 1.6,
@@ -534,9 +592,8 @@ pub(crate) fn swing(
     if wanted != TimeView::Map && !camera.free {
         // Most of the calls: a few far outliers do not push the view back.
         let mut heights: Vec<f32> = timeline
-            .calls
-            .iter()
-            .filter_map(|c| explorer.tile_point(c.tile))
+            .window()
+            .filter_map(|i| explorer.tile_point(timeline.calls[i].tile))
             .map(|p| (p.y - anchor.y).abs())
             .collect();
         heights.sort_by(f32::total_cmp);
@@ -557,9 +614,9 @@ pub(crate) fn swing(
     }
     let half_width = camera.distance * (FIELD / 2.0).tan() * aspect;
     #[expect(clippy::cast_precision_loss, reason = "a call index")]
-    let at = timeline
-        .cursor
-        .map_or(0.0, |i| timeline.step * i as f32 - length / 2.0);
+    let at = timeline.cursor.map_or(0.0, |i| {
+        timeline.step * (i as f32 - timeline.slide) - length / 2.0
+    });
     // From the side, the middle of time; in 3D, a little back towards the map, so
     // both stay in view.
     let towards_map = 0.82 + 0.18 * timeline.side();
@@ -667,19 +724,18 @@ pub(crate) fn place_markers(
     }
     for (marker, mut transform, mut visibility, mut material) in &mut markers {
         let index = marker.0;
-        let shown = index < wanted;
-        visibility.set_if_neq(if shown {
+        let at = (index < wanted)
+            .then(|| timeline.point(&explorer, index))
+            .flatten();
+        visibility.set_if_neq(if at.is_some() {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         });
-        if !shown {
-            continue;
-        }
-        let call = timeline.calls[index];
-        let Some(at) = timeline.point(&explorer, index) else {
+        let Some(at) = at else {
             continue;
         };
+        let call = timeline.calls[index];
         transform.translation = at;
         transform.scale = Vec3::splat(timeline.marker_size(&explorer, index));
         // As its node looks, but glowing less, so the light shades it as a ball in
@@ -771,12 +827,20 @@ pub(crate) fn draw_lines(
         return;
     }
     let graph = explorer.graph();
-    let string = FURTHER.with_alpha(0.18 * string_strength(unfold));
-    for (index, call) in timeline.calls.iter().enumerate() {
+    let strength = string_strength(unfold);
+    for index in timeline.window() {
+        let call = timeline.calls[index];
         let Some(home) = explorer.tile_point(call.tile) else {
             continue;
         };
         let radius = node_size(graph, call.tile) * 0.5;
+        // The node under the pointer, or one of its calls: its strings lit.
+        let lit = explorer.hovered_tile == Some(call.tile);
+        let string = if lit {
+            Color::WHITE.with_alpha(0.7 * strength)
+        } else {
+            FURTHER.with_alpha(0.18 * strength)
+        };
         // Back along time to the node it unfolded from.
         if string.alpha() > 0.02 {
             let at = timeline.at(home, index);
@@ -796,7 +860,10 @@ pub(crate) fn draw_lines(
         }
     }
     // The journey's own lifeline ends in an arrowhead: time runs this way.
-    if let Some(first) = timeline.calls.first().filter(|c| c.last > 0)
+    if let Some(first) = timeline
+        .calls
+        .first()
+        .filter(|c| c.last > 0 && c.last < timeline.window.1)
         && let Some(home) = explorer.tile_point(first.tile)
     {
         let to = timeline.at(home, first.last);
@@ -849,9 +916,11 @@ pub(crate) fn string_strength(unfold: f32) -> f32 {
     unfold * (1.0 - side(unfold))
 }
 
-/// Names the calls on the timeline, angled up from each marker so neighbors fit:
-/// the cursor's call first, then what makes it and what it calls, then the rest, each
-/// only where it clears the names already placed.
+/// Names the calls on the timeline, angled up from each marker so neighbors fit: the
+/// cursor's call first, then what makes it and what it calls, then the rest by
+/// nearness to it or to the window's start, each in full above its marker or below
+/// it, else by its short name, wherever it clears the names already placed. Says how
+/// many calls the window leaves out at either end.
 pub(crate) fn draw_labels(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -864,36 +933,26 @@ pub(crate) fn draw_labels(
     }
     let disclosed = explorer.disclosure();
     let callers: Vec<Option<usize>> = timeline.calls.iter().map(|c| c.caller).collect();
-    let (order, near) = label_order(&callers, timeline.cursor);
-    // Where calls stand closer than a name is tall, only those near the cursor's are
-    // named, so the names that show are the ones that say where it is.
-    let pixels = |index: usize| timeline.point(explorer, index).and_then(to_screen);
-    let first = timeline
-        .cursor
-        .unwrap_or(0)
-        .min(timeline.calls.len().saturating_sub(2));
-    let crowded = (first..timeline.calls.len().saturating_sub(1))
-        .chain((0..first).rev())
-        .find_map(|i| Some((pixels(i)?, pixels(i + 1)?)))
-        .is_some_and(|(a, b)| (b.x - a.x).abs() < 16.0);
-    // In the 3D views the map is named too, so only the calls around the cursor's.
-    let order = if crowded || timeline.side() < 0.5 {
-        &order[..near]
-    } else {
-        &order[..]
-    };
     let mut taken: Vec<(egui::Pos2, f32)> = Vec::new();
-    for &index in order {
+    // Below the top bar and short of the right edge, so no name is cut off.
+    let bounds = painter.clip_rect().shrink2(egui::vec2(16.0, 16.0));
+    let along = egui::vec2(LABEL_ANGLE.cos(), LABEL_ANGLE.sin());
+    for index in label_order(&callers, timeline.cursor, timeline.window.0) {
         let call = timeline.calls[index];
-        let Some(at) = timeline.point(explorer, index).and_then(to_screen) else {
+        let Some(point) = timeline.point(explorer, index) else {
+            continue;
+        };
+        let Some(at) = to_screen(point) else {
             continue;
         };
         let number = disclosed.number(call.span).unwrap_or_default();
         let name = explorer.label(call.span);
-        let text = if number.is_empty() {
-            name
-        } else {
-            format!("{number}  {name}")
+        let numbered = |name: &str| {
+            if number.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{number}  {name}")
+            }
         };
         let current = timeline.cursor == Some(index);
         let color = if current {
@@ -901,36 +960,104 @@ pub(crate) fn draw_labels(
         } else {
             egui::Color32::from_rgb(200, 205, 215)
         };
-        let galley = painter.layout_no_wrap(
-            crate::ui::short(&text, 36),
-            egui::FontId::proportional(if current { 13.0 } else { 11.5 }),
-            color.gamma_multiply(alpha),
-        );
+        let font = egui::FontId::proportional(if current { 13.0 } else { 11.5 });
         // Clear of the marker, however large it shows.
-        let radius = timeline
-            .point(explorer, index)
-            .map(|p| p + Vec3::Y * timeline.marker_size(explorer, index) * 0.5)
-            .and_then(to_screen)
+        let radius = to_screen(point + Vec3::Y * timeline.marker_size(explorer, index) * 0.5)
             .map_or(4.0, |edge| (at.y - edge.y).abs());
-        // Above the marker, or where that clashes, below it.
-        let width = galley.size().x;
-        let Some(start) = [
-            at + egui::vec2(radius * 0.8 + 3.0, -radius * 0.8 - 7.0),
-            at + egui::vec2(radius + 2.0, radius + 4.0),
-        ]
-        .into_iter()
-        .find(|&start| {
-            !taken
-                .iter()
-                .any(|&(other, length)| angled_overlap(other, length, start, width))
-        }) else {
+        let above = at + egui::vec2(radius * 0.8 + 3.0, -radius * 0.8 - 7.0);
+        let below = at + egui::vec2(radius + 2.0, radius + 4.0);
+        let texts = [numbered(&name), numbered(short_name(&name))];
+        let placed = texts.iter().enumerate().find_map(|(i, text)| {
+            // The short name only where the full one is longer.
+            if i > 0 && *text == texts[0] {
+                return None;
+            }
+            let galley =
+                painter.layout_no_wrap(text.clone(), font.clone(), color.gamma_multiply(alpha));
+            let width = galley.size().x;
+            [above, below]
+                .into_iter()
+                .find(|&start| {
+                    bounds.contains(start + along * width)
+                        && !taken
+                            .iter()
+                            .any(|&(other, length)| angled_overlap(other, length, start, width))
+                })
+                .map(|start| (start, galley))
+        });
+        let Some((start, galley)) = placed else {
             continue;
         };
-        taken.push((start, width));
+        taken.push((start, galley.size().x));
         painter.add(egui::epaint::TextShape::new(start, galley, color).with_angle(LABEL_ANGLE));
     }
+    draw_window_ends(painter, to_screen, explorer, timeline, alpha);
     // The map's rings name its modules until the side, where they fold away.
     draw_modules(painter, to_screen, explorer, timeline, timeline.side());
+}
+
+/// A name without its module or type: `draw` for `journey_panel.draw`.
+fn short_name(name: &str) -> &str {
+    name.rsplit(['.', ':']).next().unwrap_or(name)
+}
+
+/// Says how many calls run before and after the window, at the ends of the journey's
+/// own lifeline.
+fn draw_window_ends(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+    timeline: &Timeline,
+    alpha: f32,
+) {
+    let (first, end) = timeline.window;
+    let count = timeline.calls.len();
+    let Some(home) = timeline
+        .calls
+        .first()
+        .and_then(|root| explorer.tile_point(root.tile))
+    else {
+        return;
+    };
+    let color = egui::Color32::from_rgb(170, 176, 190).gamma_multiply(alpha);
+    let font = egui::FontId::proportional(12.0);
+    #[expect(clippy::cast_precision_loss, reason = "a call index")]
+    let (first_at, end_at) = (first as f32, end as f32);
+    let bounds = painter.clip_rect().shrink(8.0);
+    // On a backing, as it sits over the map or the rail's far end, and on screen.
+    let note = |at: egui::Pos2, align: egui::Align2, text: String| {
+        let galley = painter.layout_no_wrap(text, font.clone(), color);
+        let rect = align.anchor_size(at, galley.size());
+        let rect = rect.translate(egui::vec2(
+            (bounds.right() - rect.right()).min(0.0) + (bounds.left() - rect.left()).max(0.0),
+            0.0,
+        ));
+        painter.rect_filled(
+            rect.expand(4.0),
+            4.0,
+            egui::Color32::from_rgb(15, 17, 23).gamma_multiply(0.85 * alpha),
+        );
+        painter.galley(rect.min, galley, color);
+    };
+    if first > 0
+        && let Some(at) = to_screen(timeline.at_moment(home, first_at - 0.3))
+    {
+        // Under the rail's start, clear of the map behind it.
+        note(
+            at + egui::vec2(0.0, 14.0),
+            egui::Align2::LEFT_TOP,
+            format!("‹ {first} earlier"),
+        );
+    }
+    if end < count
+        && let Some(at) = to_screen(timeline.at_moment(home, end_at - 0.4))
+    {
+        note(
+            at + egui::vec2(0.0, 14.0),
+            egui::Align2::LEFT_TOP,
+            format!("{} later ›", count - end),
+        );
+    }
 }
 
 /// Names the modules the calls reach down the left edge, each level with the middle
@@ -1016,16 +1143,22 @@ pub(crate) fn angled_overlap(a: egui::Pos2, a_length: f32, b: egui::Pos2, b_leng
 }
 
 /// The order calls are offered a name, given each call's caller: the cursor's call,
-/// its caller chain, the calls it makes, its siblings by nearness, then everything
-/// else in time order; with how many lead the list as near the cursor.
-pub(crate) fn label_order(callers: &[Option<usize>], cursor: Option<usize>) -> (Vec<usize>, usize) {
+/// its caller chain, the calls it makes, then everything else by nearness to it or
+/// to `first`, where the window starts, so the first calls
+/// on the rail are named as surely as the cursor's neighbors; earlier first on a tie.
+pub(crate) fn label_order(
+    callers: &[Option<usize>],
+    cursor: Option<usize>,
+    first: usize,
+) -> Vec<usize> {
     let mut order: Vec<usize> = Vec::new();
     let push = |i: usize, order: &mut Vec<usize>| {
         if !order.contains(&i) {
             order.push(i);
         }
     };
-    if let Some(cursor) = cursor.filter(|&c| c < callers.len()) {
+    let cursor = cursor.filter(|&c| c < callers.len());
+    if let Some(cursor) = cursor {
         push(cursor, &mut order);
         let mut up = callers[cursor];
         while let Some(at) = up {
@@ -1037,19 +1170,13 @@ pub(crate) fn label_order(callers: &[Option<usize>], cursor: Option<usize>) -> (
                 push(i, &mut order);
             }
         }
-        let mut siblings: Vec<usize> = (0..callers.len())
-            .filter(|&i| callers[i] == callers[cursor])
-            .collect();
-        siblings.sort_by_key(|&i| i.abs_diff(cursor));
-        for i in siblings {
-            push(i, &mut order);
-        }
     }
-    let near = order.len();
-    for i in 0..callers.len() {
+    let mut rest: Vec<usize> = (0..callers.len()).collect();
+    rest.sort_by_key(|&i| i.abs_diff(cursor.unwrap_or(first)).min(i.abs_diff(first)));
+    for i in rest {
         push(i, &mut order);
     }
-    (order, near)
+    order
 }
 
 #[cfg(test)]
@@ -1074,6 +1201,20 @@ mod tests {
                 (4, Some(0), 4),
             ]
         );
+    }
+
+    #[test]
+    fn a_long_journey_stands_out_round_the_cursor() {
+        assert_eq!(window(10, Some(9), 40), (0, 10), "short: all of it");
+        assert_eq!(window(200, None, 40), (0, 40), "from the start");
+        assert_eq!(window(200, Some(5), 40), (0, 40));
+        let (first, end) = window(200, Some(100), 40);
+        assert!(
+            first < 100 && 100 < end && end - first == 40,
+            "round the cursor"
+        );
+        assert!(100 - first < end - 100, "with more ahead than behind");
+        assert_eq!(window(200, Some(199), 40), (160, 200), "never past the end");
     }
 
     #[test]
@@ -1217,7 +1358,24 @@ mod tests {
     fn the_cursor_and_its_neighbors_are_named_first() {
         // 0 calls 1, 3, 4; 1 calls 2.
         let calls = [None, Some(0), Some(1), Some(0), Some(0)];
-        assert_eq!(label_order(&calls, Some(3)), (vec![3, 0, 4, 1, 2], 4));
-        assert_eq!(label_order(&calls, None), (vec![0, 1, 2, 3, 4], 0));
+        assert_eq!(label_order(&calls, Some(3), 0), vec![3, 0, 1, 2, 4]);
+        assert_eq!(label_order(&calls, None, 0), vec![0, 1, 2, 3, 4]);
+        // The rest by nearness to the cursor's, or to the window's start.
+        let flat: Vec<Option<usize>> = std::iter::once(None)
+            .chain((1..20).map(|_| Some(0)))
+            .collect();
+        let order = label_order(&flat, Some(12), 0);
+        assert_eq!(
+            &order[..8],
+            &[12, 0, 1, 11, 13, 2, 10, 14],
+            "the start as soon as the cursor's neighbors"
+        );
+    }
+
+    #[test]
+    fn a_short_name_drops_its_module() {
+        assert_eq!(short_name("journey_panel.draw"), "draw");
+        assert_eq!(short_name("ui::Chrome::draw"), "draw");
+        assert_eq!(short_name("main"), "main");
     }
 }

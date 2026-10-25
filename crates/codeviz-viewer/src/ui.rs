@@ -386,7 +386,9 @@ fn draw_names(
     // Turning towards time, only the journey, the focus's neighbors and the modules.
     if timeline.side() < 0.5 {
         let quiet = timeline.unfold > 0.15;
-        draw_graph_labels(painter, to_screen, explorer, diff, up, quiet);
+        // The nodes whose calls stand out on the rail, each found by its number.
+        let standing: Vec<usize> = timeline.window().map(|i| timeline.calls[i].tile).collect();
+        draw_graph_labels(painter, to_screen, explorer, diff, up, quiet, &standing);
     }
     timeline::draw_labels(painter, to_screen, explorer, timeline);
 }
@@ -1305,6 +1307,7 @@ fn draw_graph_labels(
     diff: Option<&DiffView>,
     up: Vec3,
     quiet: bool,
+    standing: &[usize],
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1502,7 +1505,10 @@ fn draw_graph_labels(
                         (Some((numbered(&steps), color, None)), None)
                     }
                     // With the spotlight on, names alone, so more of them fit.
-                    (Some(Relation::Upstream(1)), Some(_)) if !spotlit.is_empty() => (None, None),
+                    // In the 3D view too: the calls say when it calls the focus.
+                    (Some(Relation::Upstream(1)), Some(_)) if quiet || !spotlit.is_empty() => {
+                        (None, None)
+                    }
                     (Some(Relation::Upstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, tile, focus);
                         let total = graph.sequence(tile).len();
@@ -1577,7 +1583,12 @@ fn draw_graph_labels(
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
                 // are named come what may.
-                let force = tier == 0 || hovered == Some(tile) || spotlit.contains(&tile);
+                // So is the number of a node with a call on the rail in the 3D view:
+                // it is how that call is found on the map.
+                let force = tier == 0
+                    || hovered == Some(tile)
+                    || spotlit.contains(&tile)
+                    || (badge_only && standing.contains(&tile));
                 placer.place(named, node, edge, job, stroke, force);
             }
         }

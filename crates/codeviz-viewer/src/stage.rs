@@ -205,9 +205,8 @@ fn lay_plane(
     // Round the nodes the calls come from, so on a big map it lights the part the
     // journey runs in and its rim stays in view.
     let points: Vec<Vec3> = timeline
-        .calls
-        .iter()
-        .filter_map(|call| explorer.tile_point(call.tile))
+        .window()
+        .filter_map(|i| explorer.tile_point(timeline.calls[i].tile))
         .collect();
     if strength < 0.01 || points.is_empty() {
         *visibility = Visibility::Hidden;
@@ -384,7 +383,8 @@ fn light_pools(
     // Each node once, at its call nearest the cursor's.
     let mut lit: Vec<(usize, Option<usize>)> = Vec::new();
     if strength > 0.01 {
-        for (index, call) in timeline.calls.iter().enumerate() {
+        for index in timeline.window() {
+            let call = timeline.calls[index];
             let away = timeline.cursor().map(|c| c.abs_diff(index));
             match lit.iter_mut().find(|(tile, _)| *tile == call.tile) {
                 Some((_, best)) => *best = (*best).min(away),
@@ -426,7 +426,12 @@ fn light_pools(
             *visibility = Visibility::Hidden;
             continue;
         };
-        let away = lit[i].1;
+        // The node under the pointer, or one of its calls, lights as the cursor's.
+        let away = if explorer.hovered_tile == Some(tile) {
+            Some(0)
+        } else {
+            lit[i].1
+        };
         let cursor = away == Some(0);
         // Wider than the node, and than its call's ball, however small the node.
         let ball = timeline
@@ -441,7 +446,7 @@ fn light_pools(
         if let Some(mut material) = materials.get_mut(material) {
             let tint = node_color(&explorer, None, tile).mix(&Color::WHITE, 0.35);
             let glow = POOL
-                * pool_share(away, timeline.calls.len())
+                * pool_share(away, timeline.window().len())
                 * strength
                 * (1.0 - 0.4 * haze(eye.distance(at), range));
             material.base_color = tint.with_alpha(glow);

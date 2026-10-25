@@ -337,14 +337,25 @@ pub(crate) fn draw_graph(
     }
     draw_regions(&explorer, strength, &mut gizmos);
     let time = clock.elapsed_secs();
-    match diff {
-        Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, strength, &mut gizmos),
+    if let Some(diff) = diff {
+        draw_diff_graph(&explorer, &diff, time, &mut gizmos);
+    } else {
+        let links = strength * busy_quiet(explorer.graph().positions.len(), timeline.depth_view());
+        draw_calls(&explorer, time, links, &mut gizmos);
     }
     if strength > 0.5 {
         draw_spotlight(&explorer, time, &mut gizmos);
         draw_attention(&explorer, &mut gizmos);
     }
+}
+
+/// How much further a map of `nodes` quiets its links in the 3D view, as far as it is
+/// `depth_view`: a big map's links would otherwise hatch over the calls standing out
+/// of it; a small map's stay.
+pub(crate) fn busy_quiet(nodes: usize, depth_view: f32) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "a node count")]
+    let busy = ((nodes as f32 - 60.0) / 240.0).clamp(0.0, 1.0);
+    1.0 - 0.45 * busy * depth_view
 }
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
@@ -851,6 +862,16 @@ pub(crate) fn follow_focus(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_big_map_quiets_its_links_further_in_3d() {
+        assert!(
+            (busy_quiet(40, 1.0) - 1.0).abs() < 1e-6,
+            "a small map keeps them"
+        );
+        assert!(busy_quiet(2000, 1.0) < 0.6, "a big one quiets them");
+        assert!((busy_quiet(2000, 0.0) - 1.0).abs() < 1e-6, "only in 3D");
+    }
 
     #[test]
     fn pulls_back_only_as_far_as_what_it_must_show() {
