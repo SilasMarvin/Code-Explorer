@@ -31,7 +31,11 @@ impl Plugin for OrbitCameraPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (crate::graph_view::hold_center, apply_camera)
+                (
+                    crate::graph_view::hold_center,
+                    crate::ribbon::lift_view,
+                    apply_camera,
+                )
                     .chain()
                     .before(TransformSystems::Propagate),
             );
@@ -107,6 +111,11 @@ impl OrbitCamera {
         self.goal_angles = None;
         self.yaw -= delta.x * ORBIT_SPEED;
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    /// The angles it is turned to, or easing towards.
+    pub(crate) fn angles(&self) -> (f32, f32) {
+        self.goal_angles.unwrap_or((self.yaw, self.pitch))
     }
 
     /// Eases round to `(yaw, pitch)`.

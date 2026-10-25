@@ -24,7 +24,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    order::{self, Order, OrderMode},
+    ribbon::{self, Ribbon, TimeMode},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -137,8 +137,8 @@ pub(crate) struct Chrome {
     pub(crate) side: bool,
     pub(crate) search: bool,
     pub(crate) dial_turned: Option<f32>,
-    /// How call order shows on the graph (E).
-    pub(crate) order: OrderMode,
+    /// How call order shows in depth (Z).
+    pub(crate) time: TimeMode,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -150,7 +150,7 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    order: Res<Order>,
+    ribbon: Res<Ribbon>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
@@ -203,9 +203,9 @@ fn draw_ui(
             &to_screen,
             &explorer,
             diff.as_deref(),
-            &order.fanned,
             transform.up().into(),
         );
+        ribbon::draw_markers(&painter, &to_screen, &explorer, &ribbon);
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
         let mut clear = above(graph_area, panel_area);
@@ -244,7 +244,8 @@ fn draw_ui(
         if let Some(area) = panel_area {
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(&explorer, &to_screen)) {
+            let cursor = cursor_node(&explorer, &ribbon, &to_screen);
+            if let (Some(bar), Some(node)) = (tethers.cursor, cursor) {
                 tether(ctx, bar, node, false);
             }
             // The bar under the pointer, to the node it stands for.
@@ -296,16 +297,16 @@ fn panels(
                     }
                     if ui
                         .selectable_label(
-                            chrome.order != OrderMode::Off,
-                            format!("Order: {}", chrome.order.name()),
+                            chrome.time != TimeMode::Off,
+                            format!("Time: {}", chrome.time.name()),
                         )
                         .on_hover_text(
-                            "Call order on the graph: off → fan (the focus's calls lined up \
-                             beside it) → route (the journey as one line) (E)",
+                            "Call order in depth: the journey's calls hang over the map, \
+                             later calls higher (Z)",
                         )
                         .clicked()
                     {
-                        chrome.order = chrome.order.next();
+                        chrome.time = chrome.time.toggled();
                     }
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -364,11 +365,16 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     }
 }
 
-/// Where the cursor's node is on screen, for the tether from its bar.
+/// Where the cursor's node is on screen, for the tether from its bar; its marker
+/// while the ribbon is up.
 fn cursor_node(
     explorer: &Explorer,
+    ribbon: &Ribbon,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
 ) -> Option<egui::Pos2> {
+    if let Some(marker) = ribbon.cursor_marker() {
+        return to_screen(marker);
+    }
     explorer
         .focus()
         .and_then(|unit| explorer.map().tile_of(unit))
@@ -1274,7 +1280,6 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    fanned: &[(usize, usize)],
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
@@ -1542,7 +1547,6 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    order::draw_marks(painter, &discs, fanned);
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1752,7 +1756,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("E", "call order: off → fan → route"),
+            ("Z", "time in depth: the journey as a ribbon over the map"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

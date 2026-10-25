@@ -59,16 +59,16 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`E` shows call order on the graph itself, cycling off, fan and route (`--order fan` or
-`--order route` opens on one; the top bar says which). The fan lines the focus's calls
-up in a column beside it, first at the top, in the screen's plane whatever the orbit,
-opening them in the journey so they carry its numbers; a function called more than once
-sits at its first call marked `×2`, and everything else stays put. The route moves
-nothing: it threads the disclosed journey through its nodes in the order it runs, one
-pale line with chevrons, solid where a call goes in and dotted where execution returns
-and moves on to the next call, with the other links faded back. Passes over the same
-pair of nodes run side by side, the line fades away from the cursor, and a marker rides
-it to the cursor's stop.
+`Z` puts call order in depth (`--time ribbon` opens with it; the top bar says which).
+No node moves: the disclosed journey rises over the map as a ribbon, one marker per call
+(a function called three times has three, stacked over its node), filled with its
+node's color and floating higher the later it runs, joined to the next by a pale thread
+and to its node by a drop line that fades out before it reaches the map. The camera
+turns to look across the map from low in front, so heights read, and back when `Z`
+lowers it. The cursor's call is ringed in white and named, with a ring round its node
+where its drop line lands; its neighbors are named, the first and last calls too,
+every other call carries its number, and other calls to the cursor's function are
+ringed and numbered.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
