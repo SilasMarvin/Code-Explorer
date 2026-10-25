@@ -21,10 +21,10 @@ use crate::{
     depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
+    fly::{self, Flight, TimeMode},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    order::{self, Order, OrderMode},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -137,8 +137,8 @@ pub(crate) struct Chrome {
     pub(crate) side: bool,
     pub(crate) search: bool,
     pub(crate) dial_turned: Option<f32>,
-    /// How call order shows on the graph (E).
-    pub(crate) order: OrderMode,
+    /// How the journey's order shows as depth (Z).
+    pub(crate) time: TimeMode,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -150,7 +150,7 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    order: Res<Order>,
+    flight: Res<Flight>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
@@ -203,7 +203,7 @@ fn draw_ui(
             &to_screen,
             &explorer,
             diff.as_deref(),
-            &order.fanned,
+            &flight,
             transform.up().into(),
         );
         // The graph's right edge clear of the diff card above and a docked journey
@@ -296,16 +296,17 @@ fn panels(
                     }
                     if ui
                         .selectable_label(
-                            chrome.order != OrderMode::Off,
-                            format!("Order: {}", chrome.order.name()),
+                            chrome.time != TimeMode::Off,
+                            format!("Time: {}", chrome.time.name()),
                         )
                         .on_hover_text(
-                            "Call order on the graph: off → fan (the focus's calls lined up \
-                             beside it) → route (the journey as one line) (E)",
+                            "The journey's order as depth, the cursor's call on the map, \
+                             what ran behind it, what is to come nearer: off → fly (calls \
+                             move straight off the map) → held (each keeps its spot) (Z)",
                         )
                         .clicked()
                     {
-                        chrome.order = chrome.order.next();
+                        chrome.time = chrome.time.next();
                     }
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1268,13 +1269,16 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 /// its callers note where in their own calls they call it. A name tries each side of
 /// its node and is left out when none is free, and never covers a node that matters;
 /// zooming in makes room for more. Container names fill whatever space is left.
+/// How faint a call far from the cursor gets before its name is left out.
+const LABEL_FADE: f32 = 0.3;
+
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    fanned: &[(usize, usize)],
+    flight: &Flight,
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
@@ -1337,6 +1341,11 @@ fn draw_graph_labels(
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
             _ if journey.contains_key(&tile) => 1,
+            // With time as depth, the map off the journey goes unnamed but for what
+            // touches the focus, so the journey's names read.
+            Some(Relation::Upstream(2..) | Relation::Downstream(2..)) | None if flight.on() => {
+                continue;
+            }
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
@@ -1418,6 +1427,12 @@ fn draw_graph_labels(
                 let Some((node, edge)) = discs[tile] else {
                     continue;
                 };
+                // With time as depth, a call far from the cursor's goes unnamed, and a
+                // name fades and sizes as its node does.
+                let fade = flight.fade(tile);
+                if fade < LABEL_FADE && tier != 0 && hovered != Some(tile) {
+                    continue;
+                }
                 let change = diff.and_then(|d| d.change(tile));
                 // A change is named in full: `new` alone could be any type's.
                 let name = match (change, explorer.tile_unit(tile)) {
@@ -1501,7 +1516,9 @@ fn draw_graph_labels(
                     });
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one; what changed after it.
-                let fill = egui_color(graph_view::node_color(explorer, diff, tile));
+                let fill =
+                    egui_color(graph_view::node_color(explorer, diff, tile)).gamma_multiply(fade);
+                let color = color.gamma_multiply(fade);
                 let lead = match (order, change) {
                     (Some(order), Some(change)) => Some((
                         format!(" {order} {} ", diff_view::sign(change)),
@@ -1515,7 +1532,7 @@ fn draw_graph_labels(
                     0 => 14.0,
                     1 => 12.0,
                     _ => 11.0,
-                };
+                } * flight.step(tile).map_or(1.0, fly::apparent_size);
                 // The pill's border says which way it relates to the focus, as its link
                 // does.
                 let stroke = match relation {
@@ -1542,7 +1559,6 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    order::draw_marks(painter, &discs, fanned);
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1752,7 +1768,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("E", "call order: off → fan → route"),
+            ("Z", "time as depth: off → fly → held"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

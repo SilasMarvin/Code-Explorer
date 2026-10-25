@@ -59,16 +59,16 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`E` shows call order on the graph itself, cycling off, fan and route (`--order fan` or
-`--order route` opens on one; the top bar says which). The fan lines the focus's calls
-up in a column beside it, first at the top, in the screen's plane whatever the orbit,
-opening them in the journey so they carry its numbers; a function called more than once
-sits at its first call marked `×2`, and everything else stays put. The route moves
-nothing: it threads the disclosed journey through its nodes in the order it runs, one
-pale line with chevrons, solid where a call goes in and dotted where execution returns
-and moves on to the next call, with the other links faded back. Passes over the same
-pair of nodes run side by side, the line fades away from the cursor, and a marker rides
-it to the cursor's stop.
+`Z` shows the journey's order as depth, so stepping through it flies through it
+(`--time fly` or `--time held` opens on one; the top bar says which). The camera turns
+to face the map; the cursor's call sits on the map's plane at its usual size, calls
+that already ran recede behind it, smaller and darker, and calls still to come hang
+nearer, larger and see-through, each fading with every call further from the cursor
+until only a trace and no name is left. Everything off the journey stays on the plane.
+A function called more than once sits at its call nearest the cursor's. `fly` moves
+calls straight off the plane, so what is to come drifts out from the middle of the
+view as it nears; `held` slides each along the line of sight instead, so it keeps its
+spot on the map and only its size and fade say when it runs.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

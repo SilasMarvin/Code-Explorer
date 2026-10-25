@@ -23,10 +23,9 @@ use crate::{
     },
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
+    fly::Flight,
     lens::{Lens, SPECK, Source},
-    order::link_strength,
     scene::{PALETTE, Tile, lane_color},
-    ui::Chrome,
 };
 
 /// Calls into the focus.
@@ -56,6 +55,9 @@ pub(crate) enum NodeLook {
     Hidden,
     /// Unrelated to the focus.
     Faded(usize),
+    /// A call still to come while time shows as depth: see-through, so it never hides
+    /// what lies behind it, in its module's color.
+    Ghost(usize),
     /// Anything while nothing is focused, in its container's color.
     Plain(usize),
     /// Added, removed or rewritten, when showing a diff.
@@ -175,6 +177,15 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
     for color in 0..PALETTE.len() {
         let base = lane_color(color);
         table.insert(NodeLook::Plain(color), glow(base, 0.6));
+        table.insert(
+            NodeLook::Ghost(color),
+            StandardMaterial {
+                base_color: base.with_alpha(0.45),
+                emissive: LinearRgba::from(base) * 0.5,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            },
+        );
         table.insert(
             NodeLook::Faded(color),
             StandardMaterial {
@@ -327,7 +338,7 @@ fn fade(hops: u32) -> f32 {
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
-    chrome: Res<Chrome>,
+    flight: Res<Flight>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
@@ -335,7 +346,7 @@ pub(crate) fn draw_graph(
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, link_strength(&chrome), &mut gizmos),
+        None => draw_calls(&explorer, time, &|tile| flight.fade(tile), &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
     draw_attention(&explorer, &mut gizmos);
@@ -343,9 +354,15 @@ pub(crate) fn draw_graph(
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
-/// path, are pale arrows fading with distance; everything else is faint. All of them
-/// draw at `strength`, less while the route is drawn over them.
-fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos) {
+/// path, are pale arrows fading with distance; everything else is faint. A link draws
+/// only as strongly as the fainter of its ends, by `strength`, as when time shows as
+/// depth and calls far from the cursor fade.
+fn draw_calls(
+    explorer: &Explorer,
+    time: f32,
+    strength: &dyn Fn(usize) -> f32,
+    gizmos: &mut Gizmos,
+) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
     let reach = explorer.reach();
@@ -383,7 +400,7 @@ fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos
         if visible < SPECK {
             continue;
         }
-        let shown = visible * strength;
+        let shown = visible * strength(from).min(strength(to));
         // A link lights up when it takes one step nearer the focus (violet) or one
         // step further out from it (blue).
         let lit = reach.and_then(|reach| {
@@ -522,8 +539,8 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 }
 
 /// Each module's region, as the functions showing place it: its cluster, middle, and
-/// a radius holding most of them. Where the simulation puts them, so a node the fan
-/// draws away leaves its ring where it was.
+/// a radius holding most of them. Where the simulation puts them, so a node drawn
+/// away in time leaves its ring where it was.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
     let graph = explorer.graph();
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
@@ -592,7 +609,7 @@ pub(crate) fn graph_keys(
 /// Looks at the middle of the graph from far enough back to see all of it.
 fn frame_all(explorer: &Explorer, camera: &mut OrbitCamera) {
     let points: Vec<Vec3> = (0..explorer.map().tiles.len())
-        .filter_map(|t| explorer.tile_point(t))
+        .filter_map(|t| explorer.force_point(t))
         .collect();
     frame_points(&points, None, camera);
     // Away from the focus, so it stays where it was put.
@@ -634,9 +651,9 @@ pub(crate) fn frame_reveal(
             .iter()
             .enumerate()
             .filter(|&(_, &shown)| shown >= 0.5)
-            .filter_map(|(tile, _)| explorer.tile_point(tile))
+            .filter_map(|(tile, _)| explorer.force_point(tile))
             .collect();
-        let anchor = explorer.anchor().and_then(|t| explorer.tile_point(t));
+        let anchor = explorer.anchor().and_then(|t| explorer.force_point(t));
         frame_points(&points, anchor, &mut camera);
     }
 }
@@ -657,14 +674,14 @@ pub(crate) fn frame_spotlight(
     if spotlight.is_none() {
         return;
     }
-    let Some(center) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    let Some(center) = explorer.anchor().and_then(|t| explorer.force_point(t)) else {
         return;
     };
     let points: Vec<Vec3> = explorer
         .spotlit()
         .into_iter()
         .chain(explorer.graph_focus())
-        .filter_map(|t| explorer.tile_point(t))
+        .filter_map(|t| explorer.force_point(t))
         .collect();
     for (mut camera, transform, projection) in &mut cameras {
         let Projection::Perspective(perspective) = projection else {
@@ -721,7 +738,7 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 /// follows it as the graph moves.
 /// Not once the viewer has panned or zoomed away.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    let Some(at) = explorer.anchor().and_then(|t| explorer.force_point(t)) else {
         return;
     };
     for mut camera in &mut cameras {
@@ -738,7 +755,7 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
     let Some(anchor) = explorer.anchor() else {
         return;
     };
-    let Some(at) = explorer.tile_point(anchor) else {
+    let Some(at) = explorer.force_point(anchor) else {
         return;
     };
     let reach = graph
@@ -746,7 +763,7 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         .chain(graph.callees(anchor))
         .filter(|&t| explorer.shown(t))
         .chain(explorer.graph_focus())
-        .filter_map(|t| explorer.tile_point(t))
+        .filter_map(|t| explorer.force_point(t))
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);
     camera.glide_to(at, orbit_distance(reach));
@@ -758,7 +775,7 @@ fn journey_reach(explorer: &Explorer, at: Vec3) -> f32 {
         .disclosure()
         .tiles()
         .keys()
-        .filter_map(|&t| explorer.tile_point(t))
+        .filter_map(|&t| explorer.force_point(t))
         .map(|p| p.distance(at))
         .fold(0.0, f32::max)
 }
@@ -803,7 +820,7 @@ pub(crate) fn follow_focus(
         focus,
         disclosed: Some(disclosure),
     };
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    let Some(at) = explorer.anchor().and_then(|t| explorer.force_point(t)) else {
         return;
     };
     for (mut camera, transform, projection) in &mut cameras {
@@ -818,7 +835,7 @@ pub(crate) fn follow_focus(
             continue;
         };
         let cursor: Vec<Vec3> = focus
-            .and_then(|t| explorer.tile_point(t))
+            .and_then(|t| explorer.force_point(t))
             .into_iter()
             .collect();
         let mut needed = fit_distance(&cursor, at, transform.rotation, perspective);

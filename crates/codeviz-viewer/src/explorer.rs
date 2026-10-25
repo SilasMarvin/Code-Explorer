@@ -280,7 +280,7 @@ pub(crate) struct Explorer {
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
     /// How far each node is drawn from where the simulation puts it, by tile, as
-    /// when the fan lines the focus's calls up beside it.
+    /// when time shows as depth.
     nudges: HashMap<usize, Vec3>,
 }
 
@@ -638,11 +638,6 @@ impl Explorer {
         self.nudges = nudges;
     }
 
-    /// The nodes drawn away from their places.
-    pub(crate) fn nudged(&self) -> impl Iterator<Item = usize> + '_ {
-        self.nudges.keys().copied()
-    }
-
     pub(crate) fn clustering(&self) -> Clustering {
         self.clustering
     }
@@ -805,20 +800,6 @@ impl Explorer {
             expanded.insert(span);
         }
         self.disclosure_epoch += 1;
-    }
-
-    /// Opens the calls under one span, past the disclosed depth, unless they show.
-    /// Returns whether it opened them.
-    pub(crate) fn open_calls(&mut self, span: SpanId) -> bool {
-        let disclosed = self.disclosure();
-        if disclosed.children(span).iter().all(|&c| disclosed.shows(c)) {
-            return false;
-        }
-        if !self.track_mut().expanded.insert(span) {
-            return false;
-        }
-        self.disclosure_epoch += 1;
-        true
     }
 
     /// What the journey discloses, worked out once per change.

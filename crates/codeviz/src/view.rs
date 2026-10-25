@@ -72,9 +72,9 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
-    /// Show call order on the graph (E cycles it).
+    /// Show the journey's order as depth (Z cycles it).
     #[arg(long, value_enum)]
-    order: Option<OrderArg>,
+    time: Option<TimeArg>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -125,11 +125,12 @@ enum NearArg {
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum OrderArg {
-    /// The focus's calls lined up beside it, first at the top.
-    Fan,
-    /// The disclosed journey as one line through its nodes, in the order it runs.
-    Route,
+enum TimeArg {
+    /// Each call moves straight off the map's plane by when it runs: what ran behind,
+    /// what is to come nearer.
+    Fly,
+    /// Each call moves along the line of sight instead, so it keeps its spot on screen.
+    Held,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -242,10 +243,10 @@ pub(crate) fn open(
     if args.bare {
         viewer = viewer.bare();
     }
-    if let Some(order) = args.order {
-        viewer = viewer.with_order(match order {
-            OrderArg::Fan => "fan",
-            OrderArg::Route => "route",
+    if let Some(time) = args.time {
+        viewer = viewer.with_time(match time {
+            TimeArg::Fly => "fly",
+            TimeArg::Held => "held",
         });
     }
     if let Some(path) = &args.screenshot {

@@ -16,11 +16,11 @@ mod depth_meter;
 mod diff_view;
 mod disclosure;
 mod explorer;
+mod fly;
 mod graph_view;
 mod history;
 mod journey_panel;
 mod lens;
-mod order;
 mod scene;
 mod source_diff;
 mod truth;
@@ -65,7 +65,7 @@ pub struct Viewer {
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
     diff: Option<Comparison>,
-    order: order::OrderMode,
+    time: fly::TimeMode,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -99,7 +99,7 @@ impl Viewer {
             depth: None,
             bare: false,
             diff: None,
-            order: order::OrderMode::Off,
+            time: fly::TimeMode::Off,
         }
     }
 
@@ -237,15 +237,11 @@ impl Viewer {
         self
     }
 
-    /// Shows call order on the graph: `fan` lines the focus's calls up beside it,
-    /// `route` threads the journey through the nodes in the order it runs.
+    /// Shows the journey's order as depth: `fly` moves each call off the map's plane
+    /// by when it runs, `held` along the line of sight, so it keeps its spot on screen.
     #[must_use]
-    pub fn with_order(mut self, mode: &str) -> Self {
-        self.order = match mode {
-            "fan" => order::OrderMode::Fan,
-            "route" => order::OrderMode::Route,
-            _ => order::OrderMode::Off,
-        };
+    pub fn with_time(mut self, mode: &str) -> Self {
+        self.time = fly::TimeMode::parse(mode);
         self
     }
 
@@ -364,14 +360,14 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
-            order::OrderPlugin,
+            fly::FlyPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
         .insert_resource(JourneyPanel::new(self.panel))
         .insert_resource(ui::Chrome {
             bare: self.bare,
-            order: self.order,
+            time: self.time,
             ..default()
         })
         .init_resource::<Autoplay>();
