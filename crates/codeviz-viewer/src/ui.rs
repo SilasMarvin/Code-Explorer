@@ -388,22 +388,233 @@ fn draw_names(
     // Turning towards time, only the journey, the focus's neighbors and the modules.
     let taken = if timeline.side() < 0.5 {
         let quiet = timeline.unfold > 0.15;
-        // The nodes whose calls stand out on the rail, each found by its number.
         // The nodes whose calls stand out on the rail, each found by its number, and
         // whether it runs one of the calls round the cursor's that are always found.
         let callers: Vec<Option<usize>> = timeline.calls.iter().map(|c| c.caller).collect();
         let key = timeline::key_calls(&callers, timeline.cursor());
+        // In 3D, the cursor's call and those either side of it, where their nodes
+        // crowd together, are numbered in a lens instead.
+        let lens = if quiet {
+            cursor_lens(to_screen, explorer, timeline)
+        } else {
+            Vec::new()
+        };
+        let lensed = |tile: usize| lens.iter().any(|spot| spot.tile == tile);
         let rail: Vec<(usize, bool)> = timeline
             .window()
             .map(|i| (timeline.calls[i].tile, key.contains(&i)))
+            .filter(|&(tile, _)| !lensed(tile))
             .collect();
-        draw_graph_labels(painter, to_screen, explorer, diff, up, quiet, &rail)
+        let mut taken = draw_graph_labels(painter, to_screen, explorer, diff, up, quiet, &rail);
+        taken.extend(draw_lens(painter, to_screen, explorer, diff, &lens));
+        taken
     } else {
         Vec::new()
     };
     // The rail's names keep off what the map's names took.
     timeline::draw_labels(painter, to_screen, explorer, timeline, &taken);
 }
+
+/// A node numbered in the cursor's lens: where it is, and where the lens shows it.
+struct LensSpot {
+    tile: usize,
+    numbers: String,
+    current: bool,
+    at: egui::Pos2,
+    shown: egui::Pos2,
+}
+
+/// The nodes of the cursor's call and the calls either side of it in time, spread
+/// apart about their middle as a magnifier would when any two sit closer than a badge
+/// on screen, so which way one lies from another reads; none when they stand apart.
+/// While there is a lens, these nodes are numbered in it and not on the map.
+fn cursor_lens(
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+    timeline: &Timeline,
+) -> Vec<LensSpot> {
+    let Some(cursor) = timeline.cursor() else {
+        return Vec::new();
+    };
+    let disclosed = explorer.disclosure();
+    let mut spots: Vec<LensSpot> = Vec::new();
+    for index in cursor.saturating_sub(1)..=cursor + 1 {
+        let Some(call) = timeline.calls.get(index) else {
+            continue;
+        };
+        let number = disclosed.number(call.span).unwrap_or_default();
+        let current = index == cursor;
+        if let Some(spot) = spots.iter_mut().find(|s| s.tile == call.tile) {
+            spot.numbers = format!("{}, {number}", spot.numbers);
+            spot.current |= current;
+            continue;
+        }
+        let Some(at) = explorer.tile_point(call.tile).and_then(to_screen) else {
+            continue;
+        };
+        spots.push(LensSpot {
+            tile: call.tile,
+            numbers: number.to_owned(),
+            current,
+            at,
+            shown: at,
+        });
+    }
+    // Only those crowding the cursor's: one further off reads on the map as it is.
+    if let Some(here) = spots.iter().find(|s| s.current).map(|s| s.at) {
+        spots.retain(|s| s.current || s.at.distance(here) < LENS_GAP * 0.55);
+    }
+    let points: Vec<egui::Pos2> = spots.iter().map(|s| s.at).collect();
+    let Some(shown) = magnify(&points, LENS_GAP, LENS_MOST) else {
+        return Vec::new();
+    };
+    for (spot, at) in spots.iter_mut().zip(shown) {
+        spot.shown = at;
+    }
+    spots
+}
+
+/// How far apart on screen the lens spreads the cursor's nodes at least.
+const LENS_GAP: f32 = 56.0;
+
+/// `points` spread about their middle until no two are closer than `gap`, magnified
+/// at most `most` times, as a lens over them; none when they are already that far
+/// apart or there are fewer than two.
+pub(crate) fn magnify(points: &[egui::Pos2], gap: f32, most: f32) -> Option<Vec<egui::Pos2>> {
+    let closest = points
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| points[i + 1..].iter().map(move |b| a.distance(*b)))
+        .fold(f32::INFINITY, f32::min);
+    if !closest.is_finite() || closest >= gap * 0.55 {
+        return None;
+    }
+    #[expect(clippy::cast_precision_loss, reason = "a few points")]
+    let middle = points
+        .iter()
+        .fold(egui::Vec2::ZERO, |sum, p| sum + p.to_vec2())
+        / points.len() as f32;
+    let zoom = (gap / closest.max(1e-3)).min(most);
+    Some(
+        points
+            .iter()
+            .map(|p| (middle + (p.to_vec2() - middle) * zoom).to_pos2())
+            .collect(),
+    )
+}
+
+/// Draws the cursor's lens as an inset in the map's lower left corner: the patch of
+/// map round the cursor's nodes magnified, its nodes as faint dots and the cursor's
+/// and its neighbors' numbered in their colors, ringed on the map with a leader to the
+/// inset; returns where.
+fn draw_lens(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+    diff: Option<&DiffView>,
+    lens: &[LensSpot],
+) -> Vec<egui::Rect> {
+    if lens.len() < 2 {
+        return Vec::new();
+    }
+    #[expect(clippy::cast_precision_loss, reason = "a few spots")]
+    let middle = lens
+        .iter()
+        .fold(egui::Vec2::ZERO, |sum, s| sum + s.at.to_vec2())
+        / lens.len() as f32;
+    let middle = middle.to_pos2();
+    // As far as fits them in the inset with room for their numbers to the right.
+    let room = egui::vec2(INSET.x / 2.0 - 60.0, INSET.y / 2.0 - 24.0);
+    let zoom = lens
+        .iter()
+        .map(|s| {
+            let off = (s.at - middle).abs();
+            (room.x / off.x.max(1e-3)).min(room.y / off.y.max(1e-3))
+        })
+        .fold(LENS_MOST, f32::min);
+    let clip = painter.clip_rect();
+    let inset = egui::Rect::from_min_size(
+        egui::pos2(clip.left() + 16.0, clip.bottom() - 250.0 - INSET.y),
+        INSET,
+    );
+    let reach = INSET.min_elem() / 2.0 / zoom;
+    let line = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(110));
+    // Where it looks on the map, and the leader from there to the inset.
+    painter.circle_stroke(middle, reach, line);
+    painter.line_segment(
+        [
+            middle + (inset.center() - middle).normalized() * reach,
+            inset.center_top(),
+        ],
+        line,
+    );
+    painter.rect_filled(
+        inset,
+        6.0,
+        egui::Color32::from_rgb(12, 14, 19).gamma_multiply(0.94),
+    );
+    painter.rect_stroke(inset, 6.0, line, egui::StrokeKind::Inside);
+    let centre = inset.center() + egui::vec2(-30.0, 6.0);
+    let place = |at: egui::Pos2| centre + (at - middle) * zoom;
+    // The map's own nodes round them, faint, for bearings.
+    let lens_painter = painter.with_clip_rect(inset.shrink(4.0));
+    for tile in 0..explorer.map().tiles.len() {
+        if let Some(at) = explorer.tile_point(tile).and_then(to_screen)
+            && at.distance(middle) < reach * 1.5
+        {
+            lens_painter.circle_filled(place(at), 2.0, egui::Color32::from_white_alpha(40));
+        }
+    }
+    for spot in lens {
+        let fill = egui_color(graph_view::node_color(explorer, diff, spot.tile));
+        let at = place(spot.at);
+        lens_painter.circle_filled(at, 5.0, fill);
+        let text_color = if spot.current {
+            egui::Color32::WHITE
+        } else {
+            ON_FILL
+        };
+        let galley = lens_painter.layout_no_wrap(
+            format!(" {} ", spot.numbers),
+            egui::FontId::proportional(12.0),
+            text_color,
+        );
+        let min = at + egui::vec2(8.0, -galley.size().y / 2.0);
+        let pill = egui::Rect::from_min_size(min, galley.size()).expand2(PILL_PAD);
+        let (back, border) = if spot.current {
+            (PILL, egui::Color32::WHITE)
+        } else {
+            (fill, fill)
+        };
+        lens_painter.rect_filled(pill, 4.0, back);
+        lens_painter.rect_stroke(
+            pill,
+            4.0,
+            egui::Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        );
+        lens_painter.galley(min, galley, text_color);
+    }
+    painter.text(
+        inset.left_top() + egui::vec2(8.0, 6.0),
+        egui::Align2::LEFT_TOP,
+        format!(
+            "near {} · ×{zoom:.0}",
+            lens.iter()
+                .find(|s| s.current)
+                .map_or("", |s| s.numbers.as_str())
+        ),
+        egui::FontId::proportional(10.5),
+        MUTED,
+    );
+    vec![inset]
+}
+
+/// The most the cursor's lens magnifies.
+const LENS_MOST: f32 = 16.0;
+
+/// How large the cursor's lens is on screen.
+const INSET: egui::Vec2 = egui::vec2(220.0, 150.0);
 
 /// Where the cursor's node is on screen, for the tether from its bar: its call's
 /// marker while time is unfolded.
@@ -1993,6 +2204,28 @@ pub(crate) fn egui_color(color: Color) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lens_spreads_only_a_crowd_and_keeps_its_bearings() {
+        let apart = [egui::pos2(0.0, 0.0), egui::pos2(100.0, 0.0)];
+        assert!(magnify(&apart, 56.0, 12.0).is_none(), "already readable");
+        assert!(magnify(&[egui::pos2(0.0, 0.0)], 56.0, 12.0).is_none());
+        let close = [
+            egui::pos2(100.0, 100.0),
+            egui::pos2(104.0, 97.0),
+            egui::pos2(98.0, 104.0),
+        ];
+        let spread = magnify(&close, 56.0, 12.0).expect("a crowd");
+        // The second lies right of and above the first, and still does.
+        assert!(spread[1].x > spread[0].x && spread[1].y < spread[0].y);
+        assert!(spread[0].distance(spread[1]) > 40.0, "pushed apart");
+        let middle =
+            |ps: &[egui::Pos2]| ps.iter().fold(egui::Vec2::ZERO, |s, p| s + p.to_vec2()) / 3.0;
+        assert!(
+            (middle(&spread) - middle(&close)).length() < 1e-3,
+            "about their middle"
+        );
+    }
 
     /// Runs one frame that places a label for `key` at `node` with `blocked` taken,
     /// and returns the side it took and where its text was drawn from the node.

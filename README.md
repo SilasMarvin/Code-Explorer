@@ -72,7 +72,10 @@ call on the rail: all of them on a rail of up to 20 calls, else those with room,
 cursor's call's, its caller's, those either side of it and its own calls' always, and the rest of a crowd counted in one chip by
 its module's ring, such as `UI · 3 calls`; names only on the focus's neighbors on the
 rail and the
-modules the journey runs through, and the rail's names keep off the map's) on a lit plane with a faint grid that fades out at
+modules the journey runs through, and the rail's names keep off the map's; where the
+nodes of the cursor's call and the call before or after it crowd within a badge of each
+other, an inset at the lower left magnifies that patch of map with their numbers, so
+which way one lies from the other reads) on a lit plane with a faint grid that fades out at
 its rim, and the calls standing out of it in one faint upright sheet from the journey's start,
 so each call drops straight from its caller's rail and none crosses another. Rails and
 calls are lit tubes that thicken towards the eye and grey into the fog, the calls lit
