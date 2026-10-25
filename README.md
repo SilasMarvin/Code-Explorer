@@ -65,7 +65,8 @@ No node moves: the disclosed journey rises over the map as a ribbon, one marker 
 its node's color, floating higher the later it runs and joined to the next by a pale
 thread, thicker where it is nearer the eye. Away from the cursor the thread and balls
 step back into the haze, and a long journey's balls are smaller, so a crowd stays apart. The camera tilts gently, so the map keeps its shape, and depth cues carry the
-height instead of a steep angle: the map lies on a faintly gridded floor; each call
+height instead of a steep angle: the map lies on a faintly gridded floor that fades out
+at its rim; each call
 leaves a soft pool of its color's light round its node, wider and fainter the higher
 the call floats and brightest for the cursor's, so its height is the gap between ball
 and pool; haze dims what is

@@ -159,6 +159,7 @@ fn spawn_floor(
     store.config_mut::<FloorGizmos>().0.line.width = 1.0;
     let material = materials.add(StandardMaterial {
         base_color: BACKDROP,
+        base_color_texture: Some(images.add(floor_image(128))),
         unlit: true,
         ..default()
     });
@@ -173,11 +174,54 @@ fn spawn_floor(
     floor.material = material;
 }
 
+/// How much of the floor's own shade shows at `(u, v)` across it, each from -1 to 1
+/// edge to edge: all of it over the middle, falling away to none at its rim, so the
+/// floor has no hard edge.
+pub(crate) fn floor_glow(u: f32, v: f32) -> f32 {
+    let rim = (u.powi(4) + v.powi(4)).sqrt().sqrt();
+    let t = ((rim - 0.55) / 0.45).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
+/// What the floor's surface is scaled by at its rim: the background's share of it, in
+/// linear light.
+const FLOOR_RIM: f32 = 0.3;
+
+/// The floor's shading, `size` pixels square: white over the middle, darkening to
+/// the background towards the rim.
+fn floor_image(size: u32) -> Image {
+    let mut data = Vec::new();
+    let across = |i: u32| (i as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+    for y in 0..size {
+        for x in 0..size {
+            let shade = FLOOR_RIM + (1.0 - FLOOR_RIM) * floor_glow(across(x), across(y));
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "within a channel"
+            )]
+            let value = (shade * 255.0).round() as u8;
+            data.extend([value, value, value, 255]);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
 /// Grid lines across the floor, and the pieces each is drawn in so haze can fade it.
 const GRID_LINES: usize = 16;
 const GRID_PIECES: usize = 10;
 /// How strongly the grid draws where no haze dims it.
-const GRID: f32 = 0.07;
+const GRID: f32 = 0.09;
 
 /// Fits the floor under the nodes showing, fades it in with the ribbon, and draws
 /// its grid.
@@ -209,7 +253,7 @@ fn lay_floor(
         (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN), f32::MAX),
         |(min, max, low), p| (min.min(p.truncate()), max.max(p.truncate()), low.min(p.z)),
     );
-    let margin = (max - min).max_element() * 0.08 + 4.0;
+    let margin = (max - min).max_element() * 0.2 + 4.0;
     let (min, max, z) = (min - margin, max + margin, low - 1.5);
     if floor.laid {
         let ease = 1.0 - (-time.delta_secs() * 3.0).exp();
@@ -231,11 +275,16 @@ fn lay_floor(
     };
     let eye = Eye::of(camera, orbit.distance);
     let step = size.max_element() / GRID_LINES as f32;
+    let middle = (floor.min + floor.max) / 2.0;
     let line = |from: Vec3, to: Vec3, gizmos: &mut Gizmos<FloorGizmos>| {
         let at = |i: usize| from.lerp(to, i as f32 / GRID_PIECES as f32);
         for i in 0..GRID_PIECES {
             let (a, b) = (at(i), at(i + 1));
-            let shade = |p: Vec3| Color::WHITE.with_alpha(GRID * lift * (1.0 - eye.haze(p) / HAZE));
+            let shade = |p: Vec3| {
+                let across = (p.truncate() - middle) / (size / 2.0);
+                let glow = floor_glow(across.x, across.y);
+                Color::WHITE.with_alpha(GRID * lift * glow * (1.0 - eye.haze(p) / HAZE))
+            };
             gizmos.line_gradient(a, b, shade(a), shade(b));
         }
     };
@@ -580,6 +629,18 @@ mod tests {
             "a crowd dims"
         );
         assert!(pool_share(None, 500) > 0.0, "never gone");
+    }
+
+    #[test]
+    fn the_floor_fades_out_to_its_rim() {
+        assert!(
+            (floor_glow(0.0, 0.0) - 1.0).abs() < 1e-6,
+            "full in the middle"
+        );
+        assert!((floor_glow(0.3, -0.2) - 1.0).abs() < 1e-6, "and round it");
+        assert!(floor_glow(0.8, 0.0) < floor_glow(0.6, 0.0));
+        assert!(floor_glow(1.0, 0.0).abs() < 1e-6, "none at the rim");
+        assert!(floor_glow(1.0, 1.0).abs() < 1e-6, "nor in the corners");
     }
 
     #[test]
