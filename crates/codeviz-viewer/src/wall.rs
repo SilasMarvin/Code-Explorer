@@ -125,6 +125,12 @@ impl Wall {
         })
     }
 
+    /// The wall moved out along x, if need be, to stand clear past `edge`.
+    pub(crate) fn clear_of(mut self, edge: f32) -> Self {
+        self.foot.x = self.foot.x.max(edge + GAP * self.length / LONG);
+        self
+    }
+
     /// How high the wall stands, in rows.
     fn top(&self) -> f32 {
         #[expect(clippy::cast_precision_loss, reason = "a few rows")]
@@ -264,6 +270,25 @@ fn journey_points(explorer: &Explorer) -> Vec<Vec3> {
         .collect()
 }
 
+/// How far right the graph reaches level with the wall, give or take half its height:
+/// the wall stands past it so as not to hide the graph behind it. A few far outliers do
+/// not push it out.
+fn map_edge(explorer: &Explorer, wall: &Wall) -> f32 {
+    let (low, high) = (wall.at(0.0, 0.0).y, wall.at(0.0, wall.top()).y);
+    let reach = (high - low) / 2.0;
+    let mut edges: Vec<f32> = (0..explorer.map().tiles.len())
+        .filter(|&tile| explorer.visibility(tile) >= 0.5)
+        .filter_map(|tile| explorer.tile_point(tile))
+        .filter(|p| p.y > low - reach && p.y < high + reach)
+        .map(|p| p.x)
+        .collect();
+    edges.sort_by(f32::total_cmp);
+    edges
+        .get(edges.len() * 19 / 20)
+        .copied()
+        .unwrap_or(f32::NEG_INFINITY)
+}
+
 /// Where each span sits in the flame graph: left edge and width in slots, and row.
 type Placed = HashMap<SpanId, (f32, f32, usize)>;
 
@@ -272,7 +297,11 @@ fn stand(explorer: &Explorer) -> Option<(Wall, Placed, f32)> {
     let disclosed = explorer.disclosure();
     let (placed, slots) = disclosed.layout(explorer.journey()?.root());
     let wall = Wall::beside(&journey_points(explorer), disclosed.rows(), slots)?;
-    Some((wall, placed, slots.max(1.0)))
+    Some((
+        wall.clear_of(map_edge(explorer, &wall)),
+        placed,
+        slots.max(1.0),
+    ))
 }
 
 /// Where the camera looks into the corner from, and how far back: far enough for the
@@ -758,6 +787,15 @@ mod tests {
             (middle - 10.0).abs() < 1e-4,
             "centered on the graph top to bottom"
         );
+    }
+
+    #[test]
+    fn the_wall_moves_out_past_the_graph_but_never_in() {
+        let points = [Vec3::ZERO, Vec3::new(100.0, 100.0, 0.0)];
+        let wall = Wall::beside(&points, 2, 4.0).unwrap();
+        let foot = wall.at(0.0, 0.0).x;
+        assert!((wall.clear_of(0.0).at(0.0, 0.0).x - foot).abs() < 1e-4);
+        assert!(wall.clear_of(300.0).at(0.0, 0.0).x > 300.0);
     }
 
     #[test]

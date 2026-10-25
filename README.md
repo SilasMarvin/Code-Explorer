@@ -60,7 +60,8 @@ view's settings, outcomes, source and details), `H` lists every key, and `Esc` c
 whichever of those is on top, or the spotlight.
 
 `Z` stands the journey up in the scene as a wall beside the graph (`--time wall` opens
-on it; the top bar's `Time: wall` says so): its flame graph square to the graph, time
+on it; the top bar's `Time: wall` says so): its flame graph square to the graph, just
+past the graph's right edge level with it and sized to the journey's nodes, time
 running along the depth the graph does not use, from the graph's edge towards you, and
 each level of calls a row up the wall, the root a short footing. Bars carry their node's
 color, number and name, along the bar or up it where it is narrow. The graph does not
