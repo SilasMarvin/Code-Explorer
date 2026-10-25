@@ -4,7 +4,7 @@
 //! colors, and a search box on `/`.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -18,7 +18,7 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
-    depth_meter,
+    cues, depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
@@ -198,14 +198,16 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
+        let eye = cues::Eye::of(transform, orbit.distance);
         draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
             diff.as_deref(),
             transform.up().into(),
+            ribbon.showing(),
         );
-        ribbon::draw_markers(&painter, &to_screen, &explorer, &ribbon);
+        ribbon::draw_markers(&painter, &to_screen, &explorer, &ribbon, eye);
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
         let mut clear = above(graph_area, panel_area);
@@ -1281,6 +1283,7 @@ fn draw_graph_labels(
     explorer: &Explorer,
     diff: Option<&DiffView>,
     up: Vec3,
+    quiet: bool,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1355,6 +1358,11 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
+        // While the ribbon hangs over the map, only the journey, the focus and its
+        // neighbors are named, so the ribbon's own names stand out.
+        if quiet && tier > 1 {
+            continue;
+        }
         order.push((
             (tier, std::cmp::Reverse(graph.degree(tile)), tile),
             Named::Node(tile),
@@ -1366,8 +1374,23 @@ fn draw_graph_labels(
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
+    // While the ribbon is up, only the modules it runs through are named.
+    let quiet_modules: Option<HashSet<usize>> = quiet.then(|| {
+        journey
+            .keys()
+            .copied()
+            .chain(center)
+            .filter_map(|tile| graph.cluster(tile))
+            .collect()
+    });
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
+            if quiet_modules
+                .as_ref()
+                .is_some_and(|kept| !kept.contains(&cluster))
+            {
+                continue;
+            }
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1757,6 +1780,10 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
             ("Z", "time in depth: the journey as a ribbon over the map"),
+            (
+                "Shift Z",
+                "rock the camera gently while time shows, or hold it",
+            ),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

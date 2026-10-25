@@ -63,6 +63,12 @@ pub(crate) struct OrbitCamera {
     /// Whether the viewer has panned or zoomed away from the focused node, so the
     /// camera stops holding it in the middle.
     pub(crate) free: bool,
+    /// A turn of the whole view, sideways about `pivot`, as the time view's rock;
+    /// it leaves the yaw and pitch where they are.
+    pub(crate) sway: f32,
+    /// Where the sway turns about, from the point orbited: points near it hold still
+    /// on screen while what stands nearer the eye slides across them.
+    pub(crate) pivot: Vec3,
 }
 
 impl Default for OrbitCamera {
@@ -76,6 +82,8 @@ impl Default for OrbitCamera {
             goal_distance: None,
             goal_angles: None,
             free: false,
+            sway: 0.0,
+            pivot: Vec3::ZERO,
         }
     }
 }
@@ -265,7 +273,11 @@ fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Tran
             }
         }
         let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
-        transform.translation = camera.focus + rotation * Vec3::Z * camera.distance;
-        transform.rotation = rotation;
+        let at = camera.focus + rotation * Vec3::Z * camera.distance;
+        // The sway turns the whole view about its pivot, round the screen's upright.
+        let turn = Quat::from_axis_angle(rotation * Vec3::Y, camera.sway);
+        let pivot = camera.focus + camera.pivot;
+        transform.translation = pivot + turn * (at - pivot);
+        transform.rotation = turn * rotation;
     }
 }

@@ -15,6 +15,7 @@ use codeviz_core::SpanId;
 
 use crate::{
     camera::OrbitCamera,
+    cues::{self, Eye},
     explorer::Explorer,
     graph_view::{node_color, node_size},
     ui::{Chrome, egui_color, node_name},
@@ -80,7 +81,7 @@ pub(crate) struct Call {
 impl Ribbon {
     /// How far above the map the camera should look while the ribbon is up: a little
     /// under half way up it, so the ribbon and the map round its foot share the view.
-    fn middle(&self) -> f32 {
+    pub(crate) fn middle(&self) -> f32 {
         let top = self.calls.iter().map(|c| c.marker.z).fold(0.0, f32::max);
         top * 0.4
     }
@@ -109,6 +110,17 @@ impl Ribbon {
         }
     }
 
+    /// How far it has risen: 0 flat on the map, 1 at full height.
+    pub(crate) fn lift(&self) -> f32 {
+        self.lift.clamp(0.0, 1.0)
+    }
+
+    /// How strongly the map's links draw under it: quieter while it is up, so the
+    /// ribbon reads over them.
+    pub(crate) fn map_strength(&self) -> f32 {
+        1.0 - 0.45 * self.lift()
+    }
+
     /// Whether anything of it shows.
     pub(crate) fn showing(&self) -> bool {
         self.lift > 0.01 && !self.calls.is_empty()
@@ -133,11 +145,12 @@ fn line_widths(mut store: ResMut<GizmoConfigStore>) {
     store.config_mut::<ThreadGizmos>().0.line.width = 1.5;
 }
 
-/// The view across the map while the ribbon is up: from low in front and a little to
-/// the side, so the map lies back like a floor and height reads upwards.
-pub(crate) const RIBBON_VIEW: (f32, f32) = (-0.35, 1.1);
+/// The view across the map while the ribbon is up: a gentle tilt from in front and a
+/// little to the side, so the map keeps its shape and height reads by the depth cues
+/// (shadows, haze, size, the rock) more than by the angle.
+pub(crate) const RIBBON_VIEW: (f32, f32) = (-0.2, 0.6);
 /// How far back to stand, in ribbon heights, to see it whole.
-const FIT: f32 = 2.9;
+const FIT: f32 = 2.4;
 
 // ---- layout ----
 
@@ -406,38 +419,33 @@ pub(crate) fn lift_view(
 // ---- drawing ----
 
 /// The thread: pale, so it says nothing about direction to the focus or module.
-const THREAD: Color = Color::srgba(0.92, 0.94, 1.0, 0.55);
-/// Drop lines: pale, and how strongly is [`drop_alphas`]'s.
+const THREAD: egui::Color32 = egui::Color32::from_rgb(232, 236, 248);
+/// The cursor's drop line: pale.
 const DROP: Color = Color::srgb(0.85, 0.88, 0.95);
 
+/// Where light comes from: from over the map, a little to the left and from its far
+/// side, so markers light on top and their shadows fall under them.
+const LIGHT: Vec3 = Vec3::new(-0.45, 0.5, 1.0);
+
 /// How strongly a drop line draws at its marker and where it meets its node, for a
-/// call `away` calls from the cursor's, of `count`. The cursor's runs all the way
-/// down to the ring round its node; the rest fade out before they reach the map, and
-/// the more calls there are the fainter, so the map under a long journey stays clear.
-pub(crate) fn drop_alphas(away: Option<usize>, count: usize) -> (f32, f32) {
-    #[expect(clippy::cast_precision_loss, reason = "a small count")]
-    let crowd = (24.0 / count.max(1) as f32).min(1.0);
+/// call `away` calls from the cursor's: the cursor's reaches its node, its neighbors'
+/// fade out on the way, and the rest have none, their footprints joining them to
+/// their nodes instead.
+pub(crate) fn drop_alphas(away: Option<usize>) -> (f32, f32) {
     match away {
-        Some(0) => (0.9, 0.7),
-        Some(1..=NEAR) => (0.4, 0.0),
-        _ => ((0.16 * crowd).max(0.06), 0.0),
+        Some(0) => (0.55, 0.3),
+        Some(1..=NEAR) => (0.22, 0.0),
+        _ => (0.0, 0.0),
     }
 }
 
-/// Draws the thread from call to call and each call's drop line to its node.
+/// Draws drop lines from the calls round the cursor to their nodes, and a ring flat
+/// on the map round the cursor's node, where its footprint lies.
 pub(crate) fn draw_thread(ribbon: Res<Ribbon>, mut gizmos: Gizmos<ThreadGizmos>) {
     if !ribbon.showing() {
         return;
     }
     let fade = ribbon.lift.clamp(0.0, 1.0);
-    for (index, pair) in ribbon.calls.windows(2).enumerate() {
-        let strength = thread_strength(index, ribbon.cursor) * fade;
-        gizmos.line(
-            pair[0].marker,
-            pair[1].marker,
-            THREAD.with_alpha(THREAD.alpha() * strength),
-        );
-    }
     for (index, call) in ribbon.calls.iter().enumerate() {
         // The cursor's function called again hangs from the same node, lit as it is.
         let away = ribbon.cursor.map(|c| {
@@ -447,56 +455,113 @@ pub(crate) fn draw_thread(ribbon: Res<Ribbon>, mut gizmos: Gizmos<ThreadGizmos>)
                 c.abs_diff(index)
             }
         });
-        let (top, bottom) = drop_alphas(away, ribbon.calls.len());
-        gizmos.line_gradient(
-            call.marker,
-            call.foot,
-            DROP.with_alpha(top * fade),
-            DROP.with_alpha(bottom * fade),
-        );
+        let (top, bottom) = drop_alphas(away);
+        if top > 0.0 {
+            gizmos.line_gradient(
+                call.marker,
+                call.foot,
+                DROP.with_alpha(top * fade),
+                DROP.with_alpha(bottom * fade),
+            );
+        }
     }
-    // Where the cursor's drop line lands, a ring flat on the map round its node.
     if let Some(call) = ribbon.cursor.and_then(|c| ribbon.calls.get(c)) {
         let ring = Isometry3d::from_translation(call.foot);
         gizmos.circle(ring, 1.4, Color::srgba(1.0, 1.0, 1.0, 0.8 * fade));
     }
 }
 
-/// Ribbon labels are light pills with dark text, the map's inverted, so a name over
-/// the map reads as the ribbon's and not another node's.
-const INK: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
+/// How high call `index` floats, as a share of the ribbon's height.
+pub(crate) fn rise_share(ribbon: &Ribbon, index: usize) -> f32 {
+    let top = ribbon
+        .calls
+        .iter()
+        .map(|c| c.marker.z - c.foot.z)
+        .fold(1e-3, f32::max);
+    ribbon
+        .calls
+        .get(index)
+        .map_or(0.0, |c| ((c.marker.z - c.foot.z) / top).clamp(0.0, 1.0))
+}
 
-/// Draws each call's marker, filled with its node's color as its bar is, and the
-/// labels the cursor and its neighbors carry.
+/// How big a call's footprint is, as a share of its marker's size, and how bright at
+/// its middle, for a call `rise` of the way up the ribbon: the higher it floats the
+/// wider and fainter its footprint, as under a broad light.
+pub(crate) fn shadow_shape(rise: f32) -> (f32, f32) {
+    (2.2 + 3.0 * rise, 0.9 - 0.45 * rise)
+}
+
+/// How many pixels across a marker's ball is at `nearness`, the cursor's bigger.
+pub(crate) fn marker_radius(nearness: f32, cursor: bool) -> f32 {
+    let base = if cursor { 10.0 } else { 7.0 };
+    (base * nearness).clamp(base * 0.85, base * 2.0)
+}
+
+/// Draws the thread from call to call, each call's marker as a ball lit from above,
+/// filled with its node's color as its bar is, and the labels the cursor and its
+/// neighbors carry. Nearer markers are bigger and cover farther ones; haze dims them
+/// with distance.
 pub(crate) fn draw_markers(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     ribbon: &Ribbon,
+    eye: Eye,
 ) {
     if !ribbon.showing() {
         return;
     }
     let fade = ribbon.lift.clamp(0.0, 1.0);
+    let backdrop = egui_color(cues::BACKDROP);
     let screen: Vec<Option<egui::Pos2>> =
         ribbon.calls.iter().map(|c| to_screen(c.marker)).collect();
-    // Plain markers first, so the cursor's draws over them.
-    for (index, (call, at)) in ribbon.calls.iter().zip(&screen).enumerate() {
-        let Some(at) = *at else { continue };
-        if ribbon.cursor == Some(index) {
+    for (index, pair) in ribbon.calls.windows(2).enumerate() {
+        let (Some(a), Some(b)) = (screen[index], screen[index + 1]) else {
             continue;
+        };
+        let middle = pair[0].marker.lerp(pair[1].marker, 0.5);
+        let width = (1.4 * eye.nearness(middle)).clamp(0.8, 3.5);
+        let strength = thread_strength(index, ribbon.cursor) * fade * 0.7;
+        let color = cues::mix(THREAD, backdrop, eye.haze(middle)).gamma_multiply(strength);
+        painter.line_segment([a, b], egui::Stroke::new(width, color));
+    }
+    // Farthest first, so nearer balls cover them; the cursor's over all.
+    let mut order: Vec<usize> = (0..ribbon.calls.len()).collect();
+    order.sort_by(|&a, &b| {
+        let near = |i: usize| eye.nearness(ribbon.calls[i].marker);
+        near(a).total_cmp(&near(b))
+    });
+    order.sort_by_key(|&i| ribbon.cursor == Some(i));
+    for index in order {
+        let (call, Some(at)) = (&ribbon.calls[index], screen[index]) else {
+            continue;
+        };
+        let cursor = ribbon.cursor == Some(index);
+        let radius = marker_radius(eye.nearness(call.marker), cursor);
+        let light = to_screen(call.marker + LIGHT.normalize())
+            .map_or(egui::vec2(-0.6, -0.8), |p| (p - at).normalized());
+        let fill = egui_color(node_color(explorer, None, call.tile));
+        let fill = cues::mix(fill, backdrop, eye.haze(call.marker));
+        if cursor {
+            painter.circle_filled(at, radius + 4.0, egui::Color32::from_white_alpha(36));
         }
-        let fill = egui_color(node_color(explorer, None, call.tile)).gamma_multiply(fade);
-        painter.circle(
-            at,
-            4.0,
-            fill,
-            egui::Stroke::new(1.0, egui::Color32::from_black_alpha(160)),
-        );
+        cues::sphere(painter, at, radius, fill, light, fade);
+        if cursor || ribbon.again(index) {
+            let width = if cursor { 2.0 } else { 1.5 };
+            painter.circle_stroke(
+                at,
+                radius + 1.0,
+                egui::Stroke::new(width, egui::Color32::WHITE.gamma_multiply(fade)),
+            );
+        }
     }
     let placed = name_calls(painter, explorer, ribbon, &screen, fade);
     number_calls(painter, ribbon, &screen, fade, placed);
 }
+
+/// Ribbon labels are light pills with dark text, the map's inverted, so a name over
+/// the map reads as the ribbon's and not another node's.
+const INK: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
 
 /// Names the calls [`Ribbon::label_of`] picks, the cursor's first so it always wins,
 /// each on a light pill right of its marker, else left, else not at all. Returns
@@ -517,17 +582,6 @@ fn name_calls(
         let (Some(call), Some(at)) = (ribbon.calls.get(index), screen[index]) else {
             continue;
         };
-        let fill = egui_color(node_color(explorer, None, call.tile));
-        match kind {
-            Label::Cursor => {
-                painter.circle_filled(at, 9.0, egui::Color32::from_white_alpha(40));
-                painter.circle(at, 6.0, fill, egui::Stroke::new(2.0, egui::Color32::WHITE));
-            }
-            Label::Again => {
-                painter.circle(at, 4.5, fill, egui::Stroke::new(1.5, egui::Color32::WHITE));
-            }
-            Label::Near | Label::End => {}
-        }
         let text = match kind {
             Label::Again => call.number.clone(),
             _ if call.number.is_empty() => node_name(explorer, call.tile),
@@ -693,19 +747,26 @@ mod tests {
     }
 
     #[test]
-    fn only_the_cursors_drop_line_reaches_the_map() {
-        assert!(drop_alphas(Some(0), 10).1 > 0.5);
-        for away in [Some(1), Some(NEAR), Some(9), None] {
-            assert!(drop_alphas(away, 10).1 < 1e-6, "{away:?} fades out");
-        }
+    fn higher_calls_leave_wider_fainter_footprints() {
+        let (low_size, low_dark) = shadow_shape(0.0);
+        let (high_size, high_dark) = shadow_shape(1.0);
+        assert!(high_size > low_size);
+        assert!(high_dark < low_dark);
+        assert!(high_dark > 0.0, "still there");
+    }
+
+    #[test]
+    fn only_the_cursor_and_its_neighbors_drop_to_the_map() {
         assert!(
-            drop_alphas(Some(1), 10).0 > drop_alphas(Some(9), 10).0,
-            "neighbors brighter"
+            drop_alphas(Some(0)).1 > 0.0,
+            "the cursor's reaches its node"
         );
+        assert!(drop_alphas(Some(1)).0 > 0.0);
+        assert!(drop_alphas(Some(1)).1 < 1e-6, "a neighbor's fades out");
         assert!(
-            drop_alphas(Some(9), 70).0 < drop_alphas(Some(9), 10).0,
-            "fainter in a crowd"
+            drop_alphas(Some(NEAR + 1)).0 < 1e-6,
+            "the rest have footprints"
         );
-        assert!(drop_alphas(Some(9), 1000).0 > 0.0, "never gone");
+        assert!(drop_alphas(None).0 < 1e-6);
     }
 }

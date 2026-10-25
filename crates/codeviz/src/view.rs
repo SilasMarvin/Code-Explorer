@@ -75,6 +75,10 @@ pub(crate) struct Display {
     /// Show call order in depth (Z toggles it).
     #[arg(long, value_enum)]
     time: Option<TimeArg>,
+    /// Hold the time view's camera rock at this share of a cycle (0 to 1): 0.25 and
+    /// 0.75 are its two ends. A screenshot holds it at 0 unless told.
+    #[arg(long, value_name = "PHASE")]
+    rock_at: Option<f32>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -244,7 +248,11 @@ pub(crate) fn open(
         viewer = viewer.with_time("ribbon");
     }
     if let Some(path) = &args.screenshot {
-        viewer = viewer.with_screenshot(path);
+        viewer = viewer
+            .with_screenshot(path)
+            .with_rock_at(args.rock_at.unwrap_or(0.0));
+    } else if let Some(phase) = args.rock_at {
+        viewer = viewer.with_rock_at(phase);
     }
     if let Some(keys) = &args.keys {
         viewer = viewer.with_keys(keys).map_err(anyhow::Error::msg)?;
