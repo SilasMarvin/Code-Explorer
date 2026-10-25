@@ -591,8 +591,7 @@ pub(crate) fn swing(
         .map(|p| p.truncate().distance(anchor.truncate()))
         .fold(10.0, f32::max);
     let count = timeline.window().len();
-    // In the 3D view time runs shorter, so the map keeps half the screen.
-    let length = time_length(count, reach) * (1.0 - (1.0 - RAILS_LENGTH) * timeline.depth_view());
+    let length = time_length(count, reach) * (1.0 - rails_shorter(count) * timeline.depth_view());
     #[expect(clippy::cast_precision_loss, reason = "a call count")]
     let gaps = count.saturating_sub(1).max(1) as f32;
     timeline.step = length / gaps;
@@ -659,6 +658,16 @@ fn rails_room(count: usize) -> f32 {
 /// middle: further back towards the map on a short rail.
 fn rails_toward_map(count: usize) -> f32 {
     if count <= SHORT_RAIL { 0.72 } else { 0.82 }
+}
+
+/// How much shorter time runs in the 3D view than from the side: a short rail's, so the
+/// map keeps half the screen; not a long window's, whose names need its spacing.
+fn rails_shorter(count: usize) -> f32 {
+    if count <= SHORT_RAIL {
+        1.0 - RAILS_LENGTH
+    } else {
+        0.0
+    }
 }
 
 /// How far clear of the map time starts, as a share of its length.
@@ -969,6 +978,7 @@ pub(crate) fn string_strength(unfold: f32) -> f32 {
 /// short name: the cursor's call first, then what makes it and what it calls, then
 /// the rest by nearness to it or to the window's start. Says how many calls the window
 /// leaves out at either end.
+#[expect(clippy::too_many_lines, reason = "one ranked pass")]
 pub(crate) fn draw_labels(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -1017,7 +1027,13 @@ pub(crate) fn draw_labels(
     );
     // Below the top bar and short of the right edge, so no name is cut off.
     let bounds = painter.clip_rect().shrink2(egui::vec2(16.0, 16.0));
-    for index in label_order(&callers, timeline.cursor, timeline.window.0) {
+    // Those round the cursor's first, whatever else would come before them.
+    let priority = priority_calls(&callers, timeline.cursor);
+    let mut order = label_order(&callers, timeline.cursor, timeline.window.0);
+    order.sort_by_key(|i| !priority.contains(i));
+    let mut named_first: Vec<NameBox> = Vec::new();
+    for index in order {
+        let first = priority.contains(&index);
         let call = timeline.calls[index];
         let Some((at, radius)) = markers[index] else {
             continue;
@@ -1031,7 +1047,7 @@ pub(crate) fn draw_labels(
             .get(&call.tile)
             .map(|numbers| also_runs(numbers, number))
             .unwrap_or_default();
-        let numbered = |name: &str| {
+        let numbered = |name: &str, also: &str| {
             if number.is_empty() {
                 format!("{name}{also}")
             } else {
@@ -1045,26 +1061,54 @@ pub(crate) fn draw_labels(
             egui::Color32::from_rgb(200, 205, 215)
         };
         let font = egui::FontId::proportional(if current { 13.0 } else { 11.5 });
-        let texts = [numbered(&name), numbered(short_name(&name))];
-        let placed = texts.iter().enumerate().find_map(|(i, text)| {
-            // The short name only where the full one is longer.
-            if i > 0 && *text == texts[0] {
-                return None;
-            }
-            let galley =
-                painter.layout_no_wrap(text.clone(), font.clone(), color.gamma_multiply(alpha));
-            name_spots(at, radius, galley.size())
-                .into_iter()
-                .find(|spot| {
-                    spot.corners().iter().all(|&c| bounds.contains(c))
-                        && !taken.iter().any(|other| spot.overlaps(other))
+        // In full with where else it runs, then without, then by its short name.
+        let texts = [
+            numbered(&name, &also),
+            numbered(&name, ""),
+            numbered(short_name(&name), ""),
+        ];
+        let fits = |spot: &NameBox| {
+            spot.corners().iter().all(|&c| bounds.contains(c))
+                && !taken.iter().any(|other| spot.overlaps(other))
+        };
+        let layout = |text: &String| {
+            painter.layout_no_wrap(text.clone(), font.clone(), color.gamma_multiply(alpha))
+        };
+        let placed = texts
+            .iter()
+            .enumerate()
+            .filter(|&(i, text)| i == 0 || !texts[..i].contains(text))
+            .find_map(|(_, text)| {
+                let galley = layout(text);
+                name_spots(at, radius, galley.size())
+                    .into_iter()
+                    .find(fits)
+                    .map(|spot| (spot, galley))
+            })
+            // A call round the cursor's is named come what may: clear of the other
+            // names round it, if over anything else.
+            .or_else(|| {
+                first.then(|| {
+                    let galley = layout(&texts[1]);
+                    let spots = name_spots(at, radius, galley.size());
+                    let spot = spots
+                        .iter()
+                        .find(|spot| {
+                            spot.corners().iter().all(|&c| bounds.contains(c))
+                                && !named_first.iter().any(|other| spot.overlaps(other))
+                        })
+                        .copied()
+                        .unwrap_or(spots[0]);
+                    (spot, galley)
                 })
-                .map(|spot| (spot, galley))
-        });
+            });
         let Some((spot, galley)) = placed else {
             continue;
         };
         taken.push(spot);
+        if first {
+            named_first.push(spot);
+        }
         if spot.angle == 0.0 {
             // Level names cross the calls' lines, so they sit on a backing.
             painter.rect_filled(
@@ -1361,6 +1405,28 @@ pub(crate) fn label_order(
     order
 }
 
+/// The calls whose names the rail shows come what may: the cursor's, its caller chain,
+/// every other call its caller makes, and the calls just before and after it.
+pub(crate) fn priority_calls(callers: &[Option<usize>], cursor: Option<usize>) -> Vec<usize> {
+    let Some(cursor) = cursor.filter(|&c| c < callers.len()) else {
+        return Vec::new();
+    };
+    let mut calls = vec![cursor];
+    let mut up = callers[cursor];
+    while let Some(at) = up {
+        calls.push(at);
+        up = callers[at];
+    }
+    if callers[cursor].is_some() {
+        calls.extend((0..callers.len()).filter(|&i| callers[i] == callers[cursor]));
+    }
+    calls.extend(cursor.checked_sub(1));
+    calls.extend((cursor + 1 < callers.len()).then_some(cursor + 1));
+    calls.sort_unstable();
+    calls.dedup();
+    calls
+}
+
 /// The calls whose nodes the map always numbers while the cursor is on `cursor`: its
 /// own, its caller's, the calls just before and after it in time and among its
 /// caller's, and the calls it makes; given each call's caller.
@@ -1596,6 +1662,14 @@ mod tests {
         // 0; 1; 2; 3; 4 (calls 3's child at 4); 5 under 1; 6 under 0.
         let nested = [None, Some(0), Some(1), Some(1), Some(3), Some(1), Some(0)];
         assert_eq!(&label_order(&nested, Some(3), 0)[..6], &[3, 1, 0, 2, 5, 4]);
+    }
+
+    #[test]
+    fn the_rail_always_names_the_cursors_chain_siblings_and_neighbors() {
+        let nested = [None, Some(0), Some(1), Some(1), Some(3), Some(1), Some(0)];
+        // Cursor 3: chain 1, 0; siblings 2, 5; before 2, after 4.
+        assert_eq!(priority_calls(&nested, Some(3)), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(priority_calls(&nested, None), Vec::<usize>::new());
     }
 
     #[test]

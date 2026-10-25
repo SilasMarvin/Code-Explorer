@@ -88,7 +88,7 @@ screenshot at one end). Balls are never drawn larger than a
 small share of the view however near the camera. From the side, near
 orthographic, the calls read left to right as a sequence diagram at their nodes'
 heights, a function called twice appearing twice, with the modules named down the left
-edge. Time runs shorter in 3D than from the side and, on a rail of up to 20 calls, the view
+edge. On a rail of up to 20 calls, time runs shorter in 3D than from the side and the view
 stands nearer and further towards the map, so the map keeps about half the screen.
 The window's first calls stand a little wider apart in 3D, so perspective does
 not bunch them against the map, and the docked journey panel widens while time is in
@@ -99,7 +99,9 @@ back folds each call into its node. Every call of the cursor's function is white
 link into the cursor's call violet and its own calls' links blue; every call is named
 in full wherever it fits clear of the markers, the lifelines and other names: level
 beside, above or below its marker first, on a slant only where level ones clash, else
-by its short name; the cursor's first, then its callers, every other call its caller
+by its short name. The cursor's call, its caller chain, every other call its caller makes
+and the calls either side of it are always named, dropping a `· also` before anything else
+would go; then its callers, every other call its caller
 makes, its own calls, then the rest by nearness to it or to the rail's start. A call
 of a function the journey runs more than once says so (`5.1 Explorer.graph · also 6.2`).
 Pointing at a call rings its node and every other call it runs and lights their pool and
