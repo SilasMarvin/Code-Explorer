@@ -392,7 +392,7 @@ pub(crate) fn ends(depths: &[usize]) -> Vec<usize> {
 
 /// The most calls the deck shows at once; a longer journey shows a window round the
 /// cursor.
-pub(crate) const WINDOW: usize = 15;
+pub(crate) const WINDOW: usize = 21;
 
 /// Which of `count` calls the deck shows, at most `most` of them: all that fit, else a
 /// window centered on the cursor as far as the ends allow.
@@ -406,7 +406,7 @@ pub(crate) fn window(count: usize, cursor: Option<usize>, most: usize) -> Range<
 }
 
 /// How wide a column is at least, in world units, so a name has room.
-const COLUMN: f32 = 6.0;
+const COLUMN: f32 = 3.2;
 /// How wide the deck is at least, in the journey region's widest extent.
 const WIDE: f32 = 0.95;
 /// How wide the deck is at least, as a share of the camera's distance: about half
@@ -1093,7 +1093,7 @@ pub(crate) fn draw_deck(
             );
         }
     }
-    // The cursor's last, its name in full over its neighbors'.
+    // The cursor's last, over its neighbors'.
     let cursor_last = shown
         .clone()
         .filter(|&i| floors.cursor != Some(i))
@@ -1209,50 +1209,80 @@ fn name_call(
     } else {
         format!("{} {name}", call.number)
     };
-    // Level along its tile, the name cut short with an ellipsis where the tile ends
-    // and the number always whole; the cursor's in full on a dark pill over whatever
-    // it runs past.
+    // A call beside the cursor whose function runs elsewhere in the journey too says
+    // where, where there is room.
+    let also = (floors.tether(index) == Tether::Beside)
+        .then(|| also(floors, index))
+        .flatten();
     let deck = floors.deck;
     let shown = &floors.window;
     let columns = call.end.min(shown.end.saturating_sub(1)) + 1 - index;
     #[expect(clippy::cast_precision_loss, reason = "small counts")]
     let reach = deck.size.x * (columns as f32 - BALL_AT) / shown.len().max(1) as f32;
     let room = project(call.marker + Vec3::X * reach).map_or(0.0, |end| end.distance(at));
-    let cursor = floors.cursor == Some(index);
+    // Level along its tile where the whole name fits before the tile ends, else
+    // slanting up from the ball; never cut short.
     let font = egui::FontId::proportional(size);
-    let mut galley = painter.layout_no_wrap(text.clone(), font.clone(), color);
-    let least = call.number.chars().count() + 2;
-    let mut keep = text.chars().count();
-    while !cursor && keep > least && !level(galley.size().x, radius, room) {
-        keep -= 1;
-        galley = painter.layout_no_wrap(shortened(&text, keep), font.clone(), color);
-    }
-    let start = at + egui::vec2(radius + 3.0, 0.0);
+    let fits = |text: &str| {
+        let width = painter
+            .layout_no_wrap(text.to_owned(), font.clone(), color)
+            .size()
+            .x;
+        level(width, radius, room)
+    };
+    let with_also = also.map(|also| format!("{text}  · also {also}"));
+    let (text, flat) = match with_also {
+        Some(long) if fits(&long) => (long, true),
+        _ if fits(&text) => (text, true),
+        Some(long) => (long, false),
+        None => (text, false),
+    };
+    let galley = painter.layout_no_wrap(text, font, color);
+    let angle = if flat { 0.0 } else { SLANT };
+    // Level over the cursor's brightly filled tile, the name is dark to read on it.
+    let color = if flat && away == Some(0) {
+        egui::Color32::from_rgb(18, 20, 26)
+    } else {
+        color
+    };
+    let start = at + egui::vec2(angle.cos(), angle.sin()) * (radius + 3.0);
     let corner = start - egui::vec2(0.0, galley.size().y * 0.5);
-    if cursor {
-        let pill = egui::Rect::from_min_size(corner, galley.size()).expand2(egui::vec2(4.0, 1.0));
-        painter.rect_filled(
-            pill,
-            3.0,
-            egui::Color32::from_rgb(18, 20, 26).gamma_multiply(fade),
-        );
+    let shape = egui::epaint::TextShape::new(corner, galley, color)
+        .with_angle_and_anchor(angle, egui::Align2::LEFT_CENTER)
+        .with_override_text_color(color.gamma_multiply(fade));
+    painter.add(shape);
+}
+
+/// Names on the deck that don't fit level slant up from their balls, so a crowd of
+/// columns each has room.
+const SLANT: f32 = -0.85;
+
+/// Where call `index`'s function runs elsewhere in the journey, by number.
+fn also(floors: &Floors, index: usize) -> Option<String> {
+    let tile = floors.calls.get(index)?.tile;
+    let others: Vec<&str> = floors
+        .calls
+        .iter()
+        .enumerate()
+        .filter(|&(i, c)| i != index && c.tile == tile && !c.number.is_empty())
+        .map(|(_, c)| c.number.as_str())
+        .collect();
+    also_text(&others)
+}
+
+/// `numbers` as an aside: the first two, and how many more; none if there are none.
+pub(crate) fn also_text(numbers: &[&str]) -> Option<String> {
+    match numbers {
+        [] => None,
+        [one] => Some((*one).to_owned()),
+        [first, second] => Some(format!("{first}, {second}")),
+        [first, second, rest @ ..] => Some(format!("{first}, {second} +{}", rest.len())),
     }
-    painter.galley_with_override_text_color(corner, galley, color.gamma_multiply(fade));
 }
 
 /// Where a call's ball sits across its first column, as a share of it: near the
 /// tile's start, leaving the rest of the tile to its name.
 const BALL_AT: f32 = 0.18;
-
-/// `text` cut to its first `keep` characters and an ellipsis, or whole if that long.
-pub(crate) fn shortened(text: &str, keep: usize) -> String {
-    if text.chars().count() <= keep {
-        return text.to_owned();
-    }
-    let mut short: String = text.chars().take(keep.saturating_sub(1)).collect();
-    short.push('…');
-    short
-}
 
 /// Whether a name `width` wide fits level beside a ball of `radius`, with `room`
 /// to its tile's end.
@@ -1403,9 +1433,13 @@ mod tests {
     }
 
     #[test]
-    fn a_long_name_is_cut_short_with_an_ellipsis() {
-        assert_eq!(shortened("5.10 stack", 20), "5.10 stack");
-        assert_eq!(shortened("5.10 stack", 7), "5.10 s…");
+    fn a_call_run_elsewhere_says_where() {
+        assert_eq!(also_text(&[]), None);
+        assert_eq!(also_text(&["6.2"]).as_deref(), Some("6.2"));
+        assert_eq!(
+            also_text(&["5.2", "5.14", "8.4"]).as_deref(),
+            Some("5.2, 5.14 +1")
+        );
     }
 
     #[test]
