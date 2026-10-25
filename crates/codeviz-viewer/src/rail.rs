@@ -51,8 +51,8 @@ pub(crate) struct Rail {
     /// Whether it shows, and how far it has eased in, 0 to 1.
     up: bool,
     lift: f32,
-    /// The camera's angles before it turned to the rail.
-    before: Option<(f32, f32)>,
+    /// The camera's angles and distance before it turned to the rail.
+    before: Option<((f32, f32), f32)>,
     /// Where the rail lies, while it shows.
     pub(crate) stage: Option<Stage>,
     /// Where the camera looks while it shows.
@@ -195,10 +195,14 @@ fn stand(
     rail.up = up;
     for (mut camera, _) in &mut cameras {
         if turned && up {
-            rail.before = Some(camera.angles());
+            rail.before = Some((camera.angles(), camera.goal_distance()));
             camera.turn_to(RAIL_VIEW);
-        } else if turned && let Some(before) = rail.before.take() {
-            camera.turn_to(before);
+        } else if turned && let Some((angles, distance)) = rail.before.take() {
+            camera.turn_to(angles);
+            if !camera.free {
+                let target = camera.target;
+                camera.glide_to(target, distance);
+            }
         }
     }
     let ease = 1.0 - (-time.delta_secs() * 4.0).exp();

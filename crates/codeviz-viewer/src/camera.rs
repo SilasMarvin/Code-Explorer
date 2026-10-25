@@ -118,6 +118,11 @@ impl OrbitCamera {
         self.goal_angles.unwrap_or((self.yaw, self.pitch))
     }
 
+    /// The distance it stands at, or is easing towards.
+    pub(crate) fn goal_distance(&self) -> f32 {
+        self.goal_distance.unwrap_or(self.distance)
+    }
+
     /// Eases round to `(yaw, pitch)`.
     pub(crate) fn turn_to(&mut self, (yaw, pitch): (f32, f32)) {
         // The short way round.
