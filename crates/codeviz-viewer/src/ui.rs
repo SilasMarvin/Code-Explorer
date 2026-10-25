@@ -400,11 +400,33 @@ fn draw_names(
             Vec::new()
         };
         let lensed = |tile: usize| lens.iter().any(|spot| spot.tile == tile);
-        let rail: Vec<(usize, bool)> = timeline
-            .window()
-            .map(|i| (timeline.calls[i].tile, key.contains(&i)))
-            .filter(|&(tile, _)| !lensed(tile))
-            .collect();
+        let rail = Rail {
+            tiles: timeline
+                .window()
+                .map(|i| (timeline.calls[i].tile, key.contains(&i)))
+                .filter(|&(tile, _)| !lensed(tile))
+                .collect(),
+            // The calls' markers, which a map name's see-through pill would show
+            // through, so the map's names keep off them.
+            markers: if quiet {
+                timeline
+                    .window()
+                    .filter_map(|i| {
+                        let at = timeline.point(explorer, i)?;
+                        let size = timeline.marker_size(explorer, i);
+                        let middle = to_screen(at)?;
+                        let edge = to_screen(at + Vec3::Y * size * 0.5)?;
+                        let radius = (middle.y - edge.y).abs().max(3.0);
+                        Some(egui::Rect::from_center_size(
+                            middle,
+                            egui::Vec2::splat(radius * 2.0),
+                        ))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+        };
         let mut taken = draw_graph_labels(painter, to_screen, explorer, diff, up, quiet, &rail);
         taken.extend(draw_lens(painter, to_screen, explorer, diff, &lens));
         taken
@@ -413,6 +435,15 @@ fn draw_names(
     };
     // The rail's names keep off what the map's names took.
     timeline::draw_labels(painter, to_screen, explorer, timeline, &taken);
+}
+
+/// What the map's names know of the rail in the 3D view: each call's node and whether
+/// it is one round the cursor's that is always numbered, and where the calls' markers
+/// are on screen.
+#[derive(Default)]
+struct Rail {
+    tiles: Vec<(usize, bool)>,
+    markers: Vec<egui::Rect>,
 }
 
 /// A node numbered in the cursor's lens: where it is, and where the lens shows it.
@@ -1530,7 +1561,7 @@ fn draw_graph_labels(
     diff: Option<&DiffView>,
     up: Vec3,
     quiet: bool,
-    rail: &[(usize, bool)],
+    rail: &Rail,
 ) -> Vec<egui::Rect> {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1580,8 +1611,8 @@ fn draw_graph_labels(
     // Whether a point on screen sits by the focus, whose name nothing forced covers.
     let focus_at = center.and_then(|c| discs[c]).map(|(node, _)| node);
     let by_focus = |at: egui::Pos2| focus_at.is_some_and(|f| f.distance(at) < 40.0);
-    let on_rail = |tile: usize| rail.iter().any(|&(t, _)| t == tile);
-    let key = |tile: usize| rail.iter().any(|&(t, key)| t == tile && key);
+    let on_rail = |tile: usize| rail.tiles.iter().any(|&(t, _)| t == tile);
+    let key = |tile: usize| rail.tiles.iter().any(|&(t, key)| t == tile && key);
     // Per module, how many calls on the rail run nodes whose badges found no room.
     let mut crowded: Vec<(usize, usize)> = Vec::new();
 
@@ -1664,6 +1695,7 @@ fn draw_graph_labels(
         painter,
         cards
             .into_iter()
+            .chain(rail.markers.iter().copied())
             .chain(
                 order
                     .iter()
@@ -1687,6 +1719,11 @@ fn draw_graph_labels(
                 let color = egui_color(lane_color(group % PALETTE.len()))
                     .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
                 let label = explorer.cluster_name(group);
+                // A module without a name, as a pipeline's top level, goes unnamed
+                // rather than as an empty pill.
+                if label.is_empty() {
+                    continue;
+                }
                 let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
                 placer.place(named, at, 0.0, job, None, false);
             }
@@ -1828,14 +1865,14 @@ fn draw_graph_labels(
                     || hovered == Some(tile)
                     || spotlit.contains(&tile)
                     || (badge_only && key(tile))
-                    || (badge_only && rail.len() <= FEW_CALLS && !by_focus(node));
+                    || (badge_only && rail.tiles.len() <= FEW_CALLS && !by_focus(node));
                 // Another badge with no room in a crowd counts towards its module's
                 // chip instead.
                 if !placer.place(named, node, edge, job, stroke, force)
                     && badge_only
                     && let Some(cluster) = graph.cluster(tile)
                 {
-                    let calls = rail.iter().filter(|&&(t, _)| t == tile).count();
+                    let calls = rail.tiles.iter().filter(|&&(t, _)| t == tile).count();
                     match crowded.iter_mut().find(|(c, _)| *c == cluster) {
                         Some((_, count)) => *count += calls,
                         None => crowded.push((cluster, calls)),
