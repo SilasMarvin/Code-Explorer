@@ -69,7 +69,9 @@ order the calls run and fade the further they are in time, so a function called 
 is on two cards. The fan looks at the map head-on and steps each later card right, a
 little up and back, like a fanned hand; the stack steps each later card straight back
 along depth and turns to a gentle angle to show it (head-on, the stack collapses onto
-the map). Cards near the cursor name their calls, further ones show only their numbers.
+the map). Cards near the cursor name their calls, with a dotted line back to where the callee
+sits on the map, and further ones show only their numbers; the deck's ends say which
+way is earlier and which later.
 While the deck shows, the map steps back: its links and rings draw at half strength
 under a light veil, and it names only the focus and the calls that led to it. Stepping through
 the journey leafs through the deck.

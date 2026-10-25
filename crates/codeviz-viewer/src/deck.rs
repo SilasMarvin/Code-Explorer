@@ -347,6 +347,19 @@ pub(crate) fn draw(
             let line = egui::Color32::from_white_alpha(alpha(if on_map { 1.0 } else { 0.85 * s }));
             let width = if on_map { 3.0 } else { 1.2 + 1.3 * s };
             arrow(painter, ends, line, width);
+            // Near the cursor, a dotted line back to where the callee sits on the map:
+            // all of one card's run the same way, along the deck's depth.
+            if !on_map
+                && away.abs() < NAMED + 0.5
+                && let Some(home) = explorer.tile_point(card.callee).and_then(project)
+            {
+                dotted(
+                    painter,
+                    ends.1.0,
+                    home,
+                    egui::Color32::from_white_alpha(alpha(0.45 * s)),
+                );
+            }
             if !on_map {
                 for (tile, (center, r)) in [(card.caller, ends.0), (card.callee, ends.1)] {
                     let fill = ui::egui_color(node_color(explorer, diff, tile));
@@ -577,6 +590,24 @@ fn arrow(painter: &egui::Painter, ((a, ra), (b, rb)): Ends, color: egui::Color32
         egui::Stroke::new(1.5, casing),
     ));
     painter.line_segment([start, back], egui::Stroke::new(width, color));
+}
+
+/// A dotted line from `a` to `b`.
+fn dotted(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2, color: egui::Color32) {
+    let length = a.distance(b);
+    let dash = 3.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a dash count, never negative"
+    )]
+    let dashes = (length / (dash * 2.0)) as usize;
+    for i in 0..dashes {
+        #[expect(clippy::cast_precision_loss, reason = "a small count")]
+        let t = i as f32 * dash * 2.0 / length;
+        let u = (t + dash / length).min(1.0);
+        painter.line_segment([a.lerp(b, t), a.lerp(b, u)], egui::Stroke::new(1.0, color));
+    }
 }
 
 /// A node on a card: a disc in its color, lit from the top left, so it reads as a
