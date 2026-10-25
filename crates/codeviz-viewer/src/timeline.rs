@@ -674,14 +674,20 @@ pub(crate) fn draw_labels(
             .map(|p| p + Vec3::Y * timeline.marker_size(explorer.graph(), index) * 0.5)
             .and_then(to_screen)
             .map_or(4.0, |edge| (at.y - edge.y).abs());
-        let start = at + egui::vec2(radius * 0.8 + 3.0, -radius * 0.8 - 7.0);
+        // Above the marker, or where that clashes, below it.
         let width = galley.size().x;
-        if taken
-            .iter()
-            .any(|&(other, length)| angled_overlap(other, length, start, width))
-        {
+        let Some(start) = [
+            at + egui::vec2(radius * 0.8 + 3.0, -radius * 0.8 - 7.0),
+            at + egui::vec2(radius + 2.0, radius + 4.0),
+        ]
+        .into_iter()
+        .find(|&start| {
+            !taken
+                .iter()
+                .any(|&(other, length)| angled_overlap(other, length, start, width))
+        }) else {
             continue;
-        }
+        };
         taken.push((start, width));
         painter.add(egui::epaint::TextShape::new(start, galley, color).with_angle(LABEL_ANGLE));
     }

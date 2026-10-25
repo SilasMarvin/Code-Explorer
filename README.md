@@ -64,11 +64,15 @@ opens there, `--time half` halfway round; the top bar says which). Time runs alo
 depth: every disclosed call gets a marker at its function's node, pushed back by when it
 runs, evenly spaced, so head-on the map is unchanged, and from the side the calls read
 left to right at their nodes' heights, a function called twice appearing twice. The
-markers unfold as the camera turns while the map's nodes, links and names fade, so
-swinging back folds each call into its node. Each call hangs from its caller's lifeline,
-which runs along time for as long as the caller does; the cursor's call is white, the
-call into it violet and its own calls blue. The side view is near orthographic, the view
-pans along time to keep the cursor in sight, and clicking a call moves the cursor to it.
+markers unfold as the camera turns, tied to their nodes by dotted strings mid-swing,
+while the map's nodes, links and names fade, so swinging back folds each call into its
+node. Each call hangs from its caller's lifeline, which runs along time for as long as
+the caller does; every call of the cursor's function is white, the link into the
+cursor's call violet and its own calls' links blue. Calls are named on a slant, all of
+them where there is room, else only those around the cursor's; the modules they reach
+are named down the left edge, level with their rings on the map. The side view is near
+orthographic, fits up to 60 calls across and pans along time to keep the cursor's call
+in sight, and clicking a call moves the cursor to it.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
