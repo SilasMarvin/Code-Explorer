@@ -409,9 +409,9 @@ pub(crate) fn window(count: usize, cursor: Option<usize>, most: usize) -> Range<
 const COLUMN: f32 = 3.2;
 /// How wide the deck is at least, in the journey region's widest extent.
 const WIDE: f32 = 0.95;
-/// How wide the deck is at least, as a share of the camera's distance: about half
-/// the view across, and less than the camera backs off for it, so the two settle.
-const ACROSS: f32 = 0.7;
+/// How wide the deck is at least, as a share of the camera's distance: most of the
+/// view across, so more of its names lie level, short of running off its sides.
+const ACROSS: f32 = 0.8;
 /// How deep a row is, as a share of a column's width.
 const ROW: f32 = 0.8;
 /// How deep the deck is at most, as a share of its width.
@@ -505,6 +505,11 @@ pub(crate) fn sibling(depth: impl Fn(usize) -> Option<usize>, cursor: usize, ind
     // Nothing shallower between them: both run under the same caller.
     (cursor.min(index)..=cursor.max(index)).all(|i| depth(i).is_some_and(|d| d >= at))
 }
+
+/// How many calls either side of the cursor's hang a whole string when beside it;
+/// those further along its row hang a stub of this many pieces.
+const BESIDE: usize = 4;
+const STUB: usize = 3;
 
 /// How call `index`'s string is drawn, for a cursor on the call that runs from its
 /// index to the end of the calls it makes: the cursor's call, and the calls it makes,
@@ -666,6 +671,9 @@ pub(crate) fn raise(
     // map, so its names have room at any distance.
     let least = cameras.iter().next().map_or(0.0, |c| c.distance * ACROSS);
     let plan = plan_deck((min, max), shown.len(), rows, floors.stand, least);
+    // The camera fits the deck as the map alone would size it, so widening it to the
+    // view doesn't push the camera back, and the deck wider again.
+    let fitting = plan_deck((min, max), shown.len(), rows, floors.stand, 0.0);
     let fresh = floors.deck.size == Vec2::ZERO;
     floors.deck = if fresh {
         plan
@@ -677,14 +685,14 @@ pub(crate) fn raise(
     // when it grows, unless the view was moved by hand.
     let reach = {
         let (deck, lift) = (floors.deck, floors.lift);
-        floors.deck = plan;
+        floors.deck = fitting;
         floors.lift = 1.0;
         let (_, reach) = floors.view();
         (floors.deck, floors.lift) = (deck, lift);
         reach * FIT
     };
     // And when it shrinks by much, so its columns keep their width on screen.
-    let grown = plan.size.x > floors.fitted * 1.1 || plan.size.x < floors.fitted * 0.8;
+    let grown = fitting.size.x > floors.fitted * 1.1 || fitting.size.x < floors.fitted * 0.8;
     if up && (turned || grown) {
         for mut camera in &mut cameras {
             if turned {
@@ -698,7 +706,7 @@ pub(crate) fn raise(
         }
     }
     if up {
-        floors.fitted = plan.size.x;
+        floors.fitted = fitting.size.x;
     }
     floors.calls = place_calls(&explorer, &floors, calls, &shown, rows);
     floors.window = shown;
@@ -967,7 +975,15 @@ pub(crate) fn draw_strings(
         let points = &call.string;
         let pieces = points.len().saturating_sub(1);
         let strong = tether == Tether::Cursor || hovered;
-        for (i, pair) in points.windows(2).enumerate() {
+        // A call beside the cursor but far along its row hangs only a stub under the
+        // deck, so a long row of calls doesn't fill the map with strings.
+        let far = floors.cursor.is_some_and(|c| c.abs_diff(index) > BESIDE);
+        let drawn = if shown_as == Tether::Beside && far {
+            STUB
+        } else {
+            pieces
+        };
+        for (i, pair) in points.windows(2).enumerate().take(drawn) {
             // Brightest at the deck, thinning a little towards the map, so each
             // tethered string stays traceable to its node.
             #[expect(clippy::cast_precision_loss, reason = "a few pieces")]
@@ -1230,12 +1246,25 @@ fn name_call(
             .x;
         level(width, radius, room)
     };
+    // Slanted, a name stops a little past the deck's far edge, so it doesn't run up
+    // into the map: the aside goes first, the name never.
+    let top = project(deck.at(0.5, 1.0, floors.lift())).map_or(0.0, |p| p.y);
+    let rise = (at.y - top + ABOVE).max(0.0) / -SLANT.sin();
+    let slants = |text: &str| {
+        painter
+            .layout_no_wrap(text.to_owned(), font.clone(), color)
+            .size()
+            .x
+            + radius
+            + 3.0
+            <= rise
+    };
     let with_also = also.map(|also| format!("{text}  · also {also}"));
     let (text, flat) = match with_also {
         Some(long) if fits(&long) => (long, true),
         _ if fits(&text) => (text, true),
-        Some(long) => (long, false),
-        None => (text, false),
+        Some(long) if slants(&long) => (long, false),
+        _ => (text, false),
     };
     let galley = painter.layout_no_wrap(text, font, color);
     let angle = if flat { 0.0 } else { SLANT };
@@ -1252,6 +1281,9 @@ fn name_call(
         .with_override_text_color(color.gamma_multiply(fade));
     painter.add(shape);
 }
+
+/// How far past the deck's far edge, in pixels, a slanted name may run.
+const ABOVE: f32 = 28.0;
 
 /// Names on the deck that don't fit level slant up from their balls, so a crowd of
 /// columns each has room.
