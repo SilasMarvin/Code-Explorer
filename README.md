@@ -63,7 +63,7 @@ whichever of those is on top, or the spotlight.
 the top bar's `Beams` shows they are on). The journey docks along the bottom, full
 width, under a strip that holds every disclosed call once, in the order they run, and
 pale beams rise from the strip to the nodes: brightest from the cursor's call, fainter
-from the two calls either side of it in time, and faint from the other calls of the
+from the two calls either side of it in time, and dotted from the other calls of the
 cursor's function. While they show, the graph's links step back and only the journey's
 nodes and the modules are named, the nodes the beams reach brighter than the rest.
 

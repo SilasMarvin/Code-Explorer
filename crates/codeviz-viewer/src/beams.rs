@@ -2,7 +2,7 @@
 //! along the bottom, full width, with a strip across its top edge holding every
 //! disclosed call once, in the order they run. Pale beams rise out of the strip to
 //! the nodes on the graph: brightest from the cursor's call, fainter from the two
-//! calls either side of it in time, and faintest from the other calls of the cursor's
+//! calls either side of it in time, and dotted from the other calls of the cursor's
 //! function. Each beam leaves its tick straight up and bends into its node, and the
 //! beams turn at staggered heights so they never cross near the strip.
 
@@ -77,11 +77,11 @@ pub(crate) fn lit(explorer: &Explorer) -> HashSet<usize> {
 /// Which calls on the strip get a beam, and how strongly: the cursor's in full, its
 /// neighbors in time fading with distance, and the other calls of the same node
 /// faintly.
-pub(crate) fn beamed(tiles: &[Option<usize>], cursor: usize) -> Vec<(usize, f32)> {
+pub(crate) fn beamed(tiles: &[Option<usize>], cursor: usize) -> Vec<(usize, Beam)> {
     let near = cursor.saturating_sub(REACH)..=(cursor + REACH).min(tiles.len().saturating_sub(1));
-    let mut beams: Vec<(usize, f32)> = near
+    let mut beams: Vec<(usize, Beam)> = near
         .clone()
-        .map(|index| (index, strength(index.abs_diff(cursor))))
+        .map(|index| (index, Beam::Near(index.abs_diff(cursor))))
         .collect();
     if let Some(tile) = tiles.get(cursor).copied().flatten() {
         beams.extend(
@@ -89,23 +89,31 @@ pub(crate) fn beamed(tiles: &[Option<usize>], cursor: usize) -> Vec<(usize, f32)
                 .iter()
                 .enumerate()
                 .filter(|&(index, &t)| t == Some(tile) && !near.contains(&index))
-                .map(|(index, _)| (index, AGAIN)),
+                .map(|(index, _)| (index, Beam::Again)),
         );
     }
     beams
 }
 
-/// How strongly a call so many steps from the cursor's draws its beam.
-fn strength(steps: usize) -> f32 {
-    match steps {
-        0 => 1.0,
-        1 => 0.65,
-        _ => 0.4,
-    }
+/// Why a call gets a beam: it is so many calls from the cursor's, or it runs the
+/// cursor's function again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Beam {
+    Near(usize),
+    Again,
 }
 
-/// How strongly the cursor's function's other calls draw theirs.
-const AGAIN: f32 = 0.3;
+impl Beam {
+    /// How strongly it draws: the cursor's in full, fading with distance.
+    fn strength(self) -> f32 {
+        match self {
+            Beam::Near(0) => 1.0,
+            Beam::Near(1) => 0.65,
+            Beam::Near(_) => 0.4,
+            Beam::Again => 0.32,
+        }
+    }
+}
 
 /// How high up each beam bends, in steps, given where it leaves the strip and where
 /// its node is across. Beams bending right turn lower the further right they leave,
@@ -166,12 +174,12 @@ pub(crate) fn shapes(
         return Vec::new();
     };
     let tiles: Vec<Option<usize>> = ticks.iter().map(|t| t.tile).collect();
-    let beams: Vec<(egui::Pos2, (egui::Pos2, f32), f32)> = beamed(&tiles, cursor)
+    let beams: Vec<(egui::Pos2, (egui::Pos2, f32), Beam)> = beamed(&tiles, cursor)
         .into_iter()
-        .filter_map(|(index, strength)| {
+        .filter_map(|(index, beam)| {
             let tick = ticks.get(index)?;
             let node = node_at(tick.tile?)?;
-            Some((tick.rect.center_top(), node, strength))
+            Some((tick.rect.center_top(), node, beam))
         })
         .collect();
     let levels = bend_levels(
@@ -183,17 +191,29 @@ pub(crate) fn shapes(
     let mut shapes = Vec::new();
     // The faintest first, so the cursor's draws over the rest.
     let mut order: Vec<usize> = (0..beams.len()).collect();
-    order.sort_by(|&a, &b| beams[a].2.total_cmp(&beams[b].2));
+    order.sort_by(|&a, &b| beams[a].2.strength().total_cmp(&beams[b].2.strength()));
     for i in order {
-        let (from, (to, edge), strength) = beams[i];
+        let (from, (to, edge), beam) = beams[i];
+        let strength = beam.strength();
         let rise = RISE + RISE_STEP * levels[i] as f32;
         let gap = edge + 3.0;
         let width = 1.0 + strength * 1.2;
         let color = egui::Color32::WHITE.gamma_multiply(strength * 0.92);
+        let points = path(from, rise, to, gap);
+        // A soft halo sets a beam apart from the straight links it crosses.
         shapes.push(egui::Shape::line(
-            path(from, rise, to, gap),
-            egui::Stroke::new(width, color),
+            points.clone(),
+            egui::Stroke::new(
+                width + 5.0,
+                egui::Color32::WHITE.gamma_multiply(strength * 0.07),
+            ),
         ));
+        if beam == Beam::Again {
+            // The same function another time: dotted.
+            shapes.extend(egui::Shape::dotted_line(&points, color, 5.0, width * 0.75));
+        } else {
+            shapes.push(egui::Shape::line(points, egui::Stroke::new(width, color)));
+        }
         shapes.push(egui::Shape::circle_stroke(
             to,
             gap,
@@ -239,12 +259,12 @@ mod tests {
         assert_eq!(
             beams,
             [
-                (0, 0.4),
-                (1, 0.65),
-                (2, 1.0),
-                (3, 0.65),
-                (4, 0.4),
-                (6, AGAIN)
+                (0, Beam::Near(2)),
+                (1, Beam::Near(1)),
+                (2, Beam::Near(0)),
+                (3, Beam::Near(1)),
+                (4, Beam::Near(2)),
+                (6, Beam::Again),
             ]
         );
         assert_eq!(beamed(&tiles, 0).len(), 3, "none before the first call");
