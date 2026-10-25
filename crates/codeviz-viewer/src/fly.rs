@@ -239,7 +239,7 @@ pub(crate) fn apparent_size(near: f32) -> f32 {
 /// The furthest towards the eye a call comes, and the furthest behind the map it falls,
 /// as shares of the camera's distance.
 const NEAREST: f32 = 0.45;
-const DEEPEST: f32 = 1.4;
+const DEEPEST: f32 = 0.9;
 
 /// How strongly a call `near` calls nearer the eye than the cursor's draws: in full
 /// at the cursor, fading with each call, to a trace four or five calls away.
