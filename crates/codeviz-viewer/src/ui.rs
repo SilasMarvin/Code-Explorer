@@ -943,8 +943,8 @@ pub(crate) fn journey_title(explorer: &Explorer) -> String {
 const CALLER_TEXT: egui::Color32 = egui::Color32::from_rgb(206, 170, 255);
 const CALLEE_TEXT: egui::Color32 = egui::Color32::from_rgb(130, 196, 255);
 /// Text on a bar or a badge filled with a node's color.
-const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
-const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
+pub(crate) const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
+pub(crate) const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
 
 /// The 1-based places in `caller`'s calls, in written order, where it calls `callee`.
 fn call_steps(explorer: &Explorer, from: usize, to_tile: usize) -> Vec<usize> {
@@ -1006,7 +1006,7 @@ const SIDES: [egui::Align2; 4] = [
 ];
 
 /// Room kept around a label's text: its pill.
-const PILL_PAD: egui::Vec2 = egui::vec2(5.0, 2.0);
+pub(crate) const PILL_PAD: egui::Vec2 = egui::vec2(5.0, 2.0);
 /// How fast a label slides to a new side: the share of the way left it covers in a
 /// second is `1 - e^-SLIDE`.
 const SLIDE: f32 = 14.0;
@@ -1625,6 +1625,8 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
+    // Over a crowd, the cursor's call and its neighbors in a lens.
+    crate::inset::draw(painter, to_screen, explorer, floors);
 }
 
 /// How far above the docked journey's top edge a badge for a node under it sits.

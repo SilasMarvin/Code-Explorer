@@ -20,6 +20,7 @@ mod explorer;
 mod floors;
 mod graph_view;
 mod history;
+mod inset;
 mod journey_panel;
 mod lens;
 mod scene;
