@@ -425,6 +425,8 @@ struct Layout {
     /// The fog's falloff, by distance from the eye.
     fog: (f32, f32),
     points: Vec<Option<Vec3>>,
+    /// Side-on, the height each call's node shows at, shown or not.
+    levels: Vec<Option<f32>>,
     radius: f32,
 }
 
@@ -522,43 +524,12 @@ fn aim(
         place.translation = point;
         place.scale = Vec3::splat(layout.radius * grow);
     }
-    if chrome.time == TimeMode::Side {
-        {
-            let levels: Vec<Option<f32>> = view
-                .calls
-                .iter()
-                .map(|c| {
-                    let at = explorer.tile_point(c.tile)?;
-                    let (_, map, projection) = maps.single().ok()?;
-                    let Projection::Perspective(perspective) = projection else {
-                        return None;
-                    };
-                    let height = layout.radius / RADIUS_SHARE;
-                    apparent(map, perspective.fov, at).map(|y| y * height / 2.0)
-                })
-                .collect();
-            draw_levels(&view.calls, &layout.points, &levels, cursor, &mut gizmos);
-        }
+    view.ruler = if chrome.time == TimeMode::Side {
+        draw_levels(&view.calls, &layout, cursor, &mut gizmos);
+        None
     } else {
-        draw_rise(&explorer, &view, &layout, cursor, &mut gizmos);
-    }
-    view.ruler = (chrome.time == TimeMode::Rise)
-        .then(|| {
-            let floor: Vec<Vec3> = view
-                .calls
-                .iter()
-                .zip(&layout.points)
-                .filter(|(_, p)| p.is_some())
-                .filter_map(|(c, _)| explorer.tile_point(c.tile))
-                .collect();
-            let (middle, reach) = footprint(&floor)?;
-            Some(ruler_foot(
-                middle,
-                reach.max(5.0) * 1.15,
-                layout.eye.translation,
-            ))
-        })
-        .flatten();
+        draw_rise(&explorer, &view, &layout, cursor, &mut gizmos)
+    };
     view.points = layout.points;
 }
 
@@ -591,6 +562,14 @@ fn side_on(
             Some(Vec3::new(at.x, y, along(slot, shown.len()) * width))
         })
         .collect();
+    let levels = view
+        .calls
+        .iter()
+        .map(|call| {
+            let at = explorer.tile_point(call.tile)?;
+            Some(apparent(map, perspective.fov, at)? * height / 2.0)
+        })
+        .collect();
     Layout {
         // Looking along +x, so +z runs to the right; time starts at the left edge.
         eye: Transform::from_xyz(-STAND_OFF, 0.0, width / 2.0).looking_to(Vec3::X, Vec3::Y),
@@ -604,6 +583,7 @@ fn side_on(
         }),
         fog: (FAR * 2.0, FAR * 3.0),
         points,
+        levels,
         radius: height * RADIUS_SHARE,
     }
 }
@@ -654,6 +634,7 @@ fn rising(explorer: &Explorer, view: &TimeView, size: Vec2) -> Option<Layout> {
         }),
         fog: (distance - bound * 0.4, distance + bound * 1.6),
         points,
+        levels: Vec::new(),
         radius: bound * 0.017,
     })
 }
@@ -668,14 +649,14 @@ fn pale(alpha: f32) -> Color {
 
 /// Side-on, each caller's line along its level, from its call to its last, with a
 /// drop to each call it makes; the cursor's caller and its drop to the cursor
-/// brighter. `levels` holds each call's node's height, for callers off the view.
+/// brighter. Callers off the view still have their level.
 fn draw_levels(
     calls: &[Call],
-    points: &[Option<Vec3>],
-    levels: &[Option<f32>],
+    layout: &Layout,
     cursor: Option<usize>,
     gizmos: &mut Gizmos<TimeGizmos>,
 ) {
+    let (points, levels) = (&layout.points, &layout.levels);
     let behind = |y: f32, z: f32| Vec3::new(BEHIND, y, z);
     let lit_caller = cursor.and_then(|c| calls[c].parent);
     for (index, call) in calls.iter().enumerate() {
@@ -710,15 +691,15 @@ fn draw_levels(
 /// In 3D: a faint grid and the modules' rings on the floor; from each marker a drop
 /// to its node's spot there; over each caller a pole up to its last call, with a level
 /// rung out to each call it makes, as a sequence diagram stood on the map; and a frame
-/// round the cursor's moment. Lines fade with distance, as the fog fades the
-/// markers.
+/// round the cursor's moment, with the ruler. Lines fade with distance, as the fog
+/// fades the markers. Returns the ruler's foot.
 fn draw_rise(
     explorer: &Explorer,
     view: &TimeView,
     layout: &Layout,
     cursor: Option<usize>,
     gizmos: &mut Gizmos<TimeGizmos>,
-) {
+) -> Option<Vec3> {
     let eye = layout.eye.translation;
     let (near, far) = layout.fog;
     let fade = |p: Vec3| 1.0 - ((eye.distance(p) - near) / (far - near)).clamp(0.0, 0.85);
@@ -729,9 +710,7 @@ fn draw_rise(
         .filter(|(_, p)| p.is_some())
         .filter_map(|(c, _)| explorer.tile_point(c.tile))
         .collect();
-    let Some((middle, reach)) = footprint(&floor) else {
-        return;
-    };
+    let (middle, reach) = footprint(&floor)?;
     let reach = reach.max(5.0) * 1.15;
     draw_floor(explorer, view, layout, middle, reach, gizmos);
     let lit_caller = cursor.and_then(|c| view.calls[c].parent);
@@ -796,18 +775,18 @@ fn draw_rise(
             pale(alpha * fade(from)),
         );
     }
-    draw_ruler(layout, cursor, middle, reach, gizmos);
+    Some(draw_ruler(layout, cursor, middle, reach, gizmos))
 }
 
 /// The cursor's moment, a square across the rise at its height, and a ruler up the
-/// floor's far left corner with a tick at each call.
+/// floor's far left corner with a tick at each call. Returns the ruler's foot.
 fn draw_ruler(
     layout: &Layout,
     cursor: Option<usize>,
     middle: Vec2,
     reach: f32,
     gizmos: &mut Gizmos<TimeGizmos>,
-) {
+) -> Vec3 {
     let eye = layout.eye.translation;
     // The cursor's moment: a square across the rise at its height.
     if let Some(point) = cursor.and_then(|c| layout.points[c]) {
@@ -839,6 +818,7 @@ fn draw_ruler(
             pale(if lit { 0.9 } else { 0.4 }),
         );
     }
+    foot
 }
 
 /// The floor under the rise: a faint grid `reach` round `middle`, and the rings of
