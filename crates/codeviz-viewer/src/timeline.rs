@@ -1086,20 +1086,27 @@ pub(crate) fn draw_labels(
                     .map(|spot| (spot, galley))
             })
             // A call round the cursor's is named come what may: clear of the other
-            // names round it, if over anything else.
+            // names round it, if over anything else, keeping where else it runs.
             .or_else(|| {
                 first.then(|| {
-                    let galley = layout(&texts[1]);
-                    let spots = name_spots(at, radius, galley.size());
-                    let spot = spots
-                        .iter()
-                        .find(|spot| {
-                            spot.corners().iter().all(|&c| bounds.contains(c))
-                                && !named_first.iter().any(|other| spot.overlaps(other))
+                    // With where else it runs if that clears them, as it may be the
+                    // only place the view says so; else without it.
+                    let clear = |text: &String| {
+                        let galley = layout(text);
+                        name_spots(at, radius, galley.size())
+                            .into_iter()
+                            .find(|spot| {
+                                spot.corners().iter().all(|&c| bounds.contains(c))
+                                    && !named_first.iter().any(|other| spot.overlaps(other))
+                            })
+                            .map(|spot| (spot, galley))
+                    };
+                    clear(&texts[0])
+                        .or_else(|| clear(&texts[1]))
+                        .unwrap_or_else(|| {
+                            let galley = layout(&texts[1]);
+                            (name_spots(at, radius, galley.size())[0], galley)
                         })
-                        .copied()
-                        .unwrap_or(spots[0]);
-                    (spot, galley)
                 })
             });
         let Some((spot, galley)) = placed else {
