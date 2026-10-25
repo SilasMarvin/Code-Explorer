@@ -513,6 +513,9 @@ fn aim(
             1.7
         } else if hovered_tile == Some(view.calls[marker.0].tile) {
             1.4
+        } else if cursor.is_some_and(|c| marker.0 > c) {
+            // Yet to run.
+            0.8
         } else {
             1.0
         };
@@ -746,7 +749,9 @@ fn draw_rise(
         let lit = Some(index) == cursor;
         let spot = point.truncate().extend(0.0);
         let color = view.colors.get(index).copied().unwrap_or(Color::WHITE);
-        let strength = fade(point);
+        // What is yet to run, past the cursor, steps back.
+        let ahead = cursor.is_some_and(|c| index > c);
+        let strength = fade(point) * if ahead { 0.55 } else { 1.0 };
         gizmos.line(
             point,
             spot,
