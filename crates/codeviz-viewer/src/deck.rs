@@ -594,7 +594,7 @@ fn disc(painter: &egui::Painter, center: egui::Pos2, radius: f32, fill: egui::Co
 }
 
 /// A name beside a node on a card, on a dark pill, led by a badge filled like its node;
-/// left out where it would cover a name already placed.
+/// a name is left out where it would cover one already placed.
 fn label(
     painter: &egui::Painter,
     taken: &mut Vec<egui::Rect>,
@@ -617,10 +617,12 @@ fn label(
         egui::Align2::CENTER_TOP.anchor_size(node + egui::vec2(0.0, gap), extent),
     ];
     let pad = egui::vec2(5.0, 2.0);
-    let Some(rect) = spots
+    // A number alone is small, and the deck's order needs every one: it goes beside
+    // its node even where that covers a little of another.
+    let free = spots
         .into_iter()
-        .find(|r| !taken.iter().any(|t| t.intersects(r.expand2(pad))))
-    else {
+        .find(|r| !taken.iter().any(|t| t.intersects(r.expand2(pad))));
+    let Some(rect) = free.or_else(|| name.is_empty().then_some(spots[0])) else {
         return;
     };
     let pill = rect.expand2(pad);
