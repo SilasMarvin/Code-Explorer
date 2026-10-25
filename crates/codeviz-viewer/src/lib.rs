@@ -66,6 +66,7 @@ pub struct Viewer {
     bare: bool,
     diff: Option<Comparison>,
     time: timeline::TimeView,
+    angle: Option<(f32, f32)>,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -100,6 +101,7 @@ impl Viewer {
             bare: false,
             diff: None,
             time: timeline::TimeView::Map,
+            angle: None,
         }
     }
 
@@ -234,6 +236,14 @@ impl Viewer {
     #[must_use]
     pub fn bare(mut self) -> Self {
         self.bare = true;
+        self
+    }
+
+    /// Looks at the journey's time from `yaw` degrees round from head-on towards the
+    /// side and `pitch` degrees down, in place of the view's own angle.
+    #[must_use]
+    pub fn with_angle(mut self, yaw: f32, pitch: f32) -> Self {
+        self.angle = Some((-yaw.to_radians(), -pitch.to_radians()));
         self
     }
 
@@ -373,6 +383,7 @@ impl Viewer {
         .insert_resource(ui::Chrome {
             bare: self.bare,
             time: self.time,
+            angle: self.angle,
             ..default()
         })
         .init_resource::<Autoplay>();

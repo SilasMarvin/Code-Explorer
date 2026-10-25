@@ -139,6 +139,9 @@ pub(crate) struct Chrome {
     pub(crate) dial_turned: Option<f32>,
     /// Whether the camera looks at the map or along the journey's time (Z).
     pub(crate) time: TimeView,
+    /// A camera yaw and pitch to look at the journey's time from, in place of the
+    /// view's own, for screenshots between them.
+    pub(crate) angle: Option<(f32, f32)>,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -1532,6 +1535,14 @@ fn draw_graph_labels(
                         [first, .., last] => format!("{first} … {last}"),
                         [] => String::new(),
                     });
+                // Quieted, a node the journey runs is only numbered: its calls carry
+                // its name, so each is named once.
+                let badge_only = quiet && order.is_some() && tier != 0 && change.is_none();
+                let (name, aside) = if badge_only {
+                    (String::new(), None)
+                } else {
+                    (name, aside)
+                };
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one; what changed after it.
                 let fill = egui_color(graph_view::node_color(explorer, diff, tile));

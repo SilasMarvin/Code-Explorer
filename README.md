@@ -60,14 +60,17 @@ view's settings, outcomes, source and details), `H` lists every key, and `Esc` c
 whichever of those is on top, or the spotlight.
 
 `Z` steps the camera from the map to a 3D view of the journey's calls in time, then to
-the side, and back (`--time 3d` or `--time side` opens on one; the top bar says which).
+the side, and back (`--time 3d` or `--time side` opens on one, and `--angle 50,10` looks from that many
+degrees round and down instead; the top bar says which).
 Time runs along depth: every disclosed call gets a marker at its function's node, pushed
 out of the map by when it runs, evenly spaced, so head-on the map is unchanged. Each call
 hangs from its caller's lifeline, a rail running out from the caller's node for as long
-as it runs. The 3D view, turned 45° in perspective with fog, shows the map quieted (links
-a little over half, names only on the journey's nodes, the focus's neighbors and the
-modules the journey runs through) and the calls standing out of it, each with a
-footprint ring at its node and a dotted string back to it. From the side, near
+as it runs. The 3D view, turned 55° and level so time runs flat across the screen, in perspective
+with fog, shows the map quieted (links a little over half, the journey's nodes only
+numbered, as their calls carry the names, and names only on the focus's neighbors and
+the modules the journey runs through) and the calls standing out of it, each with a
+footprint ring at its node and a dotted string back to it, none drawn larger than a
+small share of the view however near the camera. From the side, near
 orthographic, the calls read left to right as a sequence diagram at their nodes'
 heights, a function called twice appearing twice, with the modules named down the left
 edge; the view fits up to 60 calls across and pans along time to keep the cursor's call

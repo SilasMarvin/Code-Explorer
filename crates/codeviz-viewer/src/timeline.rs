@@ -66,11 +66,15 @@ impl TimeView {
     fn angles(self) -> (f32, f32) {
         match self {
             Self::Map => FRONT,
-            Self::Rails => (-0.8, -0.22),
+            // Level, so the rail of time runs flat across the screen.
+            Self::Rails => (-RAILS_YAW.to_radians(), 0.0),
             Self::Side => (-std::f32::consts::FRAC_PI_2, 0.0),
         }
     }
 }
+
+/// How far round from head-on the 3D view turns, in degrees.
+const RAILS_YAW: f32 = 55.0;
 
 /// One call on the timeline.
 #[derive(Debug, Clone, Copy)]
@@ -101,6 +105,9 @@ pub(crate) struct Timeline {
     pub(crate) pan: f32,
     /// The cursor's call, by index.
     cursor: Option<usize>,
+    /// Where the camera stands, and its lens, as of the last frame.
+    eye: Vec3,
+    lens: f32,
     markers: Vec<Entity>,
 }
 
@@ -139,17 +146,23 @@ impl Timeline {
 
     /// How wide call `index`'s marker is drawn: larger than its node on the map, as the
     /// side view is sparse, but clear of its neighbors, and growing as time unfolds.
-    fn marker_size(&self, graph: &codeviz_layout::ForceGraph, index: usize) -> f32 {
+    /// Never more than a small share of the view, so a call near the camera does not
+    /// balloon.
+    fn marker_size(&self, explorer: &Explorer, index: usize) -> f32 {
         let Some(call) = self.calls.get(index) else {
             return 0.0;
         };
-        let size = (node_size(graph, call.tile) * 1.6).min(self.step * 0.6);
+        let size = (node_size(explorer.graph(), call.tile) * 1.6).min(self.step * 0.6);
         let size = if self.cursor == Some(index) {
             size * 1.3
         } else {
             size
         };
-        size * self.unfold.sqrt()
+        let size = size * self.unfold.sqrt();
+        match self.point(explorer, index) {
+            Some(at) => size.min(marker_cap(self.eye.distance(at), self.lens)),
+            None => size,
+        }
     }
 
     /// `home` moved to call `index`'s moment. Near the side, calls also settle into
@@ -253,6 +266,13 @@ pub(crate) fn calls_of(
         .map(|(i, _)| i)
 }
 
+/// The widest a marker `distance` from the camera through `lens` may be: a share of
+/// the view's height, whatever its distance.
+pub(crate) fn marker_cap(distance: f32, lens: f32) -> f32 {
+    const SHARE: f32 = 0.025;
+    distance * (FIELD / 2.0).tan() / lens.max(1.0) * 2.0 * SHARE
+}
+
 /// How far the camera's lens narrows as time unfolds: only near the side, where it
 /// looks from eight times as far, through an eighth of the angle, nearly flat, so
 /// calls are evenly spaced however near the camera they are. Elsewhere, perspective.
@@ -321,12 +341,17 @@ pub(crate) fn swing(
         return;
     };
     let wanted = chrome.time;
+    // A camera angle asked for, in place of the view's own.
+    let angles = chrome
+        .angle
+        .filter(|_| wanted != TimeView::Map)
+        .unwrap_or_else(|| wanted.angles());
     let calls = disclosed_calls(&explorer);
     let swung = *last != Some(wanted);
     if swung {
         // Opening on the map keeps the default angle; back on it, the usual view.
         if last.is_some() || wanted != TimeView::Map {
-            camera.turn_to(wanted.angles());
+            camera.turn_to(angles);
         }
         if last.is_some() && wanted == TimeView::Map {
             orbit_anchor(&explorer, &mut camera);
@@ -343,6 +368,8 @@ pub(crate) fn swing(
     let unfold = (timeline.weight * view.back().x.abs()).clamp(0.0, 1.0);
     timeline.unfold = if unfold < 1e-3 { 0.0 } else { unfold };
     camera.lens = lens(timeline.unfold);
+    timeline.eye = view.translation;
+    timeline.lens = camera.lens;
     // Fog in the 3D views, so what is further reads as further; none head-on, where
     // nothing is, nor from the side, where everything is as far.
     let depth = camera.distance * camera.lens;
@@ -404,7 +431,7 @@ pub(crate) fn swing(
         let mut distance = time_distance(length, count, height, aspect);
         if wanted == TimeView::Rails {
             // Room for the map as well as the calls, which it sees across.
-            distance = distance.max(reach * 2.6) * 1.1;
+            distance = distance.max(reach * 2.6) * 1.3;
         }
         if (camera.goal_distance().unwrap_or(camera.distance) - distance).abs() > distance * 0.01 {
             let target = camera.target;
@@ -416,7 +443,11 @@ pub(crate) fn swing(
     let at = timeline
         .cursor
         .map_or(0.0, |i| timeline.step * i as f32 - length / 2.0);
-    timeline.pan = (gap + length / 2.0 + time_pan(at, length, half_width)) * timeline.unfold;
+    // From the side, the middle of time; in 3D, a little back towards the map, so
+    // both stay in view.
+    let towards_map = 0.82 + 0.18 * timeline.side();
+    timeline.pan =
+        (gap + length / 2.0 + time_pan(at, length, half_width)) * timeline.unfold * towards_map;
 }
 
 /// How far clear of the map time starts, as a share of its length.
@@ -516,7 +547,6 @@ pub(crate) fn place_markers(
             timeline.markers.push(entity);
         }
     }
-    let graph = explorer.graph();
     for (marker, mut transform, mut visibility, mut material) in &mut markers {
         let index = marker.0;
         let shown = index < wanted;
@@ -533,7 +563,7 @@ pub(crate) fn place_markers(
             continue;
         };
         transform.translation = at;
-        transform.scale = Vec3::splat(timeline.marker_size(graph, index));
+        transform.scale = Vec3::splat(timeline.marker_size(&explorer, index));
         // As its node looks, but glowing less, so the light shades it as a ball in
         // space: a depth cue the map's flat glow does not need.
         let look = node_look(&explorer, call.tile);
@@ -700,7 +730,7 @@ pub(crate) fn draw_lines(
     }
     for index in timeline.calls_of(tile) {
         if let Some(at) = timeline.point(&explorer, index) {
-            gizmos.circle(facing(at), timeline.marker_size(graph, index), ring);
+            gizmos.circle(facing(at), timeline.marker_size(&explorer, index), ring);
         }
     }
 }
@@ -792,7 +822,7 @@ pub(crate) fn draw_labels(
         // Clear of the marker, however large it shows.
         let radius = timeline
             .point(explorer, index)
-            .map(|p| p + Vec3::Y * timeline.marker_size(explorer.graph(), index) * 0.5)
+            .map(|p| p + Vec3::Y * timeline.marker_size(explorer, index) * 0.5)
             .and_then(to_screen)
             .map_or(4.0, |edge| (at.y - edge.y).abs());
         // Above the marker, or where that clashes, below it.
@@ -1006,6 +1036,20 @@ mod tests {
         assert!(
             lens(0.9) > 1.0 && lens(0.9) < lens(1.0),
             "eased in on the way"
+        );
+    }
+
+    #[test]
+    fn a_call_near_the_camera_stays_small() {
+        assert!(
+            marker_cap(10.0, 1.0) < marker_cap(100.0, 1.0),
+            "further may be wider"
+        );
+        let on_screen = |size: f32, distance: f32| size / (distance * (FIELD / 2.0).tan());
+        assert!(
+            (on_screen(marker_cap(10.0, 1.0), 10.0) - on_screen(marker_cap(80.0, 1.0), 80.0)).abs()
+                < 1e-6,
+            "the same share of the view at any distance"
         );
     }
 

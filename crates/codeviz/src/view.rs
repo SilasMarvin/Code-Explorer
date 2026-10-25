@@ -75,6 +75,10 @@ pub(crate) struct Display {
     /// Open looking along the journey's time (Z swings between the views).
     #[arg(long, value_enum)]
     time: Option<TimeArg>,
+    /// With --time, look from this many degrees round from head-on and down, as
+    /// `60,10`, in place of the view's own angle.
+    #[arg(long, value_name = "YAW,PITCH", value_parser = parse_angle)]
+    angle: Option<(f32, f32)>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -122,6 +126,13 @@ enum NearArg {
     Space,
     /// Distance in the graph, with each call between counting against it.
     Blend,
+}
+
+/// Reads `yaw,pitch` in degrees.
+fn parse_angle(text: &str) -> Result<(f32, f32), String> {
+    let (yaw, pitch) = text.split_once(',').unwrap_or((text, "0"));
+    let degrees = |s: &str| s.trim().parse::<f32>().map_err(|e| format!("{s}: {e}"));
+    Ok((degrees(yaw)?, degrees(pitch)?))
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -244,6 +255,9 @@ pub(crate) fn open(
     }
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some((yaw, pitch)) = args.angle {
+        viewer = viewer.with_angle(yaw, pitch);
     }
     if let Some(time) = args.time {
         viewer = viewer.with_time(match time {
