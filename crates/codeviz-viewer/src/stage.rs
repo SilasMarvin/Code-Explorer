@@ -1,6 +1,7 @@
 //! Depth cues for the timeline's 3D view, so it reads as space at a glance: the map
-//! stands on a lit, faintly gridded plane that fades out at its rim, the grid's lines
-//! running away in perspective; each node a call is strung back to glows with a soft
+//! stands on a lit, faintly gridded plane that fades out at its rim, and the calls in
+//! a fainter sheet at right angles to it, the lines of both running away in
+//! perspective; each node a call is strung back to glows with a soft
 //! pool of its color's light, brightest for the cursor's; time's rails and calls are
 //! lit tubes, thickening towards the eye and greying into haze away from it; and the camera rocks a few degrees about
 //! the map, so the calls standing out of it slide against it. `Shift Z` holds the rock
@@ -32,7 +33,8 @@ impl Plugin for StagePlugin {
             .add_systems(Startup, spawn_stage)
             .add_systems(
                 Update,
-                (lay_plane, light_pools, lay_tubes, rock).after(crate::timeline::place_markers),
+                (lay_plane, lay_sheet, light_pools, lay_tubes, rock)
+                    .after(crate::timeline::place_markers),
             );
     }
 }
@@ -54,6 +56,7 @@ struct Stage {
     z: f32,
     laid: bool,
     material: Handle<StandardMaterial>,
+    sheet: Handle<StandardMaterial>,
     spot: Handle<Image>,
     quad: Handle<Mesh>,
     /// One per node lit, spare ones hidden.
@@ -65,6 +68,10 @@ struct Stage {
 
 #[derive(Component)]
 struct Plane;
+
+/// The sheet the calls stand in, out of the map.
+#[derive(Component)]
+struct Sheet;
 
 #[derive(Component)]
 struct Pool;
@@ -98,6 +105,26 @@ fn spawn_stage(
         Pickable::IGNORE,
     ));
     stage.material = material;
+    // Seen from either side as the camera turns.
+    let sheet = materials.add(StandardMaterial {
+        base_color: SURFACE.with_alpha(0.0),
+        base_color_texture: Some(images.add(plane_image(128))),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        fog_enabled: false,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    commands.spawn((
+        Sheet,
+        Mesh3d(stage.quad.clone()),
+        MeshMaterial3d(sheet.clone()),
+        Transform::default(),
+        Visibility::Hidden,
+        Pickable::IGNORE,
+    ));
+    stage.sheet = sheet;
 }
 
 // ---- the plane ----
@@ -236,6 +263,76 @@ fn lay_plane(
         let y = stage.min.y + offset;
         if y <= stage.max.y + 1e-3 {
             line(Vec3::new(stage.min.x, y, z), Vec3::new(stage.max.x, y, z));
+        }
+    }
+}
+
+// ---- the sheet ----
+
+/// Lines along time across the sheet, and how strongly they and the sheet draw: less
+/// than the map's, as the calls on it say more.
+const SHEET_LINES: usize = 6;
+const SHEET_GRID: f32 = 0.07;
+const SHEET: f32 = 0.4;
+
+/// Lays a faint sheet behind the calls, upright and running out of the map along
+/// time, with lines along it, so the calls read as standing in a plane at right
+/// angles to the map's and time's run recedes in perspective.
+fn lay_sheet(
+    explorer: Res<Explorer>,
+    timeline: Res<Timeline>,
+    stage: Res<Stage>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut sheets: Query<(&mut Transform, &mut Visibility), With<Sheet>>,
+    mut gizmos: Gizmos<GridGizmos>,
+) {
+    let strength = timeline.depth_view();
+    let Ok((mut transform, mut visibility)) = sheets.single_mut() else {
+        return;
+    };
+    let points: Vec<Vec3> = (0..timeline.calls.len())
+        .filter_map(|index| timeline.point(&explorer, index))
+        .collect();
+    if strength < 0.01 || points.len() < 2 {
+        *visibility = Visibility::Hidden;
+        return;
+    }
+    let (min, max) = points.iter().fold((Vec3::MAX, Vec3::MIN), |(min, max), p| {
+        (min.min(*p), max.max(*p))
+    });
+    // Its rim fades, so it reaches past the calls: back into the map, and only a
+    // little towards the eye, where its lines would fan wide across the view.
+    let (length, tall) = (max.z - min.z, (max.y - min.y) * 0.35 + 6.0);
+    let (min, max) = (
+        min - Vec3::new(0.0, tall, length * 0.3),
+        max + Vec3::new(0.0, tall, length * 0.1),
+    );
+    let size = max - min;
+    let middle = (min + max) / 2.0;
+    *visibility = Visibility::Visible;
+    *transform = Transform::from_translation(middle.with_x(min.x))
+        .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2))
+        .with_scale(Vec3::new(size.z, size.y, 1.0));
+    if let Some(mut material) = materials.get_mut(&stage.sheet) {
+        material.base_color = SURFACE.with_alpha(SHEET * strength);
+    }
+    let eye = timeline.eye();
+    let range = timeline.haze_range();
+    let shade = |p: Vec3| {
+        let across = Vec2::new(p.z - middle.z, p.y - middle.y) / (Vec2::new(size.z, size.y) / 2.0);
+        let glow = plane_glow(across.x, across.y);
+        Color::WHITE
+            .with_alpha(SHEET_GRID * strength * glow * (1.0 - 0.4 * haze(eye.distance(p), range)))
+    };
+    for i in 0..=SHEET_LINES {
+        #[expect(clippy::cast_precision_loss, reason = "a few lines")]
+        let y = min.y + size.y * i as f32 / SHEET_LINES as f32;
+        let (from, to) = (Vec3::new(min.x, y, min.z), Vec3::new(min.x, y, max.z));
+        #[expect(clippy::cast_precision_loss, reason = "a few pieces")]
+        let at = |i: usize| from.lerp(to, i as f32 / GRID_PIECES as f32);
+        for i in 0..GRID_PIECES {
+            let (a, b) = (at(i), at(i + 1));
+            gizmos.line_gradient(a, b, shade(a), shade(b));
         }
     }
 }
