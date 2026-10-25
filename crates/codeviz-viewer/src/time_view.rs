@@ -427,8 +427,10 @@ fn follow_journey(
 /// around the cursor.
 const MIN_STEP: f32 = 22.0;
 
-/// The most calls the 3D view rises through at once.
+/// The most calls the 3D views show at once: fewer along level rails, which run
+/// across the narrow inset.
 const MOST_RISING: usize = 60;
+const MOST_ON_RAILS: usize = 32;
 
 /// The calls that fit in `room`, around `cursor`: as many before it as after.
 pub(crate) fn window(count: usize, cursor: Option<usize>, room: usize) -> Range<usize> {
@@ -556,7 +558,12 @@ fn aim(
         view.window = window(view.calls.len(), cursor, room);
         side_on(&explorer, &view, size, orbit, map, perspective)
     } else {
-        view.window = window(view.calls.len(), cursor, MOST_RISING);
+        let room = if chrome.time == TimeMode::Rise {
+            MOST_RISING
+        } else {
+            MOST_ON_RAILS
+        };
+        view.window = window(view.calls.len(), cursor, room);
         let ease = 1.0 - (-time.delta_secs() * 6.0).exp();
         let Some(layout) = rising(&explorer, &mut view, chrome.time, size, ease) else {
             return;
@@ -968,7 +975,12 @@ fn draw_floor(
                 .circle(
                     Isometry3d::from_translation(at),
                     ring,
-                    color.with_alpha(0.3),
+                    // Seen edge-on along the rails, rings crowd the start; fainter.
+                    color.with_alpha(if view.mode == TimeMode::Rise {
+                        0.3
+                    } else {
+                        0.16
+                    }),
                 )
                 .resolution(48);
         }
