@@ -67,7 +67,8 @@ three markers over one node. In 3D the calls rise over their part of the map, se
 three-quarter angle: each drops a line to its node's spot on a faint floor grid with the
 modules' rings, a line runs up from each caller to each call it makes, a ruler at the
 side numbers the first, last and cursor's calls, and a square marks the cursor's moment;
-drag in the view to turn it, scroll to zoom, double-click to turn it back. Side-on, an
+drag in the view (or press `Shift`-`Z`) to turn it, scroll to zoom, double-click to
+turn it back. Side-on, an
 orthographic camera looks along the map's x axis: time runs left to right and each call
 sits at the height its node shows on the map, so module bands line up across the two
 views, with each caller's line running along its level and dropping to each call it

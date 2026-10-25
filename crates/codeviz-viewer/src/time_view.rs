@@ -30,7 +30,7 @@ use bevy::{
     post_process::bloom::Bloom,
     prelude::*,
 };
-use bevy_egui::egui;
+use bevy_egui::{egui, input::egui_wants_any_keyboard_input};
 use codeviz_core::SpanId;
 
 use crate::{
@@ -180,7 +180,15 @@ impl Plugin for TimeViewPlugin {
         app.init_resource::<TimeView>()
             .init_gizmo_group::<TimeGizmos>()
             .add_systems(Startup, spawn_time_camera)
-            .add_systems(Update, (head_on, follow_journey).chain())
+            .add_systems(
+                Update,
+                (
+                    head_on,
+                    follow_journey,
+                    turn_keys.run_if(not(egui_wants_any_keyboard_input)),
+                )
+                    .chain(),
+            )
             .add_systems(
                 PostUpdate,
                 aim.after(crate::camera::apply_camera)
@@ -247,6 +255,15 @@ fn head_on(
         for mut camera in &mut cameras {
             camera.turn_to(FRONT);
         }
+    }
+}
+
+/// Shift-Z turns the 3D view a quarter round, for a look from another side without
+/// dragging.
+fn turn_keys(keys: Res<ButtonInput<KeyCode>>, chrome: Res<Chrome>, mut view: ResMut<TimeView>) {
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if shift && keys.just_pressed(KeyCode::KeyZ) && chrome.time == TimeMode::Rise {
+        view.turn.yaw += std::f32::consts::FRAC_PI_2;
     }
 }
 
@@ -1047,7 +1064,7 @@ fn ruler(
 fn title(painter: &egui::Painter, area: egui::Rect, mode: TimeMode, view: &TimeView) {
     let text = match mode {
         TimeMode::Side => "calls in order  →    Z: off",
-        _ => "calls rise in order  ↑    drag to turn · Z: side-on",
+        _ => "calls rise in order  ↑    drag or shift-Z to turn · Z: side-on",
     };
     painter.line_segment(
         [area.left_top(), area.left_bottom()],
