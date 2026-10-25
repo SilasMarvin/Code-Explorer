@@ -326,14 +326,17 @@ fn fade(hops: u32) -> f32 {
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
+    chrome: Res<Chrome>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
     draw_regions(&explorer, &mut gizmos);
+    // While the wall stands, the graph steps back behind it and its beams.
+    let strength = if chrome.wall.on { 0.55 } else { 1.0 };
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, &mut gizmos),
+        None => draw_calls(&explorer, time, strength, &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
     draw_attention(&explorer, &mut gizmos);
@@ -341,8 +344,9 @@ pub(crate) fn draw_graph(
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
-/// path, are pale arrows fading with distance; everything else is faint.
-fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
+/// path, are pale arrows fading with distance; everything else is faint. All of them
+/// draw at `strength`.
+fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
     let reach = explorer.reach();
@@ -376,10 +380,11 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
         let (Some(a), Some(b)) = (point(from), point(to)) else {
             continue;
         };
-        let shown = explorer.visibility(from).min(explorer.visibility(to));
-        if shown < SPECK {
+        let visible = explorer.visibility(from).min(explorer.visibility(to));
+        if visible < SPECK {
             continue;
         }
+        let shown = visible * strength;
         // A link lights up when it takes one step nearer the focus (violet) or one
         // step further out from it (blue).
         let lit = reach.and_then(|reach| {
@@ -566,15 +571,20 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F turns to face the graph head-on, centered on the journey's start again; R pulls
-/// back to take in the whole graph.
+/// F turns to face the graph head-on, centered on the journey's start again, or while
+/// the wall stands, to look into the corner it makes with the graph; R pulls back to
+/// take in the whole graph.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
+    mut chrome: ResMut<Chrome>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
+    if chrome.wall.on && keys.just_pressed(KeyCode::KeyF) {
+        chrome.wall.refit = true;
+    }
     for mut camera in &mut cameras {
-        if keys.just_pressed(KeyCode::KeyF) {
+        if keys.just_pressed(KeyCode::KeyF) && !chrome.wall.on {
             camera.turn_to(FRONT);
             orbit_anchor(&explorer, &mut camera);
         }

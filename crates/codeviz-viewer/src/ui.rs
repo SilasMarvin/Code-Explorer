@@ -206,6 +206,7 @@ fn draw_ui(
             &explorer,
             diff.as_deref(),
             transform.up().into(),
+            chrome.wall.on,
         );
         wall::draw(
             &painter,
@@ -297,10 +298,13 @@ fn panels(
                         chrome.side = !chrome.side;
                     }
                     if ui
-                        .selectable_label(chrome.wall.on, "Time: wall")
+                        .selectable_label(
+                            chrome.wall.on,
+                            format!("Time: {}", chrome.wall.shape.name()),
+                        )
                         .on_hover_text(
-                            "Stand the journey up as a wall beside the graph, time running \
-                             along its depth, and turn to see both (Z)",
+                            "Stand the journey up as a wall beside the graph and turn to see \
+                             both (Z); square, slanted to face you or curved round (Shift+Z)",
                         )
                         .clicked()
                     {
@@ -1274,6 +1278,7 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 /// its callers note where in their own calls they call it. A name tries each side of
 /// its node and is left out when none is free, and never covers a node that matters;
 /// zooming in makes room for more. Container names fill whatever space is left.
+/// `quiet` names only the focus, what touches it and what the journey runs.
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
@@ -1281,6 +1286,7 @@ fn draw_graph_labels(
     explorer: &Explorer,
     diff: Option<&DiffView>,
     up: Vec3,
+    quiet: bool,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1355,6 +1361,11 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
+        // While the wall stands it carries the journey's order; the graph names only
+        // the focus, what the journey runs and what touches the focus.
+        if quiet && tier > 1 {
+            continue;
+        }
         order.push((
             (tier, std::cmp::Reverse(graph.degree(tile)), tile),
             Named::Node(tile),
@@ -1779,6 +1790,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("J", "show or hide the journey"),
             ("M", "swap graph and journey"),
             ("Z", "stand the journey up as a wall beside the graph"),
+            ("Shift Z", "the wall: square → slanted → curved"),
             ("S", "show or hide the side panel"),
             ("/", "search for a function"),
             ("H", "this list"),

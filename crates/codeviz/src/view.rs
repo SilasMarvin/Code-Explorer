@@ -75,6 +75,15 @@ pub(crate) struct Display {
     /// Show the journey's time in the scene (Z toggles it).
     #[arg(long, value_enum, value_name = "MODE")]
     time: Option<TimeArg>,
+    /// With --time, look at the wall from this many radians of yaw round from the usual
+    /// corner view: less is round towards the wall's face, more towards the front.
+    #[arg(
+        long,
+        value_name = "RADIANS",
+        requires = "time",
+        allow_hyphen_values = true
+    )]
+    wall_turn: Option<f32>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -96,9 +105,13 @@ enum JourneyArg {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum TimeArg {
-    /// The journey's flame graph standing as a wall beside the graph, time running
-    /// away from it.
+    /// The journey's flame graph standing as a wall beside the graph, square to it,
+    /// time running along its depth.
     Wall,
+    /// The wall turned to face the usual view.
+    Slant,
+    /// The wall curved around the graph.
+    Arc,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -241,8 +254,15 @@ pub(crate) fn open(
     if args.bare {
         viewer = viewer.bare();
     }
-    if let Some(TimeArg::Wall) = args.time {
-        viewer = viewer.with_wall();
+    if let Some(turn) = args.wall_turn {
+        viewer = viewer.with_wall_turn(turn);
+    }
+    if let Some(time) = args.time {
+        viewer = viewer.with_wall(match time {
+            TimeArg::Wall => "wall",
+            TimeArg::Slant => "slant",
+            TimeArg::Arc => "arc",
+        });
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

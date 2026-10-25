@@ -1,11 +1,14 @@
-//! The journey standing in the scene: its flame graph as a wall square to the graph,
-//! beside it, with time running along the depth the graph does not use and each level
-//! of calls a row up the wall. The graph does not move. Beams tie the bars around the
-//! cursor to their nodes, so the order the wall reads and the places the graph shows
-//! meet without a line through every call.
+//! The journey standing in the scene: its flame graph as a wall beside the graph, with
+//! time running along the wall's length and each level of calls a row up it. The graph
+//! does not move. Beams tie the bars around the cursor to their nodes, so the order the
+//! wall reads and the places the graph shows meet without a line through every call.
+//!
+//! The wall can stand three ways ([`Shape`]): square to the graph, along the depth the
+//! graph does not use; slanted to face the usual view; or curved around the graph, a
+//! stretch of cylinder whose arc runs along time.
 //!
 //! `Z` stands it up and turns the camera to look into the corner the wall makes with
-//! the graph, where both read; [`Chrome`] holds whether it stands.
+//! the graph, where both read, `Shift+Z` changes its shape; [`Chrome`] holds both.
 
 use std::collections::HashMap;
 
@@ -19,15 +22,21 @@ use crate::{
     explorer::Explorer,
     graph_view::{fit_distance, orbit_anchor},
     journey_panel::{PanelMode, bar_look},
-    ui::{Chrome, short},
+    ui::Chrome,
 };
 
-/// Whether the wall stands, and whether it lit the graph's hovered node, so it can
-/// clear it again.
+/// Whether the wall stands and how, and the state its drawing keeps: whether it lit
+/// the graph's hovered node, so it can clear it again, and whether `F` asked to look
+/// into the corner again.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TimeWall {
     pub(crate) on: bool,
+    pub(crate) shape: Shape,
     lit: bool,
+    pub(crate) refit: bool,
+    /// How far round from the usual corner view the camera turns to look at it, in
+    /// radians of yaw, to see the wall from elsewhere.
+    pub(crate) turn: f32,
     /// The stretch of the journey, in slots, the wall widens around the cursor, as it
     /// eases after it.
     lens: Option<(f32, f32)>,
@@ -41,6 +50,52 @@ impl TimeWall {
             PanelMode::Hidden
         } else {
             mode
+        }
+    }
+}
+
+/// How the wall stands beside the graph.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Shape {
+    /// Square to the graph, time running along its depth towards the viewer.
+    Square,
+    /// Turned to face the usual view head-on, so neither end looms.
+    #[default]
+    Slant,
+    /// Curved around the graph, a stretch of cylinder about its middle.
+    Arc,
+}
+
+impl Shape {
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Slant => Self::Arc,
+            Self::Arc => Self::Square,
+            Self::Square => Self::Slant,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Square => "wall",
+            Self::Slant => "slant",
+            Self::Arc => "arc",
+        }
+    }
+
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        [Self::Square, Self::Slant, Self::Arc]
+            .into_iter()
+            .find(|s| s.name() == name)
+    }
+
+    /// The field of view while the wall stands. Square, the wall runs towards the
+    /// viewer and from close by its near end would loom over its far one, so the
+    /// camera stands further back with a narrower lens.
+    fn fov(self) -> f32 {
+        match self {
+            Self::Square => 0.38,
+            Self::Slant | Self::Arc => 0.6,
         }
     }
 }
@@ -81,17 +136,27 @@ const ROW_GAP: f32 = 0.12;
 /// behind it is hidden by it; dimmed bars are see-through.
 const BACKING: egui::Color32 = egui::Color32::from_rgba_premultiplied(14, 16, 23, 240);
 
-/// The field of view while the wall stands, narrower than the usual so the camera
-/// stands further back: the wall runs towards the viewer, and from close by its near
-/// end would loom over its far one.
-const FOV: f32 = 0.38;
+/// The slanted wall's direction: the usual view's right, so it faces that view.
+fn slant() -> Vec3 {
+    Vec3::new(VIEW.0.cos(), 0.0, -VIEW.0.sin())
+}
+
+/// The most the arc turns, start to end: a little short of a quarter, so its far end
+/// never comes round in front of the graph.
+const ARC: f32 = 1.45;
+
+/// How many pieces a curved bar is drawn in per radian it turns.
+const PIECES: f32 = 18.0;
 
 /// Where the wall stands, in the world.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Wall {
+    shape: Shape,
     /// Its corner nearest the graph at the bottom, where the journey starts.
     foot: Vec3,
-    /// How far time runs along z, start to end.
+    /// The middle of the journey's nodes, level with the foot: the arc's axis.
+    middle: Vec3,
+    /// How far time runs, start to end, unless the arc must stop short.
     length: f32,
     /// A row's height.
     row: f32,
@@ -100,9 +165,8 @@ pub(crate) struct Wall {
 
 impl Wall {
     /// A wall for `rows` levels of calls and `slots` across, standing just past the
-    /// right edge of `points`, the graph as it shows, centered on it top to bottom,
-    /// and running from the graph's plane towards the viewer.
-    pub(crate) fn beside(points: &[Vec3], rows: usize, slots: f32) -> Option<Self> {
+    /// right edge of `points`, the journey's nodes, centered on them top to bottom.
+    pub(crate) fn beside(shape: Shape, points: &[Vec3], rows: usize, slots: f32) -> Option<Self> {
         if points.is_empty() || rows == 0 {
             return None;
         }
@@ -117,8 +181,11 @@ impl Wall {
         let row = (ROW * extent).min(TALL * extent / level(rows_f));
         let height = row * level(rows_f);
         let middle = (min + max) / 2.0;
+        let foot = Vec3::new(max.x + GAP * extent, middle.y - height / 2.0, middle.z);
         Some(Self {
-            foot: Vec3::new(max.x + GAP * extent, middle.y - height / 2.0, middle.z),
+            shape,
+            foot,
+            middle: Vec3::new(middle.x, foot.y, middle.z),
             length: (slots * SLOT).clamp(SHORT, LONG) * extent,
             row,
             rows,
@@ -137,13 +204,29 @@ impl Wall {
         level(self.rows as f32)
     }
 
-    /// The point `along` the way from the journey's start to its end, `up` rows high.
-    pub(crate) fn at(&self, along: f32, up: f32) -> Vec3 {
-        self.foot + Vec3::new(0.0, up * self.row, along * self.length)
+    /// The arc's radius and how far it turns, start to end.
+    fn arc(&self) -> (f32, f32) {
+        let radius = (self.foot.x - self.middle.x).max(1.0);
+        (radius, (self.length / radius).min(ARC))
     }
 
-    /// The wall's outline: along the bottom, then back along the top.
-    pub(crate) fn corners(&self) -> [Vec3; 4] {
+    /// The point `along` the way from the journey's start to its end, `up` rows high.
+    pub(crate) fn at(&self, along: f32, up: f32) -> Vec3 {
+        let rise = Vec3::Y * up * self.row;
+        match self.shape {
+            Shape::Square => self.foot + Vec3::Z * along * self.length + rise,
+            Shape::Slant => self.foot + slant() * along * self.length + rise,
+            Shape::Arc => {
+                let (radius, turn) = self.arc();
+                let angle = along * turn;
+                self.middle + Vec3::new(angle.cos(), 0.0, angle.sin()) * radius + rise
+            }
+        }
+    }
+
+    /// The wall's corners: along the bottom, then back along the top.
+    #[cfg(test)]
+    fn corners(&self) -> [Vec3; 4] {
         let top = self.top();
         [
             self.at(0.0, 0.0),
@@ -153,19 +236,54 @@ impl Wall {
         ]
     }
 
-    /// A bar's corners, `left` and `width` in shares of the journey on `row`, the
-    /// root's at the bottom: bottom start, bottom end, top end, top start.
-    pub(crate) fn bar(&self, left: f32, width: f32, row: usize) -> [Vec3; 4] {
+    /// The stretch of wall from `left` for `width`, in shares of the journey, between
+    /// heights `bottom` and `top`, in pieces flat enough to draw as quads: one on a
+    /// flat wall, more the further a curved one turns. Each is bottom start, bottom
+    /// end, top end, top start.
+    fn strip(&self, left: f32, width: f32, bottom: f32, top: f32) -> Vec<[Vec3; 4]> {
+        let pieces = match self.shape {
+            Shape::Arc => (width * self.arc().1 * PIECES).ceil().max(1.0),
+            Shape::Square | Shape::Slant => 1.0,
+        };
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a small, positive count"
+        )]
+        let count = pieces as usize;
+        (0..count)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "a small count")]
+                let (a, b) = (
+                    left + width * i as f32 / pieces,
+                    left + width * (i + 1) as f32 / pieces,
+                );
+                [
+                    self.at(a, bottom),
+                    self.at(b, bottom),
+                    self.at(b, top),
+                    self.at(a, top),
+                ]
+            })
+            .collect()
+    }
+
+    /// The whole wall, in pieces.
+    fn face(&self) -> Vec<[Vec3; 4]> {
+        self.strip(0.0, 1.0, 0.0, self.top())
+    }
+
+    /// A bar's pieces, `left` and `width` in shares of the journey on `row`, the
+    /// root's at the bottom.
+    pub(crate) fn bar(&self, left: f32, width: f32, row: usize) -> Vec<[Vec3; 4]> {
         #[expect(clippy::cast_precision_loss, reason = "a few rows")]
         let row = row as f32;
-        let (bottom, top) = (level(row + ROW_GAP / 2.0), level(row + 1.0 - ROW_GAP / 2.0));
-        let end = left + width * (1.0 - BAR_GAP);
-        [
-            self.at(left, bottom),
-            self.at(end, bottom),
-            self.at(end, top),
-            self.at(left, top),
-        ]
+        self.strip(
+            left,
+            width * (1.0 - BAR_GAP),
+            level(row + ROW_GAP / 2.0),
+            level(row + 1.0 - ROW_GAP / 2.0),
+        )
     }
 }
 
@@ -182,13 +300,13 @@ pub(crate) fn running_order<K: Copy>(placed: &HashMap<K, (f32, f32, usize)>) -> 
 
 /// Slots across past which a journey is too crowded to name every call evenly, and
 /// the wall widens the stretch around the cursor instead.
-const CROWDED: f32 = 24.0;
+const CROWDED: f32 = 12.0;
 /// That stretch, in slots before and after the cursor's start: more ahead, where
 /// stepping goes next.
-const BEHIND: f32 = 3.0;
-const AHEAD: f32 = 9.0;
+const BEHIND: f32 = 2.0;
+const AHEAD: f32 = 6.0;
 /// The least share of the wall's length the stretch gets.
-const FOCUS: f32 = 0.55;
+const FOCUS: f32 = 0.6;
 
 /// Where slot `slot` of `total` falls along the wall, as a share of its length: evenly,
 /// or with the stretch `lens` given at least [`FOCUS`] of the length and the rest
@@ -293,10 +411,10 @@ fn map_edge(explorer: &Explorer, wall: &Wall) -> f32 {
 type Placed = HashMap<SpanId, (f32, f32, usize)>;
 
 /// The journey's bars as disclosed, their slots across, and the wall to stand them on.
-fn stand(explorer: &Explorer) -> Option<(Wall, Placed, f32)> {
+fn stand(explorer: &Explorer, shape: Shape) -> Option<(Wall, Placed, f32)> {
     let disclosed = explorer.disclosure();
     let (placed, slots) = disclosed.layout(explorer.journey()?.root());
-    let wall = Wall::beside(&journey_points(explorer), disclosed.rows(), slots)?;
+    let wall = Wall::beside(shape, &journey_points(explorer), disclosed.rows(), slots)?;
     Some((
         wall.clear_of(map_edge(explorer, &wall)),
         placed,
@@ -304,18 +422,28 @@ fn stand(explorer: &Explorer) -> Option<(Wall, Placed, f32)> {
     ))
 }
 
-/// Where the camera looks into the corner from, and how far back: far enough for the
-/// wall and the journey's nodes on the graph.
-fn corner_view(explorer: &Explorer, perspective: &PerspectiveProjection) -> Option<(Vec3, f32)> {
-    let (wall, _, _) = stand(explorer)?;
-    let mut points = wall.corners().to_vec();
+/// What the corner view must keep on screen: the wall and the journey's nodes.
+fn view_points(explorer: &Explorer, shape: Shape) -> Option<Vec<Vec3>> {
+    let (wall, _, _) = stand(explorer, shape)?;
+    let mut points: Vec<Vec3> = wall.face().into_iter().flatten().collect();
     points.extend(journey_points(explorer));
+    Some(points)
+}
+
+/// Where the camera turned to `rotation` looks from, and how far back, to see the
+/// wall and the journey's nodes.
+fn corner_view(
+    explorer: &Explorer,
+    shape: Shape,
+    rotation: Quat,
+    perspective: &PerspectiveProjection,
+) -> Option<(Vec3, f32)> {
+    let points = view_points(explorer, shape)?;
     let (min, max) = points.iter().fold(
         (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
         |(min, max), &p| (min.min(p), max.max(p)),
     );
     let center = (min + max) / 2.0;
-    let rotation = Quat::from_euler(EulerRot::YXZ, VIEW.0, VIEW.1, 0.0);
     Some((center, fit_distance(&points, center, rotation, perspective)))
 }
 
@@ -323,84 +451,74 @@ fn corner_view(explorer: &Explorer, perspective: &PerspectiveProjection) -> Opti
 #[derive(Default)]
 pub(crate) struct Framed {
     on: bool,
-    key: Option<(Option<usize>, u64, usize, u32)>,
+    shape: Shape,
+    key: Option<(Option<usize>, u64)>,
     view: Option<(Vec3, f32)>,
-    /// The wall the view was fitted to.
-    wall: Option<Wall>,
 }
 
-impl Wall {
-    /// Whether the wall has moved or grown far enough from `before` to refit the view,
-    /// as the graph settles: a share of its length either way.
-    fn moved_from(&self, before: &Self) -> bool {
-        let shift = self.foot.distance(before.foot) + (self.length - before.length).abs();
-        shift > 0.12 * before.length
-    }
-}
+/// How much further back than the view stands the wall may need before it refits.
+const OUTGROWN: f32 = 1.05;
 
-/// Turns to look into the corner when the wall stands up, and holds that view while
-/// it stands, refitting it to a new journey or a level more or less, until the viewer
-/// pans or zooms away; turns back to the journey's start when it goes.
+/// Turns to look into the corner when the wall stands up, changes shape, or `F` asks,
+/// and holds that view while it stands, until the viewer pans or zooms away. A new
+/// journey looks again; the wall growing past the view, as a level more opens or the
+/// graph settles, only pulls back from where the camera is turned. Turns back to the
+/// journey's start when the wall goes.
 pub(crate) fn frame(
-    chrome: Res<Chrome>,
+    mut chrome: ResMut<Chrome>,
     explorer: Res<Explorer>,
     mut last: Local<Framed>,
     time: Res<Time>,
-    mut cameras: Query<(&mut OrbitCamera, &mut Projection)>,
+    mut cameras: Query<(&mut OrbitCamera, &mut Projection, &Transform)>,
 ) {
-    let raised = chrome.wall.on && !last.on;
-    let lowered = !chrome.wall.on && last.on;
-    last.on = chrome.wall.on;
+    let wall = chrome.wall;
+    let raised = wall.on && (!last.on || last.shape != wall.shape);
+    let lowered = !wall.on && last.on;
+    (last.on, last.shape) = (wall.on, wall.shape);
+    if wall.refit {
+        chrome.wall.refit = false;
+    }
     let ease = 1.0 - (-6.0 * time.delta_secs()).exp();
-    for (mut camera, mut projection) in &mut cameras {
+    for (mut camera, mut projection, transform) in &mut cameras {
         let Projection::Perspective(perspective) = &mut *projection else {
             continue;
         };
-        let fov = if chrome.wall.on {
-            FOV
+        let fov = if wall.on {
+            wall.shape.fov()
         } else {
             PerspectiveProjection::default().fov
         };
         if (perspective.fov - fov).abs() > 1e-4 {
             perspective.fov += (fov - perspective.fov) * ease;
         }
-        let narrow = PerspectiveProjection {
-            fov: FOV,
+        let lens = PerspectiveProjection {
+            fov,
             ..perspective.clone()
         };
         if lowered {
             camera.turn_to(ANGLED);
             orbit_anchor(&explorer, &mut camera);
         }
-        if !chrome.wall.on {
+        if !wall.on {
             last.view = None;
             continue;
         }
-        let disclosed = explorer.disclosure();
-        let slots = explorer
-            .journey()
-            .map_or(0.0, |j| disclosed.layout(j.root()).1);
-        let key = (
-            explorer.anchor(),
-            explorer.aim(),
-            disclosed.rows(),
-            slots.to_bits(),
-        );
-        let wall = stand(&explorer).map(|(wall, _, _)| wall);
-        let moved = match (&wall, &last.wall) {
-            (Some(wall), Some(before)) => wall.moved_from(before),
-            (now, before) => now.is_some() != before.is_some(),
-        };
-        if raised || last.key != Some(key) || moved && !camera.free {
+        let key = (explorer.anchor(), explorer.aim());
+        if raised || wall.refit || last.key != Some(key) {
             last.key = Some(key);
-            last.wall = wall;
-            last.view = corner_view(&explorer, &narrow);
-            if raised {
-                camera.turn_to(VIEW);
-            }
+            let angles = (VIEW.0 + wall.turn, VIEW.1);
+            let corner = Quat::from_euler(EulerRot::YXZ, angles.0, angles.1, 0.0);
+            last.view = corner_view(&explorer, wall.shape, corner, &lens);
+            camera.turn_to(angles);
             if last.view.is_some() {
                 camera.free = false;
             }
+        } else if let Some((target, distance)) = last.view
+            && !camera.free
+            && let Some(points) = view_points(&explorer, wall.shape)
+            && fit_distance(&points, target, transform.rotation, &lens) > distance * OUTGROWN
+        {
+            last.view = corner_view(&explorer, wall.shape, transform.rotation, &lens);
         }
         if let Some((target, distance)) = last.view
             && !camera.free
@@ -414,8 +532,8 @@ pub(crate) fn frame(
 struct Bar {
     span: SpanId,
     tile: Option<usize>,
-    /// Its corners: bottom start, bottom end, top end, top start.
-    quad: [egui::Pos2; 4],
+    /// Its pieces, each bottom start, bottom end, top end, top start.
+    quads: Vec<[egui::Pos2; 4]>,
     fill: egui::Color32,
     text: egui::Color32,
 }
@@ -423,15 +541,56 @@ struct Bar {
 impl Bar {
     /// Where its call starts: midway up its near edge, a little in.
     fn start(&self) -> egui::Pos2 {
-        let near = self.quad[0] + (self.quad[3] - self.quad[0]) / 2.0;
-        let far = self.quad[1] + (self.quad[2] - self.quad[1]) / 2.0;
+        let first = self.quads[0];
+        let near = first[0] + (first[3] - first[0]) / 2.0;
+        let far = first[1] + (first[2] - first[1]) / 2.0;
         near + (far - near).normalized() * 4.0
     }
+
+    fn contains(&self, point: egui::Pos2) -> bool {
+        self.quads.iter().any(|quad| inside(point, quad))
+    }
+}
+
+/// The outline of a strip of pieces: along the bottom, then back along the top.
+fn outline(quads: &[[egui::Pos2; 4]]) -> Vec<egui::Pos2> {
+    let bottom = quads.iter().map(|q| q[0]).chain(quads.last().map(|q| q[1]));
+    let top = quads
+        .iter()
+        .rev()
+        .map(|q| q[2])
+        .chain(quads.first().map(|q| q[3]));
+    bottom.chain(top).collect()
+}
+
+/// The upright rectangle inside a strip on screen, where its name goes horizontally,
+/// whichever way the strip runs.
+pub(crate) fn upright(quads: &[[egui::Pos2; 4]]) -> Option<egui::Rect> {
+    let (first, last) = (quads.first()?, quads.last()?);
+    let start = f32::midpoint(first[0].x, first[3].x);
+    let end = f32::midpoint(last[1].x, last[2].x);
+    let (left, right) = if start <= end {
+        (first[0].x.max(first[3].x), last[1].x.min(last[2].x))
+    } else {
+        (last[1].x.max(last[2].x), first[0].x.min(first[3].x))
+    };
+    // Its top edge's lowest point and its bottom edge's highest, across the pieces.
+    let top = quads
+        .iter()
+        .flat_map(|q| [q[2].y, q[3].y])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = quads
+        .iter()
+        .flat_map(|q| [q[0].y, q[1].y])
+        .fold(f32::INFINITY, f32::min);
+    let (top, bottom) = (top.min(bottom), top.max(bottom));
+    (right > left && bottom > top)
+        .then(|| egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom)))
 }
 
 /// The wall as it stands this frame, on screen.
 struct Standing {
-    outline: [egui::Pos2; 4],
+    face: Vec<[egui::Pos2; 4]>,
     /// The bars in the order they run.
     bars: Vec<Bar>,
     /// The cursor's bar, by index into `bars`.
@@ -455,15 +614,20 @@ impl Standing {
     ) -> Option<Self> {
         let (wall, slots) = (*wall, *slots);
         let along = |slot: f32| warp(slot, slots, lens);
-        let on_screen = |corners: [Vec3; 4]| -> Option<[egui::Pos2; 4]> {
-            Some([
-                project(corners[0])?,
-                project(corners[1])?,
-                project(corners[2])?,
-                project(corners[3])?,
-            ])
+        let on_screen = |pieces: Vec<[Vec3; 4]>| -> Option<Vec<[egui::Pos2; 4]>> {
+            pieces
+                .into_iter()
+                .map(|q| {
+                    Some([
+                        project(q[0])?,
+                        project(q[1])?,
+                        project(q[2])?,
+                        project(q[3])?,
+                    ])
+                })
+                .collect()
         };
-        let outline = on_screen(wall.corners())?;
+        let face = on_screen(wall.face())?;
         let track = explorer.track();
         let map = explorer.map();
         let cursor_span = explorer.selected();
@@ -476,7 +640,7 @@ impl Standing {
         for span in running_order(placed) {
             let (left, width, row) = placed[&span];
             let (start, end) = (along(left), along(left + width));
-            let Some(quad) = on_screen(wall.bar(start, end - start, row)) else {
+            let Some(quads) = on_screen(wall.bar(start, end - start, row)) else {
                 continue;
             };
             let future = stepping && track.span(span).is_some_and(|s| s.enter > cursor_enter);
@@ -484,7 +648,7 @@ impl Standing {
             bars.push(Bar {
                 span,
                 tile: track.unit_id(span).and_then(|u| map.tile_of(u)),
-                quad,
+                quads,
                 fill,
                 text,
             });
@@ -500,17 +664,16 @@ impl Standing {
         });
         let now = cursor.and_then(|index| {
             let (left, _, _) = placed[&bars[index].span];
-            let top = wall.top();
             Some([
                 project(wall.at(along(left), 0.0))?,
-                project(wall.at(along(left), top))?,
+                project(wall.at(along(left), wall.top()))?,
             ])
         });
-        let hovered = pointer.and_then(|p| bars.iter().position(|b| inside(p, &b.quad)));
+        let hovered = pointer.and_then(|p| bars.iter().position(|b| b.contains(p)));
         // Edge-on, the wall is a sliver with nothing to read.
-        let breadth = (outline[1] - outline[0]).length();
+        let breadth: f32 = face.iter().map(|q| (q[1] - q[0]).length()).sum();
         (breadth > 40.0).then_some(Self {
-            outline,
+            face,
             bars,
             cursor,
             now,
@@ -575,34 +738,42 @@ impl Standing {
 
     /// The wall, its bars and their names, and the cursor's line across it.
     fn draw_bars(&self, painter: &egui::Painter, explorer: &Explorer) {
-        painter.add(egui::Shape::convex_polygon(
-            self.outline.to_vec(),
-            BACKING,
+        for quad in &self.face {
+            painter.add(egui::Shape::convex_polygon(
+                quad.to_vec(),
+                BACKING,
+                egui::Stroke::NONE,
+            ));
+        }
+        painter.add(egui::Shape::closed_line(
+            outline(&self.face),
             egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
         ));
-        // Time runs along the top edge, away from the graph.
-        if let Some(fit) = room((self.outline[2] - self.outline[3]).length(), 20.0) {
-            label_along(
-                painter,
-                [self.outline[3], self.outline[2]],
-                fit,
-                -1.0,
+        // Time runs away from the graph: said over the wall's end, clear of the
+        // cursor's name over its start.
+        if let Some(last) = self.face.last() {
+            painter.text(
+                last[2] + egui::vec2(-4.0, -4.0),
+                egui::Align2::RIGHT_BOTTOM,
                 "time →",
-                egui::Color32::from_white_alpha(120),
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_white_alpha(130),
             );
         }
         let disclosed = explorer.disclosure();
         for (index, bar) in self.bars.iter().enumerate() {
-            painter.add(egui::Shape::convex_polygon(
-                bar.quad.to_vec(),
-                bar.fill,
-                egui::Stroke::NONE,
-            ));
+            for quad in &bar.quads {
+                painter.add(egui::Shape::convex_polygon(
+                    quad.to_vec(),
+                    bar.fill,
+                    egui::Stroke::new(0.5, bar.fill),
+                ));
+            }
             let lit = Some(index) == self.hovered
                 || bar.tile.is_some() && bar.tile == explorer.hovered_tile;
             if lit {
                 painter.add(egui::Shape::closed_line(
-                    bar.quad.to_vec(),
+                    outline(&bar.quads),
                     egui::Stroke::new(1.5, egui::Color32::from_white_alpha(170)),
                 ));
             }
@@ -612,12 +783,21 @@ impl Standing {
             let name = label
                 .rsplit_once('.')
                 .map_or(label.as_str(), |(_, name)| name);
-            let label = if number.is_empty() {
-                name.to_owned()
-            } else {
-                format!("{number}  {name}")
-            };
-            label_bar(painter, &bar.quad, &label, bar.text);
+            let named = label_bar(painter, &bar.quads, number, name, bar.text);
+            // The cursor's call is always named: over the wall where its bar has no
+            // room.
+            if Some(index) == self.cursor
+                && !named
+                && let Some([_, top]) = self.now
+            {
+                painter.text(
+                    top + egui::vec2(0.0, -6.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    format!("{number}  {name}").trim(),
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::WHITE,
+                );
+            }
         }
         if let Some(now) = self.now {
             painter.line_segment(
@@ -627,7 +807,7 @@ impl Standing {
         }
         if let Some(bar) = self.cursor.map(|c| &self.bars[c]) {
             painter.add(egui::Shape::closed_line(
-                bar.quad.to_vec(),
+                outline(&bar.quads),
                 egui::Stroke::new(2.0, egui::Color32::WHITE),
             ));
         }
@@ -676,7 +856,7 @@ pub(crate) fn draw(
     let hover = ctx
         .pointer_hover_pos()
         .filter(|p| area.contains(*p) && !ctx.egui_is_using_pointer());
-    let stood = wall.on.then(|| stand(explorer)).flatten();
+    let stood = wall.on.then(|| stand(explorer, wall.shape)).flatten();
     // The stretch around the cursor eases after it as it moves.
     let goal = stood.as_ref().and_then(|(_, placed, slots)| {
         let cursor = explorer.selected()?;
@@ -706,67 +886,124 @@ pub(crate) fn draw(
     standing.interact(ctx, explorer, &mut wall.lit);
 }
 
-/// The font size and the characters a name gets on a line `length` long in a band
-/// `height` across; `None` where it would be too small to read.
-pub(crate) fn room(length: f32, height: f32) -> Option<(f32, usize)> {
-    let size = (height * 0.62).min(13.0);
-    if size < 7.5 || length < 24.0 {
-        return None;
+/// Font sizes a bar's name tries, largest first.
+const SIZES: [f32; 4] = [13.0, 11.5, 10.0, 9.0];
+
+/// The pieces a name breaks into across lines: after each `_` or `::`, and before
+/// each capital that follows a small letter.
+fn words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut last = ' ';
+    for c in name.chars() {
+        if c.is_uppercase() && last.is_lowercase() && !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+        }
+        word.push(c);
+        if c == '_' || c == ':' && last == ':' {
+            words.push(std::mem::take(&mut word));
+        }
+        last = c;
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// `words` packed into at most `lines` lines of `width` characters, a word too long
+/// for a line cut across lines, and the last line ending in `…` when they do not all
+/// fit. Returns the lines and whether everything fit with no word cut.
+pub(crate) fn pack(words: &[String], width: usize, lines: usize) -> (Vec<String>, bool) {
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let mut cut = false;
+    for word in words {
+        let fits = line.chars().count() + word.chars().count() <= width;
+        if !fits && !line.is_empty() {
+            out.push(std::mem::take(&mut line));
+        }
+        line.push_str(word);
+        while line.chars().count() > width {
+            let head: String = line.chars().take(width).collect();
+            line = line.chars().skip(width).collect();
+            out.push(head);
+            cut = true;
+        }
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    let whole = out.len() <= lines && !cut;
+    if out.len() > lines {
+        out.truncate(lines);
+        if let Some(last) = out.last_mut() {
+            let kept: String = last.chars().take(width.saturating_sub(1)).collect();
+            *last = format!("{kept}…");
+        }
+    }
+    (out, whole)
+}
+
+/// Names a bar upright, whatever way the wall turns: its number, then its name
+/// broken at its words across as many lines as the bar is tall, as large as fits
+/// whole; where it fits at no size, the number alone, as the panel does. Returns
+/// whether the name showed.
+fn label_bar(
+    painter: &egui::Painter,
+    quads: &[[egui::Pos2; 4]],
+    number: &str,
+    name: &str,
+    color: egui::Color32,
+) -> bool {
+    let Some(rect) = upright(quads).map(|r| r.shrink2(egui::vec2(3.0, 2.0))) else {
+        return false;
+    };
+    let mut parts = words(name);
+    if !number.is_empty() {
+        parts.insert(0, format!("{number} "));
     }
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "a small, clamped character count"
+        reason = "small, clamped counts"
     )]
-    let chars = ((length - 10.0) / (size * 0.56)).clamp(0.0, 300.0) as usize;
-    (chars >= 3).then_some((size, chars))
-}
-
-/// Writes `text` along the line `ends` at `size`, cut to `chars`; `outside` lifts it
-/// that many of its own heights off the line, below it.
-fn label_along(
-    painter: &egui::Painter,
-    [from, to]: [egui::Pos2; 2],
-    (size, chars): (f32, usize),
-    outside: f32,
-    text: &str,
-    color: egui::Color32,
-) {
-    let galley =
-        painter.layout_no_wrap(short(text, chars), egui::FontId::proportional(size), color);
-    let direction = (to - from).normalized();
-    // Square to the line, pointing down the screen as text reads.
-    let down = egui::vec2(-direction.y, direction.x);
-    let shift = galley.size().y * (outside - 0.5);
-    let at = from + direction * 5.0 + down * shift;
-    painter.add(
-        egui::epaint::TextShape::new(at, galley, color).with_angle(direction.y.atan2(direction.x)),
-    );
-}
-
-/// Names a bar along it, or up it like a book's spine where a narrow bar holds more
-/// that way.
-fn label_bar(painter: &egui::Painter, quad: &[egui::Pos2; 4], text: &str, color: egui::Color32) {
-    let middle = |a: egui::Pos2, b: egui::Pos2| a + (b - a) / 2.0;
-    let along = [middle(quad[0], quad[3]), middle(quad[1], quad[2])];
-    let up = [middle(quad[0], quad[1]), middle(quad[3], quad[2])];
-    let length = |[a, b]: [egui::Pos2; 2]| (b - a).length();
-    let height = (quad[3] - quad[0])
-        .length()
-        .min((quad[2] - quad[1]).length());
-    let width = (quad[1] - quad[0])
-        .length()
-        .min((quad[2] - quad[3]).length());
-    let chars = text.chars().count();
-    let line = match (room(length(along), height), room(length(up), width)) {
-        (Some(a), Some(u)) if a.1 < chars && u.1 > a.1 + 2 => Some((up, u)),
-        (Some(a), _) => Some((along, a)),
-        (None, Some(u)) => Some((up, u)),
-        (None, None) => None,
+    let fit = |size: f32| {
+        let width = (rect.width() / (size * 0.5)).clamp(0.0, 200.0) as usize;
+        let lines = (rect.height() / (size * 1.2)).clamp(0.0, 20.0) as usize;
+        (width >= 3 && lines >= 1).then(|| (size, pack(&parts, width, lines)))
     };
-    if let Some((line, fit)) = line {
-        label_along(painter, line, fit, 0.0, text, color);
+    let whole = SIZES
+        .into_iter()
+        .filter_map(fit)
+        .find(|(_, (_, whole))| *whole);
+    let named = whole.is_some();
+    let number_alone = || {
+        let size = SIZES[SIZES.len() - 1];
+        #[expect(clippy::cast_precision_loss, reason = "a short number")]
+        let wide = number.chars().count() as f32 * size * 0.5;
+        (!number.is_empty() && wide <= rect.width() && size * 1.2 <= rect.height())
+            .then(|| (size, (vec![number.to_owned()], true)))
+    };
+    let Some((size, (lines, _))) = whole.or_else(number_alone) else {
+        return false;
+    };
+    let font = egui::FontId::proportional(size);
+    #[expect(clippy::cast_precision_loss, reason = "a few lines")]
+    let block = lines.len() as f32 * size * 1.2;
+    let painter = painter.with_clip_rect(rect.expand(2.0).intersect(painter.clip_rect()));
+    let mut y = rect.center().y - block / 2.0;
+    for line in lines {
+        painter.text(
+            egui::pos2(rect.left(), y),
+            egui::Align2::LEFT_TOP,
+            line,
+            font.clone(),
+            color,
+        );
+        y += size * 1.2;
     }
+    named
 }
 
 #[cfg(test)]
@@ -776,7 +1013,7 @@ mod tests {
     #[test]
     fn the_wall_stands_past_the_graph_and_runs_towards_the_viewer() {
         let points = [Vec3::new(-50.0, -20.0, 1.0), Vec3::new(50.0, 40.0, -1.0)];
-        let wall = Wall::beside(&points, 3, 4.0).unwrap();
+        let wall = Wall::beside(Shape::Square, &points, 3, 4.0).unwrap();
         let [start, end, top_end, top_start] = wall.corners();
         assert!(start.x > 50.0, "clear of the graph's right edge");
         assert_eq!(start.x, end.x, "square to the graph");
@@ -792,7 +1029,7 @@ mod tests {
     #[test]
     fn the_wall_moves_out_past_the_graph_but_never_in() {
         let points = [Vec3::ZERO, Vec3::new(100.0, 100.0, 0.0)];
-        let wall = Wall::beside(&points, 2, 4.0).unwrap();
+        let wall = Wall::beside(Shape::Square, &points, 2, 4.0).unwrap();
         let foot = wall.at(0.0, 0.0).x;
         assert!((wall.clear_of(0.0).at(0.0, 0.0).x - foot).abs() < 1e-4);
         assert!(wall.clear_of(300.0).at(0.0, 0.0).x > 300.0);
@@ -802,7 +1039,7 @@ mod tests {
     fn a_long_journey_lengthens_the_wall_up_to_a_point() {
         let points = [Vec3::ZERO, Vec3::new(100.0, 100.0, 0.0)];
         let length = |slots| {
-            let wall = Wall::beside(&points, 2, slots).unwrap();
+            let wall = Wall::beside(Shape::Square, &points, 2, slots).unwrap();
             wall.at(1.0, 0.0).z - wall.at(0.0, 0.0).z
         };
         assert_eq!(
@@ -817,8 +1054,8 @@ mod tests {
     #[test]
     fn a_bar_sits_on_its_row_within_its_share_of_time() {
         let points = [Vec3::ZERO, Vec3::new(100.0, 100.0, 0.0)];
-        let wall = Wall::beside(&points, 3, 4.0).unwrap();
-        let [start, end, top_end, _] = wall.bar(0.25, 0.5, 1);
+        let wall = Wall::beside(Shape::Square, &points, 3, 4.0).unwrap();
+        let [start, end, top_end, _] = wall.bar(0.25, 0.5, 1)[0];
         let (bottom, top) = (wall.at(0.0, level(1.0)).y, wall.at(0.0, level(2.0)).y);
         assert!(
             start.y > bottom && top_end.y < top,
@@ -868,13 +1105,78 @@ mod tests {
     #[test]
     fn a_short_journey_needs_no_lens_and_a_long_one_looks_ahead() {
         assert_eq!(lens_around(3.0, 10.0), None);
-        assert_eq!(lens_around(40.0, 100.0), Some((37.0, 49.0)));
+        assert_eq!(lens_around(40.0, 100.0), Some((38.0, 46.0)));
         assert_eq!(
             lens_around(0.0, 100.0),
-            Some((0.0, 12.0)),
+            Some((0.0, 8.0)),
             "held inside the start"
         );
-        assert_eq!(lens_around(99.0, 100.0), Some((88.0, 100.0)), "and the end");
+        assert_eq!(lens_around(99.0, 100.0), Some((92.0, 100.0)), "and the end");
+    }
+
+    #[test]
+    fn the_arc_curves_round_the_graph_towards_the_viewer_and_stops_short() {
+        let points = [Vec3::new(-50.0, -50.0, 0.0), Vec3::new(50.0, 50.0, 0.0)];
+        let wall = Wall::beside(Shape::Arc, &points, 2, 400.0).unwrap();
+        let (start, end) = (wall.at(0.0, 0.0), wall.at(1.0, 0.0));
+        let axis = Vec3::new(0.0, start.y, 0.0);
+        assert!(
+            (start.distance(axis) - end.distance(axis)).abs() < 1e-3,
+            "on a circle"
+        );
+        assert!(end.z > start.z, "towards the viewer");
+        assert!(end.x > 0.0, "never round in front of the graph");
+        assert!(
+            wall.bar(0.0, 1.0, 1).len() > 4,
+            "a long curved bar comes in pieces"
+        );
+    }
+
+    #[test]
+    fn the_slant_faces_the_usual_view() {
+        let points = [Vec3::ZERO, Vec3::new(100.0, 100.0, 0.0)];
+        let wall = Wall::beside(Shape::Slant, &points, 2, 4.0).unwrap();
+        let run = (wall.at(1.0, 0.0) - wall.at(0.0, 0.0)).normalize();
+        let view = Quat::from_euler(EulerRot::YXZ, VIEW.0, VIEW.1, 0.0) * Vec3::Z;
+        assert!(run.dot(view).abs() < 1e-4, "square to the line of sight");
+        assert_eq!(wall.bar(0.0, 1.0, 1).len(), 1);
+    }
+
+    #[test]
+    fn a_name_breaks_at_its_words_and_is_cut_only_when_it_must() {
+        assert_eq!(words("draw_graph_labels"), ["draw_", "graph_", "labels"]);
+        assert_eq!(words("tilePoint"), ["tile", "Point"]);
+        let parts = words("draw_graph_labels");
+        let (lines, whole) = pack(&parts, 7, 3);
+        assert_eq!(lines, ["draw_", "graph_", "labels"]);
+        assert!(whole);
+        let (lines, whole) = pack(&parts, 12, 1);
+        assert_eq!(lines, ["draw_graph_…"]);
+        assert!(!whole);
+        let (lines, whole) = pack(&["abcdefgh".to_owned()], 3, 3);
+        assert!(!whole, "a cut word counts against it");
+        assert_eq!(
+            lines,
+            ["abc", "def", "gh"],
+            "a long word is cut across lines"
+        );
+    }
+
+    #[test]
+    fn a_name_stands_upright_inside_its_bar_either_way_round() {
+        let quad = [
+            egui::pos2(0.0, 20.0),
+            egui::pos2(40.0, 24.0),
+            egui::pos2(40.0, 4.0),
+            egui::pos2(0.0, 0.0),
+        ];
+        let rect = upright(&[quad]).unwrap();
+        assert_eq!(
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 4.0), egui::pos2(40.0, 20.0))
+        );
+        let mirrored = quad.map(|p| egui::pos2(-p.x, p.y));
+        assert_eq!(upright(&[mirrored]).unwrap().width(), 40.0);
     }
 
     #[test]

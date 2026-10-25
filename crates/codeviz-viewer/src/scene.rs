@@ -319,7 +319,11 @@ fn keyboard(
         help.0 = !help.0;
     }
     if keys.just_pressed(KeyCode::KeyZ) {
-        chrome.wall.on = !chrome.wall.on;
+        if shift && chrome.wall.on {
+            chrome.wall.shape = chrome.wall.shape.next();
+        } else {
+            chrome.wall.on = !chrome.wall.on;
+        }
     }
     if keys.just_pressed(KeyCode::KeyS) {
         chrome.side = !chrome.side;

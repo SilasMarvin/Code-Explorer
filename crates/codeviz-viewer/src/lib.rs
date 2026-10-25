@@ -238,11 +238,22 @@ impl Viewer {
         self
     }
 
-    /// Opens with the journey standing as a wall beside the graph, time running along
-    /// its depth, seen from three-quarters.
+    /// Opens with the journey standing as a wall beside the graph, seen from
+    /// three-quarters: `wall` square to the graph, `slant` facing the view, `arc`
+    /// curved around the graph.
     #[must_use]
-    pub fn with_wall(mut self) -> Self {
-        self.wall.on = true;
+    pub fn with_wall(mut self, shape: &str) -> Self {
+        if let Some(shape) = wall::Shape::parse(shape) {
+            self.wall.on = true;
+            self.wall.shape = shape;
+        }
+        self
+    }
+
+    /// Looks at the wall from `yaw` radians round from the usual corner view.
+    #[must_use]
+    pub fn with_wall_turn(mut self, yaw: f32) -> Self {
+        self.wall.turn = yaw;
         self
     }
 

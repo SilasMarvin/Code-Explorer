@@ -59,22 +59,29 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`Z` stands the journey up in the scene as a wall beside the graph (`--time wall` opens
-on it; the top bar's `Time: wall` says so): its flame graph square to the graph, just
-past the graph's right edge level with it and sized to the journey's nodes, time
-running along the depth the graph does not use, from the graph's edge towards you, and
-each level of calls a row up the wall, the root a short footing. Bars carry their node's
-color, number and name, along the bar or up it where it is narrow. The graph does not
-move. The camera turns to look into the corner the two make, with a narrower lens so the
-wall's near end does not loom, and holds that view until you pan or zoom; `Z` again
-turns back. Pale beams tie the cursor's bar and the two calls either side of it to
-their nodes, fading away from the cursor, and every other call to the cursor's function
-beams faintly too, so a function called more than once shows each time. A journey too
-long to name every call evenly widens the stretch around the cursor, a few calls back
-and more ahead, to over half the wall, the rest squeezed either side, and the stretch
-eases after the cursor as it steps. Hovering a bar
-lights its node and a click moves the cursor there. The docked journey hides while the
-wall stands.
+`Z` stands the journey up in the scene as a wall beside the graph, just past the
+graph's right edge level with it and sized to the journey's nodes: its flame graph, time
+running along the wall away from the graph and each level of calls a row up it, the root
+a short footing. The graph does not move; while the wall stands it steps back, its
+links fainter and only the focus, what touches it, what the journey runs and the
+modules named. The camera turns to look into the corner the two make and holds that
+view until you pan or zoom, pulling back only when the wall outgrows it; `F` looks into
+the corner again and `Z` again turns back. `Shift+Z` changes how the wall stands:
+slanted to face that view, so neither end looms (the default), square to the graph
+along the depth it does not use, seen through a narrower lens, or curved around the
+graph. `--time slant|wall|arc` opens on one, `--wall-turn` looks from further round,
+and the top bar says which.
+
+Bars carry their node's color, number and name, upright whichever way the wall turns,
+the name broken at its words across the bar; a bar too narrow for its whole name shows
+its number alone, as the panel does, and the cursor's call is named over the wall. Pale
+beams tie the cursor's bar and the two calls either side of it to their nodes, fading
+away from the cursor, and every other call to the cursor's function beams faintly too,
+so a function called more than once shows each time. A journey over twelve calls
+widens the stretch around the cursor, two calls back and six ahead, to most of the
+wall, the rest squeezed either side, and the stretch eases after the cursor as it
+steps. Hovering a bar lights its node and a click moves the cursor there. The docked
+journey hides while the wall stands.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
