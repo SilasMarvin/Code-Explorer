@@ -69,8 +69,9 @@ as it runs. The 3D view, turned 55° and level so time runs flat across the scre
 with fog, shows the map quieted (links a little over half, on a big map about a third, the
 journey's nodes only numbered, as their calls carry the names, and only those with a
 call on the rail: all of them on a rail of up to 20 calls, else those with room, the
-cursor's call and its own calls' always, and the rest of a crowd counted in one chip by
-its module's ring, such as `UI · 3 calls`; names only on the focus's neighbors and the
+cursor's call's, its caller's, those either side of it and its own calls' always, and the rest of a crowd counted in one chip by
+its module's ring, such as `UI · 3 calls`; names only on the focus's neighbors on the
+rail and the
 modules the journey runs through, and the rail's names keep off the map's) on a lit plane with a faint grid that fades out at
 its rim, and the calls standing out of it in one faint upright sheet from the journey's start,
 so each call drops straight from its caller's rail and none crosses another. Rails and
@@ -92,7 +93,9 @@ back folds each call into its node. Every call of the cursor's function is white
 link into the cursor's call violet and its own calls' links blue; every call is named
 in full wherever it fits clear of the markers, the lifelines and other names: level
 beside, above or below its marker first, on a slant only where level ones clash, else
-by its short name; the cursor's first, then the first calls and the cursor's neighbors.
+by its short name; the cursor's first, then its callers, every other call its caller
+makes, its own calls, then the rest by nearness to it or to the rail's start. A call
+of a function the journey runs more than once says so (`5.1 Explorer.graph · also 6.2`).
 Pointing at a call rings its node and every other call it runs and lights their pool and
 draws their strings, pointing at a node does the same for all its calls, and clicking a call moves
 the cursor to it.
