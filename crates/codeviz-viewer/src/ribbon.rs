@@ -54,6 +54,10 @@ pub(crate) struct Ribbon {
     before: Option<(f32, f32)>,
     /// Whether it was up last frame.
     up: bool,
+    /// Each call's height, in units of the scale, eased.
+    heights: Vec<f32>,
+    /// How tall the ribbon stood when the camera last stepped back to fit it.
+    fitted: f32,
     /// The world unit heights are measured in, eased so the ribbon never jumps.
     scale: f32,
     /// The calls in the order they run, each at its marker.
@@ -74,15 +78,11 @@ pub(crate) struct Call {
 }
 
 impl Ribbon {
-    /// How far above the map the camera should look while the ribbon is up: half way
-    /// up it, so the whole ribbon sits in view.
+    /// How far above the map the camera should look while the ribbon is up: a little
+    /// under half way up it, so the ribbon and the map round its foot share the view.
     fn middle(&self) -> f32 {
-        let top = self
-            .calls
-            .iter()
-            .map(|c| c.marker.z - c.foot.z)
-            .fold(0.0, f32::max);
-        top * 0.5
+        let top = self.calls.iter().map(|c| c.marker.z).fold(0.0, f32::max);
+        top * 0.4
     }
 
     /// Where the cursor's marker floats, while the ribbon shows.
@@ -137,7 +137,7 @@ fn line_widths(mut store: ResMut<GizmoConfigStore>) {
 /// the side, so the map lies back like a floor and height reads upwards.
 pub(crate) const RIBBON_VIEW: (f32, f32) = (-0.35, 1.1);
 /// How far back to stand, in ribbon heights, to see it whole.
-const FIT: f32 = 2.4;
+const FIT: f32 = 2.9;
 
 // ---- layout ----
 
@@ -156,16 +156,55 @@ pub(crate) fn in_order<S: Copy>(root: S, children: impl Fn(S) -> Vec<S>) -> Vec<
 /// The first call's height over the map, and the most a step between calls or the
 /// whole ribbon rises, as shares of the scale.
 const BASE: f32 = 0.6;
-const STEP: f32 = 0.3;
-const TALL: f32 = 2.4;
+const STEP: f32 = 0.2;
+const TALL: f32 = 2.0;
 
-/// How high call `index` of `count` floats, in units of the scale: evenly spaced, a
-/// step apart while they fit, closer together once a long journey would rise past
-/// `TALL`.
-pub(crate) fn height(index: usize, count: usize) -> f32 {
+/// Steps either side of the cursor that keep their room in a long journey, and the
+/// share of the ribbon's height they may take between them.
+const ZOOM: usize = 4;
+const ZOOM_SHARE: f32 = 0.35;
+
+/// How many steps from the cursor's call the step from call `index` to the next is:
+/// the steps into and out of it are none.
+fn steps_away(index: usize, cursor: usize) -> usize {
+    if index < cursor {
+        cursor - index - 1
+    } else {
+        index - cursor
+    }
+}
+
+/// How high each of `count` calls floats, in units of the scale: a step apart while
+/// they fit under `TALL`. A longer journey packs closer, except the steps around the
+/// cursor, which keep room enough to read, so the ribbon opens where the cursor is.
+pub(crate) fn heights(count: usize, cursor: Option<usize>) -> Vec<f32> {
+    let gaps = count.saturating_sub(1);
     #[expect(clippy::cast_precision_loss, reason = "small counts")]
-    let (index, gaps) = (index as f32, count.saturating_sub(1).max(1) as f32);
-    BASE + index * STEP.min(TALL / gaps)
+    let even = STEP.min(TALL / gaps.max(1) as f32);
+    let mut steps = vec![even; gaps];
+    if let Some(cursor) = cursor {
+        let near: Vec<usize> = (0..gaps)
+            .filter(|&i| steps_away(i, cursor) < ZOOM)
+            .collect();
+        let rest = gaps - near.len();
+        #[expect(clippy::cast_precision_loss, reason = "small counts")]
+        let (near_count, rest_count) = (near.len().max(1) as f32, rest.max(1) as f32);
+        let wide = STEP.min(TALL * ZOOM_SHARE / near_count);
+        let narrow = (TALL - wide * near_count) / rest_count;
+        if wide > even && narrow < wide {
+            steps.fill(narrow);
+            for i in near {
+                steps[i] = wide;
+            }
+        }
+    }
+    std::iter::once(BASE)
+        .chain(steps.iter().scan(BASE, |at, step| {
+            *at += step;
+            Some(*at)
+        }))
+        .take(count)
+        .collect()
 }
 
 /// How much a call's label says, if it has one.
@@ -202,13 +241,8 @@ pub(crate) fn thread_strength(index: usize, cursor: Option<usize>) -> f32 {
         return 0.6;
     };
     // Steps before the cursor end at or before it; steps after start at or after it.
-    let away = if index < cursor {
-        cursor - index - 1
-    } else {
-        index - cursor
-    };
     #[expect(clippy::cast_precision_loss, reason = "a small count")]
-    let away = away as f32;
+    let away = steps_away(index, cursor) as f32;
     (1.0 - away * 0.1).max(0.12)
 }
 
@@ -301,25 +335,44 @@ pub(crate) fn rise(
             .find_map(|s| index.get(&s).copied())
     });
     let (scale, lift, count) = (ribbon.scale, ribbon.lift, calls.len());
-    if turned && up {
-        // Back far enough to see the ribbon whole once it stands.
-        let top = height(count.saturating_sub(1), count) * scale;
+    // Back far enough to see the ribbon whole once it stands, and again when more of
+    // the journey opens and it grows, unless the view was moved by hand.
+    let goals = heights(count, ribbon.cursor);
+    let top = goals.last().copied().unwrap_or(BASE) * spread;
+    let grown = top > ribbon.fitted * 1.1;
+    if up && (turned || grown) {
         for mut camera in &mut cameras {
-            ribbon.before = Some(camera.angles());
-            camera.turn_to(RIBBON_VIEW);
-            let distance = camera.distance.max(top * FIT);
+            if turned {
+                ribbon.before = Some(camera.angles());
+                camera.turn_to(RIBBON_VIEW);
+            } else if camera.free {
+                continue;
+            }
+            let distance = camera.goal_distance().max(top * FIT);
             let target = camera.target;
             camera.glide_to(target, distance);
         }
     }
+    if up {
+        ribbon.fitted = top;
+    }
+    // Heights ease, so as the cursor moves the ribbon opens round it smoothly.
+    if ribbon.heights.len() == count {
+        for (now, goal) in ribbon.heights.iter_mut().zip(&goals) {
+            *now += (goal - *now) * ease;
+        }
+    } else {
+        ribbon.heights = goals;
+    }
     let graph = explorer.graph();
-    ribbon.calls = calls
+    let eased = &ribbon.heights;
+    let placed: Vec<Call> = calls
         .into_iter()
         .enumerate()
         .filter_map(|(i, (_, tile, number))| {
             let at = explorer.tile_point(tile)?;
             let foot = at + Vec3::Z * node_size(graph, tile) * 0.5;
-            let rise = height(i, count) * scale * lift;
+            let rise = eased[i] * scale * lift;
             // Heights count from the map's plane, so calls at one time share a level.
             let marker = at.with_z(foot.z.max(rise));
             Some(Call {
@@ -330,6 +383,7 @@ pub(crate) fn rise(
             })
         })
         .collect();
+    ribbon.calls = placed;
 }
 
 /// While the ribbon is up, the camera looks half way up it rather than at the map.
@@ -556,17 +610,37 @@ mod tests {
 
     #[test]
     fn later_calls_float_higher_and_long_journeys_stay_in_bounds() {
-        let few: Vec<f32> = (0..5).map(|i| height(i, 5)).collect();
+        let few = heights(5, Some(2));
         assert!(few.windows(2).all(|w| w[1] > w[0]), "later is higher");
         assert!(
             (few[1] - few[0] - STEP).abs() < 1e-6,
             "a full step while they fit"
         );
         assert!(few[0] > 0.0, "the first call clears the map");
-        let many: Vec<f32> = (0..200).map(|i| height(i, 200)).collect();
+        let many = heights(200, Some(100));
         assert!(many.windows(2).all(|w| w[1] > w[0]));
         assert!(many[199] <= BASE + TALL + 1e-4, "never taller than the cap");
-        assert!((height(0, 1) - BASE).abs() < 1e-6, "a lone call");
+        assert_eq!(heights(1, None), vec![BASE], "a lone call");
+        assert_eq!(heights(0, None), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn a_long_journey_opens_round_the_cursor() {
+        let many = heights(200, Some(100));
+        let step = |i: usize| many[i + 1] - many[i];
+        assert!(step(100) > step(10) * 4.0, "room round the cursor");
+        assert!((step(99) - step(100)).abs() < 1e-6, "either side alike");
+        let still = heights(200, None);
+        assert!(
+            (still[1] - still[0] - (still[199] - still[198])).abs() < 1e-6,
+            "evenly without a cursor"
+        );
+        let short = heights(12, Some(5));
+        let gaps: Vec<f32> = short.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(
+            gaps.iter().all(|g| (g - gaps[0]).abs() < 1e-6),
+            "a journey that fits stays even"
+        );
     }
 
     #[test]

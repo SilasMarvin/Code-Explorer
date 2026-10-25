@@ -68,7 +68,9 @@ turns to look across the map from low in front, so heights read, and back when `
 lowers it. The cursor's call is ringed in white and named, with a ring round its node
 where its drop line lands; its neighbors are named, the first and last calls too,
 every other call carries its number, and other calls to the cursor's function are
-ringed and numbered.
+ringed and numbered. A long journey packs its calls closer under a height cap, except
+the few steps either side of the cursor, which keep room to read, so the ribbon opens
+round the cursor as it moves.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
