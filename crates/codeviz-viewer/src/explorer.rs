@@ -279,6 +279,9 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// How far each node is drawn from where the simulation puts it, by tile, as
+    /// when the fan lines the focus's calls up beside it.
+    nudges: HashMap<usize, Vec3>,
 }
 
 impl Explorer {
@@ -332,6 +335,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            nudges: HashMap::new(),
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -617,9 +621,26 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node is drawn: where the simulation puts it, and any nudge.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
+        let nudge = self.nudges.get(&tile).copied().unwrap_or_default();
+        self.force_point(tile).map(|at| at + nudge)
+    }
+
+    /// Where the simulation puts a graph node, nudge or not.
+    pub(crate) fn force_point(&self, tile: usize) -> Option<Vec3> {
         self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+    }
+
+    /// Draws nodes away from where the simulation puts them, by tile; the rest go
+    /// back to their places.
+    pub(crate) fn set_nudges(&mut self, nudges: HashMap<usize, Vec3>) {
+        self.nudges = nudges;
+    }
+
+    /// The nodes drawn away from their places.
+    pub(crate) fn nudged(&self) -> impl Iterator<Item = usize> + '_ {
+        self.nudges.keys().copied()
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -784,6 +805,20 @@ impl Explorer {
             expanded.insert(span);
         }
         self.disclosure_epoch += 1;
+    }
+
+    /// Opens the calls under one span, past the disclosed depth, unless they show.
+    /// Returns whether it opened them.
+    pub(crate) fn open_calls(&mut self, span: SpanId) -> bool {
+        let disclosed = self.disclosure();
+        if disclosed.children(span).iter().all(|&c| disclosed.shows(c)) {
+            return false;
+        }
+        if !self.track_mut().expanded.insert(span) {
+            return false;
+        }
+        self.disclosure_epoch += 1;
+        true
     }
 
     /// What the journey discloses, worked out once per change.
