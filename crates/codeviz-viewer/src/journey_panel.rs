@@ -184,15 +184,55 @@ pub(crate) fn draw(
             tethers = canvas(ui, content, explorer, panel, diff);
             if panel.beams {
                 let strip = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), strip));
-                (tethers.ticks, tethers.cursor_tick) = draw_strip(ui, strip, explorer, diff);
+                strip_of_calls(ui, strip, explorer, panel, diff, &mut tethers);
             }
         });
     tethers
 }
 
 /// Every disclosed call once, in the order they run, each filled like its bar; what
-/// runs after the cursor dims, as its bars do. Returns where each call sits on it and
-/// which is the cursor's.
+/// runs after the cursor dims, as its bars do. Hovering a call lights its node and
+/// clicking it moves the cursor there. Hands the beams where each call sits and which
+/// is the cursor's.
+fn strip_of_calls(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    explorer: &mut Explorer,
+    panel: &mut JourneyPanel,
+    diff: Option<&DiffView>,
+    tethers: &mut Tethers,
+) {
+    let response = ui.interact(rect, ui.id().with("call_strip"), egui::Sense::click());
+    let (ticks, cursor) = draw_strip(ui, rect, explorer, diff);
+    let hovered = response.hover_pos().and_then(|p| {
+        ticks
+            .iter()
+            .find(|t| t.rect.expand2(egui::vec2(0.5, 3.0)).contains(p))
+    });
+    if let Some(tick) = hovered {
+        tethers.hovered = Some(tick.rect);
+        if tick.tile.is_some() {
+            explorer.hovered_tile = tick.tile;
+            panel.lit_node = true;
+        }
+        let number = explorer
+            .disclosure()
+            .number(tick.span)
+            .unwrap_or_default()
+            .to_owned();
+        response
+            .clone()
+            .on_hover_text(format!("{number}  {}", explorer.label(tick.span)));
+        // Only a pointer's click, as on the bars.
+        if response.clicked_by(egui::PointerButton::Primary) {
+            explorer.select(Some(tick.span));
+        }
+    }
+    tethers.ticks = ticks;
+    tethers.cursor_tick = cursor;
+}
+
+/// Draws the strip, and returns where each call sits on it and which is the cursor's.
 fn draw_strip(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -224,7 +264,8 @@ fn draw_strip(
             || lane_color(track.color(tick.span) % PALETTE.len()),
             |tile| node_color(explorer, diff, tile),
         ));
-        let future = cursor.is_some_and(|c| index > c);
+        // At the start, everything shows in full, as on the bars.
+        let future = cursor.is_some_and(|c| c > 0 && index > c);
         let fill = if future {
             base.gamma_multiply(0.38)
         } else {
