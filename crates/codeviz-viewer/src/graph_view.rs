@@ -17,6 +17,7 @@ use codeviz_core::Change;
 use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
+    bridges::{Bridges, link_strength},
     camera::{FRONT, OrbitCamera},
     diff_view::{
         ADDED, DiffView, MODIFIED, MOVED, REMOVED, change_color, diff_look, draw_diff_graph,
@@ -24,9 +25,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
-    order::link_strength,
     scene::{PALETTE, Tile, lane_color},
-    ui::Chrome,
 };
 
 /// Calls into the focus.
@@ -327,7 +326,7 @@ fn fade(hops: u32) -> f32 {
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
-    chrome: Res<Chrome>,
+    bridges: Res<Bridges>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
@@ -335,7 +334,7 @@ pub(crate) fn draw_graph(
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, link_strength(&chrome), &mut gizmos),
+        None => draw_calls(&explorer, time, link_strength(&bridges), &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
     draw_attention(&explorer, &mut gizmos);
@@ -344,7 +343,7 @@ pub(crate) fn draw_graph(
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
 /// path, are pale arrows fading with distance; everything else is faint. All of them
-/// draw at `strength`, less while the route is drawn over them.
+/// draw at `strength`, less while the bridges are drawn over them.
 fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
@@ -522,8 +521,7 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 }
 
 /// Each module's region, as the functions showing place it: its cluster, middle, and
-/// a radius holding most of them. Where the simulation puts them, so a node the fan
-/// draws away leaves its ring where it was.
+/// a radius holding most of them.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
     let graph = explorer.graph();
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
@@ -531,7 +529,7 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
         if explorer.visibility(tile) < 0.5 {
             continue;
         }
-        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.force_point(tile))
+        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.tile_point(tile))
             && let Some(list) = members.get_mut(cluster)
         {
             list.push(at);

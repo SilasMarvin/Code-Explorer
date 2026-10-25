@@ -5,12 +5,12 @@ use bevy::prelude::*;
 use bevy_egui::input::egui_wants_any_keyboard_input;
 
 use crate::{
+    bridges,
     disclosure::Disclose,
     explorer::{Autoplay, Clustering, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
-    order,
     ui::{Chrome, KeyHelp},
 };
 
@@ -30,7 +30,6 @@ impl Plugin for ScenePlugin {
                 autoplay,
                 graph_view::track_attention,
                 simulate,
-                order::fan,
                 reveal,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::follow_focus,
@@ -38,7 +37,8 @@ impl Plugin for ScenePlugin {
                 graph_view::frame_spotlight,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
-                order::draw_route,
+                bridges::rise,
+                bridges::draw_bridges,
             )
                 .chain(),
         );
@@ -322,8 +322,8 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyS) {
         chrome.side = !chrome.side;
     }
-    if keys.just_pressed(KeyCode::KeyE) {
-        chrome.order = chrome.order.next();
+    if keys.just_pressed(KeyCode::KeyZ) {
+        chrome.time = chrome.time.next();
     }
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;
