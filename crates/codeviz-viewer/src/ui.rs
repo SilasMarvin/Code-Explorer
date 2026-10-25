@@ -205,7 +205,7 @@ fn draw_ui(
             &explorer,
             diff.as_deref(),
             transform.up().into(),
-            floors.showing(),
+            floors.showing().then(|| floors.lit_tiles()).as_ref(),
         );
         floors::draw_deck(&painter, (&camera, transform), &explorer, &floors, eye);
         // The graph's right edge clear of the diff card above and a docked journey
@@ -1283,7 +1283,7 @@ fn draw_graph_labels(
     explorer: &Explorer,
     diff: Option<&DiffView>,
     up: Vec3,
-    quiet: bool,
+    quiet: Option<&HashSet<usize>>,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1358,9 +1358,9 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
-        // While the upper floor hangs over the map, only the journey, the focus and
-        // its neighbors are named, so the deck's own names stand out.
-        if quiet && tier > 1 {
+        // While the upper floor hangs over the map, only the focus and the nodes
+        // its bright strings land on are named, so each name pairs with a string.
+        if quiet.is_some_and(|lit| tier > 0 && !lit.contains(&tile) && hovered != Some(tile)) {
             continue;
         }
         order.push((
@@ -1375,7 +1375,7 @@ fn draw_graph_labels(
         to_screen(middle + up * radius)
     };
     // While the upper floor is up, only the modules it runs through are named.
-    let quiet_modules: Option<HashSet<usize>> = quiet.then(|| {
+    let quiet_modules: Option<HashSet<usize>> = quiet.is_some().then(|| {
         journey
             .keys()
             .copied()

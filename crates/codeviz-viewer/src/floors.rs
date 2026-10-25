@@ -10,7 +10,10 @@
 //! The deck stays readable in a long journey by showing a window of calls round the
 //! cursor, with how many more lie either side.
 
-use std::{collections::HashMap, ops::Range};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
 use bevy::{picking::Pickable, prelude::*};
 use bevy_egui::egui;
@@ -162,6 +165,15 @@ impl Floors {
         })
     }
 
+    /// The nodes the bright strings land on: the cursor's call's, its neighbors' and
+    /// those of other calls to its function.
+    pub(crate) fn lit_tiles(&self) -> HashSet<usize> {
+        (0..self.calls.len())
+            .filter(|&i| self.shows(i) && self.away(i).is_some_and(|away| away <= NEAR))
+            .map(|i| self.calls[i].tile)
+            .collect()
+    }
+
     /// Whether the deck shows call `index`.
     pub(crate) fn shows(&self, index: usize) -> bool {
         self.window.contains(&index)
@@ -259,11 +271,12 @@ pub(crate) fn window(count: usize, cursor: Option<usize>, most: usize) -> Range<
 
 /// How wide a column is at least, in world units, so a name has room.
 const COLUMN: f32 = 3.2;
+/// How wide the deck is at least, in the journey region's widest extent.
+const WIDE: f32 = 0.95;
 /// How deep a row is, as a share of a column's width.
 const ROW: f32 = 0.8;
-/// How deep a row is at most, in least column widths, so a wide deck's rows stay
-/// shallow.
-const DEEPEST: f32 = 1.6;
+/// How deep the deck is at most, as a share of its width.
+const SHALLOW: f32 = 0.3;
 /// How high the deck floats over the map, as a share of its width, and at least.
 const HEIGHT: f32 = 0.45;
 const LOWEST: f32 = 14.0;
@@ -277,9 +290,9 @@ pub(crate) fn plan_deck(min: Vec2, max: Vec2, columns: usize, rows: usize) -> De
     let span = max - min;
     #[expect(clippy::cast_precision_loss, reason = "small counts")]
     let (columns, rows) = (columns.max(1) as f32, rows.max(1) as f32);
-    let width = span.x.max(columns * COLUMN);
+    let width = (span.max_element() * WIDE).max(columns * COLUMN);
     let column = width / columns;
-    let depth = rows * (column * ROW).min(COLUMN * DEEPEST);
+    let depth = (rows * column * ROW).min(width * SHALLOW);
     Deck {
         middle: (min + max) / 2.0,
         size: Vec2::new(width, depth),
@@ -303,6 +316,9 @@ pub(crate) fn deck_spot(index: usize, depth: usize, shown: &Range<usize>, rows: 
     );
     Vec2::new(column / columns, (row + 0.5) / rows)
 }
+
+/// Calls either side of the cursor whose strings draw bright.
+const NEAR: usize = 2;
 
 /// How strongly a string draws, for a call `away` calls from the cursor's: the
 /// cursor's in full, its two neighbors either side bright, the rest faint.
@@ -403,7 +419,8 @@ pub(crate) fn raise(
     let shown = window(calls.len(), floors.cursor, WINDOW);
     let depths: Vec<usize> = calls.iter().map(|c| c.3).collect();
     let rows = depths[shown.clone()].iter().max().map_or(1, |d| d + 1);
-    let points: Vec<Vec2> = calls
+    // Over the shown calls' nodes, so a long journey's deck follows its window.
+    let points: Vec<Vec2> = calls[shown.clone()]
         .iter()
         .filter_map(|c| explorer.tile_point(c.1))
         .map(Vec3::truncate)
@@ -488,7 +505,7 @@ fn place_calls(
 }
 
 /// How far back to stand, in reaches either side of the middle.
-const FIT: f32 = 2.3;
+const FIT: f32 = 2.5;
 
 /// The middle of `points` and how far the farthest lies from it.
 pub(crate) fn fit(points: &[Vec3]) -> (Vec3, f32) {
@@ -659,7 +676,7 @@ pub(crate) fn draw_strings(
 // ---- painting the deck ----
 
 /// Names on the deck are light, set at a slant so a crowd of columns each has room.
-const SLANT: f32 = -0.6;
+const SLANT: f32 = -0.85;
 
 /// How many pixels across a call's ball is, the cursor's bigger.
 pub(crate) fn marker_radius(nearness: f32, cursor: bool) -> f32 {
@@ -762,7 +779,9 @@ pub(crate) fn draw_deck(
         cues::sphere(painter, at, radius, fill, egui::vec2(-0.6, -0.8), fade);
     }
     for index in shown.clone() {
-        name_call(painter, project, explorer, floors, index, fade);
+        let call = &floors.calls[index];
+        let radius = marker_radius(eye.nearness(call.marker), floors.cursor == Some(index));
+        name_call(painter, project, explorer, floors, index, (radius, fade));
     }
     count_beyond(painter, project, floors, rows, fade);
 }
@@ -775,7 +794,7 @@ fn name_call(
     explorer: &Explorer,
     floors: &Floors,
     index: usize,
-    fade: f32,
+    (radius, fade): (f32, f32),
 ) {
     let call = &floors.calls[index];
     let Some(at) = project(call.marker) else {
@@ -783,11 +802,11 @@ fn name_call(
     };
     let away = floors.away(index);
     let (size, color) = match away {
-        Some(0) if floors.cursor == Some(index) => (14.0, egui::Color32::WHITE),
-        Some(0) => (11.5, egui::Color32::from_rgb(235, 238, 246)),
-        Some(1..=2) => (11.5, egui::Color32::from_rgb(214, 219, 230)),
-        None => (11.0, egui::Color32::from_rgb(196, 202, 216)),
-        Some(_) => (10.5, egui::Color32::from_rgb(150, 157, 172)),
+        Some(0) if floors.cursor == Some(index) => (15.0, egui::Color32::WHITE),
+        Some(0) => (12.5, egui::Color32::from_rgb(235, 238, 246)),
+        Some(1..=2) => (12.5, egui::Color32::from_rgb(214, 219, 230)),
+        None => (12.0, egui::Color32::from_rgb(196, 202, 216)),
+        Some(_) => (11.5, egui::Color32::from_rgb(172, 179, 194)),
     };
     let name = node_name(explorer, call.tile);
     let text = if call.number.is_empty() {
@@ -796,8 +815,10 @@ fn name_call(
         format!("{} {name}", call.number)
     };
     let galley = painter.layout_no_wrap(text, egui::FontId::proportional(size), color);
-    let lift = egui::vec2(7.0, -galley.size().y * 0.5 - 4.0);
-    let shape = egui::epaint::TextShape::new(at + lift, galley, color)
+    // Starting just clear of the ball, along the slant.
+    let start = at + egui::vec2(SLANT.cos(), SLANT.sin()) * (radius + 3.0);
+    let corner = start - egui::vec2(0.0, galley.size().y * 0.5);
+    let shape = egui::epaint::TextShape::new(corner, galley, color)
         .with_angle_and_anchor(SLANT, egui::Align2::LEFT_CENTER)
         .with_override_text_color(color.gamma_multiply(fade));
     painter.add(shape);
@@ -882,7 +903,7 @@ mod tests {
     fn the_deck_is_wide_enough_for_its_columns_and_clears_the_map() {
         let small = plan_deck(Vec2::ZERO, Vec2::new(100.0, 40.0), 4, 2);
         assert!(
-            (small.size.x - 100.0).abs() < 1e-4,
+            (small.size.x - 100.0 * WIDE).abs() < 1e-4,
             "as wide as the journey"
         );
         assert_eq!(small.middle, Vec2::new(50.0, 20.0));
