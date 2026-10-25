@@ -649,7 +649,7 @@ fn rising(explorer: &Explorer, view: &TimeView, size: Vec2) -> Option<Layout> {
             far: FAR,
             ..default()
         }),
-        fog: (distance - bound * 0.2, distance + bound * 2.2),
+        fog: (distance - bound * 0.4, distance + bound * 1.6),
         points,
         radius: bound * 0.017,
     })
@@ -705,8 +705,9 @@ fn draw_levels(
 }
 
 /// In 3D: a faint grid and the modules' rings on the floor; from each marker a drop
-/// to its node's spot there; a line from each caller up to each call it makes; and a
-/// frame round the cursor's moment. Lines fade with distance, as the fog fades the
+/// to its node's spot there; over each caller a pole up to its last call, with a level
+/// rung out to each call it makes, as a sequence diagram stood on the map; and a frame
+/// round the cursor's moment. Lines fade with distance, as the fog fades the
 /// markers.
 fn draw_rise(
     explorer: &Explorer,
@@ -731,6 +732,13 @@ fn draw_rise(
     let reach = reach.max(5.0) * 1.15;
     draw_floor(explorer, view, layout, middle, reach, gizmos);
     let lit_caller = cursor.and_then(|c| view.calls[c].parent);
+    // Where a caller stands: its marker, or for one before the view, its node's spot.
+    let caller_at = |index: usize| {
+        layout.points[index].or_else(|| {
+            let at = explorer.tile_point(view.calls[index].tile)?;
+            Some(at.truncate().extend(0.0))
+        })
+    };
     for (index, call) in view.calls.iter().enumerate() {
         let Some(point) = layout.points[index] else {
             continue;
@@ -749,15 +757,53 @@ fn draw_rise(
             layout.radius * 0.6,
             color.with_alpha(0.7 * strength),
         );
-        if let Some(from) = call.parent.and_then(|p| layout.points[p]) {
+        // A level rung from the caller's pole out to the call, at the call's height.
+        if let Some(from) = call.parent.and_then(caller_at) {
             let alpha = match () {
                 () if lit => 0.9,
                 () if lit_caller == call.parent => 0.4,
-                () => 0.18,
+                () => 0.2,
             };
-            gizmos.line(from, point, pale(alpha * strength));
+            gizmos.line(
+                from.truncate().extend(point.z),
+                point,
+                pale(alpha * strength),
+            );
         }
     }
+    // Each caller's pole, up over its node from its call to its last.
+    for caller in 0..view.calls.len() {
+        let last = (0..view.calls.len())
+            .rev()
+            .find(|&i| view.calls[i].parent == Some(caller) && layout.points[i].is_some())
+            .and_then(|i| layout.points[i]);
+        let (Some(last), Some(from)) = (last, caller_at(caller)) else {
+            continue;
+        };
+        let alpha = if lit_caller == Some(caller) {
+            0.6
+        } else {
+            0.25
+        };
+        gizmos.line(
+            from,
+            from.truncate().extend(last.z),
+            pale(alpha * fade(from)),
+        );
+    }
+    draw_ruler(layout, cursor, middle, reach, gizmos);
+}
+
+/// The cursor's moment, a square across the rise at its height, and a ruler up the
+/// floor's far left corner with a tick at each call.
+fn draw_ruler(
+    layout: &Layout,
+    cursor: Option<usize>,
+    middle: Vec2,
+    reach: f32,
+    gizmos: &mut Gizmos<TimeGizmos>,
+) {
+    let eye = layout.eye.translation;
     // The cursor's moment: a square across the rise at its height.
     if let Some(point) = cursor.and_then(|c| layout.points[c]) {
         let at = middle.extend(point.z);
@@ -767,7 +813,6 @@ fn draw_rise(
             pale(0.22),
         );
     }
-    // A ruler up the corner nearest the eye, a tick at each call.
     let foot = ruler_foot(middle, reach, eye);
     let top = layout
         .points
@@ -1138,6 +1183,9 @@ fn interact(
     view.hovered = near;
 }
 
+/// How many calls either side of the cursor the 3D view names.
+const NAMED_AROUND: usize = 8;
+
 /// Names on the time view's calls.
 struct Names<'a> {
     painter: &'a egui::Painter,
@@ -1174,6 +1222,10 @@ impl Names<'_> {
             .collect();
         let anchor = self.cursor.unwrap_or(view.window.start);
         order.sort_by_key(|&i| (!lit(i), i.abs_diff(anchor)));
+        // In 3D, where calls crowd in depth, only the stretch around the cursor.
+        if view.mode == TimeMode::Rise {
+            order.retain(|&i| lit(i) || i.abs_diff(anchor) <= NAMED_AROUND);
+        }
         taken.extend(
             self.screens
                 .iter()
