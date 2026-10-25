@@ -477,7 +477,7 @@ const COMB: f32 = 0.45;
 /// and how many make a crowd; how high its name is then pulled up.
 const CROWD_RADIUS: f32 = 0.08;
 const CROWD: usize = 3;
-const TAG: f32 = 0.06;
+const TAG: f32 = 0.15;
 
 /// The disclosed journey's calls in order, each with its node, number, and depth;
 /// calls whose node the graph lacks are left out.

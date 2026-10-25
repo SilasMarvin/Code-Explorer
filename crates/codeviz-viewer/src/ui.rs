@@ -1597,8 +1597,9 @@ fn draw_graph_labels(
                 let struck = change == Some(Change::Removed);
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
-                // are named come what may.
-                let force = tier == 0 || hovered == Some(tile) || spotlit.contains(&tile);
+                // are named come what may, and the deck's calls keep their numbers.
+                let force =
+                    tier == 0 || hovered == Some(tile) || spotlit.contains(&tile) || numbered_only;
                 placer.place(named, node, edge, job, stroke, force);
             }
         }
