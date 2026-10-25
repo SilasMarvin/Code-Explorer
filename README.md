@@ -66,9 +66,10 @@ Time runs along depth: every disclosed call gets a marker at its function's node
 out of the map by when it runs, evenly spaced, so head-on the map is unchanged. Each call
 hangs from its caller's lifeline, a rail running out from the caller's node for as long
 as it runs. The 3D view, turned 55° and level so time runs flat across the screen, in perspective
-with fog, shows the map quieted (links a little over half, the journey's nodes only
-numbered, as their calls carry the names, and names only on the focus's neighbors and
-the modules the journey runs through) on a lit plane with a faint grid that fades out at
+with fog, shows the map quieted (links a little over half, on a big map about a third, the
+journey's nodes only numbered, as their calls carry the names, every node with a call
+in view keeping its number, and names only on the focus's neighbors and the modules
+the journey runs through) on a lit plane with a faint grid that fades out at
 its rim, and the calls standing out of it in one faint upright sheet from the journey's start,
 so each call drops straight from its caller's rail and none crosses another. Rails and
 calls are lit tubes that thicken towards the eye and grey into the fog, the calls lit
@@ -79,13 +80,16 @@ screenshot at one end). Balls are never drawn larger than a
 small share of the view however near the camera. From the side, near
 orthographic, the calls read left to right as a sequence diagram at their nodes'
 heights, a function called twice appearing twice, with the modules named down the left
-edge; the view fits up to 60 calls across and pans along time to keep the cursor's call
-in sight. Every angle in between unfolds as far as the camera has turned, and turning
+edge. A journey of more than 40 calls stands out only 40 at a time round the
+cursor's, the view fitted to them and sliding along as the cursor steps, with how many
+run earlier and later said at the rail's ends. Every angle in between unfolds as far as the camera has turned, and turning
 back folds each call into its node. Every call of the cursor's function is white, the
-link into the cursor's call violet and its own calls' links blue; calls are named on a
-slant around the cursor's, and all of them from the side where there is room. Pointing
-at a call rings its node and every other call it runs, pointing at a node rings all its
-calls, and clicking a call moves the cursor to it.
+link into the cursor's call violet and its own calls' links blue; every call is named
+in full on a slant wherever it fits (above, below or ending at its marker, else by its
+short name), the cursor's first, then the first calls and the cursor's neighbors.
+Pointing at a call rings its node and every other call it runs and lights their pool and
+strings, pointing at a node does the same for all its calls, and clicking a call moves
+the cursor to it.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

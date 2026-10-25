@@ -1354,6 +1354,10 @@ fn draw_graph_labels(
         })
         .collect();
 
+    // Whether a point on screen sits by the focus, whose name nothing forced covers.
+    let focus_at = center.and_then(|c| discs[c]).map(|(node, _)| node);
+    let by_focus = |at: egui::Pos2| focus_at.is_some_and(|f| f.distance(at) < 40.0);
+
     // Lower ranks are placed first and win any overlap.
     let mut order: Vec<(LabelRank, Named)> = Vec::new();
     for (tile, disc) in discs.iter().enumerate() {
@@ -1588,7 +1592,7 @@ fn draw_graph_labels(
                 let force = tier == 0
                     || hovered == Some(tile)
                     || spotlit.contains(&tile)
-                    || (badge_only && standing.contains(&tile));
+                    || (badge_only && standing.contains(&tile) && !by_focus(node));
                 placer.place(named, node, edge, job, stroke, force);
             }
         }

@@ -918,8 +918,8 @@ pub(crate) fn string_strength(unfold: f32) -> f32 {
 
 /// Names the calls on the timeline, angled up from each marker so neighbors fit: the
 /// cursor's call first, then what makes it and what it calls, then the rest by
-/// nearness to it or to the window's start, each in full above its marker or below
-/// it, else by its short name, wherever it clears the names already placed. Says how
+/// nearness to it or to the window's start, each in full above its marker, below it
+/// or ending at it, else by its short name, wherever it clears the names already placed. Says how
 /// many calls the window leaves out at either end.
 pub(crate) fn draw_labels(
     painter: &egui::Painter,
@@ -934,6 +934,8 @@ pub(crate) fn draw_labels(
     let disclosed = explorer.disclosure();
     let callers: Vec<Option<usize>> = timeline.calls.iter().map(|c| c.caller).collect();
     let mut taken: Vec<(egui::Pos2, f32)> = Vec::new();
+    // The window's ends first, so no name runs over them.
+    let notes = draw_window_ends(painter, to_screen, explorer, timeline, alpha);
     // Below the top bar and short of the right edge, so no name is cut off.
     let bounds = painter.clip_rect().shrink2(egui::vec2(16.0, 16.0));
     let along = egui::vec2(LABEL_ANGLE.cos(), LABEL_ANGLE.sin());
@@ -975,10 +977,17 @@ pub(crate) fn draw_labels(
             let galley =
                 painter.layout_no_wrap(text.clone(), font.clone(), color.gamma_multiply(alpha));
             let width = galley.size().x;
-            [above, below]
+            // Last, ending at the marker down and to the left of it, as at the
+            // view's right edge.
+            let before = at - along * (width + radius + 4.0) + egui::vec2(0.0, 4.0);
+            [above, below, before]
                 .into_iter()
                 .find(|&start| {
-                    bounds.contains(start + along * width)
+                    let end = start + along * width;
+                    bounds.contains(end)
+                        && !notes
+                            .iter()
+                            .any(|n| n.intersects(egui::Rect::from_two_pos(start, end)))
                         && !taken
                             .iter()
                             .any(|&(other, length)| angled_overlap(other, length, start, width))
@@ -991,7 +1000,6 @@ pub(crate) fn draw_labels(
         taken.push((start, galley.size().x));
         painter.add(egui::epaint::TextShape::new(start, galley, color).with_angle(LABEL_ANGLE));
     }
-    draw_window_ends(painter, to_screen, explorer, timeline, alpha);
     // The map's rings name its modules until the side, where they fold away.
     draw_modules(painter, to_screen, explorer, timeline, timeline.side());
 }
@@ -1002,14 +1010,14 @@ fn short_name(name: &str) -> &str {
 }
 
 /// Says how many calls run before and after the window, at the ends of the journey's
-/// own lifeline.
+/// own lifeline; returns where it said so.
 fn draw_window_ends(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     timeline: &Timeline,
     alpha: f32,
-) {
+) -> Vec<egui::Rect> {
     let (first, end) = timeline.window;
     let count = timeline.calls.len();
     let Some(home) = timeline
@@ -1017,7 +1025,7 @@ fn draw_window_ends(
         .first()
         .and_then(|root| explorer.tile_point(root.tile))
     else {
-        return;
+        return Vec::new();
     };
     let color = egui::Color32::from_rgb(170, 176, 190).gamma_multiply(alpha);
     let font = egui::FontId::proportional(12.0);
@@ -1038,26 +1046,29 @@ fn draw_window_ends(
             egui::Color32::from_rgb(15, 17, 23).gamma_multiply(0.85 * alpha),
         );
         painter.galley(rect.min, galley, color);
+        rect.expand(4.0)
     };
+    let mut drawn = Vec::new();
     if first > 0
         && let Some(at) = to_screen(timeline.at_moment(home, first_at - 0.3))
     {
         // Under the rail's start, clear of the map behind it.
-        note(
+        drawn.push(note(
             at + egui::vec2(0.0, 14.0),
             egui::Align2::LEFT_TOP,
             format!("‹ {first} earlier"),
-        );
+        ));
     }
     if end < count
         && let Some(at) = to_screen(timeline.at_moment(home, end_at - 0.4))
     {
-        note(
+        drawn.push(note(
             at + egui::vec2(0.0, 14.0),
             egui::Align2::LEFT_TOP,
             format!("{} later ›", count - end),
-        );
+        ));
     }
+    drawn
 }
 
 /// Names the modules the calls reach down the left edge, each level with the middle
