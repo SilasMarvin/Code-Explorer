@@ -25,6 +25,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
+    rail,
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -150,6 +151,7 @@ fn draw_ui(
     mut chrome: ResMut<Chrome>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
+    mut rail: ResMut<rail::Rail>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
@@ -246,14 +248,32 @@ fn draw_ui(
         if let Some(area) = panel_area {
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            let beaming = panel.beaming();
+            let beaming = panel.beaming() && !panel.railed();
             let nodes = |tile: usize| node_disc(&explorer, &to_screen, tile, up);
             tie(
                 &painter, beam_slot, &tethers, &explorer, beaming, nodes, &tags,
             );
+            if panel.railed() {
+                let project = view(&camera, transform);
+                rail.lay(&painter, beam_slot, &mut explorer, &mut panel, project);
+            }
         }
     }
     Ok(())
+}
+
+/// Where a point in the world is on screen, wherever that is, even past the graph's
+/// edge.
+fn view<'a>(
+    camera: &'a Camera,
+    transform: &'a GlobalTransform,
+) -> impl Fn(Vec3) -> Option<egui::Pos2> + 'a {
+    |position| {
+        camera
+            .world_to_viewport(transform, position)
+            .ok()
+            .map(|p| egui::pos2(p.x, p.y))
+    }
 }
 
 /// Ties the journey to the graph: beams from its calls to their nodes while they
@@ -326,10 +346,14 @@ fn panels(
                         chrome.search = !chrome.search;
                     }
                     if ui
-                        .selectable_label(panel.beams, "Beams")
+                        .selectable_label(
+                            panel.beams,
+                            if panel.rail { "Beams 3D" } else { "Beams" },
+                        )
                         .on_hover_text(
                             "Tie the journey's calls to their nodes: beams rise from the \
-                             cursor's call and its neighbors in time (Z)",
+                             cursor's call and its neighbors in time; again for 3D, from a \
+                             rail of calls on a floor under the map (Z)",
                         )
                         .clicked()
                     {
@@ -406,9 +430,14 @@ fn node_disc(
     Some((node, edge))
 }
 
-/// Shows or hides the beams, bringing the journey back when it is hidden.
+/// Steps the beams on, flat; then into 3D, from a rail under the map; then off. The
+/// journey comes back when it is hidden.
 pub(crate) fn toggle_beams(panel: &mut JourneyPanel) {
-    panel.beams = !panel.beams;
+    (panel.beams, panel.rail) = match (panel.beams, panel.rail) {
+        (false, _) => (true, false),
+        (true, false) => (true, true),
+        (true, true) => (false, false),
+    };
     if panel.beams && panel.mode == PanelMode::Hidden {
         panel.mode = PanelMode::Docked;
     }
@@ -1823,7 +1852,10 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("Z", "beams from the journey's calls to their nodes"),
+            (
+                "Z",
+                "beams from the journey's calls to their nodes; again in 3D",
+            ),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

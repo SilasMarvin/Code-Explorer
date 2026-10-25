@@ -31,7 +31,11 @@ impl Plugin for OrbitCameraPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (crate::graph_view::hold_center, apply_camera)
+                (
+                    crate::graph_view::hold_center,
+                    crate::rail::aim_view,
+                    apply_camera,
+                )
                     .chain()
                     .before(TransformSystems::Propagate),
             );
@@ -109,6 +113,11 @@ impl OrbitCamera {
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
+    /// The angles it is turned to, or easing towards.
+    pub(crate) fn angles(&self) -> (f32, f32) {
+        self.goal_angles.unwrap_or((self.yaw, self.pitch))
+    }
+
     /// Eases round to `(yaw, pitch)`.
     pub(crate) fn turn_to(&mut self, (yaw, pitch): (f32, f32)) {
         // The short way round.
@@ -145,7 +154,7 @@ fn spawn_camera(
         Camera {
             order: 1,
             output_mode: CameraOutputMode::Write {
-                blend_state: Some(BlendState::ALPHA_BLENDING),
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 clear_color: ClearColorConfig::None,
             },
             clear_color: ClearColorConfig::Custom(Color::NONE),

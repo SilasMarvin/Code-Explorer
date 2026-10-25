@@ -21,6 +21,7 @@ mod graph_view;
 mod history;
 mod journey_panel;
 mod lens;
+mod rail;
 mod scene;
 mod source_diff;
 mod truth;
@@ -173,10 +174,12 @@ impl Viewer {
         self
     }
 
-    /// Shows the journey's order on the graph: `beams` ties its calls to their nodes.
+    /// Shows the journey's order on the graph: `beams` ties its calls to their nodes,
+    /// `rail` does so in 3D, from a rail of calls on a floor under the map.
     #[must_use]
     pub fn with_time(mut self, mode: &str) -> Self {
-        self.panel.beams = mode == "beams";
+        self.panel.beams = matches!(mode, "beams" | "rail");
+        self.panel.rail = mode == "rail";
         self
     }
 
@@ -357,6 +360,7 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
+            rail::RailPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)

@@ -111,7 +111,7 @@ pub(crate) enum Beam {
 
 impl Beam {
     /// How strongly it draws: the cursor's in full, fading with distance.
-    fn strength(self) -> f32 {
+    pub(crate) fn strength(self) -> f32 {
         match self {
             Beam::Near(0) => 1.0,
             Beam::Near(1) => 0.65,

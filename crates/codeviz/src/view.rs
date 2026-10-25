@@ -72,7 +72,7 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
-    /// Show the journey's order on the graph (Z toggles beams).
+    /// Show the journey's order on the graph (Z cycles flat beams, 3D beams, off).
     #[arg(long, value_enum)]
     time: Option<TimeArg>,
     /// Render once, save a PNG screenshot here, and exit.
@@ -128,6 +128,8 @@ enum NearArg {
 enum TimeArg {
     /// Beams from the journey's calls up to their nodes.
     Beams,
+    /// Beams in 3D: arcs from a rail of calls on a floor under the map.
+    Rail,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -240,8 +242,10 @@ pub(crate) fn open(
     if args.bare {
         viewer = viewer.bare();
     }
-    if let Some(TimeArg::Beams) = args.time {
-        viewer = viewer.with_time("beams");
+    match args.time {
+        Some(TimeArg::Beams) => viewer = viewer.with_time("beams"),
+        Some(TimeArg::Rail) => viewer = viewer.with_time("rail"),
+        None => {}
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

@@ -279,6 +279,9 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// How much of the map's depth is pressed out where it is drawn, 0 to 1, so it
+    /// lies flat on the 3D beams' floor.
+    flat: f32,
 }
 
 impl Explorer {
@@ -332,6 +335,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            flat: 0.0,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -617,9 +621,21 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node is drawn: where the simulation puts it, pressed as flat as
+    /// the map is laid.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        let at = Vec3::from(*self.graph.positions.get(tile)?);
+        Some(at.with_z(at.z * (1.0 - self.flat)))
+    }
+
+    /// How much of the map's depth is pressed out.
+    pub(crate) fn flat(&self) -> f32 {
+        self.flat
+    }
+
+    /// Presses the map's depth out by `share`, 0 to 1, where it is drawn.
+    pub(crate) fn set_flat(&mut self, share: f32) {
+        self.flat = share.clamp(0.0, 1.0);
     }
 
     pub(crate) fn clustering(&self) -> Clustering {

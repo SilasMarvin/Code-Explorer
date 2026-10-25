@@ -15,6 +15,7 @@ use crate::{
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
     graph_view::node_color,
+    rail,
     scene::{PALETTE, lane_color},
     ui::{egui_color, journey_title, short},
 };
@@ -44,12 +45,20 @@ pub(crate) struct JourneyPanel {
     lit_node: bool,
     /// Whether beams tie the journey's calls to their nodes (Z).
     pub(crate) beams: bool,
+    /// Whether the beams stand in 3D, from a rail of calls on a floor under the map,
+    /// rather than flat from the strip (Z again).
+    pub(crate) rail: bool,
 }
 
 impl JourneyPanel {
     /// Whether beams show: they need the journey on screen.
     pub(crate) fn beaming(&self) -> bool {
         self.beams && self.mode != PanelMode::Hidden
+    }
+
+    /// Whether the beams stand in 3D: the strip of calls is then a rail in the scene.
+    pub(crate) fn railed(&self) -> bool {
+        self.beaming() && self.rail
     }
 }
 
@@ -83,7 +92,12 @@ pub(crate) fn split(
         // and the graph the space above it; the strip holds every call, so the
         // journey is the strip and its header.
         PanelMode::Docked if panel.beams => {
-            let height = beams::STRIP + HEADER;
+            // On the rail, the calls lie in the scene and the journey is its header.
+            let height = if panel.rail {
+                HEADER
+            } else {
+                beams::STRIP + HEADER
+            };
             let top = area.max.y - height;
             (
                 egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, top)),
@@ -174,7 +188,7 @@ pub(crate) fn draw(
             );
             // With beams, the strip of calls they rise from takes the bars' place,
             // along the top edge, with the header under it.
-            let strip = panel.beams.then(|| {
+            let strip = (panel.beams && !panel.rail).then(|| {
                 egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), beams::STRIP))
             });
             let header = egui::Rect::from_min_size(
@@ -184,7 +198,7 @@ pub(crate) fn draw(
             header_bar(ui, header.shrink2(egui::vec2(10.0, 2.0)), explorer, panel);
             if let Some(strip) = strip {
                 strip_of_calls(ui, strip, explorer, panel, diff, &mut tethers);
-            } else {
+            } else if !panel.beams {
                 let content =
                     egui::Rect::from_min_max(egui::pos2(rect.min.x, header.max.y), rect.max)
                         .shrink(PAD);
@@ -234,6 +248,53 @@ fn strip_of_calls(
     }
     tethers.ticks = ticks;
     tethers.cursor_tick = cursor;
+}
+
+/// The pointer on the rail of calls the 3D beams rise from, as on the strip: over a
+/// call it lights its node and names it, and a click moves the cursor there.
+pub(crate) fn rail_pointer(
+    ctx: &egui::Context,
+    placed: &[rail::Placed],
+    explorer: &mut Explorer,
+    panel: &mut JourneyPanel,
+) {
+    let Some(bounds) = placed
+        .iter()
+        .map(rail::Placed::bounds)
+        .reduce(egui::Rect::union)
+    else {
+        return;
+    };
+    egui::Area::new("rail".into())
+        .fixed_pos(bounds.min)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            let response = ui.allocate_rect(bounds, egui::Sense::click());
+            let hovered = response
+                .hover_pos()
+                .and_then(|p| placed.iter().find(|t| t.contains(p)));
+            let Some(call) = hovered else {
+                if panel.lit_node {
+                    explorer.hovered_tile = None;
+                    panel.lit_node = false;
+                }
+                return;
+            };
+            if call.tile.is_some() {
+                explorer.hovered_tile = call.tile;
+                panel.lit_node = true;
+            }
+            let number = explorer
+                .disclosure()
+                .number(call.span)
+                .unwrap_or_default()
+                .to_owned();
+            let clicked = response.clicked_by(egui::PointerButton::Primary);
+            response.on_hover_text(format!("{number}  {}", explorer.label(call.span)));
+            if clicked {
+                explorer.select(Some(call.span));
+            }
+        });
 }
 
 /// Draws the strip, and returns where each call sits on it and which is the cursor's.

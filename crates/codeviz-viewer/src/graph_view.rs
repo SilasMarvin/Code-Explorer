@@ -680,7 +680,7 @@ pub(crate) fn frame_spotlight(
 
 /// How far back a camera turned to `rotation` and looking at `center` must be for
 /// every one of `points` to sit inside the middle of its view, clear of the edges.
-fn fit_distance(
+pub(crate) fn fit_distance(
     points: &[Vec3],
     center: Vec3,
     rotation: Quat,
