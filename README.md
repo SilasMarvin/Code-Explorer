@@ -61,20 +61,20 @@ whichever of those is on top, or the spotlight.
 
 `Z` shows call order in depth, as a spiral staircase (`--time helix` opens on it; the
 top bar says so). No node moves: the calls the cursor steps through with `←`/`→` (the
-root's, until you step into a call) stand as markers on a helix over their caller's node,
-call `k` at `k` o'clock and `k` steps up towards you. Head-on, where `Z` turns the camera,
-it reads as a clock face on the map, first call at one o'clock; orbit off it and it
-becomes a stair, its height the time. A list longer than twelve winds round again, a
+root's, until you step into a call) stand as markers on a helix over their caller's
+node, call `k` at `k` o'clock and `k` steps up towards you. Head-on, where `Z` turns the
+camera, it reads as a clock face on the map, first call at one o'clock; orbit off it and
+it becomes a stair, its height the time. A list longer than twelve winds round again, a
 little wider; of one longer than three turns, the turns round the cursor's show, and the
 hub says which (`13–48 of 66`). The calls the cursor's own call makes, where the journey
 shows them, wind round its marker on a small helix of their own. A new list winds out
-from its caller as the cursor steps into it. Each marker is its callee's color with its number and name, and a thin line
-runs from it down to the callee's node: pale, white for the cursor's call, whose marker is
-white, and a white hand runs out to it from the axis; the hub names the caller. The rail
-is brighter as far as the cursor. While it shows, the ordinary links fade back and the
-map goes quiet: only the focus is named, a call the helix names shows only its number,
-and only the modules the journey runs through are named. `--time-tilt <radians>` turns the camera up
-from below instead of head-on.
+from its caller as the cursor steps into it. Each marker is its callee's color with its
+number and name, and a thin line runs from it down to the callee's node: pale, white for
+the cursor's call, whose marker is white, and a white hand runs out to it from the axis;
+the hub names the caller. The rail is brighter as far as the cursor. While it shows, the
+ordinary links fade back and the map goes quiet: only the focus is named, a call the
+helix names shows only its number, and only the modules the journey runs through are
+named. `--time-tilt <radians>` turns the camera up from below instead of head-on.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
