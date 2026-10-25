@@ -114,6 +114,11 @@ impl OrbitCamera {
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
+    /// The distance being eased towards, if any.
+    pub(crate) fn goal_distance(&self) -> Option<f32> {
+        self.goal_distance
+    }
+
     /// Eases round to `(yaw, pitch)`.
     pub(crate) fn turn_to(&mut self, (yaw, pitch): (f32, f32)) {
         // The short way round.

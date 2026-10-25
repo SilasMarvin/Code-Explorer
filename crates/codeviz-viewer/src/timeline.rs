@@ -22,7 +22,7 @@ use crate::{
     camera::{FRONT, OrbitCamera},
     explorer::Explorer,
     graph_view::{
-        CALLEE, CALLER, FURTHER, LEVELS, NodeMaterials, node_look, node_size, orbit_anchor,
+        CALLEE, CALLER, FURTHER, LEVELS, NodeMaterials, node_look, node_size, orbit_anchor, regions,
     },
     ui::Chrome,
 };
@@ -117,6 +117,21 @@ impl Timeline {
             Some(index) => self.point(explorer, index),
             None => explorer.tile_point(tile),
         }
+    }
+
+    /// How wide call `index`'s marker is drawn: larger than its node on the map, as the
+    /// side view is sparse, but clear of its neighbors, and growing as time unfolds.
+    fn marker_size(&self, graph: &codeviz_layout::ForceGraph, index: usize) -> f32 {
+        let Some(call) = self.calls.get(index) else {
+            return 0.0;
+        };
+        let size = (node_size(graph, call.tile) * 1.6).min(self.step * 0.6);
+        let size = if self.cursor == Some(index) {
+            size * 1.3
+        } else {
+            size
+        };
+        size * self.unfold.sqrt()
     }
 
     /// `home` moved to call `index`'s moment.
@@ -245,7 +260,7 @@ pub(crate) fn swing(
     chrome: Res<Chrome>,
     explorer: Res<Explorer>,
     mut timeline: ResMut<Timeline>,
-    mut last: Local<Option<(TimeView, usize)>>,
+    mut last: Local<Option<TimeView>>,
     mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
 ) {
     let Ok((mut camera, view, projection)) = cameras.single_mut() else {
@@ -253,10 +268,7 @@ pub(crate) fn swing(
     };
     let wanted = chrome.time;
     let calls = disclosed_calls(&explorer);
-    let swung = last.is_none_or(|(view, _)| view != wanted);
-    // Turned to time, or more or fewer calls in it: refit the view to them.
-    let refit =
-        wanted != TimeView::Map && last.is_none_or(|(_, count)| swung || count != calls.len());
+    let swung = *last != Some(wanted);
     if swung {
         // Opening on the map keeps the default angle; back on it, the usual view.
         if last.is_some() || wanted != TimeView::Map {
@@ -266,7 +278,7 @@ pub(crate) fn swing(
             orbit_anchor(&explorer, &mut camera);
         }
     }
-    *last = Some((wanted, calls.len()));
+    *last = Some(wanted);
     let on = if wanted == TimeView::Map { 0.0 } else { 1.0 };
     let ease = 1.0 - (-time.delta_secs() * 6.0).exp();
     timeline.weight += (on - timeline.weight) * ease;
@@ -301,7 +313,8 @@ pub(crate) fn swing(
         Projection::Perspective(p) => p.aspect_ratio,
         _ => 1.6,
     };
-    if refit {
+    // Turned to time, the view fits it, until the viewer pans or zooms away.
+    if wanted != TimeView::Map && !camera.free {
         let height = timeline
             .calls
             .iter()
@@ -309,8 +322,10 @@ pub(crate) fn swing(
             .map(|p| (p.y - anchor.y).abs())
             .fold(0.0, f32::max);
         let distance = time_distance(length, count, height, aspect);
-        let target = camera.target;
-        camera.glide_to(target, distance);
+        if (camera.goal_distance().unwrap_or(camera.distance) - distance).abs() > distance * 0.01 {
+            let target = camera.target;
+            camera.glide_to(target, distance);
+        }
     }
     let half_width = camera.distance * (FIELD / 2.0).tan() * aspect;
     #[expect(clippy::cast_precision_loss, reason = "a call index")]
@@ -421,14 +436,7 @@ pub(crate) fn place_markers(
             continue;
         };
         transform.translation = at;
-        // Larger than on the map, as the side view is sparse, but clear of neighbors.
-        let size = (node_size(graph, call.tile) * 1.6).min(timeline.step * 0.6);
-        let size = if timeline.cursor == Some(index) {
-            size * 1.3
-        } else {
-            size
-        };
-        transform.scale = Vec3::splat(size * unfold.sqrt());
+        transform.scale = Vec3::splat(timeline.marker_size(graph, index));
         if let Some(wanted) = materials.0.get(&(node_look(&explorer, call.tile), LEVELS))
             && &material.0 != wanted
         {
@@ -526,6 +534,13 @@ pub(crate) fn draw_lines(
                 pale
             };
             gizmos.line(from, to, color);
+            // The journey's own lifeline ends in an arrowhead: time runs this way.
+            if index == 0 {
+                let size = timeline.step.min(4.0) * 0.5;
+                let back = Vec3::NEG_Z * size;
+                gizmos.line(to, to + back + Vec3::Y * size * 0.6, color);
+                gizmos.line(to, to + back - Vec3::Y * size * 0.6, color);
+            }
         }
         let Some(caller) = call.caller.and_then(|c| timeline.calls.get(c)) else {
             continue;
@@ -628,7 +643,13 @@ pub(crate) fn draw_labels(
             egui::FontId::proportional(if current { 13.0 } else { 11.5 }),
             color.gamma_multiply(alpha),
         );
-        let start = at + egui::vec2(5.0, -9.0);
+        // Clear of the marker, however large it shows.
+        let radius = timeline
+            .point(explorer, index)
+            .map(|p| p + Vec3::Y * timeline.marker_size(explorer.graph(), index) * 0.5)
+            .and_then(to_screen)
+            .map_or(4.0, |edge| (at.y - edge.y).abs());
+        let start = at + egui::vec2(radius * 0.8 + 3.0, -radius * 0.8 - 7.0);
         let width = galley.size().x;
         if taken
             .iter()
@@ -638,6 +659,68 @@ pub(crate) fn draw_labels(
         }
         taken.push((start, width));
         painter.add(egui::epaint::TextShape::new(start, galley, color).with_angle(LABEL_ANGLE));
+    }
+    draw_modules(painter, to_screen, explorer, timeline, alpha);
+}
+
+/// Names the modules the calls reach down the left edge, each level with the middle
+/// of its ring on the map: from the side a module keeps its band of the map's height.
+fn draw_modules(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+    timeline: &Timeline,
+    alpha: f32,
+) {
+    let graph = explorer.graph();
+    // How often the calls reach each module.
+    let mut visits: Vec<(usize, usize)> = Vec::new();
+    for call in &timeline.calls {
+        let Some(cluster) = graph.cluster(call.tile) else {
+            continue;
+        };
+        match visits.iter_mut().find(|(c, _)| *c == cluster) {
+            Some((_, count)) => *count += 1,
+            None => visits.push((cluster, 1)),
+        }
+    }
+    visits.sort_by_key(|&(_, count)| std::cmp::Reverse(count));
+    // A point in view to measure heights beside: the cursor's call, else the first.
+    let Some(beside) = timeline.point(explorer, timeline.cursor.unwrap_or(0)) else {
+        return;
+    };
+    let rings = regions(explorer);
+    // Only beside the calls: a ring's middle far from all of them says little.
+    let heights: Vec<f32> = (0..timeline.calls.len())
+        .filter_map(|i| timeline.point(explorer, i).and_then(to_screen))
+        .map(|at| at.y)
+        .collect();
+    let top = heights.iter().copied().fold(f32::INFINITY, f32::min) - 20.0;
+    let bottom = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max) + 20.0;
+    let left = painter.clip_rect().left() + 12.0;
+    let mut taken: Vec<f32> = Vec::new();
+    for (cluster, _) in visits {
+        let Some(y) = rings
+            .iter()
+            .find(|(c, _, _)| *c == cluster)
+            .and_then(|(_, middle, _)| to_screen(beside.with_y(middle.y)))
+            .map(|at| at.y)
+        else {
+            continue;
+        };
+        if !(top..=bottom).contains(&y) || taken.iter().any(|t| (t - y).abs() < 15.0) {
+            continue;
+        }
+        taken.push(y);
+        let color =
+            crate::ui::egui_color(crate::scene::lane_color(cluster)).gamma_multiply(0.75 * alpha);
+        painter.text(
+            egui::pos2(left, y),
+            egui::Align2::LEFT_CENTER,
+            explorer.cluster_name(cluster).to_uppercase(),
+            egui::FontId::proportional(11.0),
+            color,
+        );
     }
 }
 
