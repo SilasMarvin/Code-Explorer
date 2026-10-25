@@ -59,16 +59,20 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`E` shows call order on the graph itself, cycling off, fan and route (`--order fan` or
-`--order route` opens on one; the top bar says which). The fan lines the focus's calls
-up in a column beside it, first at the top, in the screen's plane whatever the orbit,
-opening them in the journey so they carry its numbers; a function called more than once
-sits at its first call marked `×2`, and everything else stays put. The route moves
-nothing: it threads the disclosed journey through its nodes in the order it runs, one
-pale line with chevrons, solid where a call goes in and dotted where execution returns
-and moves on to the next call, with the other links faded back. Passes over the same
-pair of nodes run side by side, the line fades away from the cursor, and a marker rides
-it to the cursor's stop.
+`Z` shows the journey's calls in order in a second view beside the map, cycling off, 3D
+and side-on (`--time 3d` or `--time side` opens on one; the top bar says which); the map
+turns head-on and keeps the left. Each disclosed call is a marker over its node, lifted
+along z by its place in the order, evenly spaced, so a function called three times has
+three markers over one node. In 3D the calls rise over their part of the map, seen at a
+three-quarter angle: each drops a line to its node's spot on a faint floor grid with the
+modules' rings, a line runs up from each caller to each call it makes, a ruler at the
+side numbers the first, last and cursor's calls, and a square marks the cursor's moment;
+drag in the view to turn it, scroll to zoom, double-click to turn it back. Side-on, an
+orthographic camera looks along the map's x axis: time runs left to right and each call
+sits at the height its node shows on the map, so module bands line up across the two
+views, with each caller's line running along its level and dropping to each call it
+makes. Either way the cursor's call is ringed with a dashed guide from its node on the
+map; the call under the pointer lights its node, and a click moves the cursor to it.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

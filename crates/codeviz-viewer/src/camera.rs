@@ -143,7 +143,8 @@ fn spawn_camera(
         Camera2d,
         RenderLayers::none(),
         Camera {
-            order: 1,
+            // Over both graph cameras: the map's and the time view's.
+            order: 2,
             output_mode: CameraOutputMode::Write {
                 blend_state: Some(BlendState::ALPHA_BLENDING),
                 clear_color: ClearColorConfig::None,
@@ -233,7 +234,10 @@ fn camera_input(
     }
 }
 
-fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Transform)>) {
+pub(crate) fn apply_camera(
+    time: Res<Time>,
+    mut cameras: Query<(&mut OrbitCamera, &mut Transform)>,
+) {
     let ease = 1.0 - (-EASING * time.delta_secs()).exp();
     for (mut camera, mut transform) in &mut cameras {
         camera.focus = camera.focus.lerp(camera.target, ease);

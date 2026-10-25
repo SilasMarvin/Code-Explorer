@@ -24,9 +24,9 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    order::{self, Order, OrderMode},
     scene::{PALETTE, lane_color},
     source_diff,
+    time_view::{self, TimeCameras, TimeMode, TimeView},
 };
 
 pub(crate) struct UiPlugin;
@@ -137,11 +137,15 @@ pub(crate) struct Chrome {
     pub(crate) side: bool,
     pub(crate) search: bool,
     pub(crate) dial_turned: Option<f32>,
-    /// How call order shows on the graph (E).
-    pub(crate) order: OrderMode,
+    /// Whether the journey's calls show in order beside the map (Z).
+    pub(crate) time: TimeMode,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "lays out the views and what sits over them"
+)]
 fn draw_ui(
     mut contexts: EguiContexts,
     mut explorer: ResMut<Explorer>,
@@ -150,10 +154,11 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    order: Res<Order>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
+    mut time_cameras: TimeCameras,
+    mut time_view: ResMut<TimeView>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -184,17 +189,19 @@ fn draw_ui(
         egui::pos2(screen.min.x + left, screen.min.y + top),
         egui::pos2(screen.max.x - right, screen.max.y - bottom),
     );
-    let (graph_area, panel_area) =
-        journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
+    let extent = journey_panel::extent(&explorer);
+    let (graph_area, panel_area) = journey_panel::split(panel.mode, central, extent);
+    let (graph_area, time_area, panel_area) =
+        time_view::layout(chrome.time, panel.mode, graph_area, panel_area, extent);
     if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
-        let to_screen = |position: Vec3| {
+        let projected = |position: Vec3| {
             camera
                 .world_to_viewport(transform, position)
                 .ok()
                 .map(|p| egui::pos2(p.x, p.y))
-                .filter(|p| graph_area.contains(*p))
         };
+        let to_screen = |position: Vec3| projected(position).filter(|p| graph_area.contains(*p));
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
@@ -203,9 +210,25 @@ fn draw_ui(
             &to_screen,
             &explorer,
             diff.as_deref(),
-            &order.fanned,
             transform.up().into(),
         );
+        if let (Some(area), Ok((mut time_camera, time_transform))) =
+            (time_area, time_cameras.single_mut())
+        {
+            fit_viewport(&mut time_camera, &window, area);
+            time_view::draw_overlay(
+                ctx,
+                area,
+                &mut explorer,
+                diff.as_deref(),
+                &mut time_view,
+                (&time_camera, time_transform),
+                &time_view::MapProjection {
+                    anywhere: &projected,
+                    on_map: &to_screen,
+                },
+            );
+        }
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
         let mut clear = above(graph_area, panel_area);
@@ -296,16 +319,17 @@ fn panels(
                     }
                     if ui
                         .selectable_label(
-                            chrome.order != OrderMode::Off,
-                            format!("Order: {}", chrome.order.name()),
+                            chrome.time != TimeMode::Off,
+                            format!("Time: {}", chrome.time.name()),
                         )
                         .on_hover_text(
-                            "Call order on the graph: off → fan (the focus's calls lined up \
-                             beside it) → route (the journey as one line) (E)",
+                            "The journey's calls in order beside the map: off → 3D (calls \
+                             rise over their nodes) → side-on (time runs left to right, each \
+                             call at its node's height) (Z)",
                         )
                         .clicked()
                     {
-                        chrome.order = chrome.order.next();
+                        chrome.time = chrome.time.next();
                     }
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -914,7 +938,7 @@ pub(crate) fn journey_title(explorer: &Explorer) -> String {
 const CALLER_TEXT: egui::Color32 = egui::Color32::from_rgb(206, 170, 255);
 const CALLEE_TEXT: egui::Color32 = egui::Color32::from_rgb(130, 196, 255);
 /// Text on a bar or a badge filled with a node's color.
-const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
+pub(crate) const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
 const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
 
 /// The 1-based places in `caller`'s calls, in written order, where it calls `callee`.
@@ -1160,10 +1184,10 @@ impl<'a> Placer<'a> {
 }
 
 /// What leads a label: text in a color, on a fill when it is a badge.
-type Lead = (String, egui::Color32, Option<egui::Color32>);
+pub(crate) type Lead = (String, egui::Color32, Option<egui::Color32>);
 
 /// A label in two parts: the name, then a quieter note.
-fn label_job(
+pub(crate) fn label_job(
     lead: Option<Lead>,
     name: &str,
     note: Option<String>,
@@ -1274,7 +1298,6 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    fanned: &[(usize, usize)],
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
@@ -1542,7 +1565,6 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    order::draw_marks(painter, &discs, fanned);
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1752,7 +1774,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("E", "call order: off → fan → route"),
+            ("Z", "calls in order beside the map: off → 3D → side-on"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
