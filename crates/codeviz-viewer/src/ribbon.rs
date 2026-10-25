@@ -149,6 +149,30 @@ fn line_widths(mut store: ResMut<GizmoConfigStore>) {
 /// little to the side, so the map keeps its shape and height reads by the depth cues
 /// (shadows, haze, size, the rock) more than by the angle.
 pub(crate) const RIBBON_VIEW: (f32, f32) = (-0.2, 0.6);
+/// The most the view tilts further for a journey bunched in a sliver of a big map,
+/// where the ribbon's foot would otherwise sink into the names round it.
+const BUNCHED_TILT: f32 = 0.12;
+
+/// The view to read the ribbon from, for a journey spreading `spread` over a map
+/// reaching `reach` from where it starts: the gentle tilt, a little steeper the
+/// smaller a share of the map the journey covers.
+pub(crate) fn ribbon_view(spread: f32, reach: f32) -> (f32, f32) {
+    let share = spread / reach.max(1e-3);
+    let bunched = ((0.5 - share) / 0.3).clamp(0.0, 1.0);
+    (RIBBON_VIEW.0, RIBBON_VIEW.1 + BUNCHED_TILT * bunched)
+}
+
+/// How far the map showing reaches from the journey's start.
+fn map_reach(explorer: &Explorer, tiles: &[usize]) -> f32 {
+    let Some(start) = tiles.first().and_then(|&t| explorer.tile_point(t)) else {
+        return 1.0;
+    };
+    (0..explorer.map().tiles.len())
+        .filter(|&tile| explorer.visibility(tile) >= 0.5)
+        .filter_map(|tile| explorer.tile_point(tile))
+        .map(|p| p.truncate().distance(start.truncate()))
+        .fold(1.0, f32::max)
+}
 /// How far back to stand, in ribbon heights, to see it whole.
 const FIT: f32 = 2.6;
 
@@ -373,7 +397,7 @@ pub(crate) fn rise(
         for mut camera in &mut cameras {
             if turned {
                 ribbon.before = Some(camera.angles());
-                camera.turn_to(RIBBON_VIEW);
+                camera.turn_to(ribbon_view(spread, map_reach(&explorer, &tiles)));
             } else if camera.free {
                 continue;
             }
@@ -836,5 +860,17 @@ mod tests {
             .filter(|&i| label(i, 19, Some(10)) == Some(Label::Mark))
             .collect();
         assert_eq!(marked, vec![4, 16], "8 and 12 are the cursor's neighbors");
+    }
+
+    #[test]
+    fn a_bunched_journey_tilts_the_view_a_little_more() {
+        let (_, spread_out) = ribbon_view(60.0, 100.0);
+        let (_, bunched) = ribbon_view(10.0, 100.0);
+        assert!((spread_out - RIBBON_VIEW.1).abs() < 1e-6, "the gentle tilt");
+        assert!(bunched > spread_out);
+        assert!(
+            bunched <= RIBBON_VIEW.1 + BUNCHED_TILT + 1e-6,
+            "never much more"
+        );
     }
 }
