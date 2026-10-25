@@ -83,8 +83,18 @@ pub(crate) fn calls(explorer: &Explorer) -> (Vec<(SpanId, Option<usize>)>, Optio
                 (span, tile)
             })
             .collect();
-    let cursor = std::iter::successors(track.selected(), |&s| track.span(s)?.parent)
-        .find_map(|span| calls.iter().position(|&(c, _)| c == span));
+    let ancestry = |span: Option<SpanId>| std::iter::successors(span, |&s| track.span(s)?.parent);
+    let selected = track.selected().filter(|&s| s != journey.root());
+    // The call around the cursor when it has no bar of its own, as a closure; or,
+    // where that is the root, as a step of a pipeline, the first call inside it.
+    let cursor = ancestry(selected)
+        .find_map(|span| calls.iter().position(|&(c, _)| c == span))
+        .or_else(|| {
+            let selected = selected?;
+            calls
+                .iter()
+                .position(|&(c, _)| ancestry(Some(c)).any(|a| a == selected))
+        });
     (calls, cursor)
 }
 
@@ -98,20 +108,29 @@ pub(crate) fn lit(explorer: &Explorer) -> HashSet<usize> {
         .collect()
 }
 
-/// Which calls on the strip get a beam, and why: the cursor's, its neighbors in time,
-/// and the other calls of the same node. With the cursor at the root, before the
-/// first call, the first calls get them.
+/// Which calls on the strip get a beam, and why: the cursor's, the nearest two either
+/// side of it in time that are on the graph, and the other calls of the same node.
+/// With the cursor at the root, before the first call, the first three on the graph.
 pub(crate) fn beamed(tiles: &[Option<usize>], cursor: Option<usize>) -> Vec<(usize, Beam)> {
+    let shown = |index: &usize| tiles[*index].is_some();
     let Some(cursor) = cursor else {
-        return (0..REACH.min(tiles.len()))
-            .map(|index| (index, Beam::Near(index + 1)))
+        return (0..tiles.len())
+            .filter(shown)
+            .take(REACH + 1)
+            .enumerate()
+            .map(|(rank, index)| (index, Beam::Near(rank + 1)))
             .collect();
     };
-    let near = cursor.saturating_sub(REACH)..=(cursor + REACH).min(tiles.len().saturating_sub(1));
-    let mut beams: Vec<(usize, Beam)> = near
-        .clone()
-        .map(|index| (index, Beam::Near(index.abs_diff(cursor))))
+    let before = (0..cursor).rev().filter(shown).take(REACH);
+    let after = (cursor + 1..tiles.len()).filter(shown).take(REACH);
+    let mut beams: Vec<(usize, Beam)> = before
+        .enumerate()
+        .chain(after.enumerate())
+        .map(|(rank, index)| (index, Beam::Near(rank + 1)))
         .collect();
+    beams.push((cursor, Beam::Near(0)));
+    beams.sort_by_key(|&(index, _)| index);
+    let near: Vec<usize> = beams.iter().map(|&(index, _)| index).collect();
     if let Some(tile) = tiles.get(cursor).copied().flatten() {
         beams.extend(
             tiles
@@ -301,8 +320,12 @@ fn steps(
     };
     let here = node(Some(cursor));
     let legs = [
-        (node(cursor.checked_sub(1)), here, 0.5),
-        (here, node(Some(cursor + 1)), 0.9),
+        (node(previous_shown(tiles, cursor)), here, 0.5),
+        (
+            here,
+            node((cursor + 1..tiles.len()).find(|&i| tiles[i].is_some())),
+            0.9,
+        ),
     ];
     let mut shapes = Vec::new();
     for (from, to, strength) in legs {
@@ -330,6 +353,11 @@ fn steps(
         }
     }
     shapes
+}
+
+/// The last call before the cursor's that is on the graph.
+fn previous_shown(tiles: &[Option<usize>], cursor: usize) -> Option<usize> {
+    (0..cursor).rev().find(|&i| tiles[i].is_some())
 }
 
 /// A short arrow from one node toward another, given each one's middle and how far
@@ -435,9 +463,28 @@ mod tests {
         );
         assert_eq!(
             beamed(&tiles, None),
-            [(0, Beam::Near(1)), (1, Beam::Near(2))],
-            "at the root, the first calls"
+            [(0, Beam::Near(1)), (1, Beam::Near(2)), (2, Beam::Near(3))],
+            "at the root, the first three calls"
         );
+        assert_eq!(
+            beamed(&tiles, Some(0)),
+            [(0, Beam::Near(0)), (1, Beam::Near(1)), (2, Beam::Near(2))],
+            "on the first call, it and the next two"
+        );
+    }
+
+    #[test]
+    fn calls_off_the_graph_are_passed_over_for_the_nearest_on_it() {
+        let tiles = [None, None, Some(1), Some(2), None, Some(3), Some(4)];
+        assert_eq!(
+            beamed(&tiles, Some(1)),
+            [(1, Beam::Near(0)), (2, Beam::Near(1)), (3, Beam::Near(2))]
+        );
+        assert_eq!(
+            beamed(&tiles, None),
+            [(2, Beam::Near(1)), (3, Beam::Near(2)), (5, Beam::Near(3))]
+        );
+        assert_eq!(previous_shown(&tiles, 5), Some(3));
     }
 
     #[test]

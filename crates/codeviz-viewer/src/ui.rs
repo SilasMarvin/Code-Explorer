@@ -953,6 +953,28 @@ const CALLER_TEXT: egui::Color32 = egui::Color32::from_rgb(206, 170, 255);
 const CALLEE_TEXT: egui::Color32 = egui::Color32::from_rgb(130, 196, 255);
 /// Text on a bar or a badge filled with a node's color.
 const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
+/// Text on a badge whose fill has stepped back.
+const DIM_ON_FILL: egui::Color32 = egui::Color32::from_rgb(200, 205, 216);
+/// The faintest a stepped-back name gets, by its brightest channel.
+const TEXT_FLOOR: f32 = 150.0;
+
+/// A name's color stepped back while beams show: darker, but no darker than reads on
+/// the dark background, keeping its hue.
+fn step_back(color: egui::Color32) -> egui::Color32 {
+    let dimmed = color.gamma_multiply(0.6);
+    let brightest = f32::from(dimmed.r().max(dimmed.g()).max(dimmed.b())).max(1.0);
+    if brightest >= TEXT_FLOOR {
+        return dimmed;
+    }
+    let lift = TEXT_FLOOR / brightest;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a channel scaled within 0..=255"
+    )]
+    let up = |c: u8| (f32::from(c) * lift).min(255.0) as u8;
+    egui::Color32::from_rgb(up(dimmed.r()), up(dimmed.g()), up(dimmed.b()))
+}
 const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
 
 /// The 1-based places in `caller`'s calls, in written order, where it calls `callee`.
@@ -1511,7 +1533,8 @@ fn draw_graph_labels(
                 // the journey.
                 let dim = beamed.is_some_and(|lit| tier != 0 && !lit.contains(&tile));
                 let fade = |c: egui::Color32| if dim { c.gamma_multiply(0.4) } else { c };
-                let color = fade(color);
+                // Text steps back too, but never below what reads on the dark.
+                let color = if dim { step_back(color) } else { color };
                 let impact_note = diff
                     .filter(|d| d.style == DiffStyle::Impact)
                     .and_then(|d| d.affected.iter().find(|a| a.tile == tile))
@@ -1568,13 +1591,15 @@ fn draw_graph_labels(
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one; what changed after it.
                 let fill = fade(egui_color(graph_view::node_color(explorer, diff, tile)));
+                // Dark on a full fill, light on a faded one.
+                let on_fill = if dim { DIM_ON_FILL } else { ON_FILL };
                 let lead = match (order, change) {
                     (Some(order), Some(change)) => Some((
                         format!(" {order} {} ", diff_view::sign(change)),
-                        ON_FILL,
+                        on_fill,
                         Some(fill),
                     )),
-                    (Some(order), None) => Some((format!(" {order} "), ON_FILL, Some(fill))),
+                    (Some(order), None) => Some((format!(" {order} "), on_fill, Some(fill))),
                     (None, _) => lead,
                 };
                 let size = match tier {
@@ -1941,6 +1966,14 @@ mod tests {
             .and_then(|labels| labels.get(&Named::Node(0)).cloned())
             .unwrap_or_else(|| panic!("the label was not remembered"));
         (shown.side, shown.offset)
+    }
+
+    #[test]
+    fn a_stepped_back_name_keeps_its_hue_above_the_floor() {
+        let green = step_back(egui::Color32::from_rgb(40, 200, 90));
+        assert!(green.g() >= 150 && green.g() > green.r() && green.g() > green.b());
+        let dark = step_back(egui::Color32::from_rgb(20, 30, 40));
+        assert_eq!(dark.b(), 150, "lifted to the floor");
     }
 
     #[test]
