@@ -14,6 +14,8 @@
 //!
 //! [`Chrome`] holds whether they show; [`Bridges`] eases them up and down.
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use bevy_egui::egui;
 use codeviz_core::SpanId;
@@ -53,6 +55,9 @@ pub(crate) struct Bridges {
     on: bool,
     /// The camera's angles before the bridges tilted it, to turn back to.
     before: Option<(f32, f32)>,
+    /// Each arc's height as a share of the stack's, by call, eased towards where it
+    /// stands, so arcs rise into place rather than jump as the cursor moves the stack.
+    heights: HashMap<SpanId, f32>,
     /// Each arc's top, with its number, for the labels.
     pub(crate) tops: Vec<Top>,
 }
@@ -110,7 +115,7 @@ const TILT: (f32, f32) = (0.0, 0.3);
 const TOP: f32 = 0.45;
 
 /// The first call's height as a share of the last's, so it still clears its link.
-const FLOOR: f32 = 0.12;
+const FLOOR: f32 = 0.25;
 
 /// How far an arc running up or down the screen leans to the right of its way for
 /// each unit it lifts, so it opens into a loop rather than doubling back over its
@@ -296,6 +301,7 @@ pub(crate) fn rise(
 /// Draws each call of the disclosed journey as an arc from caller to callee, as high
 /// as it is late, and notes where each peaks for its number.
 pub(crate) fn draw_bridges(
+    time: Res<Time>,
     explorer: Res<Explorer>,
     mut bridges: ResMut<Bridges>,
     cameras: Query<(&OrbitCamera, &Transform, &Projection)>,
@@ -312,12 +318,18 @@ pub(crate) fn draw_bridges(
     let (calls, on) = in_step(&explorer, journey_calls(&explorer));
     let graph = explorer.graph();
     let right = view.right().as_vec3();
+    let ease = 1.0 - (-time.delta_secs() * 6.0).exp();
+    let heights = &mut bridges.heights;
+    heights.retain(|span, _| calls.iter().any(|c| c.span == *span));
+    for (index, call) in calls.iter().enumerate() {
+        let height = heights.entry(call.span).or_default();
+        *height += (height_share(index, calls.len()) - *height) * ease;
+    }
     // Each call's ends, from the caller's surface to the callee's, and which way and
     // how far it lifts per unit of the stack's height.
     let spans: Vec<Option<(Vec3, Vec3, Vec3)>> = calls
         .iter()
-        .enumerate()
-        .map(|(index, call)| {
+        .map(|call| {
             let (a, b) = (
                 explorer.tile_point(call.from)?,
                 explorer.tile_point(call.to)?,
@@ -328,7 +340,7 @@ pub(crate) fn draw_bridges(
             let along = (b - a).normalize_or_zero();
             let from = a + along * node_size(graph, call.from) * 0.5;
             let to = b - along * node_size(graph, call.to) * 0.5;
-            let lift = lift_direction(a, b, right) * height_share(index, calls.len());
+            let lift = lift_direction(a, b, right) * bridges.heights[&call.span];
             Some((from, to, lift))
         })
         .collect();
