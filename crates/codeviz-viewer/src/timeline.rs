@@ -850,12 +850,18 @@ pub(crate) fn draw_lines(
             continue;
         };
         let radius = node_size(graph, call.tile) * 0.5;
-        // The node under the pointer, or one of its calls: its strings lit.
-        let lit = explorer.hovered_tile == Some(call.tile);
-        let string = if lit {
+        // Strung back to its node only where it matters, so strings do not fan out
+        // past following: the cursor's call and its own calls, and the node under
+        // the pointer's, lit.
+        let string = if explorer.hovered_tile == Some(call.tile) {
             Color::WHITE.with_alpha(0.7 * strength)
+        } else if timeline
+            .cursor
+            .is_some_and(|c| c == index || call.caller == Some(c))
+        {
+            FURTHER.with_alpha(0.35 * strength)
         } else {
-            FURTHER.with_alpha(0.18 * strength)
+            continue;
         };
         // Back along time to the node it unfolded from.
         if string.alpha() > 0.02 {
@@ -932,11 +938,11 @@ pub(crate) fn string_strength(unfold: f32) -> f32 {
     unfold * (1.0 - side(unfold))
 }
 
-/// Names the calls on the timeline, angled up from each marker so neighbors fit: the
-/// cursor's call first, then what makes it and what it calls, then the rest by
-/// nearness to it or to the window's start, each in full above its marker, below it
-/// or ending at it, else by its short name, wherever it clears the names already placed. Says how
-/// many calls the window leaves out at either end.
+/// Names the calls on the timeline, level beside each marker where that clears the
+/// markers and the names already placed, else angled up or down from it, else by its
+/// short name: the cursor's call first, then what makes it and what it calls, then
+/// the rest by nearness to it or to the window's start. Says how many calls the window
+/// leaves out at either end.
 pub(crate) fn draw_labels(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
@@ -949,18 +955,42 @@ pub(crate) fn draw_labels(
     }
     let disclosed = explorer.disclosure();
     let callers: Vec<Option<usize>> = timeline.calls.iter().map(|c| c.caller).collect();
-    let mut taken: Vec<(egui::Pos2, f32)> = Vec::new();
-    // The window's ends first, so no name runs over them.
-    let notes = draw_window_ends(painter, to_screen, explorer, timeline, alpha);
+    // Each marker on screen and how far its edge is from its middle.
+    let markers: Vec<Option<(egui::Pos2, f32)>> = (0..timeline.calls.len())
+        .map(|index| {
+            let point = timeline.point(explorer, index)?;
+            let at = to_screen(point)?;
+            let radius = to_screen(point + Vec3::Y * timeline.marker_size(explorer, index) * 0.5)
+                .map_or(4.0, |edge| (at.y - edge.y).abs());
+            Some((at, radius))
+        })
+        .collect();
+    // No name runs along a lifeline, where it would hide the calls hanging from it.
+    let rails = timeline
+        .lines(explorer)
+        .into_iter()
+        .filter(|line| line.rail)
+        .filter_map(|line| Some((to_screen(line.from)?, to_screen(line.to)?)))
+        .map(|(from, to)| NameBox::along(from, to, 3.0));
+    // Nor over a marker, nor over the window's ends, drawn first.
+    let mut taken: Vec<NameBox> = rails
+        .chain(markers.iter().flatten().map(|&(at, radius)| {
+            NameBox::level(
+                at - egui::Vec2::splat(radius),
+                egui::Vec2::splat(radius * 2.0),
+            )
+        }))
+        .collect();
+    taken.extend(
+        draw_window_ends(painter, to_screen, explorer, timeline, alpha)
+            .into_iter()
+            .map(|r| NameBox::level(r.min, r.size())),
+    );
     // Below the top bar and short of the right edge, so no name is cut off.
     let bounds = painter.clip_rect().shrink2(egui::vec2(16.0, 16.0));
-    let along = egui::vec2(LABEL_ANGLE.cos(), LABEL_ANGLE.sin());
     for index in label_order(&callers, timeline.cursor, timeline.window.0) {
         let call = timeline.calls[index];
-        let Some(point) = timeline.point(explorer, index) else {
-            continue;
-        };
-        let Some(at) = to_screen(point) else {
+        let Some((at, radius)) = markers[index] else {
             continue;
         };
         let number = disclosed.number(call.span).unwrap_or_default();
@@ -979,11 +1009,6 @@ pub(crate) fn draw_labels(
             egui::Color32::from_rgb(200, 205, 215)
         };
         let font = egui::FontId::proportional(if current { 13.0 } else { 11.5 });
-        // Clear of the marker, however large it shows.
-        let radius = to_screen(point + Vec3::Y * timeline.marker_size(explorer, index) * 0.5)
-            .map_or(4.0, |edge| (at.y - edge.y).abs());
-        let above = at + egui::vec2(radius * 0.8 + 3.0, -radius * 0.8 - 7.0);
-        let below = at + egui::vec2(radius + 2.0, radius + 4.0);
         let texts = [numbered(&name), numbered(short_name(&name))];
         let placed = texts.iter().enumerate().find_map(|(i, text)| {
             // The short name only where the full one is longer.
@@ -992,32 +1017,114 @@ pub(crate) fn draw_labels(
             }
             let galley =
                 painter.layout_no_wrap(text.clone(), font.clone(), color.gamma_multiply(alpha));
-            let width = galley.size().x;
-            // Last, ending at the marker down and to the left of it, as at the
-            // view's right edge.
-            let before = at - along * (width + radius + 4.0) + egui::vec2(0.0, 4.0);
-            [above, below, before]
+            name_spots(at, radius, galley.size())
                 .into_iter()
-                .find(|&start| {
-                    let end = start + along * width;
-                    bounds.contains(end)
-                        && !notes
-                            .iter()
-                            .any(|n| n.intersects(egui::Rect::from_two_pos(start, end)))
-                        && !taken
-                            .iter()
-                            .any(|&(other, length)| angled_overlap(other, length, start, width))
+                .find(|spot| {
+                    spot.corners().iter().all(|&c| bounds.contains(c))
+                        && !taken.iter().any(|other| spot.overlaps(other))
                 })
-                .map(|start| (start, galley))
+                .map(|spot| (spot, galley))
         });
-        let Some((start, galley)) = placed else {
+        let Some((spot, galley)) = placed else {
             continue;
         };
-        taken.push((start, galley.size().x));
-        painter.add(egui::epaint::TextShape::new(start, galley, color).with_angle(LABEL_ANGLE));
+        taken.push(spot);
+        if spot.angle == 0.0 {
+            // Level names cross the calls' lines, so they sit on a backing.
+            painter.rect_filled(
+                egui::Rect::from_min_size(spot.at, spot.size).expand(1.0),
+                3.0,
+                egui::Color32::from_rgb(15, 17, 23).gamma_multiply(0.75 * alpha),
+            );
+        }
+        painter.add(egui::epaint::TextShape::new(spot.at, galley, color).with_angle(spot.angle));
     }
     // The map's rings name its modules until the side, where they fold away.
     draw_modules(painter, to_screen, explorer, timeline, timeline.side());
+}
+
+/// Where a name `size` may go beside a marker at `at`, `radius` across, in the order
+/// tried: level to its right, level to its left, level above or below it to the right
+/// (clear of a lifeline it sits on), angled up from it, angled down from it, and
+/// angled ending at it.
+fn name_spots(at: egui::Pos2, radius: f32, size: egui::Vec2) -> [NameBox; 7] {
+    let along = egui::vec2(LABEL_ANGLE.cos(), LABEL_ANGLE.sin());
+    let slanted = |at: egui::Pos2| NameBox {
+        at,
+        angle: LABEL_ANGLE,
+        size,
+    };
+    [
+        NameBox::level(at + egui::vec2(radius + 4.0, -size.y / 2.0), size),
+        NameBox::level(at - egui::vec2(radius + 4.0 + size.x, size.y / 2.0), size),
+        NameBox::level(at + egui::vec2(radius * 0.7, -radius - 3.0 - size.y), size),
+        NameBox::level(at + egui::vec2(radius * 0.7, radius + 3.0), size),
+        slanted(at + egui::vec2(radius * 0.8 + 3.0, -radius * 0.8 - 11.0)),
+        slanted(at + egui::vec2(radius + 2.0, radius + 4.0)),
+        slanted(at - along * (size.x + radius + 4.0) + egui::vec2(0.0, 4.0)),
+    ]
+}
+
+/// A name's box on screen: its top left corner, the angle it runs at about that
+/// corner, and its size.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NameBox {
+    at: egui::Pos2,
+    angle: f32,
+    size: egui::Vec2,
+}
+
+impl NameBox {
+    fn level(at: egui::Pos2, size: egui::Vec2) -> Self {
+        Self {
+            at,
+            angle: 0.0,
+            size,
+        }
+    }
+
+    /// A line from `from` to `to`, `thick` across, as a box.
+    fn along(from: egui::Pos2, to: egui::Pos2, thick: f32) -> Self {
+        let run = to - from;
+        let angle = run.y.atan2(run.x);
+        let down = egui::vec2(-angle.sin(), angle.cos());
+        Self {
+            at: from - down * thick / 2.0,
+            angle,
+            size: egui::vec2(run.length(), thick),
+        }
+    }
+
+    fn corners(&self) -> [egui::Pos2; 4] {
+        let along = egui::vec2(self.angle.cos(), self.angle.sin()) * self.size.x;
+        let down = egui::vec2(-self.angle.sin(), self.angle.cos()) * self.size.y;
+        [
+            self.at,
+            self.at + along,
+            self.at + along + down,
+            self.at + down,
+        ]
+    }
+
+    /// Whether two boxes overlap: unless some edge's direction separates them.
+    pub(crate) fn overlaps(&self, other: &Self) -> bool {
+        let (a, b) = (self.corners(), other.corners());
+        let axes = [a[1] - a[0], a[3] - a[0], b[1] - b[0], b[3] - b[0]];
+        axes.iter()
+            .filter(|axis| axis.length_sq() > 1e-6)
+            .all(|axis| {
+                let project = |corners: &[egui::Pos2; 4]| {
+                    corners
+                        .iter()
+                        .map(|c| c.to_vec2().dot(*axis))
+                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), d| {
+                            (lo.min(d), hi.max(d))
+                        })
+                };
+                let ((a_lo, a_hi), (b_lo, b_hi)) = (project(&a), project(&b));
+                a_lo < b_hi && b_lo < a_hi
+            })
+    }
 }
 
 /// A name without its module or type: `draw` for `journey_panel.draw`.
@@ -1157,17 +1264,6 @@ fn draw_modules(
 
 /// How far names tilt up from the horizontal, so neighbors in time fit side by side.
 const LABEL_ANGLE: f32 = -0.6;
-
-/// Whether two names tilted alike, starting at `a` and `b` and `a_length` and
-/// `b_length` long, would overlap: they run parallel, so only if they start within a
-/// line of each other across the tilt and their runs along it overlap.
-pub(crate) fn angled_overlap(a: egui::Pos2, a_length: f32, b: egui::Pos2, b_length: f32) -> bool {
-    const LINE: f32 = 13.0;
-    let along = egui::vec2(LABEL_ANGLE.cos(), LABEL_ANGLE.sin());
-    let across = egui::vec2(-along.y, along.x);
-    let offset = b - a;
-    offset.dot(across).abs() < LINE && offset.dot(along) < a_length && offset.dot(along) > -b_length
-}
 
 /// The order calls are offered a name, given each call's caller: the cursor's call,
 /// its caller chain, the calls it makes, then everything else by nearness to it or
@@ -1369,26 +1465,26 @@ mod tests {
     }
 
     #[test]
-    fn tilted_names_clash_only_when_they_share_a_line() {
-        let a = egui::pos2(100.0, 100.0);
+    fn name_boxes_clash_only_where_they_meet() {
+        let size = egui::vec2(80.0, 12.0);
+        let a = NameBox::level(egui::pos2(100.0, 100.0), size);
+        assert!(a.overlaps(&NameBox::level(egui::pos2(150.0, 105.0), size)));
         assert!(
-            angled_overlap(a, 80.0, egui::pos2(110.0, 100.0), 80.0),
-            "side by side, level"
-        );
-        // Further along the tilt, on the same line: clear once past its end.
-        let along = egui::vec2(LABEL_ANGLE.cos(), LABEL_ANGLE.sin());
-        assert!(angled_overlap(a, 80.0, a + along * 60.0, 80.0));
-        assert!(!angled_overlap(a, 80.0, a + along * 90.0, 80.0));
-        assert!(
-            !angled_overlap(a, 80.0, egui::pos2(100.0, 140.0), 80.0),
+            !a.overlaps(&NameBox::level(egui::pos2(100.0, 115.0), size)),
             "a line below"
         );
-        assert!(!angled_overlap(
-            a,
-            80.0,
-            egui::pos2(130.0, 100.0 + 30.0),
-            80.0
-        ));
+        assert!(
+            !a.overlaps(&NameBox::level(egui::pos2(185.0, 100.0), size)),
+            "past its end"
+        );
+        // Tilted up from its corner: clear of a level name that runs under its rise.
+        let tilted = NameBox {
+            at: egui::pos2(100.0, 90.0),
+            angle: LABEL_ANGLE,
+            size,
+        };
+        assert!(!tilted.overlaps(&NameBox::level(egui::pos2(150.0, 92.0), size)));
+        assert!(tilted.overlaps(&NameBox::level(egui::pos2(120.0, 70.0), size)));
     }
 
     #[test]

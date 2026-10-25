@@ -74,7 +74,8 @@ journey runs through) on a lit plane with a faint grid that fades out at
 its rim, and the calls standing out of it in one faint upright sheet from the journey's start,
 so each call drops straight from its caller's rail and none crosses another. Rails and
 calls are lit tubes that thicken towards the eye and grey into the fog, the calls lit
-balls; a faint dotted string runs from each back to its node, which glows with a soft
+balls; a faint dotted string runs back to its node from the cursor's call and each
+call it makes (others would fan out past following), and each node glows with a soft
 pool of its color, brightest for the cursor's. The camera rocks a few degrees about the
 map so the calls slide against it (`Shift Z` holds it still; `--rock-at 0.25` holds a
 screenshot at one end). Balls are never drawn larger than a
@@ -88,10 +89,11 @@ cursor's, the view fitted to them and sliding along as the cursor steps, with ho
 run earlier and later said at the rail's ends. Every angle in between unfolds as far as the camera has turned, and turning
 back folds each call into its node. Every call of the cursor's function is white, the
 link into the cursor's call violet and its own calls' links blue; every call is named
-in full on a slant wherever it fits (above, below or ending at its marker, else by its
-short name), the cursor's first, then the first calls and the cursor's neighbors.
+in full wherever it fits clear of the markers, the lifelines and other names: level
+beside, above or below its marker first, on a slant only where level ones clash, else
+by its short name; the cursor's first, then the first calls and the cursor's neighbors.
 Pointing at a call rings its node and every other call it runs and lights their pool and
-strings, pointing at a node does the same for all its calls, and clicking a call moves
+draws their strings, pointing at a node does the same for all its calls, and clicking a call moves
 the cursor to it.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
