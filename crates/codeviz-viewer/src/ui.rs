@@ -390,17 +390,12 @@ fn draw_names(
         let quiet = timeline.unfold > 0.15;
         // The nodes whose calls stand out on the rail, each found by its number.
         // The nodes whose calls stand out on the rail, each found by its number, and
-        // whether it runs the cursor's call or one it makes.
-        let cursor = timeline.cursor();
+        // whether it runs one of the calls round the cursor's that are always found.
+        let callers: Vec<Option<usize>> = timeline.calls.iter().map(|c| c.caller).collect();
+        let key = timeline::key_calls(&callers, timeline.cursor());
         let rail: Vec<(usize, bool)> = timeline
             .window()
-            .map(|i| {
-                let call = timeline.calls[i];
-                (
-                    call.tile,
-                    cursor.is_some_and(|c| c == i || call.caller == Some(c)),
-                )
-            })
+            .map(|i| (timeline.calls[i].tile, key.contains(&i)))
             .collect();
         draw_graph_labels(painter, to_screen, explorer, diff, up, quiet, &rail)
     } else {
@@ -1393,8 +1388,12 @@ fn draw_graph_labels(
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
-            // Quieted, only the nodes whose calls stand out on the rail.
+            // Quieted, only the nodes whose calls stand out on the rail, not even the
+            // focus's other callers and callees: the rail says what it calls.
             _ if quiet && journey.contains_key(&tile) && !on_rail(tile) => continue,
+            Some(Relation::Upstream(1) | Relation::Downstream(1)) if quiet && !on_rail(tile) => {
+                continue;
+            }
             _ if journey.contains_key(&tile) => 1,
             // A change is named even where the journey folds it away, after what the
             // journey shows.
@@ -1611,12 +1610,14 @@ fn draw_graph_labels(
                 // The focus, what the pointer is over and what the spotlight picks out
                 // are named come what may.
                 // So, in the 3D view, is the number of the node of the cursor's
-                // call or one it makes, and of every call on a short rail: it is how
-                // that call is found on the map.
+                // call, its caller, the calls either side of it and those it makes,
+                // and of every call on a short rail: it is how that call is found on
+                // the map.
                 let force = tier == 0
                     || hovered == Some(tile)
                     || spotlit.contains(&tile)
-                    || (badge_only && (rail.len() <= FEW_CALLS || key(tile)) && !by_focus(node));
+                    || (badge_only && key(tile))
+                    || (badge_only && rail.len() <= FEW_CALLS && !by_focus(node));
                 // Another badge with no room in a crowd counts towards its module's
                 // chip instead.
                 if !placer.place(named, node, edge, job, stroke, force)

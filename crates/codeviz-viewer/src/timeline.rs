@@ -998,11 +998,18 @@ pub(crate) fn draw_labels(
         };
         let number = disclosed.number(call.span).unwrap_or_default();
         let name = explorer.label(call.span);
+        // Where else the journey runs the same function, so a reader need not
+        // match its node on the map.
+        let also = disclosed
+            .tiles()
+            .get(&call.tile)
+            .map(|numbers| also_runs(numbers, number))
+            .unwrap_or_default();
         let numbered = |name: &str| {
             if number.is_empty() {
-                name.to_owned()
+                format!("{name}{also}")
             } else {
-                format!("{number}  {name}")
+                format!("{number}  {name}{also}")
             }
         };
         let current = timeline.cursor == Some(index);
@@ -1127,6 +1134,21 @@ impl NameBox {
                 let ((a_lo, a_hi), (b_lo, b_hi)) = (project(&a), project(&b));
                 a_lo < b_hi && b_lo < a_hi
             })
+    }
+}
+
+/// The other moments a function runs, after one of them, `number`: ` · also 6.2`, or
+/// for many, the first few and how many more.
+fn also_runs(numbers: &[String], number: &str) -> String {
+    let others: Vec<&str> = numbers
+        .iter()
+        .map(String::as_str)
+        .filter(|n| *n != number)
+        .collect();
+    match others.len() {
+        0 => String::new(),
+        1..=3 => format!("  · also {}", others.join(", ")),
+        n => format!("  · also {} +{}", others[..2].join(", "), n - 2),
     }
 }
 
@@ -1269,9 +1291,10 @@ fn draw_modules(
 const LABEL_ANGLE: f32 = -0.6;
 
 /// The order calls are offered a name, given each call's caller: the cursor's call,
-/// its caller chain, the calls it makes, then everything else by nearness to it or
-/// to `first`, where the window starts, so the first calls
-/// on the rail are named as surely as the cursor's neighbors; earlier first on a tie.
+/// its caller chain, every other call its caller makes by nearness to it, the calls it
+/// makes, then everything else by nearness to it or to `first`, where the window
+/// starts, so the first calls on the rail are named as surely as the cursor's
+/// neighbors; earlier first on a tie.
 pub(crate) fn label_order(
     callers: &[Option<usize>],
     cursor: Option<usize>,
@@ -1291,6 +1314,13 @@ pub(crate) fn label_order(
             push(at, &mut order);
             up = callers[at];
         }
+        let mut siblings: Vec<usize> = (0..callers.len())
+            .filter(|&i| callers[cursor].is_some() && callers[i] == callers[cursor])
+            .collect();
+        siblings.sort_by_key(|&i| i.abs_diff(cursor));
+        for i in siblings {
+            push(i, &mut order);
+        }
         for (i, caller) in callers.iter().enumerate() {
             if *caller == Some(cursor) {
                 push(i, &mut order);
@@ -1303,6 +1333,34 @@ pub(crate) fn label_order(
         push(i, &mut order);
     }
     order
+}
+
+/// The calls whose nodes the map always numbers while the cursor is on `cursor`: its
+/// own, its caller's, the calls just before and after it in time and among its
+/// caller's, and the calls it makes; given each call's caller.
+pub(crate) fn key_calls(callers: &[Option<usize>], cursor: Option<usize>) -> Vec<usize> {
+    let Some(cursor) = cursor.filter(|&c| c < callers.len()) else {
+        return Vec::new();
+    };
+    let mut key = vec![cursor];
+    key.extend(callers[cursor]);
+    key.extend(cursor.checked_sub(1));
+    key.extend((cursor + 1 < callers.len()).then_some(cursor + 1));
+    if callers[cursor].is_some() {
+        let siblings: Vec<usize> = (0..callers.len())
+            .filter(|&i| callers[i] == callers[cursor])
+            .collect();
+        let at = siblings
+            .iter()
+            .position(|&i| i == cursor)
+            .unwrap_or_default();
+        key.extend(at.checked_sub(1).and_then(|a| siblings.get(a)));
+        key.extend(siblings.get(at + 1));
+    }
+    key.extend((0..callers.len()).filter(|&i| callers[i] == Some(cursor)));
+    key.sort_unstable();
+    key.dedup();
+    key
 }
 
 #[cfg(test)]
@@ -1494,7 +1552,7 @@ mod tests {
     fn the_cursor_and_its_neighbors_are_named_first() {
         // 0 calls 1, 3, 4; 1 calls 2.
         let calls = [None, Some(0), Some(1), Some(0), Some(0)];
-        assert_eq!(label_order(&calls, Some(3), 0), vec![3, 0, 1, 2, 4]);
+        assert_eq!(label_order(&calls, Some(3), 0), vec![3, 0, 4, 1, 2]);
         assert_eq!(label_order(&calls, None, 0), vec![0, 1, 2, 3, 4]);
         // The rest by nearness to the cursor's, or to the window's start.
         let flat: Vec<Option<usize>> = std::iter::once(None)
@@ -1502,9 +1560,34 @@ mod tests {
             .collect();
         let order = label_order(&flat, Some(12), 0);
         assert_eq!(
-            &order[..8],
-            &[12, 0, 1, 11, 13, 2, 10, 14],
-            "the start as soon as the cursor's neighbors"
+            &order[..4],
+            &[12, 0, 11, 13],
+            "its caller's calls by nearness"
+        );
+        assert_eq!(order.len(), 20);
+        // Nested: the caller and all of its calls before the cursor's own calls.
+        // 0 calls 1 and 5; 1 calls 2, 3, 4; 3 calls 6... laid out depth first:
+        // 0; 1; 2; 3; 4 (calls 3's child at 4); 5 under 1; 6 under 0.
+        let nested = [None, Some(0), Some(1), Some(1), Some(3), Some(1), Some(0)];
+        assert_eq!(&label_order(&nested, Some(3), 0)[..6], &[3, 1, 0, 2, 5, 4]);
+    }
+
+    #[test]
+    fn the_map_numbers_the_cursors_neighbors_in_time_and_its_caller() {
+        let nested = [None, Some(0), Some(1), Some(1), Some(3), Some(1), Some(0)];
+        // Cursor 3: caller 1, before 2, after 4 (its own call), siblings 2 and 5.
+        assert_eq!(key_calls(&nested, Some(3)), vec![1, 2, 3, 4, 5]);
+        assert_eq!(key_calls(&nested, None), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_call_says_where_else_its_function_runs() {
+        let numbers = |ns: &[&str]| ns.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(also_runs(&numbers(&["5.1"]), "5.1"), "");
+        assert_eq!(also_runs(&numbers(&["5.1", "6.2"]), "5.1"), "  · also 6.2");
+        assert_eq!(
+            also_runs(&numbers(&["1", "2", "3", "4", "5"]), "3"),
+            "  · also 1, 2 +2"
         );
     }
 
