@@ -67,7 +67,8 @@ links fainter and only the focus, what touches it, what the journey runs and the
 modules named. The camera turns to look into the corner the two make and holds that
 view until you pan or zoom, pulling back only when the wall outgrows it; `F` looks into
 the corner again and `Z` again turns back. `Shift+Z` changes how the wall stands:
-slanted to face that view, so neither end looms (the default), square to the graph
+slanted to face the camera, swinging round as you orbit so it stays readable and
+neither end looms (the default), square to the graph
 along the depth it does not use, seen through a narrower lens, or curved around the
 graph. `--time slant|wall|arc` opens on one, `--wall-turn` looks from further round,
 and the top bar says which.

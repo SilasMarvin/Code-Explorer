@@ -59,7 +59,7 @@ impl TimeWall {
 pub(crate) enum Shape {
     /// Square to the graph, time running along its depth towards the viewer.
     Square,
-    /// Turned to face the usual view head-on, so neither end looms.
+    /// Turned to face the camera, swinging as it orbits, so neither end looms.
     #[default]
     Slant,
     /// Curved around the graph, a stretch of cylinder about its middle.
@@ -136,9 +136,12 @@ const ROW_GAP: f32 = 0.12;
 /// behind it is hidden by it; dimmed bars are see-through.
 const BACKING: egui::Color32 = egui::Color32::from_rgba_premultiplied(14, 16, 23, 240);
 
-/// The slanted wall's direction: the usual view's right, so it faces that view.
-fn slant() -> Vec3 {
-    Vec3::new(VIEW.0.cos(), 0.0, -VIEW.0.sin())
+/// The way a slanted wall runs to face a camera whose right is `right`: along it, level,
+/// swinging as the camera orbits, but never back across the graph.
+pub(crate) fn facing(right: Vec3) -> Vec3 {
+    let level = Vec3::new(right.x, 0.0, right.z).normalize_or(Vec3::X);
+    // At least this far out along x, away from the graph.
+    Vec3::new(level.x.max(0.2), 0.0, level.z).normalize()
 }
 
 /// The most the arc turns, start to end: a little short of a quarter, so its far end
@@ -152,6 +155,8 @@ const PIECES: f32 = 18.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Wall {
     shape: Shape,
+    /// Which way a slanted wall runs.
+    run: Vec3,
     /// Its corner nearest the graph at the bottom, where the journey starts.
     foot: Vec3,
     /// The middle of the journey's nodes, level with the foot: the arc's axis.
@@ -184,12 +189,19 @@ impl Wall {
         let foot = Vec3::new(max.x + GAP * extent, middle.y - height / 2.0, middle.z);
         Some(Self {
             shape,
+            run: facing(Quat::from_euler(EulerRot::YXZ, VIEW.0, VIEW.1, 0.0) * Vec3::X),
             foot,
             middle: Vec3::new(middle.x, foot.y, middle.z),
             length: (slots * SLOT).clamp(SHORT, LONG) * extent,
             row,
             rows,
         })
+    }
+
+    /// The wall turned, if slanted, to face a camera whose right is `right`.
+    pub(crate) fn facing(mut self, right: Vec3) -> Self {
+        self.run = facing(right);
+        self
     }
 
     /// The wall moved out along x, if need be, to stand clear past `edge`.
@@ -215,7 +227,7 @@ impl Wall {
         let rise = Vec3::Y * up * self.row;
         match self.shape {
             Shape::Square => self.foot + Vec3::Z * along * self.length + rise,
-            Shape::Slant => self.foot + slant() * along * self.length + rise,
+            Shape::Slant => self.foot + self.run * along * self.length + rise,
             Shape::Arc => {
                 let (radius, turn) = self.arc();
                 let angle = along * turn;
@@ -411,10 +423,11 @@ fn map_edge(explorer: &Explorer, wall: &Wall) -> f32 {
 type Placed = HashMap<SpanId, (f32, f32, usize)>;
 
 /// The journey's bars as disclosed, their slots across, and the wall to stand them on.
-fn stand(explorer: &Explorer, shape: Shape) -> Option<(Wall, Placed, f32)> {
+fn stand(explorer: &Explorer, shape: Shape, right: Vec3) -> Option<(Wall, Placed, f32)> {
     let disclosed = explorer.disclosure();
     let (placed, slots) = disclosed.layout(explorer.journey()?.root());
-    let wall = Wall::beside(shape, &journey_points(explorer), disclosed.rows(), slots)?;
+    let wall =
+        Wall::beside(shape, &journey_points(explorer), disclosed.rows(), slots)?.facing(right);
     Some((
         wall.clear_of(map_edge(explorer, &wall)),
         placed,
@@ -423,8 +436,8 @@ fn stand(explorer: &Explorer, shape: Shape) -> Option<(Wall, Placed, f32)> {
 }
 
 /// What the corner view must keep on screen: the wall and the journey's nodes.
-fn view_points(explorer: &Explorer, shape: Shape) -> Option<Vec<Vec3>> {
-    let (wall, _, _) = stand(explorer, shape)?;
+fn view_points(explorer: &Explorer, shape: Shape, rotation: Quat) -> Option<Vec<Vec3>> {
+    let (wall, _, _) = stand(explorer, shape, rotation * Vec3::X)?;
     let mut points: Vec<Vec3> = wall.face().into_iter().flatten().collect();
     points.extend(journey_points(explorer));
     Some(points)
@@ -438,7 +451,7 @@ fn corner_view(
     rotation: Quat,
     perspective: &PerspectiveProjection,
 ) -> Option<(Vec3, f32)> {
-    let points = view_points(explorer, shape)?;
+    let points = view_points(explorer, shape, rotation)?;
     let (min, max) = points.iter().fold(
         (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
         |(min, max), &p| (min.min(p), max.max(p)),
@@ -515,7 +528,7 @@ pub(crate) fn frame(
             }
         } else if let Some((target, distance)) = last.view
             && !camera.free
-            && let Some(points) = view_points(&explorer, wall.shape)
+            && let Some(points) = view_points(&explorer, wall.shape, transform.rotation)
             && fit_distance(&points, target, transform.rotation, &lens) > distance * OUTGROWN
         {
             last.view = corner_view(&explorer, wall.shape, transform.rotation, &lens);
@@ -856,7 +869,11 @@ pub(crate) fn draw(
     let hover = ctx
         .pointer_hover_pos()
         .filter(|p| area.contains(*p) && !ctx.egui_is_using_pointer());
-    let stood = wall.on.then(|| stand(explorer, wall.shape)).flatten();
+    let right = transform.right().as_vec3();
+    let stood = wall
+        .on
+        .then(|| stand(explorer, wall.shape, right))
+        .flatten();
     // The stretch around the cursor eases after it as it moves.
     let goal = stood.as_ref().and_then(|(_, placed, slots)| {
         let cursor = explorer.selected()?;
@@ -1133,13 +1150,18 @@ mod tests {
     }
 
     #[test]
-    fn the_slant_faces_the_usual_view() {
+    fn the_slant_faces_the_camera_as_it_orbits() {
         let points = [Vec3::ZERO, Vec3::new(100.0, 100.0, 0.0)];
         let wall = Wall::beside(Shape::Slant, &points, 2, 4.0).unwrap();
         let run = (wall.at(1.0, 0.0) - wall.at(0.0, 0.0)).normalize();
         let view = Quat::from_euler(EulerRot::YXZ, VIEW.0, VIEW.1, 0.0) * Vec3::Z;
         assert!(run.dot(view).abs() < 1e-4, "square to the line of sight");
         assert_eq!(wall.bar(0.0, 1.0, 1).len(), 1);
+        // Orbiting round to face the graph head-on, the wall swings level with it.
+        let front = wall.facing(Vec3::X);
+        assert!((front.at(1.0, 0.0).z - front.at(0.0, 0.0).z).abs() < 1e-3);
+        // But never back across the graph, from behind it.
+        assert!(facing(Vec3::NEG_X).x > 0.0);
     }
 
     #[test]
