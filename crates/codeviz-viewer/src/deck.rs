@@ -153,6 +153,10 @@ pub(crate) fn strength(away: f32) -> f32 {
 /// How strongly the cards next to the cursor's draw.
 const NEXT: f32 = 0.62;
 
+/// How much further apart stacked cards are than fanned ones: seen at a gentle
+/// angle, a step along depth moves a card less across the screen.
+const STACK_DEPTH: f32 = 1.8;
+
 /// How far a card `away` cards from the cursor's sits from it, `step` being one card
 /// on: fanned, each later card a step right and a little up, clear of the journey
 /// docked below, and back, so the cursor's is the nearest; stacked, straight back along depth, the past in front.
@@ -160,7 +164,7 @@ pub(crate) fn offset(mode: TimeMode, away: f32, step: Vec3) -> Vec3 {
     match mode {
         TimeMode::Off => Vec3::ZERO,
         TimeMode::Fan => Vec3::new(away * step.x, away * step.y, -away.abs() * step.z),
-        TimeMode::Stack => Vec3::new(0.0, 0.0, -away * step.z),
+        TimeMode::Stack => Vec3::new(0.0, 0.0, -away * step.z * STACK_DEPTH),
     }
 }
 
@@ -298,7 +302,10 @@ pub(crate) fn draw(
 ) -> Dealt {
     let mut taken = Vec::new();
     let mode = deck.mode;
-    let Some(at) = deck.at.filter(|_| mode != TimeMode::Off) else {
+    let Some(at) = deck
+        .at
+        .filter(|_| mode != TimeMode::Off && !deck.cards.is_empty())
+    else {
         return Dealt::default();
     };
     #[expect(clippy::cast_precision_loss, reason = "card indices")]
@@ -465,22 +472,29 @@ fn draw_ends(
     };
     let first = order.iter().map(|o| o.1).fold(f32::INFINITY, f32::min);
     let last = order.iter().map(|o| o.1).fold(f32::NEG_INFINITY, f32::max);
+    // Fanned, time runs left to right; stacked, the corners say which end is which.
+    let (earlier, later) = match mode {
+        TimeMode::Fan => ("← earlier", "later →"),
+        _ => ("earlier", "later"),
+    };
     let ends = [
         (
+            first < -0.5,
             first,
             Vec3::new(low.x, high.y, low.z),
             egui::Align2::LEFT_BOTTOM,
-            "← earlier",
+            earlier,
         ),
         (
+            last > 0.5,
             last,
             high.with_z(low.z),
             egui::Align2::RIGHT_BOTTOM,
-            "later →",
+            later,
         ),
     ];
-    for (away, corner, align, text) in ends {
-        if away.abs() < 0.5 || !away.is_finite() {
+    for (shown, away, corner, align, text) in ends {
+        if !shown {
             continue;
         }
         if let Some(at) = project(corner + offset(mode, away, deck.step)) {
