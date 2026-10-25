@@ -23,7 +23,7 @@ use crate::{
     },
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
-    fly::Flight,
+    fly::{self, Flight},
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
 };
@@ -735,10 +735,15 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 }
 
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
-/// follows it as the graph moves.
+/// follows it as the graph moves. With time as depth, the cursor's node instead, so
+/// stepping flies from call to call.
 /// Not once the viewer has panned or zoomed away.
-pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let Some(at) = explorer.anchor().and_then(|t| explorer.force_point(t)) else {
+pub(crate) fn hold_center(
+    explorer: Res<Explorer>,
+    flight: Res<Flight>,
+    mut cameras: Query<&mut OrbitCamera>,
+) {
+    let Some(at) = center_tile(&explorer, &flight).and_then(|t| explorer.force_point(t)) else {
         return;
     };
     for mut camera in &mut cameras {
@@ -746,6 +751,42 @@ pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut Orbit
             camera.target = at;
         }
     }
+}
+
+/// The node the camera holds in the middle: where the journey starts, or with time as
+/// depth, the cursor's node.
+fn center_tile(explorer: &Explorer, flight: &Flight) -> Option<usize> {
+    if flight.on() {
+        explorer.graph_focus()
+    } else {
+        explorer.anchor()
+    }
+}
+
+/// With time as depth, looks at the cursor's node from far enough back to see the calls
+/// either side of it on the map: `snug` refits to them, else it pulls back as far as
+/// they need and comes in only once it is more than twice as far back as they need,
+/// so stepping through one neighborhood never pumps the view in and out, while
+/// stepping into a tighter one flies in to it.
+fn frame_flight(
+    explorer: &Explorer,
+    at: Vec3,
+    snug: bool,
+    camera: &mut OrbitCamera,
+    transform: &Transform,
+    perspective: &PerspectiveProjection,
+) {
+    let window: Vec<Vec3> = fly::window(explorer)
+        .into_iter()
+        .filter_map(|t| explorer.force_point(t))
+        .collect();
+    let needed = fit_distance(&window, at, transform.rotation, perspective);
+    let distance = if snug || needed > camera.distance || needed * 2.0 < camera.distance {
+        needed
+    } else {
+        camera.distance
+    };
+    camera.glide_to(at, distance);
 }
 
 /// Orbits the node the journey starts at from far enough back to see everything it
@@ -793,6 +834,7 @@ pub(crate) struct Followed {
     aim: Option<(Option<usize>, u64)>,
     focus: Option<usize>,
     disclosed: Option<Arc<Disclosed>>,
+    flying: bool,
 }
 
 /// Turns to the node the journey starts at whenever the view is pointed somewhere by
@@ -803,6 +845,7 @@ pub(crate) struct Followed {
 /// level more or less of the journey refits the view to what shows.
 pub(crate) fn follow_focus(
     explorer: Res<Explorer>,
+    flight: Res<Flight>,
     mut last: Local<Followed>,
     mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
 ) {
@@ -815,15 +858,26 @@ pub(crate) fn follow_focus(
         .as_ref()
         .is_some_and(|d| !Arc::ptr_eq(d, &disclosure));
     let moved = last.focus != focus;
+    let took_off = flight.on() && !last.flying;
     *last = Followed {
         aim: Some(aim),
         focus,
         disclosed: Some(disclosure),
+        flying: flight.on(),
     };
-    let Some(at) = explorer.anchor().and_then(|t| explorer.force_point(t)) else {
+    let Some(at) = center_tile(&explorer, &flight).and_then(|t| explorer.force_point(t)) else {
         return;
     };
     for (mut camera, transform, projection) in &mut cameras {
+        if flight.on() {
+            if let Projection::Perspective(perspective) = projection
+                && (aimed || took_off || !camera.free && (opened || moved))
+            {
+                let snug = aimed || took_off || opened && !moved;
+                frame_flight(&explorer, at, snug, &mut camera, transform, perspective);
+            }
+            continue;
+        }
         if aimed {
             orbit_anchor(&explorer, &mut camera);
             continue;

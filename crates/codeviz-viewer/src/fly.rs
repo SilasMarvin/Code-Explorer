@@ -76,6 +76,9 @@ pub(crate) struct Flight {
     steps: HashMap<usize, f32>,
     /// The mode last drawn, so turning it on turns the camera to face the map.
     mode: TimeMode,
+    /// Each node's call nearest the cursor's, by its number, and how many times the
+    /// journey calls it.
+    nearest: HashMap<usize, (String, usize)>,
     /// The map's plane, as far along the head-on view as the node the camera orbits.
     plane: f32,
 }
@@ -89,6 +92,14 @@ impl Flight {
     /// How strongly a node draws: in full off the journey and at the cursor.
     pub(crate) fn fade(&self, tile: usize) -> f32 {
         self.fades.get(&tile).copied().unwrap_or(1.0)
+    }
+
+    /// The number of a node's call nearest the cursor's, the one it sits at, and how
+    /// many times the journey calls it.
+    pub(crate) fn nearest(&self, tile: usize) -> Option<(&str, usize)> {
+        self.nearest
+            .get(&tile)
+            .map(|(number, count)| (number.as_str(), *count))
     }
 
     /// Calls between the cursor's and a node's nearest, when it is on the journey.
@@ -142,7 +153,7 @@ pub(crate) fn steps_from(calls: &[usize], cursor: usize) -> HashMap<usize, i32> 
 
 /// How far towards the camera a call `step` calls from the cursor's sits, as a share
 /// of the camera's distance: past calls fall away behind the map, quickly at first,
-/// future ones rise towards the eye but never much more than half way, so none fills
+/// future ones rise towards the eye but never even half way, so none fills
 /// the view.
 pub(crate) fn depth(step: f32) -> f32 {
     if step >= 0.0 {
@@ -160,7 +171,7 @@ pub(crate) fn apparent_size(step: f32) -> f32 {
 
 /// The furthest towards the eye a call comes, and the furthest behind the map it falls,
 /// as shares of the camera's distance.
-const NEAREST: f32 = 0.6;
+const NEAREST: f32 = 0.45;
 const DEEPEST: f32 = 2.0;
 
 /// How strongly a call `step` calls from the cursor's draws: in full at the cursor,
@@ -175,8 +186,9 @@ pub(crate) fn strength(step: f32) -> f32 {
 /// What is left of a call far from the cursor.
 const TRACE: f32 = 0.12;
 
-/// The disclosed journey's nodes in the order they run, and where the cursor is in it.
-fn journey_calls(explorer: &Explorer) -> (Vec<usize>, Option<usize>) {
+/// The disclosed journey's calls in the order they run, by node and span, and where the
+/// cursor is among them.
+fn journey_calls(explorer: &Explorer) -> (Vec<(usize, SpanId)>, Option<usize>) {
     let Some(journey) = explorer.journey() else {
         return (Vec::new(), None);
     };
@@ -199,10 +211,55 @@ fn journey_calls(explorer: &Explorer) -> (Vec<usize>, Option<usize>) {
             if Some(span) == cursor {
                 at = Some(calls.len());
             }
-            calls.push(tile);
+            calls.push((tile, span));
         }
     }
     (calls, at)
+}
+
+/// The nodes of the calls within [`WINDOW`] of the cursor's, as the camera frames them.
+pub(crate) fn window(explorer: &Explorer) -> Vec<usize> {
+    let (calls, cursor) = journey_calls(explorer);
+    let Some(cursor) = cursor else {
+        return Vec::new();
+    };
+    let from = cursor.saturating_sub(WINDOW);
+    calls
+        .into_iter()
+        .skip(from)
+        .take(WINDOW * 2 + 1)
+        .map(|(tile, _)| tile)
+        .collect()
+}
+
+/// Calls either side of the cursor's the camera keeps in view.
+const WINDOW: usize = 2;
+
+/// For each node `steps` places, the number of the call it sits at and how many calls
+/// the journey makes to it.
+fn nearest_numbers(
+    explorer: &Explorer,
+    calls: &[(usize, SpanId)],
+    cursor: Option<usize>,
+    steps: &HashMap<usize, i32>,
+) -> HashMap<usize, (String, usize)> {
+    let Some(cursor) = cursor else {
+        return HashMap::new();
+    };
+    let disclosed = explorer.disclosure();
+    let mut counts: HashMap<usize, usize> = HashMap::new();
+    for &(tile, _) in calls {
+        *counts.entry(tile).or_default() += 1;
+    }
+    steps
+        .iter()
+        .filter_map(|(&tile, &step)| {
+            let index = cursor.checked_add_signed(isize::try_from(step).ok()?)?;
+            let &(_, span) = calls.get(index)?;
+            let number = disclosed.number(span)?.to_owned();
+            Some((tile, (number, counts.get(&tile).copied().unwrap_or(1))))
+        })
+        .collect()
 }
 
 /// Where a point on the map's plane at `flat` is drawn `rise` towards the eye: straight
@@ -250,10 +307,12 @@ pub(crate) fn fly(
     }
     let explorer_ref = explorer.bypass_change_detection();
     let (calls, cursor) = journey_calls(explorer_ref);
+    let tiles: Vec<usize> = calls.iter().map(|&(tile, _)| tile).collect();
     let steps = match cursor.filter(|_| mode != TimeMode::Off) {
-        Some(cursor) => steps_from(&calls, cursor),
+        Some(cursor) => steps_from(&tiles, cursor),
         None => HashMap::new(),
     };
+    flight.nearest = nearest_numbers(explorer_ref, &calls, cursor, &steps);
     // The map's plane: through the node the camera orbits, square to the head-on view.
     let plane = explorer_ref
         .anchor()

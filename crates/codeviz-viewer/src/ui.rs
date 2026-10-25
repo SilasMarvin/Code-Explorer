@@ -1340,9 +1340,18 @@ fn draw_graph_labels(
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
+            // With time as depth, the calls nearest the cursor's first.
+            _ if journey.contains_key(&tile) && flight.on() => {
+                if flight.step(tile).is_some_and(|s| s.abs() < 2.5) {
+                    1
+                } else {
+                    2
+                }
+            }
             _ if journey.contains_key(&tile) => 1,
             // With time as depth, the map off the journey goes unnamed but for what
-            // touches the focus, so the journey's names read.
+            // touches the focus, and that after the journey, so the journey's names read.
+            Some(Relation::Upstream(1) | Relation::Downstream(1)) if flight.on() => 3,
             Some(Relation::Upstream(2..) | Relation::Downstream(2..)) | None if flight.on() => {
                 continue;
             }
@@ -1505,7 +1514,7 @@ fn draw_graph_labels(
                     .flatten()
                     .reduce(|a, b| format!("{a} · {b}"));
                 // A node the journey runs leads with its place in it, as its bar does.
-                let order = journey
+                let listed = journey
                     .get(&tile)
                     .filter(|numbers| !numbers.is_empty())
                     .map(|numbers| match numbers.as_slice() {
@@ -1514,6 +1523,17 @@ fn draw_graph_labels(
                         [first, .., last] => format!("{first} … {last}"),
                         [] => String::new(),
                     });
+                // With time as depth, the call it sits at, and how often it runs.
+                let (order, aside) = match flight.nearest(tile) {
+                    Some((number, count)) => (
+                        (!number.is_empty()).then(|| number.to_owned()),
+                        [aside, (count > 1).then(|| format!("×{count}"))]
+                            .into_iter()
+                            .flatten()
+                            .reduce(|a, b| format!("{a} · {b}")),
+                    ),
+                    None => (listed, aside),
+                };
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one; what changed after it.
                 let fill =
