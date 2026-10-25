@@ -24,9 +24,8 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
-    order::link_strength,
     scene::{PALETTE, Tile, lane_color},
-    ui::Chrome,
+    timeline::{Timeline, map_strength},
 };
 
 /// Calls into the focus.
@@ -323,28 +322,35 @@ fn fade(hops: u32) -> f32 {
     }
 }
 
-/// Every call as a link, then the spotlight, the focus and the node under the pointer.
+/// Every call as a link, then the spotlight, the focus and the node under the pointer;
+/// fading as the timeline unfolds, since seen from the side they collapse.
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
-    chrome: Res<Chrome>,
+    timeline: Res<Timeline>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
-    draw_regions(&explorer, &mut gizmos);
+    let strength = map_strength(&timeline);
+    if strength <= 0.05 {
+        return;
+    }
+    draw_regions(&explorer, strength, &mut gizmos);
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, link_strength(&chrome), &mut gizmos),
+        None => draw_calls(&explorer, time, strength, &mut gizmos),
     }
-    draw_spotlight(&explorer, time, &mut gizmos);
-    draw_attention(&explorer, &mut gizmos);
+    if strength > 0.5 {
+        draw_spotlight(&explorer, time, &mut gizmos);
+        draw_attention(&explorer, &mut gizmos);
+    }
 }
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
 /// path, are pale arrows fading with distance; everything else is faint. All of them
-/// draw at `strength`, less while the route is drawn over them.
+/// draw at `strength`.
 fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
@@ -522,8 +528,7 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 }
 
 /// Each module's region, as the functions showing place it: its cluster, middle, and
-/// a radius holding most of them. Where the simulation puts them, so a node the fan
-/// draws away leaves its ring where it was.
+/// a radius holding most of them.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
     let graph = explorer.graph();
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
@@ -531,7 +536,7 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
         if explorer.visibility(tile) < 0.5 {
             continue;
         }
-        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.force_point(tile))
+        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.tile_point(tile))
             && let Some(list) = members.get_mut(cluster)
         {
             list.push(at);
@@ -555,14 +560,14 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
 }
 
 /// A faint ring round each module's region, in its color.
-fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
+fn draw_regions(explorer: &Explorer, strength: f32, gizmos: &mut Gizmos) {
     for (cluster, middle, radius) in regions(explorer) {
         let color = lane_color(cluster % PALETTE.len());
         gizmos
             .circle(
                 Isometry3d::from_translation(middle),
                 radius,
-                color.with_alpha(0.22),
+                color.with_alpha(0.22 * strength),
             )
             .resolution(64);
     }
@@ -688,7 +693,8 @@ fn fit_distance(
     // The share of the half-view a point may use: the rest is room for its name, and
     // for the journey docked over the bottom right.
     const ROOM: f32 = 0.72;
-    let tan_y = (perspective.fov / 2.0).tan() * ROOM;
+    // The field before the timeline's lens narrows it, as distances are measured.
+    let tan_y = (crate::timeline::FIELD / 2.0).tan() * ROOM;
     let tan_x = tan_y * perspective.aspect_ratio;
     let (right, up, back) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
     points
@@ -720,13 +726,18 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
 /// follows it as the graph moves.
 /// Not once the viewer has panned or zoomed away.
-pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
+/// With the timeline unfolded, along time as far as keeps the cursor's call in sight.
+pub(crate) fn hold_center(
+    explorer: Res<Explorer>,
+    timeline: Res<Timeline>,
+    mut cameras: Query<&mut OrbitCamera>,
+) {
     let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
         return;
     };
     for mut camera in &mut cameras {
         if !camera.free {
-            camera.target = at;
+            camera.target = at + Vec3::Z * timeline.pan;
         }
     }
 }
@@ -786,6 +797,7 @@ pub(crate) struct Followed {
 /// level more or less of the journey refits the view to what shows.
 pub(crate) fn follow_focus(
     explorer: Res<Explorer>,
+    timeline: Res<Timeline>,
     mut last: Local<Followed>,
     mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
 ) {
@@ -811,7 +823,8 @@ pub(crate) fn follow_focus(
             orbit_anchor(&explorer, &mut camera);
             continue;
         }
-        if camera.free || !(opened || moved) {
+        // Along the timeline the cursor's call is kept in sight by panning instead.
+        if camera.free || !(opened || moved) || timeline.unfold > 0.0 {
             continue;
         }
         let Projection::Perspective(perspective) = projection else {

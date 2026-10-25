@@ -24,9 +24,9 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    order::{self, Order, OrderMode},
     scene::{PALETTE, lane_color},
     source_diff,
+    timeline::{self, TimeView, Timeline},
 };
 
 pub(crate) struct UiPlugin;
@@ -137,8 +137,8 @@ pub(crate) struct Chrome {
     pub(crate) side: bool,
     pub(crate) search: bool,
     pub(crate) dial_turned: Option<f32>,
-    /// How call order shows on the graph (E).
-    pub(crate) order: OrderMode,
+    /// Whether the camera looks at the map or along the journey's time (Z).
+    pub(crate) time: TimeView,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -150,7 +150,7 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    order: Res<Order>,
+    timeline: Res<Timeline>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
@@ -198,14 +198,17 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
-        draw_graph_labels(
-            &painter,
-            &to_screen,
-            &explorer,
-            diff.as_deref(),
-            &order.fanned,
-            transform.up().into(),
-        );
+        // Seen from the side the map's names would pile up; the calls are named.
+        if timeline.unfold < 0.5 {
+            draw_graph_labels(
+                &painter,
+                &to_screen,
+                &explorer,
+                diff.as_deref(),
+                transform.up().into(),
+            );
+        }
+        timeline::draw_labels(&painter, &to_screen, &explorer, &timeline);
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
         let mut clear = above(graph_area, panel_area);
@@ -244,13 +247,14 @@ fn draw_ui(
         if let Some(area) = panel_area {
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(&explorer, &to_screen)) {
+            let node = cursor_node(&explorer, &timeline, &to_screen);
+            if let (Some(bar), Some(node)) = (tethers.cursor, node) {
                 tether(ctx, bar, node, false);
             }
             // The bar under the pointer, to the node it stands for.
             let hovered = explorer
                 .hovered_tile
-                .and_then(|tile| explorer.tile_point(tile))
+                .and_then(|tile| timeline.tile_point(&explorer, tile))
                 .and_then(to_screen);
             if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
                 tether(ctx, bar, node, true);
@@ -296,16 +300,16 @@ fn panels(
                     }
                     if ui
                         .selectable_label(
-                            chrome.order != OrderMode::Off,
-                            format!("Order: {}", chrome.order.name()),
+                            chrome.time != TimeView::Map,
+                            format!("View: {}", chrome.time.name()),
                         )
                         .on_hover_text(
-                            "Call order on the graph: off → fan (the focus's calls lined up \
-                             beside it) → route (the journey as one line) (E)",
+                            "Swing the camera between the map and the side, where the \
+                             journey's calls run left to right in time (Z)",
                         )
                         .clicked()
                     {
-                        chrome.order = chrome.order.next();
+                        chrome.time = chrome.time.next();
                     }
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -364,15 +368,17 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     }
 }
 
-/// Where the cursor's node is on screen, for the tether from its bar.
+/// Where the cursor's node is on screen, for the tether from its bar: its call's
+/// marker while time is unfolded.
 fn cursor_node(
     explorer: &Explorer,
+    timeline: &Timeline,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
 ) -> Option<egui::Pos2> {
     explorer
         .focus()
         .and_then(|unit| explorer.map().tile_of(unit))
-        .and_then(|tile| explorer.tile_point(tile))
+        .and_then(|tile| timeline.tile_point(explorer, tile))
         .and_then(to_screen)
 }
 
@@ -1274,7 +1280,6 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    fanned: &[(usize, usize)],
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
@@ -1542,7 +1547,6 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    order::draw_marks(painter, &discs, fanned);
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1752,7 +1756,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("E", "call order: off → fan → route"),
+            ("Z", "swing between the map and calls in time"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

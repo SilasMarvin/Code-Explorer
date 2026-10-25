@@ -59,16 +59,16 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`E` shows call order on the graph itself, cycling off, fan and route (`--order fan` or
-`--order route` opens on one; the top bar says which). The fan lines the focus's calls
-up in a column beside it, first at the top, in the screen's plane whatever the orbit,
-opening them in the journey so they carry its numbers; a function called more than once
-sits at its first call marked `×2`, and everything else stays put. The route moves
-nothing: it threads the disclosed journey through its nodes in the order it runs, one
-pale line with chevrons, solid where a call goes in and dotted where execution returns
-and moves on to the next call, with the other links faded back. Passes over the same
-pair of nodes run side by side, the line fades away from the cursor, and a marker rides
-it to the cursor's stop.
+`Z` swings the camera a quarter turn to see the journey's calls in time (`--time side`
+opens there, `--time half` halfway round; the top bar says which). Time runs along
+depth: every disclosed call gets a marker at its function's node, pushed back by when it
+runs, evenly spaced, so head-on the map is unchanged, and from the side the calls read
+left to right at their nodes' heights, a function called twice appearing twice. The
+markers unfold as the camera turns while the map's nodes, links and names fade, so
+swinging back folds each call into its node. Each call hangs from its caller's lifeline,
+which runs along time for as long as the caller does; the cursor's call is white, the
+call into it violet and its own calls blue. The side view is near orthographic, the view
+pans along time to keep the cursor in sight, and clicking a call moves the cursor to it.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

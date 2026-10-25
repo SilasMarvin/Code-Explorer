@@ -59,6 +59,10 @@ pub(crate) struct OrbitCamera {
     /// Whether the viewer has panned or zoomed away from the focused node, so the
     /// camera stops holding it in the middle.
     pub(crate) free: bool,
+    /// How far the lens narrows: the camera stands this many times further back,
+    /// through a field as much narrower, so what it frames keeps its size but flattens
+    /// towards orthographic.
+    pub(crate) lens: f32,
 }
 
 impl Default for OrbitCamera {
@@ -72,6 +76,7 @@ impl Default for OrbitCamera {
             goal_distance: None,
             goal_angles: None,
             free: false,
+            lens: 1.0,
         }
     }
 }
@@ -233,9 +238,12 @@ fn camera_input(
     }
 }
 
-fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Transform)>) {
+fn apply_camera(
+    time: Res<Time>,
+    mut cameras: Query<(&mut OrbitCamera, &mut Transform, &mut Projection)>,
+) {
     let ease = 1.0 - (-EASING * time.delta_secs()).exp();
-    for (mut camera, mut transform) in &mut cameras {
+    for (mut camera, mut transform, mut projection) in &mut cameras {
         camera.focus = camera.focus.lerp(camera.target, ease);
         if let Some(goal) = camera.goal_distance {
             camera.distance += (goal - camera.distance) * ease;
@@ -251,7 +259,15 @@ fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Tran
             }
         }
         let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
-        transform.translation = camera.focus + rotation * Vec3::Z * camera.distance;
+        let lens = camera.lens.max(1.0);
+        transform.translation = camera.focus + rotation * Vec3::Z * camera.distance * lens;
         transform.rotation = rotation;
+        if let Projection::Perspective(perspective) = &mut *projection {
+            let fov = 2.0 * ((crate::timeline::FIELD / 2.0).tan() / lens).atan();
+            if (perspective.fov - fov).abs() > 1e-5 {
+                perspective.fov = fov;
+            }
+            perspective.far = perspective.far.max(camera.distance * lens * 4.0);
+        }
     }
 }
