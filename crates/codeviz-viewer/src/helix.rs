@@ -19,7 +19,7 @@ use codeviz_core::SpanId;
 use crate::{
     camera::OrbitCamera,
     explorer::Explorer,
-    graph_view::node_color,
+    scene::{PALETTE, lane_color},
     ui::{Chrome, egui_color, node_name},
 };
 
@@ -174,7 +174,7 @@ const WIDENING: f32 = 0.15;
 
 /// How far each call steps up, as a share of the camera's distance, and how high
 /// the stair stands at most.
-const STEP: f32 = 0.03;
+const STEP: f32 = 0.05;
 const HEIGHT: f32 = 0.25;
 
 /// Where call `index` (from 0) of `count` stands on a helix of unit radius and unit
@@ -464,22 +464,42 @@ impl Pen<'_> {
         #[expect(clippy::cast_precision_loss, reason = "a small count")]
         let top = stair.base + Vec3::Z * stair.step * stair.count as f32;
         self.line(Layer::String, stair.base, top, LINE.with_alpha(0.35 * fade));
-        let rail: Vec<Vec3> = (0..=last * 12)
-            .map(|i| {
-                #[expect(clippy::cast_precision_loss, reason = "a small count")]
-                let along = i as f32 / 12.0;
-                stair.point(along)
-            })
-            .collect();
-        self.lines
-            .push((Layer::Rail, rail, LINE.with_alpha(0.45 * fade)));
+        // The rail, brighter as far as the cursor, so what has run reads as climbed.
+        let run = cursor.unwrap_or(0);
+        let rail = |from: usize, to: usize| -> Vec<Vec3> {
+            (from * 12..=to * 12)
+                .map(|i| {
+                    #[expect(clippy::cast_precision_loss, reason = "a small count")]
+                    let along = i as f32 / 12.0;
+                    stair.point(along)
+                })
+                .collect()
+        };
+        if run > 0 {
+            self.lines
+                .push((Layer::Rail, rail(0, run), LINE.with_alpha(0.6 * fade)));
+        }
+        if run < last {
+            self.lines
+                .push((Layer::Rail, rail(run, last), LINE.with_alpha(0.3 * fade)));
+        }
         for (index, call) in calls.iter().enumerate() {
             #[expect(clippy::cast_precision_loss, reason = "a small count")]
             let at = stair.point(index as f32);
             let is_cursor = cursor == Some(index);
             // A tread from the axis out to it, so its height reads as a step.
             let axis = stair.base + Vec3::Z * (at.z - stair.base.z);
-            self.line(Layer::String, axis, at, LINE.with_alpha(0.16 * fade));
+            // The cursor's is the clock's hand.
+            if is_cursor {
+                self.line(
+                    Layer::Cursor,
+                    axis,
+                    at,
+                    Color::WHITE.with_alpha(0.75 * fade),
+                );
+            } else {
+                self.line(Layer::String, axis, at, LINE.with_alpha(0.16 * fade));
+            }
             if let Some(node) = self.explorer.tile_point(call.to) {
                 if is_cursor {
                     self.line(Layer::Cursor, at, node, Color::WHITE.with_alpha(0.9 * fade));
@@ -493,7 +513,9 @@ impl Pen<'_> {
                 axis,
                 number: call.number.clone(),
                 name: node_name(self.explorer, call.to),
-                color: node_color(self.explorer, None, call.to),
+                // Its module's color even on the focus, which the map paints white, so
+                // only the cursor's marker is white.
+                color: lane_color(self.explorer.tile_color(call.to) % PALETTE.len()),
                 cursor: is_cursor,
                 small,
                 tile: call.to,
@@ -635,10 +657,16 @@ fn disc(marker: &Marker) -> f32 {
 /// Behind a name, dark enough to read over the map.
 const BACK: egui::Color32 = egui::Color32::from_rgba_premultiplied(12, 14, 19, 215);
 
-/// A marker's disc in its callee's color, with the last part of its number.
+/// A marker's disc in its callee's color, the cursor's white, with the last part of
+/// its number.
 fn draw_disc(painter: &egui::Painter, marker: &Marker, at: egui::Pos2) {
     let r = disc(marker);
-    painter.circle_filled(at, r, egui_color(marker.color));
+    let fill = if marker.cursor {
+        egui::Color32::WHITE
+    } else {
+        egui_color(marker.color)
+    };
+    painter.circle_filled(at, r, fill);
     let ring = if marker.cursor {
         egui::Stroke::new(2.0, egui::Color32::WHITE)
     } else {
