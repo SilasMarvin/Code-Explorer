@@ -948,6 +948,7 @@ pub(crate) fn draw_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     timeline: &Timeline,
+    map_names: &[egui::Rect],
 ) {
     let alpha = ((timeline.unfold - 0.25) / 0.3).clamp(0.0, 1.0);
     if alpha <= 0.0 {
@@ -981,9 +982,11 @@ pub(crate) fn draw_labels(
             )
         }))
         .collect();
+    // Nor over the map's names, nor the window's ends.
     taken.extend(
         draw_window_ends(painter, to_screen, explorer, timeline, alpha)
             .into_iter()
+            .chain(map_names.iter().copied())
             .map(|r| NameBox::level(r.min, r.size())),
     );
     // Below the top bar and short of the right edge, so no name is cut off.

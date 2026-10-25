@@ -67,10 +67,11 @@ out of the map by when it runs, evenly spaced, so head-on the map is unchanged. 
 hangs from its caller's lifeline, a rail running out from the caller's node for as long
 as it runs. The 3D view, turned 55° and level so time runs flat across the screen, in perspective
 with fog, shows the map quieted (links a little over half, on a big map about a third, the
-journey's nodes only numbered, as their calls carry the names, every node with a call
-in view keeping its number, in a short list beside a crowd with a leader to its node
-where there is no room, and names only on the focus's neighbors and the modules the
-journey runs through) on a lit plane with a faint grid that fades out at
+journey's nodes only numbered, as their calls carry the names, and only those with a
+call on the rail: all of them on a rail of up to 20 calls, else those with room, the
+cursor's call and its own calls' always, and the rest of a crowd counted in one chip by
+its module's ring, such as `UI · 3 calls`; names only on the focus's neighbors and the
+modules the journey runs through, and the rail's names keep off the map's) on a lit plane with a faint grid that fades out at
 its rim, and the calls standing out of it in one faint upright sheet from the journey's start,
 so each call drops straight from its caller's rail and none crosses another. Rails and
 calls are lit tubes that thicken towards the eye and grey into the fog, the calls lit

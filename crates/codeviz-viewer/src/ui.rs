@@ -386,13 +386,28 @@ fn draw_names(
     up: Vec3,
 ) {
     // Turning towards time, only the journey, the focus's neighbors and the modules.
-    if timeline.side() < 0.5 {
+    let taken = if timeline.side() < 0.5 {
         let quiet = timeline.unfold > 0.15;
         // The nodes whose calls stand out on the rail, each found by its number.
-        let standing: Vec<usize> = timeline.window().map(|i| timeline.calls[i].tile).collect();
-        draw_graph_labels(painter, to_screen, explorer, diff, up, quiet, &standing);
-    }
-    timeline::draw_labels(painter, to_screen, explorer, timeline);
+        // The nodes whose calls stand out on the rail, each found by its number, and
+        // whether it runs the cursor's call or one it makes.
+        let cursor = timeline.cursor();
+        let rail: Vec<(usize, bool)> = timeline
+            .window()
+            .map(|i| {
+                let call = timeline.calls[i];
+                (
+                    call.tile,
+                    cursor.is_some_and(|c| c == i || call.caller == Some(c)),
+                )
+            })
+            .collect();
+        draw_graph_labels(painter, to_screen, explorer, diff, up, quiet, &rail)
+    } else {
+        Vec::new()
+    };
+    // The rail's names keep off what the map's names took.
+    timeline::draw_labels(painter, to_screen, explorer, timeline, &taken);
 }
 
 /// Where the cursor's node is on screen, for the tether from its bar: its call's
@@ -1309,8 +1324,8 @@ fn draw_graph_labels(
     diff: Option<&DiffView>,
     up: Vec3,
     quiet: bool,
-    standing: &[usize],
-) {
+    rail: &[(usize, bool)],
+) -> Vec<egui::Rect> {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
     let diff_tier = |tile: usize| {
@@ -1359,7 +1374,10 @@ fn draw_graph_labels(
     // Whether a point on screen sits by the focus, whose name nothing forced covers.
     let focus_at = center.and_then(|c| discs[c]).map(|(node, _)| node);
     let by_focus = |at: egui::Pos2| focus_at.is_some_and(|f| f.distance(at) < 40.0);
-    let mut crowded = Vec::new();
+    let on_rail = |tile: usize| rail.iter().any(|&(t, _)| t == tile);
+    let key = |tile: usize| rail.iter().any(|&(t, key)| t == tile && key);
+    // Per module, how many calls on the rail run nodes whose badges found no room.
+    let mut crowded: Vec<(usize, usize)> = Vec::new();
 
     // Lower ranks are placed first and win any overlap.
     let mut order: Vec<(LabelRank, Named)> = Vec::new();
@@ -1375,6 +1393,8 @@ fn draw_graph_labels(
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
+            // Quieted, only the nodes whose calls stand out on the rail.
+            _ if quiet && journey.contains_key(&tile) && !on_rail(tile) => continue,
             _ if journey.contains_key(&tile) => 1,
             // A change is named even where the journey folds it away, after what the
             // journey shows.
@@ -1590,94 +1610,85 @@ fn draw_graph_labels(
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
                 // are named come what may.
-                // So is the number of a node with a call on the rail in the 3D view:
-                // it is how that call is found on the map.
-                // Where it finds no room in a crowd, it joins its module's list
-                // beside the crowd, with a leader back to its node.
-                let listed = badge_only && standing.contains(&tile) && !by_focus(node);
-                let force = tier == 0 || hovered == Some(tile) || spotlit.contains(&tile);
-                if !placer.place(named, node, edge, job.clone(), stroke, force) && listed {
-                    crowded.push((graph.cluster(tile).unwrap_or(usize::MAX), node, job));
+                // So, in the 3D view, is the number of the node of the cursor's
+                // call or one it makes, and of every call on a short rail: it is how
+                // that call is found on the map.
+                let force = tier == 0
+                    || hovered == Some(tile)
+                    || spotlit.contains(&tile)
+                    || (badge_only && (rail.len() <= FEW_CALLS || key(tile)) && !by_focus(node));
+                // Another badge with no room in a crowd counts towards its module's
+                // chip instead.
+                if !placer.place(named, node, edge, job, stroke, force)
+                    && badge_only
+                    && let Some(cluster) = graph.cluster(tile)
+                {
+                    let calls = rail.iter().filter(|&&(t, _)| t == tile).count();
+                    match crowded.iter_mut().find(|(c, _)| *c == cluster) {
+                        Some((_, count)) => *count += calls,
+                        None => crowded.push((cluster, calls)),
+                    }
                 }
             }
         }
     }
+    let mut taken = placer.taken.clone();
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    draw_badge_lists(painter, crowded);
+    for (cluster, calls) in crowded {
+        if let Some(at) = ring_top(cluster) {
+            let text = format!(
+                "{} · {calls} call{}",
+                explorer.cluster_name(cluster).to_uppercase(),
+                if calls == 1 { "" } else { "s" }
+            );
+            let color = egui_color(lane_color(cluster % PALETTE.len()));
+            taken.push(draw_chip(
+                painter,
+                at + egui::vec2(0.0, 16.0),
+                text,
+                color,
+                &taken,
+            ));
+        }
+    }
+    taken
 }
 
-/// A badge in a list: its node on screen, and its number laid out.
-type Badge = (egui::Pos2, std::sync::Arc<egui::Galley>);
+/// The most calls on the rail whose nodes are all badged, crowd or not; past that a
+/// crowd's badges with no room collapse into its module's chip.
+const FEW_CALLS: usize = 20;
 
-/// Lists the number badges that found no room in a crowd, a list a module, each to
-/// the left of its badges' nodes and level with them, a faint leader from each badge
-/// to its node.
-fn draw_badge_lists(
+/// A module's chip for the badges its crowd had no room for, below `at` by its ring's
+/// top, or further down where that is taken; returns where it went.
+fn draw_chip(
     painter: &egui::Painter,
-    crowded: Vec<(usize, egui::Pos2, egui::text::LayoutJob)>,
-) {
-    const ROW: f32 = 18.0;
-    let mut lists: Vec<(usize, Vec<Badge>)> = Vec::new();
-    for (cluster, node, job) in crowded {
-        let galley = painter.layout_job(job);
-        match lists.iter_mut().find(|(c, _)| *c == cluster) {
-            Some((_, list)) => list.push((node, galley)),
-            None => lists.push((cluster, vec![(node, galley)])),
-        }
-    }
-    let mut lists: Vec<(f32, f32, Vec<Badge>)> = lists
-        .into_iter()
-        .map(|(_, mut list)| {
-            list.sort_by(|a, b| a.0.y.total_cmp(&b.0.y));
-            #[expect(clippy::cast_precision_loss, reason = "a few badges")]
-            let middle = list.iter().map(|(n, _)| n.y).sum::<f32>() / list.len() as f32;
-            let left = list.iter().map(|(n, _)| n.x).fold(f32::INFINITY, f32::min);
-            (middle, left, list)
+    at: egui::Pos2,
+    text: String,
+    color: egui::Color32,
+    taken: &[egui::Rect],
+) -> egui::Rect {
+    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(11.0), color);
+    let size = galley.size() + PILL_PAD * 2.0;
+    let rect = (0..6)
+        .map(|step| {
+            #[expect(clippy::cast_precision_loss, reason = "a few steps")]
+            let down = step as f32 * (size.y + 3.0);
+            egui::Rect::from_center_size(at + egui::vec2(0.0, down + size.y / 2.0), size)
         })
-        .collect();
-    lists.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let bounds = painter.clip_rect().shrink(30.0);
-    let wanted: Vec<(f32, usize)> = lists.iter().map(|(y, _, l)| (*y, l.len())).collect();
-    let tops = stack_lists(&wanted, ROW, bounds.top(), bounds.bottom());
-    let leader = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(120));
-    for ((_, left, list), top) in lists.into_iter().zip(tops) {
-        let width = list.iter().map(|(_, g)| g.size().x).fold(0.0, f32::max);
-        let x = (left - 60.0 - width).max(bounds.left());
-        for (row, (node, galley)) in list.into_iter().enumerate() {
-            #[expect(clippy::cast_precision_loss, reason = "a few badges")]
-            let min = egui::pos2(x + width - galley.size().x, top + row as f32 * ROW);
-            let pill = egui::Rect::from_min_size(min, galley.size()).expand2(PILL_PAD);
-            painter.line_segment([egui::pos2(pill.right(), pill.center().y), node], leader);
-            painter.circle_filled(node, 2.0, leader.color);
-            painter.rect_filled(pill, 4.0, PILL);
-            painter.galley(min, galley, egui::Color32::WHITE);
-        }
-    }
-}
-
-/// Where each list's first row goes, given each list's middle and how many rows it
-/// has, in order down the screen: centred on its middle, pushed down clear of the
-/// list above, and back up as needed to end above `bottom`, never above `top`.
-pub(crate) fn stack_lists(lists: &[(f32, usize)], row: f32, top: f32, bottom: f32) -> Vec<f32> {
-    #[expect(clippy::cast_precision_loss, reason = "a few rows")]
-    let height = |rows: usize| rows as f32 * row;
-    let mut tops: Vec<f32> = Vec::with_capacity(lists.len());
-    let mut below = top;
-    for &(middle, rows) in lists {
-        let at = (middle - height(rows) / 2.0).max(below);
-        tops.push(at);
-        below = at + height(rows) + row / 2.0;
-    }
-    // Back up from the bottom where the last lists ran past it.
-    let mut above = bottom;
-    for (i, &(_, rows)) in lists.iter().enumerate().rev() {
-        tops[i] = tops[i].min(above - height(rows)).max(top);
-        above = tops[i] - row / 2.0;
-    }
-    tops
+        .find(|rect| !taken.iter().any(|t| t.intersects(*rect)))
+        .unwrap_or_else(|| egui::Rect::from_center_size(at + egui::vec2(0.0, size.y / 2.0), size));
+    painter.rect_filled(rect, 4.0, PILL);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, color.gamma_multiply(0.6)),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.min + PILL_PAD, galley, color);
+    rect
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1981,18 +1992,6 @@ pub(crate) fn egui_color(color: Color) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn badge_lists_stack_clear_of_each_other_and_the_edges() {
-        // Alone, centred on its badges' middle.
-        assert_eq!(stack_lists(&[(100.0, 4)], 10.0, 0.0, 500.0), vec![80.0]);
-        // Two lists wanting the same place: the second goes below the first.
-        let tops = stack_lists(&[(100.0, 4), (110.0, 2)], 10.0, 0.0, 500.0);
-        assert!(tops[1] >= tops[0] + 40.0);
-        // Near the edges: kept inside.
-        assert_eq!(stack_lists(&[(5.0, 4)], 10.0, 0.0, 500.0), vec![0.0]);
-        assert_eq!(stack_lists(&[(495.0, 4)], 10.0, 0.0, 500.0), vec![460.0]);
-    }
 
     /// Runs one frame that places a label for `key` at `node` with `blocked` taken,
     /// and returns the side it took and where its text was drawn from the node.
