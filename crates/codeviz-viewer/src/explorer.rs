@@ -807,20 +807,6 @@ impl Explorer {
         self.disclosure_epoch += 1;
     }
 
-    /// Opens the calls under one span, past the disclosed depth, unless they show.
-    /// Returns whether it opened them.
-    pub(crate) fn open_calls(&mut self, span: SpanId) -> bool {
-        let disclosed = self.disclosure();
-        if disclosed.children(span).iter().all(|&c| disclosed.shows(c)) {
-            return false;
-        }
-        if !self.track_mut().expanded.insert(span) {
-            return false;
-        }
-        self.disclosure_epoch += 1;
-        true
-    }
-
     /// What the journey discloses, worked out once per change.
     pub(crate) fn disclosure(&self) -> Arc<Disclosed> {
         let key = (

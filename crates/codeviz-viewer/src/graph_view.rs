@@ -24,9 +24,8 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
-    order::link_strength,
     scene::{PALETTE, Tile, lane_color},
-    ui::Chrome,
+    stairs::{STAIRS_VIEW, Stairs},
 };
 
 /// Calls into the focus.
@@ -327,7 +326,6 @@ fn fade(hops: u32) -> f32 {
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
-    chrome: Res<Chrome>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
@@ -335,7 +333,7 @@ pub(crate) fn draw_graph(
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, link_strength(&chrome), &mut gizmos),
+        None => draw_calls(&explorer, time, 1.0, &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
     draw_attention(&explorer, &mut gizmos);
@@ -344,7 +342,7 @@ pub(crate) fn draw_graph(
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
 /// path, are pale arrows fading with distance; everything else is faint. All of them
-/// draw at `strength`, less while the route is drawn over them.
+/// draw at `strength`.
 fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
@@ -571,16 +569,17 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F turns to face the graph head-on, centered on the journey's start again; R pulls
-/// back to take in the whole graph.
+/// F turns to face the graph head-on, centered on the journey's start again, or with
+/// the stairs up to the view that shows them; R pulls back to take in the whole graph.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
+    stairs: Res<Stairs>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(FRONT);
+            camera.turn_to(if stairs.up() { STAIRS_VIEW } else { FRONT });
             orbit_anchor(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {
@@ -720,8 +719,16 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
 /// follows it as the graph moves.
 /// Not once the viewer has panned or zoomed away.
-pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+pub(crate) fn hold_center(
+    explorer: Res<Explorer>,
+    stairs: Res<Stairs>,
+    mut cameras: Query<&mut OrbitCamera>,
+) {
+    let Some(at) = explorer
+        .anchor()
+        .and_then(|t| explorer.tile_point(t))
+        .map(|at| at + stairs.lift())
+    else {
         return;
     };
     for mut camera in &mut cameras {
