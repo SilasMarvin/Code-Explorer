@@ -391,7 +391,7 @@ fn cast_footprints(
 // ---- the rock ----
 
 /// How far the camera rocks each way, in radians, and how long a cycle takes.
-const ROCK: f32 = 0.03;
+const ROCK: f32 = 0.045;
 const ROCK_PERIOD: f32 = 6.0;
 
 /// Whether the time view rocks the camera, and where in its rock to hold it.
