@@ -326,6 +326,9 @@ struct Footprints {
 #[derive(Component)]
 struct Footprint;
 
+/// The cursor's footprint's size, as a share of its ball's, and brightness.
+const CURSOR_POOL: (f32, f32) = (1.7, 1.6);
+
 /// How bright a footprint is at its middle, at most.
 const FOOTPRINT: f32 = 0.55;
 
@@ -441,8 +444,13 @@ fn cast_footprints(
             continue;
         };
         let rise = ribbon::rise_share(&ribbon, index);
-        let (spread, strength) = ribbon::shadow_shape(rise);
         let cursor = ribbon.cursor == Some(index);
+        // The cursor's pool is tight and bright, a spot on its node, whatever its height.
+        let (spread, strength) = if cursor {
+            (CURSOR_POOL.0, CURSOR_POOL.1)
+        } else {
+            ribbon::shadow_shape(rise)
+        };
         let pixels =
             ribbon::marker_radius(eye.nearness(call.marker), cursor, ribbon.calls.len()) * spread;
         // Round the node itself rather than on the floor straight under it: the map
@@ -467,8 +475,10 @@ fn cast_footprints(
 // ---- the rock ----
 
 /// How far the camera rocks each way, in radians, and how long a cycle takes.
-const ROCK: f32 = 0.045;
-const ROCK_PERIOD: f32 = 6.0;
+const ROCK: f32 = 0.035;
+const ROCK_PERIOD: f32 = 7.0;
+/// How long the rock holds still after a hand last moved the camera, in seconds.
+const ROCK_REST: f32 = 1.0;
 
 /// Whether the time view rocks the camera, and where in its rock to hold it.
 #[derive(Resource, Debug, Default)]
@@ -484,22 +494,39 @@ pub(crate) fn sway(phase: f32) -> f32 {
     ROCK * (phase * TAU).sin()
 }
 
+/// Whether the rock rests at `now`, a hand having last moved the camera at `handled`:
+/// for a moment after, so it never fights a drag or a zoom.
+pub(crate) fn resting(now: f32, handled: Option<f32>) -> bool {
+    handled.is_some_and(|at| now - at < ROCK_REST)
+}
+
 /// While the ribbon is up, rocks the view gently from side to side about the map, so
-/// what floats over it slides against it; easing in and out, and held still by
-/// `Shift Z`.
+/// what floats over it slides against it; easing in and out, resting while a hand
+/// moves the camera and a moment after, and held still by `Shift Z`.
 fn rock(
     time: Res<Time>,
     settings: Res<Rock>,
     ribbon: Res<Ribbon>,
     mut amount: Local<f32>,
+    mut handled: Local<Option<f32>>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
-    let on = if settings.still { 0.0 } else { ribbon.lift() };
-    let ease = 1.0 - (-time.delta_secs() * 2.0).exp();
+    let now = time.elapsed_secs();
+    for mut camera in &mut cameras {
+        if std::mem::take(&mut camera.handled) {
+            *handled = Some(now);
+        }
+    }
+    let on = if settings.still || resting(now, *handled) {
+        0.0
+    } else {
+        ribbon.lift()
+    };
+    // Quick to rest, slow to start again.
+    let rate = if on < *amount { 6.0 } else { 1.5 };
+    let ease = 1.0 - (-time.delta_secs() * rate).exp();
     *amount += (on - *amount) * ease;
-    let phase = settings
-        .held_at
-        .unwrap_or(time.elapsed_secs() / ROCK_PERIOD);
+    let phase = settings.held_at.unwrap_or(now / ROCK_PERIOD);
     for mut camera in &mut cameras {
         camera.sway = sway(phase) * *amount;
         // About the map under the ribbon's middle, so the map holds still and the
@@ -598,6 +625,13 @@ mod tests {
         assert!((sway(0.25) - ROCK).abs() < 1e-6, "one end");
         assert!((sway(0.75) + ROCK).abs() < 1e-6, "the other");
         assert!(sway(1.0).abs() < 1e-5, "and back");
+    }
+
+    #[test]
+    fn the_rock_rests_a_moment_after_a_hand_moves_the_camera() {
+        assert!(!resting(5.0, None), "rocks untouched");
+        assert!(resting(5.0, Some(4.5)), "rests just after");
+        assert!(!resting(5.0, Some(3.5)), "and starts again");
     }
 
     #[test]

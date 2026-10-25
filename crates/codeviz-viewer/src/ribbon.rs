@@ -168,9 +168,9 @@ pub(crate) fn in_order<S: Copy>(root: S, children: impl Fn(S) -> Vec<S>) -> Vec<
 
 /// The first call's height over the map, and the most a step between calls or the
 /// whole ribbon rises, as shares of the scale.
-const BASE: f32 = 0.6;
+const BASE: f32 = 1.0;
 const STEP: f32 = 0.2;
-const TALL: f32 = 2.0;
+const TALL: f32 = 1.8;
 
 /// Steps either side of the cursor that keep their room in a long journey, and the
 /// share of the ribbon's height they may take between them.
@@ -231,6 +231,17 @@ pub(crate) enum Label {
     End,
     /// Another call to the cursor's function, by number.
     Again,
+    /// Every few calls along the rest, by number and name, so the climb is named
+    /// end to end.
+    Mark,
+}
+
+/// Calls named along the ribbon besides the cursor's and its ends, about.
+const MARKS: usize = 6;
+
+/// How many calls apart the marks along a ribbon of `count` calls are named.
+pub(crate) fn marks_every(count: usize) -> usize {
+    count.div_ceil(MARKS).max(2)
 }
 
 /// Calls either side of the cursor that are named.
@@ -244,7 +255,12 @@ pub(crate) fn label(index: usize, count: usize, cursor: Option<usize>) -> Option
     if cursor.is_some_and(|c| c.abs_diff(index) <= NEAR) {
         return Some(Label::Near);
     }
-    (index == 0 || index + 1 == count).then_some(Label::End)
+    if index == 0 || index + 1 == count {
+        return Some(Label::End);
+    }
+    index
+        .is_multiple_of(marks_every(count))
+        .then_some(Label::Mark)
 }
 
 /// How strongly the thread from call `index` to the next draws with the cursor at
@@ -595,7 +611,16 @@ fn name_calls(
     let mut labelled: Vec<(usize, Label)> = (0..ribbon.calls.len())
         .filter_map(|i| ribbon.label_of(i).map(|l| (i, l)))
         .collect();
-    labelled.sort_by_key(|&(i, l)| (l != Label::Cursor, l != Label::Again, l == Label::End, i));
+    // The cursor's first, then its function's other calls, its neighbors, the ends,
+    // and the marks between where room is left.
+    let rank = |l: Label| match l {
+        Label::Cursor => 0,
+        Label::Again => 1,
+        Label::Near => 2,
+        Label::End => 3,
+        Label::Mark => 4,
+    };
+    labelled.sort_by_key(|&(i, l)| (rank(l), i));
     for (index, kind) in labelled {
         let (Some(call), Some(at)) = (ribbon.calls.get(index), screen[index]) else {
             continue;
@@ -608,7 +633,7 @@ fn name_calls(
         let pill = match kind {
             Label::Cursor | Label::Again => egui::Color32::from_rgb(245, 247, 252),
             Label::Near => egui::Color32::from_rgb(178, 184, 198),
-            Label::End => egui::Color32::from_rgb(120, 127, 142),
+            Label::End | Label::Mark => egui::Color32::from_rgb(120, 127, 142),
         };
         let size = if kind == Label::Cursor { 13.0 } else { 11.0 };
         let galley = painter.layout_no_wrap(text, egui::FontId::proportional(size), INK);
@@ -742,7 +767,12 @@ mod tests {
         assert_eq!(kinds[5], Some(Label::Cursor));
         assert_eq!(kinds[3], Some(Label::Near));
         assert_eq!(kinds[7], Some(Label::Near));
-        assert_eq!(kinds[2], None);
+        assert_eq!(kinds[1], None);
+        assert_eq!(
+            kinds[2],
+            Some(Label::Mark),
+            "every other call in a short one"
+        );
         assert_eq!(kinds[0], Some(Label::End));
         assert_eq!(kinds[9], Some(Label::End));
         assert_eq!(
@@ -796,5 +826,15 @@ mod tests {
             marker_radius(1.5, false, 10) > marker_radius(1.0, false, 10),
             "nearer, bigger"
         );
+    }
+
+    #[test]
+    fn marks_name_the_climb_end_to_end() {
+        assert_eq!(marks_every(19), 4);
+        assert_eq!(marks_every(5), 2, "never every call");
+        let marked: Vec<usize> = (0..19)
+            .filter(|&i| label(i, 19, Some(10)) == Some(Label::Mark))
+            .collect();
+        assert_eq!(marked, vec![4, 16], "8 and 12 are the cursor's neighbors");
     }
 }

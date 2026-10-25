@@ -69,6 +69,9 @@ pub(crate) struct OrbitCamera {
     /// Where the sway turns about, from the point orbited: points near it hold still
     /// on screen while what stands nearer the eye slides across them.
     pub(crate) pivot: Vec3,
+    /// Whether a hand has turned, panned or zoomed it since this was last cleared, so
+    /// the rock can hold still while it does.
+    pub(crate) handled: bool,
 }
 
 impl Default for OrbitCamera {
@@ -84,6 +87,7 @@ impl Default for OrbitCamera {
             free: false,
             sway: 0.0,
             pivot: Vec3::ZERO,
+            handled: false,
         }
     }
 }
@@ -98,6 +102,7 @@ impl OrbitCamera {
 
     /// Moves the point orbited by `offset` at once, letting go of the focus.
     fn pan(&mut self, offset: Vec3) {
+        self.handled = true;
         self.target += offset;
         self.focus += offset;
         self.free = true;
@@ -106,6 +111,7 @@ impl OrbitCamera {
     /// Zooms by `factor` (below 1 is nearer), towards `toward` when given: the whole
     /// view scales about that point, so it stays where it is on screen.
     fn zoom(&mut self, factor: f32, toward: Option<Vec3>) {
+        self.handled = true;
         let distance = (self.distance * factor).clamp(2.0, 4_000.0);
         if let Some(point) = toward {
             self.pan((self.focus - point) * (distance / self.distance - 1.0));
@@ -116,6 +122,7 @@ impl OrbitCamera {
 
     /// Turns by a drag of `delta` pixels.
     fn orbit(&mut self, delta: Vec2) {
+        self.handled = true;
         self.goal_angles = None;
         self.yaw -= delta.x * ORBIT_SPEED;
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
@@ -167,7 +174,7 @@ fn spawn_camera(
         Camera {
             order: 1,
             output_mode: CameraOutputMode::Write {
-                blend_state: Some(BlendState::ALPHA_BLENDING),
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 clear_color: ClearColorConfig::None,
             },
             clear_color: ClearColorConfig::Custom(Color::NONE),
