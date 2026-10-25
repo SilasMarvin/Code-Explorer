@@ -394,7 +394,8 @@ fn cast_footprints(
         let rise = ribbon::rise_share(&ribbon, index);
         let (spread, strength) = ribbon::shadow_shape(rise);
         let cursor = ribbon.cursor == Some(index);
-        let pixels = ribbon::marker_radius(eye.nearness(call.marker), cursor) * spread;
+        let pixels =
+            ribbon::marker_radius(eye.nearness(call.marker), cursor, ribbon.calls.len()) * spread;
         // Round the node itself rather than on the floor straight under it: the map
         // is not quite flat, and a tilted view would part the two.
         let at = call.foot - Vec3::Z * node_size(explorer.graph(), call.tile) * 0.5;

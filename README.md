@@ -63,10 +63,12 @@ whichever of those is on top, or the spotlight.
 No node moves: the disclosed journey rises over the map as a ribbon, one marker per call
 (a function called three times has three, stacked over its node), a lit ball filled with
 its node's color, floating higher the later it runs and joined to the next by a pale
-thread. The camera tilts gently, so the map keeps its shape, and depth cues carry the
+thread, thicker where it is nearer the eye. Away from the cursor the thread and balls
+step back into the haze, and a long journey's balls are smaller, so a crowd stays apart. The camera tilts gently, so the map keeps its shape, and depth cues carry the
 height instead of a steep angle: the map lies on a faintly gridded floor; each call
 leaves a soft pool of its color's light round its node, wider and fainter the higher
-the call floats, so its height is the gap between ball and pool; haze dims what is
+the call floats and brightest for the cursor's, so its height is the gap between ball
+and pool; haze dims what is
 farther from the eye; nearer balls are bigger and cover farther ones; and the view rocks
 a few degrees from side to side about the map, so the ribbon slides against it
 (`Shift Z` holds it still; `--rock-at 0.25` and `0.75` hold a screenshot at either end).
