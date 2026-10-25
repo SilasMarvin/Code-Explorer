@@ -656,10 +656,17 @@ pub(crate) fn draw_strings(
         let points = string_points(call.marker, call.foot, 16);
         let pieces = points.len().saturating_sub(1);
         for (i, pair) in points.windows(2).enumerate() {
-            // Brightest at the deck, thinning a little towards the map.
+            // Brightest at the deck, thinning towards the map: a little for the bright
+            // strings, most of the way for the rest, whose pools mark where they land,
+            // so a crowd of strings doesn't knot over a crowd of nodes.
             #[expect(clippy::cast_precision_loss, reason = "a few pieces")]
             let t = i as f32 / pieces.max(1) as f32;
-            let color = tint.with_alpha(alpha * (1.0 - 0.35 * t));
+            let thin = if away.is_some_and(|a| a <= NEAR) {
+                0.35
+            } else {
+                0.8
+            };
+            let color = tint.with_alpha(alpha * (1.0 - thin * t));
             if away == Some(0) && floors.cursor == Some(index) {
                 bold.line(pair[0], pair[1], color);
             } else {
