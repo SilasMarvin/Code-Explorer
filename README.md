@@ -63,7 +63,9 @@ whichever of those is on top, or the spotlight.
 bar says so). No node moves: each call the disclosed journey makes is drawn as an arc
 from its caller to the function it calls, lifting off the map towards you, higher the
 later it runs, so the journey stacks up as bridges, first low and last high. A function
-called twice gets two arcs. The camera tilts up a little from below, so height reads as
+called twice gets two arcs. The stack holds one list of calls at a time, the ones the
+cursor steps through with `←`/`→` (the root's, until you step into a call), and of a
+long list the 15 around the cursor. The camera tilts up a little from below, so height reads as
 rising up the screen while the map stays nearly face on, and an arc whose link runs up
 or down the screen leans to the right of its way so it opens into a loop; `Z` again turns
 the camera back. The stack stands as high as the view allows. The cursor's arc is white

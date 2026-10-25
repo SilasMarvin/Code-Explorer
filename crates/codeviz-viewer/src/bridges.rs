@@ -2,11 +2,15 @@
 //! journey makes is drawn as an arc from its caller to the function it calls, lifting
 //! off the map towards the viewer, higher the later it runs, so the journey reads as a
 //! stack of bridges, first low and last high. A function called twice gets two arcs.
+//! The stack holds the calls the cursor steps through, one list at a time, and of a
+//! long list the stretch around the cursor.
 //!
-//! Depth hardly shows head-on, so each arc also leans to one side of its link by as
-//! much as it lifts, and `Z` tilts the camera a little, from below, so height reads as
-//! rising up the screen while the map stays nearly face on. The cursor's arc is bright
-//! and numbered; the others are pale, numbered at their tops where there is room.
+//! Depth hardly shows head-on, so `Z` tilts the camera a little, from below, and height
+//! reads as rising up the screen while the map stays nearly face on. An arc whose link
+//! runs up or down the screen would rise along itself, so it leans sideways and opens
+//! into a loop. The stack stands as high as the view allows. The cursor's arc is
+//! bright and numbered, with a pier down to its link; the others are pale, numbered at
+//! their tops where there is room.
 //!
 //! [`Chrome`] holds whether they show; [`Bridges`] eases them up and down.
 
@@ -58,6 +62,8 @@ pub(crate) struct Bridges {
 pub(crate) struct Top {
     pub(crate) at: Vec3,
     pub(crate) number: String,
+    /// Where the arc leaves and lands.
+    pub(crate) ends: (Vec3, Vec3),
     /// How strongly the arc draws, 1 for the cursor's.
     pub(crate) strength: f32,
     pub(crate) cursor: bool,
@@ -96,10 +102,11 @@ const LINE: Color = Color::srgb(0.86, 0.89, 0.95);
 
 /// The camera's turn while the bridges show: square to the map side to side, tilted up
 /// from below so that what lifts towards the viewer rises on screen.
-const TILT: (f32, f32) = (0.0, 0.42);
+const TILT: (f32, f32) = (0.0, 0.3);
 
-/// How high the last call's arc stands, as a share of the camera's distance, so the
-/// stack keeps its height on screen however far the view is zoomed out.
+/// How high the last call's arc stands at most, as a share of the camera's distance,
+/// so the stack keeps its height on screen however far the view is zoomed out; lower
+/// when that would take a top off screen.
 const TOP: f32 = 0.45;
 
 /// The first call's height as a share of the last's, so it still clears its link.
@@ -179,11 +186,13 @@ pub(crate) fn lift_direction(from: Vec3, to: Vec3, right: Vec3) -> Vec3 {
     Vec3::Z + side * LEAN * way.dot(up).abs()
 }
 
-/// One call to draw: its caller's node, its callee's, its span and its number.
+/// One call to draw: its caller's node, its callee's, its span, its caller's span and
+/// its number.
 struct Call {
     from: usize,
     to: usize,
     span: SpanId,
+    caller: SpanId,
     number: String,
 }
 
@@ -210,10 +219,50 @@ fn journey_calls(explorer: &Explorer) -> Vec<Call> {
                 from: tile(caller)?,
                 to: tile(call)?,
                 span: call,
+                caller,
                 number: disclosed.number(call)?.to_owned(),
             })
         })
         .collect()
+}
+
+/// The calls the cursor steps through: those its caller makes, or the root's when it
+/// is on none, so the stack holds one list of calls at a time, however deep the
+/// journey is open; stepping into a call shows the calls it makes. A cursor inside a
+/// call that draws no arc of its own, as in a closure, counts as on that call.
+fn in_step(explorer: &Explorer, calls: Vec<Call>) -> (Vec<Call>, Option<SpanId>) {
+    let Some(journey) = explorer.journey() else {
+        return (Vec::new(), None);
+    };
+    let on = std::iter::successors(explorer.selected(), |&s| journey.span(s)?.parent)
+        .find(|&s| calls.iter().any(|c| c.span == s));
+    let caller = on
+        .and_then(|s| calls.iter().find(|c| c.span == s))
+        .map_or(journey.root(), |c| c.caller);
+    let mut calls: Vec<Call> = calls.into_iter().filter(|c| c.caller == caller).collect();
+    // A long list shows the stretch around the cursor.
+    let at = on.and_then(|s| calls.iter().position(|c| c.span == s));
+    let shown = window(calls.len(), at, WINDOW);
+    calls.truncate(shown.end);
+    calls.drain(..shown.start);
+    (calls, on)
+}
+
+/// The most calls the stack holds at once.
+const WINDOW: usize = 15;
+
+/// Which of `count` calls the stack holds, at most `size` of them: all when they fit,
+/// else a run centered on the cursor's, or from the first when it is on none, kept
+/// whole at either end.
+pub(crate) fn window(count: usize, cursor: Option<usize>, size: usize) -> std::ops::Range<usize> {
+    if count <= size {
+        return 0..count;
+    }
+    let start = cursor
+        .unwrap_or(0)
+        .saturating_sub(size / 2)
+        .min(count - size);
+    start..start + size
 }
 
 /// Eases the arcs up while the bridges show and down when they don't, and tilts the
@@ -260,7 +309,7 @@ pub(crate) fn draw_bridges(
     let Ok((camera, view, projection)) = cameras.single() else {
         return;
     };
-    let calls = journey_calls(&explorer);
+    let (calls, on) = in_step(&explorer, journey_calls(&explorer));
     let graph = explorer.graph();
     let right = view.right().as_vec3();
     // Each call's ends, from the caller's surface to the callee's, and which way and
@@ -287,7 +336,7 @@ pub(crate) fn draw_bridges(
         Projection::Perspective(perspective) => (perspective.fov / 2.0).tan(),
         _ => 0.4,
     };
-    let eye = View {
+    let eye = Eye {
         at: view.translation,
         up: view.up().as_vec3(),
         forward: view.forward().as_vec3(),
@@ -299,9 +348,7 @@ pub(crate) fn draw_bridges(
         .map(|&(from, to, lift)| (from.lerp(to, 0.5), lift))
         .collect();
     let top = fitting_top(&eye, &tops, camera.distance * TOP) * ease_in_out(bridges.rise);
-    let cursor = explorer
-        .selected()
-        .and_then(|s| calls.iter().position(|c| c.span == s));
+    let cursor = on.and_then(|s| calls.iter().position(|c| c.span == s));
     let forward = eye.forward;
     let fade = bridges.rise.min(1.0);
     for (index, (call, span)) in calls.iter().zip(&spans).enumerate() {
@@ -331,12 +378,21 @@ pub(crate) fn draw_bridges(
                 pier,
             );
         } else {
-            arcs.linestrip(points.iter().copied(), color);
+            // Faint where it leaves the caller, where a busy caller's arcs crowd, and
+            // whole from its top down to where it lands.
+            #[expect(clippy::cast_precision_loss, reason = "a small count")]
+            let last = (points.len() - 1).max(1) as f32;
+            arcs.linestrip_gradient(points.iter().enumerate().map(|(i, &p)| {
+                #[expect(clippy::cast_precision_loss, reason = "a small count")]
+                let along = i as f32 / last;
+                (p, color.with_alpha(color.alpha() * emerging(along)))
+            }));
             arrowhead(&mut arcs, &points, forward, head, color);
         }
         bridges.tops.push(Top {
             at: from.lerp(to, 0.5) + lift,
             number: call.number.clone(),
+            ends: (from, to),
             strength,
             cursor: is_cursor,
         });
@@ -344,7 +400,7 @@ pub(crate) fn draw_bridges(
 }
 
 /// Where a camera looks from and how wide it sees.
-pub(crate) struct View {
+pub(crate) struct Eye {
     pub(crate) at: Vec3,
     pub(crate) up: Vec3,
     pub(crate) forward: Vec3,
@@ -358,7 +414,7 @@ const ROOM: f32 = 0.82;
 /// How high the stack may stand, at most `most`, so that every arc's top stays on
 /// screen: each given by the middle of its link and which way it lifts per unit of
 /// height. Arcs whose link is already off screen don't hold it down.
-pub(crate) fn fitting_top(view: &View, arcs: &[(Vec3, Vec3)], most: f32) -> f32 {
+pub(crate) fn fitting_top(view: &Eye, arcs: &[(Vec3, Vec3)], most: f32) -> f32 {
     let limit = ROOM * view.tan_half;
     arcs.iter()
         .filter_map(|&(middle, lift)| {
@@ -384,6 +440,12 @@ pub(crate) fn fitting_top(view: &View, arcs: &[(Vec3, Vec3)], most: f32) -> f32 
             Some(fits.min(near))
         })
         .fold(most, f32::min)
+}
+
+/// How much of an arc's strength shows `along` it, 0 at the caller to 1 at the
+/// callee: a fifth where it leaves, rising to all of it by its top.
+pub(crate) fn emerging(along: f32) -> f32 {
+    0.2 + 0.8 * ease_in_out(along * 2.0)
 }
 
 /// Slow at both ends, so the arcs lift off and settle gently.
@@ -452,6 +514,15 @@ pub(crate) fn draw_numbers(
         let Some(at) = to_screen(top.at) else {
             continue;
         };
+        // An arc too low to clear its nodes leaves its number to theirs.
+        let (from, to) = (to_screen(top.ends.0), to_screen(top.ends.1));
+        if [from, to]
+            .into_iter()
+            .flatten()
+            .any(|end| end.distance(at) < LOW)
+        {
+            continue;
+        }
         let size = if top.cursor { 13.0 } else { 11.0 };
         let text = if top.cursor {
             egui::Color32::WHITE
@@ -482,6 +553,10 @@ pub(crate) fn draw_numbers(
         painter.galley(rect.center() - galley.size() * 0.5, galley, text);
     }
 }
+
+/// How near an arc's top may come to either of its nodes on screen, in points, and
+/// still be numbered.
+const LOW: f32 = 22.0;
 
 /// Whether `rect` keeps a little off every one of `placed`.
 pub(crate) fn clear_of(rect: egui::Rect, placed: &[egui::Rect]) -> bool {
@@ -566,7 +641,7 @@ mod tests {
     #[test]
     fn the_stack_stands_no_higher_than_the_view() {
         // Looking down -z from 100 away, a quarter-turn view: tan(fov / 2) = 1.
-        let view = View {
+        let view = Eye {
             at: Vec3::Z * 100.0,
             up: Vec3::Y,
             forward: -Vec3::Z,
@@ -582,6 +657,23 @@ mod tests {
         // A link already off screen doesn't hold the rest down.
         let off = fitting_top(&view, &[(Vec3::Y * 500.0, Vec3::Y)], 30.0);
         assert!((off - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_arc_emerges_from_its_caller() {
+        assert!((emerging(0.0) - 0.2).abs() < 1e-6);
+        assert!(emerging(0.25) > emerging(0.1));
+        assert!((emerging(0.5) - 1.0).abs() < 1e-6, "whole by its top");
+        assert!((emerging(1.0) - 1.0).abs() < 1e-6, "and where it lands");
+    }
+
+    #[test]
+    fn a_long_list_shows_the_stretch_around_the_cursor() {
+        assert_eq!(window(10, Some(3), 15), 0..10, "all, when they fit");
+        assert_eq!(window(49, Some(20), 15), 13..28);
+        assert_eq!(window(49, Some(1), 15), 0..15, "kept whole at the start");
+        assert_eq!(window(49, Some(48), 15), 34..49, "and at the end");
+        assert_eq!(window(49, None, 15), 0..15);
     }
 
     #[test]
