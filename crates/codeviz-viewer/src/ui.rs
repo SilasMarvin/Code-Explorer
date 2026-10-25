@@ -1270,9 +1270,9 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 /// its callers note where in their own calls they call it. A name tries each side of
 /// its node and is left out when none is free, and never covers a node that matters;
 /// zooming in makes room for more. Container names fill whatever space is left. With
-/// the helix up, the map goes quiet, clear of its `markers`: only what the journey
-/// touches is named, and the modules it runs through; a call the helix names shows
-/// only its number.
+/// the helix up, the map goes quiet, clear of its `markers`: only the focus is named,
+/// with the modules the journey runs through, and a call the helix names shows only
+/// its number.
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
@@ -1357,8 +1357,10 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
-        // With the helix up, the map names only what the journey touches.
-        if quiet && tier > 2 {
+        // With the helix up, the map names only the focus, what is picked out and what
+        // the helix shows.
+        let picked = hovered == Some(tile) || spotlit.contains(&tile);
+        if quiet && tier != 0 && !picked && !on_helix(tile) {
             continue;
         }
         order.push((

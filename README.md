@@ -65,7 +65,10 @@ root's, until you step into a call) stand as markers on a helix over their calle
 call `k` at `k` o'clock and `k` steps up towards you. Head-on, where `Z` turns the camera,
 it reads as a clock face on the map, first call at one o'clock; orbit off it and it
 becomes a stair, its height the time. A list longer than twelve winds round again, a
-little wider. Each marker is its callee's color with its number and name, and a thin line
+little wider; of one longer than three turns, the turns round the cursor's show, and the
+hub says which (`13–48 of 66`). The calls the cursor's own call makes, where the journey
+shows them, wind round its marker on a small helix of their own. A new list winds out
+from its caller as the cursor steps into it. Each marker is its callee's color with its number and name, and a thin line
 runs from it down to the callee's node: pale, white for the cursor's call, whose marker is
 white. While it shows, the ordinary links fade back and the map goes quiet: only what the
 journey touches is named, a call the helix names shows only its number, and only the
