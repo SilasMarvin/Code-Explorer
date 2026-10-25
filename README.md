@@ -59,16 +59,18 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`E` shows call order on the graph itself, cycling off, fan and route (`--order fan` or
-`--order route` opens on one; the top bar says which). The fan lines the focus's calls
-up in a column beside it, first at the top, in the screen's plane whatever the orbit,
-opening them in the journey so they carry its numbers; a function called more than once
-sits at its first call marked `×2`, and everything else stays put. The route moves
-nothing: it threads the disclosed journey through its nodes in the order it runs, one
-pale line with chevrons, solid where a call goes in and dotted where execution returns
-and moves on to the next call, with the other links faded back. Passes over the same
-pair of nodes run side by side, the line fades away from the cursor, and a marker rides
-it to the cursor's stop.
+`Z` stands the journey up in the scene as a wall beside the graph (`--time wall` opens
+on it; the top bar's `Time: wall` says so): its flame graph square to the graph, time
+running along the depth the graph does not use, from the graph's edge towards you, and
+each level of calls a row up the wall, the root a short footing. Bars carry their node's
+color, number and name, along the bar or up it where it is narrow. The graph does not
+move. The camera turns to look into the corner the two make, with a narrower lens so the
+wall's near end does not loom, and holds that view until you pan or zoom; `Z` again
+turns back. Pale beams tie the cursor's bar and the three calls either side of it to
+their nodes, fading away from the cursor, and every other call to the cursor's function
+beams faintly too, so a function called more than once shows each time. Hovering a bar
+lights its node and a click moves the cursor there. The docked journey hides while the
+wall stands.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

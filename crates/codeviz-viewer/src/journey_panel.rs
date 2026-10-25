@@ -447,24 +447,10 @@ fn canvas(
             hovered = Some(bar.span);
         }
         let tile = tile_of(bar.span);
-        let base = egui_color(tile.map_or_else(
-            || lane_color(track.color(bar.span) % PALETTE.len()),
-            |tile| node_color(explorer, diff, tile),
-        ));
-        let faint = Confidence::of(span) == Confidence::Guessed || is_handoff(span);
         // What runs after the cursor dims once you step through it; at the start,
         // everything shows in full.
         let future = stepping && span.enter > cursor_enter;
-        let (fill, text) = if faint {
-            (base.gamma_multiply(0.22), MUTED)
-        } else if future {
-            (
-                base.gamma_multiply(0.38),
-                egui::Color32::from_rgb(200, 205, 216),
-            )
-        } else {
-            (base, egui::Color32::from_rgb(14, 16, 22))
-        };
+        let (fill, text) = bar_look(explorer, diff, bar.span, future);
         painter.rect_filled(bar.rect, 3.0, fill);
 
         // Under a diff, what changed is outlined too; a call that is new, though what
@@ -678,6 +664,35 @@ fn canvas(
     Tethers {
         cursor: cursor_rect,
         hovered: hovered_rect,
+    }
+}
+
+/// A bar's fill and the color of the name on it: its node's color, faint for a
+/// guessed call or a hand-off, dimmed when it runs after the cursor.
+pub(crate) fn bar_look(
+    explorer: &Explorer,
+    diff: Option<&DiffView>,
+    span: SpanId,
+    future: bool,
+) -> (egui::Color32, egui::Color32) {
+    let track = explorer.track();
+    let tile = track.unit_id(span).and_then(|u| explorer.map().tile_of(u));
+    let base = egui_color(tile.map_or_else(
+        || lane_color(track.color(span) % PALETTE.len()),
+        |tile| node_color(explorer, diff, tile),
+    ));
+    let faint = track
+        .span(span)
+        .is_some_and(|s| Confidence::of(s) == Confidence::Guessed || is_handoff(s));
+    if faint {
+        (base.gamma_multiply(0.22), MUTED)
+    } else if future {
+        (
+            base.gamma_multiply(0.38),
+            egui::Color32::from_rgb(200, 205, 216),
+        )
+    } else {
+        (base, egui::Color32::from_rgb(14, 16, 22))
     }
 }
 
