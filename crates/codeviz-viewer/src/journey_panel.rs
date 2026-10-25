@@ -264,8 +264,7 @@ fn draw_strip(
             || lane_color(track.color(tick.span) % PALETTE.len()),
             |tile| node_color(explorer, diff, tile),
         ));
-        // At the start, everything shows in full, as on the bars.
-        let future = cursor.is_some_and(|c| c > 0 && index > c);
+        let future = cursor.is_some_and(|c| index > c);
         let fill = if future {
             base.gamma_multiply(0.38)
         } else {

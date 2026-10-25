@@ -42,7 +42,9 @@ pub(crate) fn sequence<S: Copy>(placed: &HashMap<S, (f32, f32, usize)>) -> Vec<S
 }
 
 /// The disclosed calls in the order they run, each with its node, and which is the
-/// cursor's: the call around it when it has no bar of its own.
+/// cursor's: the call around it when it has no bar of its own, and none at the root.
+/// The root is not a call, and left out, so at the first level of calls each sits
+/// over its bar.
 pub(crate) fn calls(explorer: &Explorer) -> (Vec<(SpanId, Option<usize>)>, Option<usize>) {
     let track = explorer.track();
     let Some(journey) = track.journey() else {
@@ -52,6 +54,7 @@ pub(crate) fn calls(explorer: &Explorer) -> (Vec<(SpanId, Option<usize>)>, Optio
     let calls: Vec<(SpanId, Option<usize>)> =
         sequence(&explorer.disclosure().layout(journey.root()).0)
             .into_iter()
+            .filter(|&span| span != journey.root())
             .map(|span| {
                 let tile = track.unit_id(span).and_then(|u| map.tile_of(u));
                 (span, tile)
@@ -66,18 +69,21 @@ pub(crate) fn calls(explorer: &Explorer) -> (Vec<(SpanId, Option<usize>)>, Optio
 pub(crate) fn lit(explorer: &Explorer) -> HashSet<usize> {
     let (calls, cursor) = calls(explorer);
     let tiles: Vec<Option<usize>> = calls.iter().map(|&(_, tile)| tile).collect();
-    cursor.map_or_else(HashSet::new, |cursor| {
-        beamed(&tiles, cursor)
-            .into_iter()
-            .filter_map(|(index, _)| tiles[index])
-            .collect()
-    })
+    beamed(&tiles, cursor)
+        .into_iter()
+        .filter_map(|(index, _)| tiles[index])
+        .collect()
 }
 
-/// Which calls on the strip get a beam, and how strongly: the cursor's in full, its
-/// neighbors in time fading with distance, and the other calls of the same node
-/// faintly.
-pub(crate) fn beamed(tiles: &[Option<usize>], cursor: usize) -> Vec<(usize, Beam)> {
+/// Which calls on the strip get a beam, and why: the cursor's, its neighbors in time,
+/// and the other calls of the same node. With the cursor at the root, before the
+/// first call, the first calls get them.
+pub(crate) fn beamed(tiles: &[Option<usize>], cursor: Option<usize>) -> Vec<(usize, Beam)> {
+    let Some(cursor) = cursor else {
+        return (0..REACH.min(tiles.len()))
+            .map(|index| (index, Beam::Near(index + 1)))
+            .collect();
+    };
     let near = cursor.saturating_sub(REACH)..=(cursor + REACH).min(tiles.len().saturating_sub(1));
     let mut beams: Vec<(usize, Beam)> = near
         .clone()
@@ -170,9 +176,6 @@ pub(crate) fn shapes(
     cursor: Option<usize>,
     node_at: impl Fn(usize) -> Option<(egui::Pos2, f32)>,
 ) -> Vec<egui::Shape> {
-    let Some(cursor) = cursor else {
-        return Vec::new();
-    };
     let tiles: Vec<Option<usize>> = ticks.iter().map(|t| t.tile).collect();
     let beams: Vec<(egui::Pos2, (egui::Pos2, f32), Beam)> = beamed(&tiles, cursor)
         .into_iter()
@@ -255,7 +258,7 @@ mod tests {
             Some(5),
             Some(2),
         ];
-        let beams = beamed(&tiles, 2);
+        let beams = beamed(&tiles, Some(2));
         assert_eq!(
             beams,
             [
@@ -267,7 +270,16 @@ mod tests {
                 (6, Beam::Again),
             ]
         );
-        assert_eq!(beamed(&tiles, 0).len(), 3, "none before the first call");
+        assert_eq!(
+            beamed(&tiles, Some(0)).len(),
+            3,
+            "none before the first call"
+        );
+        assert_eq!(
+            beamed(&tiles, None),
+            [(0, Beam::Near(1)), (1, Beam::Near(2))],
+            "at the root, the first calls"
+        );
     }
 
     #[test]
