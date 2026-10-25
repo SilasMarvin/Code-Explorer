@@ -73,6 +73,9 @@ pub(crate) struct Stairs {
     ruler: Option<Vec3>,
     /// The cursor's step.
     cursor: Option<usize>,
+    /// Where the cursor's call is on its node's stem, when it is a later call of a
+    /// node standing lower down.
+    later: Option<Vec3>,
 }
 
 /// One call on the stairs.
@@ -304,6 +307,11 @@ pub(crate) fn rise(
         base + along * (leftmost - reach * 0.1)
     });
 
+    stairs.later = stairs
+        .cursor
+        .filter(|&c| stairs.steps[c].first != c)
+        .and_then(|c| Some(explorer.force_point(stairs.steps[c].tile)? + Vec3::Z * level(c)));
+
     let mut nudges: HashMap<usize, Vec3> = HashMap::new();
     if stairs.rise > 0.0 {
         for step in &stairs.steps {
@@ -395,13 +403,16 @@ pub(crate) fn draw_stairs(
             );
         }
         for &later in &steps[1..] {
-            let at = foot + Vec3::Z * stairs.level(later);
-            let mark = if Some(later) == stairs.cursor {
-                MARK
+            let at = Isometry3d::from_translation(foot + Vec3::Z * stairs.level(later));
+            if Some(later) == stairs.cursor {
+                // The cursor on a later call: rings round the stem where it stands.
+                for grow in [0.7, 1.4] {
+                    bright.circle(at, radius * grow, MARK.with_alpha(rise));
+                }
             } else {
-                STEM.with_alpha(STEM.alpha() * strength(later, stairs.cursor) * rise * 1.4)
-            };
-            gizmos.circle(Isometry3d::from_translation(at), radius * 0.7, mark);
+                let faded = strength(later, stairs.cursor) * rise * 1.4;
+                gizmos.circle(at, radius * 0.7, STEM.with_alpha(STEM.alpha() * faded));
+            }
         }
     }
     draw_ruler(&stairs, &explorer, &mut gizmos, &mut bright);
@@ -517,6 +528,20 @@ pub(crate) fn draw_labels(
             egui::Color32::WHITE.gamma_multiply(alpha),
         );
         placed.push(point.y);
+    }
+    // A later call has no node of its own: ring its place on the stem, on screen.
+    if let Some(point) = stairs.later.and_then(to_screen) {
+        let white = egui::Color32::WHITE.gamma_multiply(alpha);
+        painter.circle_stroke(point, 6.0, egui::Stroke::new(1.5, white));
+        if let Some(cursor) = stairs.cursor {
+            painter.text(
+                point + egui::vec2(9.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                &stairs.steps[cursor].number,
+                egui::FontId::monospace(12.0),
+                white,
+            );
+        }
     }
     let grey = egui::Color32::from_rgb(160, 166, 180).gamma_multiply(alpha);
     for (index, step) in stairs.steps.iter().enumerate() {
