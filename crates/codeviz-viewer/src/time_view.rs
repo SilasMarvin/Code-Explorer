@@ -48,7 +48,9 @@ use crate::{
 pub(crate) enum TimeMode {
     #[default]
     Off,
-    /// Calls rise over the map, seen at a three-quarter angle.
+    /// Calls run out from the map along level rails, seen from the front left.
+    Rails,
+    /// Calls rise over the map, seen at a three-quarter angle from above.
     Rise,
     /// Calls run left to right, seen from the map's side.
     Side,
@@ -57,16 +59,23 @@ pub(crate) enum TimeMode {
 impl TimeMode {
     pub(crate) fn next(self) -> Self {
         match self {
-            Self::Off => Self::Rise,
+            Self::Off => Self::Rails,
+            Self::Rails => Self::Rise,
             Self::Rise => Self::Side,
             Self::Side => Self::Off,
         }
     }
 
+    /// Whether a perspective camera the viewer can turn shows it.
+    pub(crate) fn turns(self) -> bool {
+        matches!(self, Self::Rails | Self::Rise)
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Off => "off",
-            Self::Rise => "3D",
+            Self::Rails => "3D",
+            Self::Rise => "from above",
             Self::Side => "side-on",
         }
     }
@@ -102,43 +111,76 @@ pub(crate) struct Call {
     pub(crate) number: String,
 }
 
-/// How the 3D view is turned: about the journey's middle, z up.
+/// How the 3D view is turned about the journey's middle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Turn {
-    /// Round the vertical, from straight in front (looking north up the map).
+    /// Round the vertical, from the view's starting side.
     pub(crate) yaw: f32,
-    /// Up from the floor.
+    /// Up from level.
     pub(crate) pitch: f32,
     /// Nearer than fitting, above 1.
     pub(crate) zoom: f32,
 }
 
 impl Default for Turn {
-    /// From the front left and a little above: time reads as height, and the floor
-    /// still shows the map's layout.
     fn default() -> Self {
-        Self {
-            yaw: -0.5,
-            pitch: 0.3,
-            zoom: 1.0,
-        }
+        Self::start(TimeMode::Rails)
     }
 }
 
+/// How far round from head-on the level-rail view turns.
+const RAILS_YAW: f32 = 55.0;
+
 impl Turn {
-    /// Turns by a drag of `delta` pixels.
-    fn drag(&mut self, delta: Vec2) {
-        self.yaw -= delta.x * 0.008;
-        self.pitch = (self.pitch + delta.y * 0.008).clamp(0.0, 1.5);
+    /// Where each view starts. Level rails: turned 55° from the map's head-on view and
+    /// level with it, so time runs out to the right along flat rails and each call
+    /// keeps its node's height. From above: the front left and a little up, z as
+    /// height over the map as a floor.
+    pub(crate) fn start(mode: TimeMode) -> Self {
+        match mode {
+            TimeMode::Rise => Self {
+                yaw: -0.5,
+                pitch: 0.3,
+                zoom: 1.0,
+            },
+            _ => Self {
+                yaw: RAILS_YAW.to_radians(),
+                pitch: 0.0,
+                zoom: 1.0,
+            },
+        }
     }
 
-    /// Where the eye is from what it looks at, `distance` away.
-    pub(crate) fn eye(self, distance: f32) -> Vec3 {
-        Vec3::new(
-            self.pitch.cos() * self.yaw.sin(),
-            -self.pitch.cos() * self.yaw.cos(),
-            self.pitch.sin(),
-        ) * distance
+    /// Turns by a drag of `delta` pixels.
+    fn drag(&mut self, mode: TimeMode, delta: Vec2) {
+        self.yaw -= delta.x * 0.008;
+        let (low, high) = if mode == TimeMode::Rise {
+            (0.0, 1.5)
+        } else {
+            (-1.2, 1.2)
+        };
+        self.pitch = (self.pitch + delta.y * 0.008).clamp(low, high);
+    }
+
+    /// Which way the eye is from what it looks at, and which way is up. Level rails
+    /// turn about the map's y, which stays up; from above turns about z.
+    pub(crate) fn eye(self, mode: TimeMode) -> (Vec3, Vec3) {
+        let (yaw, pitch) = (self.yaw, self.pitch);
+        if mode == TimeMode::Rise {
+            let at = Vec3::new(
+                pitch.cos() * yaw.sin(),
+                -pitch.cos() * yaw.cos(),
+                pitch.sin(),
+            );
+            (at, Vec3::Z)
+        } else {
+            let at = Vec3::new(
+                -yaw.sin() * pitch.cos(),
+                pitch.sin(),
+                yaw.cos() * pitch.cos(),
+            );
+            (at, Vec3::Y)
+        }
     }
 }
 
@@ -157,6 +199,8 @@ pub(crate) struct TimeView {
     /// The call under the pointer in the time view.
     pub(crate) hovered: Option<usize>,
     pub(crate) turn: Turn,
+    /// Which way the eye looks from and which way is up, eased towards the turn.
+    seen: Option<(Vec3, Vec3)>,
     /// How it shows, as last placed.
     pub(crate) mode: TimeMode,
     /// In 3D, what the eye looks at and from how far before zooming, eased.
@@ -262,7 +306,7 @@ fn head_on(
 /// dragging.
 fn turn_keys(keys: Res<ButtonInput<KeyCode>>, chrome: Res<Chrome>, mut view: ResMut<TimeView>) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if shift && keys.just_pressed(KeyCode::KeyZ) && chrome.time == TimeMode::Rise {
+    if shift && keys.just_pressed(KeyCode::KeyZ) && chrome.time.turns() {
         view.turn.yaw += std::f32::consts::FRAC_PI_2;
     }
 }
@@ -447,6 +491,8 @@ struct Layout {
     /// Side-on, the height each call's node shows at, shown or not.
     levels: Vec<Option<f32>>,
     radius: f32,
+    /// In perspective, the world size of a pixel at unit distance, to cap markers by.
+    per_pixel: Option<f32>,
 }
 
 /// The time camera, as it is aimed.
@@ -494,6 +540,9 @@ fn aim(
         return;
     };
     let cursor = view.cursor(&explorer);
+    if view.mode != chrome.time && chrome.time.turns() {
+        view.turn = Turn::start(chrome.time);
+    }
     let layout = if chrome.time == TimeMode::Side {
         let Ok((orbit, map, Projection::Perspective(perspective))) = maps.single() else {
             return;
@@ -509,7 +558,7 @@ fn aim(
     } else {
         view.window = window(view.calls.len(), cursor, MOST_RISING);
         let ease = 1.0 - (-time.delta_secs() * 6.0).exp();
-        let Some(layout) = rising(&explorer, &mut view, size, ease) else {
+        let Some(layout) = rising(&explorer, &mut view, chrome.time, size, ease) else {
             return;
         };
         layout
@@ -543,8 +592,12 @@ fn aim(
         } else {
             1.0
         };
+        // Near the eye, no bigger on screen than a few pixels.
+        let most = layout.per_pixel.map_or(f32::INFINITY, |per| {
+            MOST_PIXELS * per * layout.eye.translation.distance(point)
+        });
         place.translation = point;
-        place.scale = Vec3::splat(layout.radius * grow);
+        place.scale = Vec3::splat(layout.radius.min(most) * grow);
     }
     view.ruler = if chrome.time == TimeMode::Side {
         draw_levels(&view.calls, &layout, cursor, &mut gizmos);
@@ -554,6 +607,9 @@ fn aim(
     };
     view.points = layout.points;
 }
+
+/// The biggest a marker's radius shows, in pixels, before the cursor's grows it.
+const MOST_PIXELS: f32 = 6.0;
 
 /// A marker's radius, as a share of the side-on view's height.
 const RADIUS_SHARE: f32 = 0.006;
@@ -607,15 +663,24 @@ fn side_on(
         points,
         levels,
         radius: height * RADIUS_SHARE,
+        per_pixel: None,
     }
 }
 
-/// How tall the rise is beside how far the journey spreads over the map.
+/// How tall the rise is beside how far the journey spreads over the map, and how
+/// long the level rails run.
 const RISE: f32 = 1.6;
+const RAIL: f32 = 3.2;
 
 /// In 3D: calls rise from the floor over their nodes, seen from where the view is
 /// turned, far enough back to take in the whole rise.
-fn rising(explorer: &Explorer, view: &mut TimeView, size: Vec2, ease: f32) -> Option<Layout> {
+fn rising(
+    explorer: &Explorer,
+    view: &mut TimeView,
+    mode: TimeMode,
+    size: Vec2,
+    ease: f32,
+) -> Option<Layout> {
     let shown = view.window.clone();
     let floor: Vec<Vec3> = view.calls[shown.clone()]
         .iter()
@@ -623,7 +688,8 @@ fn rising(explorer: &Explorer, view: &mut TimeView, size: Vec2, ease: f32) -> Op
         .collect();
     let (middle, reach) = footprint(&floor)?;
     let reach = reach.max(5.0);
-    let rise = reach * RISE;
+    // Level rails run longer, out across the view.
+    let rise = reach * if mode == TimeMode::Rise { RISE } else { RAIL };
     let points = view
         .calls
         .iter()
@@ -651,9 +717,18 @@ fn rising(explorer: &Explorer, view: &mut TimeView, size: Vec2, ease: f32) -> Op
     };
     view.fit = Some((center, fit));
     let distance = fit / view.turn.zoom;
+    // Turns ease in, from one view to the next as well.
+    let goal = view.turn.eye(mode);
+    let (from, up) = match view.seen {
+        Some((from, up)) => (
+            from.lerp(goal.0, ease).normalize_or(goal.0),
+            up.lerp(goal.1, ease).normalize_or(goal.1),
+        ),
+        None => goal,
+    };
+    view.seen = Some((from, up));
     Some(Layout {
-        eye: Transform::from_translation(center + view.turn.eye(distance))
-            .looking_at(center, Vec3::Z),
+        eye: Transform::from_translation(center + from * distance).looking_at(center, up),
         projection: Projection::Perspective(PerspectiveProjection {
             fov,
             aspect_ratio: aspect,
@@ -665,6 +740,7 @@ fn rising(explorer: &Explorer, view: &mut TimeView, size: Vec2, ease: f32) -> Op
         points,
         levels: Vec::new(),
         radius: bound * 0.017,
+        per_pixel: Some(2.0 * (fov / 2.0).tan() / size.y.max(1.0)),
     })
 }
 
@@ -804,12 +880,13 @@ fn draw_rise(
             pale(alpha * fade(from)),
         );
     }
-    Some(draw_ruler(layout, cursor, middle, reach, gizmos))
+    Some(draw_ruler(view.mode, layout, cursor, middle, reach, gizmos))
 }
 
 /// The cursor's moment, a square across the rise at its height, and a ruler up the
 /// floor's far left corner with a tick at each call. Returns the ruler's foot.
 fn draw_ruler(
+    mode: TimeMode,
     layout: &Layout,
     cursor: Option<usize>,
     middle: Vec2,
@@ -823,10 +900,15 @@ fn draw_ruler(
         gizmos.rect(
             Isometry3d::from_translation(at),
             Vec2::splat(reach * 2.0),
-            pale(0.22),
+            pale(if mode == TimeMode::Rise { 0.22 } else { 0.1 }),
         );
     }
-    let foot = ruler_foot(middle, reach, eye);
+    // Level rails: along the floor's bottom edge, under everything, ticked upright.
+    let (foot, across) = if mode == TimeMode::Rise {
+        (ruler_foot(middle, reach, eye), Vec3::X)
+    } else {
+        ((middle - Vec2::splat(reach)).extend(0.0), Vec3::Y)
+    };
     let top = layout
         .points
         .iter()
@@ -842,8 +924,8 @@ fn draw_ruler(
         let tick = reach * if lit { 0.08 } else { 0.035 };
         let at = foot + Vec3::Z * point.z;
         gizmos.line(
-            at - Vec3::X * tick,
-            at + Vec3::X * tick,
+            at - across * tick,
+            at + across * tick,
             pale(if lit { 0.9 } else { 0.4 }),
         );
     }
@@ -999,7 +1081,7 @@ pub(crate) fn draw_overlay(
             .and_then(|c| explorer.tile_point(view.calls[c].tile))
             .and_then(map.on_map)
         {
-            guide(ctx, node, at, ring);
+            guide(ctx, node, at, ring, area.min.x);
         }
     }
     interact(ctx, area, mode, explorer, view, &screens, radius);
@@ -1064,7 +1146,8 @@ fn ruler(
 fn title(painter: &egui::Painter, area: egui::Rect, mode: TimeMode, view: &TimeView) {
     let text = match mode {
         TimeMode::Side => "calls in order  →    Z: off",
-        _ => "calls rise in order  ↑    drag or shift-Z to turn · Z: side-on",
+        TimeMode::Rise => "calls rise in order  ↑    drag or shift-Z to turn · Z: side-on",
+        _ => "calls run out in order  →    drag or shift-Z to turn · Z: from above",
     };
     painter.line_segment(
         [area.left_top(), area.left_bottom()],
@@ -1158,17 +1241,17 @@ fn interact(
             ui.allocate_rect(area, egui::Sense::click_and_drag())
         })
         .inner;
-    if mode == TimeMode::Rise {
+    if mode.turns() {
         if response.dragged() {
             let delta = response.drag_delta();
-            view.turn.drag(Vec2::new(delta.x, delta.y));
+            view.turn.drag(mode, Vec2::new(delta.x, delta.y));
         }
         if response.hovered() {
             let scroll = ctx.input(|i| i.smooth_scroll_delta.y);
             view.turn.zoom = (view.turn.zoom * (scroll * 0.003).exp()).clamp(0.4, 6.0);
         }
         if response.double_clicked() {
-            view.turn = Turn::default();
+            view.turn = Turn::start(mode);
         }
     }
     let hover = response.hover_pos();
@@ -1308,26 +1391,46 @@ impl Names<'_> {
     }
 }
 
-/// A dashed line from the cursor's node on the map across to its marker, stopping
-/// short of the marker's ring.
-fn guide(ctx: &egui::Context, node: egui::Pos2, marker: egui::Pos2, ring: f32) {
+/// A dashed line from the cursor's node on the map to its marker in the time view,
+/// as an elbow: level out to the split at `split`, along it to the marker's height,
+/// then level in to the marker, stopping short of its ring. It crosses no more of the
+/// map than it must.
+fn guide(ctx: &egui::Context, node: egui::Pos2, marker: egui::Pos2, ring: f32, split: f32) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::new("time_guide"),
     ));
-    let along = marker - node;
-    let length = along.length();
-    if length < ring + 12.0 {
-        return;
+    let path = elbow(node, marker, ring, split);
+    if path.len() > 1 {
+        painter.extend(egui::Shape::dashed_line(
+            &path,
+            egui::Stroke::new(1.2, egui::Color32::from_white_alpha(150)),
+            6.0,
+            4.0,
+        ));
     }
-    let end = node + along * ((length - ring) / length);
-    let start = node + along * (12.0 / length);
-    painter.extend(egui::Shape::dashed_line(
-        &[start, end],
-        egui::Stroke::new(1.2, egui::Color32::from_white_alpha(150)),
-        6.0,
-        4.0,
-    ));
+}
+
+/// The guide's corners, from just past the node to the edge of the marker's ring.
+pub(crate) fn elbow(
+    node: egui::Pos2,
+    marker: egui::Pos2,
+    ring: f32,
+    split: f32,
+) -> Vec<egui::Pos2> {
+    const CLEAR: f32 = 12.0;
+    let toward = (marker.x - split).signum();
+    let end = egui::pos2(marker.x - toward * ring, marker.y);
+    if (split - node.x).abs() < CLEAR || (end.x - split) * toward <= 0.0 {
+        return Vec::new();
+    }
+    let start = egui::pos2(node.x + (split - node.x).signum() * CLEAR, node.y);
+    vec![
+        start,
+        egui::pos2(split, node.y),
+        egui::pos2(split, marker.y),
+        end,
+    ]
 }
 
 #[cfg(test)]
@@ -1394,15 +1497,30 @@ mod tests {
     }
 
     #[test]
-    fn the_default_turn_looks_from_the_front_left_and_above() {
-        let eye = Turn::default().eye(10.0);
-        assert!((eye.length() - 10.0).abs() < 1e-4);
+    fn from_above_looks_from_the_front_left_and_above() {
+        let (eye, up) = Turn::start(TimeMode::Rise).eye(TimeMode::Rise);
+        assert!((eye.length() - 1.0).abs() < 1e-4);
         assert!(eye.x < 0.0, "left");
         assert!(eye.y < 0.0, "in front, south of the map");
         assert!(eye.z > 0.0, "above the floor");
-        let mut turn = Turn::default();
-        turn.drag(Vec2::new(0.0, 10_000.0));
+        assert_eq!(up, Vec3::Z, "time is up");
+        let mut turn = Turn::start(TimeMode::Rise);
+        turn.drag(TimeMode::Rise, Vec2::new(0.0, 10_000.0));
         assert!(turn.pitch <= 1.5, "never over the top");
+    }
+
+    #[test]
+    fn level_rails_run_time_out_to_the_right() {
+        let (eye, up) = Turn::start(TimeMode::Rails).eye(TimeMode::Rails);
+        assert_eq!(up, Vec3::Y, "the map's up stays up");
+        assert!(eye.y.abs() < 1e-6, "level");
+        // Screen right, looking back at the middle from the eye.
+        let right = (-eye).cross(up);
+        assert!(right.z > 0.5, "later calls further right");
+        assert!(
+            right.x > 0.0,
+            "and the map still left to right, foreshortened"
+        );
     }
 
     #[test]
@@ -1427,6 +1545,25 @@ mod tests {
         assert!((middle.x - 5.0).abs() < 1e-6);
         assert!(reach < 10.0, "one far call does not count");
         assert!(footprint(&[]).is_none());
+    }
+
+    #[test]
+    fn the_guide_turns_along_the_split() {
+        let path = elbow(
+            egui::pos2(100.0, 300.0),
+            egui::pos2(900.0, 120.0),
+            10.0,
+            600.0,
+        );
+        assert_eq!(path.len(), 4);
+        assert_eq!(path[1], egui::pos2(600.0, 300.0), "level with the node");
+        assert_eq!(path[2], egui::pos2(600.0, 120.0), "down the split");
+        assert_eq!(path[3], egui::pos2(890.0, 120.0), "short of the ring");
+        assert_eq!(
+            elbow(egui::pos2(100.0, 0.0), egui::pos2(605.0, 0.0), 10.0, 600.0),
+            Vec::new(),
+            "no room past the split"
+        );
     }
 
     #[test]

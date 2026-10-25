@@ -211,6 +211,7 @@ fn draw_ui(
             &explorer,
             diff.as_deref(),
             transform.up().into(),
+            chrome.time != TimeMode::Off,
         );
         if let (Some(area), Ok((mut time_camera, time_transform))) =
             (time_area, time_cameras.single_mut())
@@ -324,7 +325,8 @@ fn panels(
                         )
                         .on_hover_text(
                             "The journey's calls in order beside the map: off → 3D (calls \
-                             rise over their nodes) → side-on (time runs left to right, each \
+                             run out from their nodes along level rails) → from above (calls \
+                             rise over the map) → side-on (time runs left to right, each \
                              call at its node's height) (Z)",
                         )
                         .clicked()
@@ -1291,7 +1293,9 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 /// over links and glow. The focus's callees lead with the order it calls them in, and
 /// its callers note where in their own calls they call it. A name tries each side of
 /// its node and is left out when none is free, and never covers a node that matters;
-/// zooming in makes room for more. Container names fill whatever space is left.
+/// zooming in makes room for more. Container names fill whatever space is left. While
+/// the time view shows (`quiet`), names further out than the focus's neighbours step
+/// aside.
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
@@ -1299,6 +1303,7 @@ fn draw_graph_labels(
     explorer: &Explorer,
     diff: Option<&DiffView>,
     up: Vec3,
+    quiet: bool,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1373,6 +1378,11 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
+        // Beside the time view, only what the cursor touches: the focus, its direct
+        // neighbours, what the journey runs, what the pointer is on, and changes.
+        if quiet && tier > 1 && diff_tier(tile).is_none() {
+            continue;
+        }
         order.push((
             (tier, std::cmp::Reverse(graph.degree(tile)), tile),
             Named::Node(tile),
@@ -1774,8 +1784,11 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("Z", "calls in order beside the map: off → 3D → side-on"),
-            ("Shift Z", "turn the 3D calls view a quarter round"),
+            (
+                "Z",
+                "calls in order beside the map: off → 3D → from above → side-on",
+            ),
+            ("Shift Z", "turn the calls view a quarter round"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

@@ -126,9 +126,12 @@ enum NearArg {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum TimeArg {
-    /// A second view beside the map, in 3D: calls rise over their nodes.
+    /// A second view beside the map, in 3D: calls run out from their nodes along
+    /// level rails.
     #[value(name = "3d")]
     ThreeD,
+    /// The same, seen from above: calls rise over the map.
+    Above,
     /// A second view beside the map, looking along it from the side: time runs left
     /// to right and each call keeps its node's height.
     Side,
@@ -247,6 +250,7 @@ pub(crate) fn open(
     if let Some(time) = args.time {
         viewer = viewer.with_time(match time {
             TimeArg::ThreeD => "3d",
+            TimeArg::Above => "above",
             TimeArg::Side => "side",
         });
     }

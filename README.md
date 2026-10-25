@@ -59,21 +59,23 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`Z` shows the journey's calls in order in a second view beside the map, cycling off, 3D
-and side-on (`--time 3d` or `--time side` opens on one; the top bar says which); the map
-turns head-on and keeps the left. Each disclosed call is a marker over its node, lifted
-along z by its place in the order, evenly spaced, so a function called three times has
-three markers over one node. In 3D the calls rise over their part of the map, seen at a
-three-quarter angle: each drops a line to its node's spot on a faint floor grid with the
-modules' rings, a line runs up from each caller to each call it makes, a ruler at the
-side numbers the first, last and cursor's calls, and a square marks the cursor's moment;
-drag in the view (or press `Shift`-`Z`) to turn it, scroll to zoom, double-click to
-turn it back. Side-on, an
-orthographic camera looks along the map's x axis: time runs left to right and each call
-sits at the height its node shows on the map, so module bands line up across the two
-views, with each caller's line running along its level and dropping to each call it
-makes. Either way the cursor's call is ringed with a dashed guide from its node on the
-map; the call under the pointer lights its node, and a click moves the cursor to it.
+`Z` shows the journey's calls in order in a second view beside the map, cycling off, 3D,
+from above and side-on (`--time 3d`, `--time above` or `--time side` opens on one; the top
+bar says which). The map turns head-on, keeps the left and names only the focus, its
+direct neighbours, the journey's nodes, what the pointer is on and the modules. Each
+disclosed call is a marker over its node, pushed out along z by its place in the order,
+evenly spaced, so a function called three times has three markers. In 3D the view
+stands 55° round from the map and level with it: time runs out to the right, each
+caller's rail runs level from its call to its last, and each call drops from its
+caller's rail to its marker at its node's height; the map's footprint shows as a faint
+grid with the modules' rings, and a ruler along the bottom numbers the first, last and
+cursor's calls. From above, the calls rise over the map as a floor, on poles with level
+rungs. In either, drag in the view (or press `Shift`-`Z`) to turn it, scroll to zoom,
+double-click to turn it back; turns ease. Side-on, an orthographic camera looks along
+the map's x axis: time runs left to right and each call sits at the height its node
+shows on the map, so module bands line up across the two views. The cursor's call is
+ringed, with a dashed guide from its node on the map that turns along the split; the
+call under the pointer lights its node, and a click moves the cursor to it.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

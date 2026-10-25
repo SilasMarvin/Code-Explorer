@@ -237,13 +237,15 @@ impl Viewer {
         self
     }
 
-    /// Shows the journey's calls in order beside the map: `3d`, rising over their
-    /// nodes, or `side`, seen from the map's side.
+    /// Shows the journey's calls in order beside the map: `3d`, running out from
+    /// their nodes along level rails, `above`, rising over the map, or `side`, seen
+    /// from the map's side.
     #[must_use]
     pub fn with_time(mut self, mode: &str) -> Self {
         self.time = match mode {
             "side" => time_view::TimeMode::Side,
-            _ => time_view::TimeMode::Rise,
+            "above" => time_view::TimeMode::Rise,
+            _ => time_view::TimeMode::Rails,
         };
         self
     }
