@@ -754,8 +754,9 @@ pub(crate) fn hold_center(
 }
 
 /// What the camera holds in the middle: the node the journey starts at, or with time as
-/// depth, the middle of the calls either side of the cursor's on the map, so stepping
-/// glides along the journey and the cursor's neighbors in time stay in view.
+/// depth, half way from the cursor's node to the middle of the calls either side of it
+/// on the map, so stepping glides along the journey, the cursor's neighbors in time
+/// stay in view, and the cursor never strays far from the middle.
 fn center_point(explorer: &Explorer, flight: &Flight) -> Option<Vec3> {
     if !flight.on() {
         return explorer.anchor().and_then(|t| explorer.force_point(t));
@@ -764,11 +765,13 @@ fn center_point(explorer: &Explorer, flight: &Flight) -> Option<Vec3> {
         .into_iter()
         .filter_map(|t| explorer.force_point(t))
         .collect();
+    let cursor = explorer.graph_focus().and_then(|t| explorer.force_point(t));
     if window.is_empty() {
-        return explorer.graph_focus().and_then(|t| explorer.force_point(t));
+        return cursor;
     }
     #[expect(clippy::cast_precision_loss, reason = "a handful of points")]
-    Some(window.iter().sum::<Vec3>() / window.len() as f32)
+    let middle = window.iter().sum::<Vec3>() / window.len() as f32;
+    Some(cursor.map_or(middle, |cursor| cursor.lerp(middle, 0.5)))
 }
 
 /// With time as depth, looks at `at`, the middle of the cursor's neighborhood in time,
