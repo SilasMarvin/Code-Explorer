@@ -59,16 +59,19 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
-`E` shows call order on the graph itself, cycling off, fan and route (`--order fan` or
-`--order route` opens on one; the top bar says which). The fan lines the focus's calls
-up in a column beside it, first at the top, in the screen's plane whatever the orbit,
-opening them in the journey so they carry its numbers; a function called more than once
-sits at its first call marked `×2`, and everything else stays put. The route moves
-nothing: it threads the disclosed journey through its nodes in the order it runs, one
-pale line with chevrons, solid where a call goes in and dotted where execution returns
-and moves on to the next call, with the other links faded back. Passes over the same
-pair of nodes run side by side, the line fades away from the cursor, and a marker rides
-it to the cursor's stop.
+`Z` puts time on the depth axis as pillars (`--time pillars` opens with them; the top
+bar says which). No node moves. Each node on the disclosed journey grows a thin pillar
+out of the map, away from you, and each call of it is a bead on its pillar at the height
+of its time, so a function called three times has three beads. A faint plane parallel to
+the map stands at the cursor's time and sweeps up and down as you step. The cursor's bead
+is white, on a white stem down to its node, and named when it stands clear of the node;
+calls still open under it (on the stack) are ringed and lit on up to the plane; past
+beads are filled with their node's color, beads to come are rings of it. Only a few
+steps either side of the plane draw in full, so the pillars stay sparse; a ruler at the
+plane's left edge carries the journey's numbers. Raising the pillars only tips the
+camera forward a little, keeping its turn, and quiets the graph's links and the names
+of nodes off the journey; `Z` again tips it back. `F` returns to that view while they
+are up.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

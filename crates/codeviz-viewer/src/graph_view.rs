@@ -24,9 +24,8 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
-    order::link_strength,
+    pillars::{PILLARS_VIEW, Pillars},
     scene::{PALETTE, Tile, lane_color},
-    ui::Chrome,
 };
 
 /// Calls into the focus.
@@ -327,15 +326,15 @@ fn fade(hops: u32) -> f32 {
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
-    chrome: Res<Chrome>,
     clock: Res<Time>,
+    pillars: Res<Pillars>,
     mut gizmos: Gizmos,
 ) {
     draw_regions(&explorer, &mut gizmos);
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, link_strength(&chrome), &mut gizmos),
+        None => draw_calls(&explorer, time, pillars.links(), &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
     draw_attention(&explorer, &mut gizmos);
@@ -344,7 +343,7 @@ pub(crate) fn draw_graph(
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
 /// path, are pale arrows fading with distance; everything else is faint. All of them
-/// draw at `strength`, less while the route is drawn over them.
+/// draw at `strength`, less while the pillars stand over them.
 fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
@@ -531,7 +530,7 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
         if explorer.visibility(tile) < 0.5 {
             continue;
         }
-        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.force_point(tile))
+        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.tile_point(tile))
             && let Some(list) = members.get_mut(cluster)
         {
             list.push(at);
@@ -571,16 +570,17 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F turns to face the graph head-on, centered on the journey's start again; R pulls
-/// back to take in the whole graph.
+/// F turns to face the graph head-on, centered on the journey's start again, or with
+/// the pillars up to the view that shows them; R pulls back to take in the whole graph.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
+    pillars: Res<Pillars>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(FRONT);
+            camera.turn_to(if pillars.up() { PILLARS_VIEW } else { FRONT });
             orbit_anchor(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {
@@ -720,8 +720,16 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
 /// follows it as the graph moves.
 /// Not once the viewer has panned or zoomed away.
-pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+pub(crate) fn hold_center(
+    explorer: Res<Explorer>,
+    pillars: Res<Pillars>,
+    mut cameras: Query<&mut OrbitCamera>,
+) {
+    let Some(at) = explorer
+        .anchor()
+        .and_then(|t| explorer.tile_point(t))
+        .map(|at| at + pillars.lift())
+    else {
         return;
     };
     for mut camera in &mut cameras {
