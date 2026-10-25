@@ -452,6 +452,10 @@ pub(crate) fn place_markers(
     mut timeline: ResMut<Timeline>,
     explorer: Res<Explorer>,
     materials: Res<NodeMaterials>,
+    mut assets: ResMut<Assets<StandardMaterial>>,
+    mut lit: Local<
+        std::collections::HashMap<crate::graph_view::NodeLook, Handle<StandardMaterial>>,
+    >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut shrunk: Local<bool>,
     mut markers: Query<
@@ -530,7 +534,21 @@ pub(crate) fn place_markers(
         };
         transform.translation = at;
         transform.scale = Vec3::splat(timeline.marker_size(graph, index));
-        if let Some(wanted) = materials.0.get(&(node_look(&explorer, call.tile), LEVELS))
+        // As its node looks, but glowing less, so the light shades it as a ball in
+        // space: a depth cue the map's flat glow does not need.
+        let look = node_look(&explorer, call.tile);
+        if !lit.contains_key(&look)
+            && let Some(base) = materials.0.get(&(look, LEVELS)).and_then(|h| assets.get(h))
+        {
+            let shaded = StandardMaterial {
+                emissive: base.emissive * 0.3,
+                perceptual_roughness: 0.35,
+                reflectance: 0.6,
+                ..base.clone()
+            };
+            lit.insert(look, assets.add(shaded));
+        }
+        if let Some(wanted) = lit.get(&look)
             && &material.0 != wanted
         {
             material.0 = wanted.clone();
