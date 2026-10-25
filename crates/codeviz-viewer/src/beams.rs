@@ -13,8 +13,31 @@ use codeviz_core::SpanId;
 
 use crate::{explorer::Explorer, journey_panel::JourneyPanel};
 
-/// Height of the strip of calls along the top of the journey.
-pub(crate) const STRIP: f32 = 28.0;
+/// Height of a row of calls on the strip, and of the strip's margins.
+const STRIP_ROW: f32 = 22.0;
+const STRIP_MARGIN: f32 = 6.0;
+
+/// Height of the strip of calls along the top of the journey, in one row or two.
+pub(crate) fn strip_height(rows: usize) -> f32 {
+    STRIP_MARGIN + rows.max(1) as f32 * STRIP_ROW
+}
+
+/// Where each call's tick sits on the strip, in steps of an even share of its width:
+/// its start, its end and its row. In one row each call has its share; staggered over
+/// two, calls alternate rows and each spans two shares, so its name has twice the room,
+/// and a call on the lower row sits under the gap between two on the upper.
+pub(crate) fn tick_spans(count: usize, stagger: bool) -> Vec<(f32, f32, usize)> {
+    (0..count)
+        .map(|index| {
+            let start = index as f32;
+            if stagger {
+                (start, (start + 2.0).min(count as f32 + 1.0), index % 2)
+            } else {
+                (start, start + 1.0, 0)
+            }
+        })
+        .collect()
+}
 /// How many calls either side of the cursor's get a beam.
 const REACH: usize = 2;
 /// Height each beam rises before it may bend, and the step between beams' bends.
@@ -111,7 +134,7 @@ pub(crate) enum Beam {
 
 impl Beam {
     /// How strongly it draws: the cursor's in full, fading with distance.
-    fn strength(self) -> f32 {
+    pub(crate) fn strength(self) -> f32 {
         match self {
             Beam::Near(0) => 1.0,
             Beam::Near(1) => 0.65,
@@ -179,12 +202,18 @@ pub(crate) fn shapes(
     tag_at: impl Fn(usize) -> Option<egui::Rect>,
 ) -> Vec<egui::Shape> {
     let tiles: Vec<Option<usize>> = ticks.iter().map(|t| t.tile).collect();
+    // Every beam leaves from the strip's top edge, whichever row its call is on.
+    let top = ticks
+        .iter()
+        .map(|t| t.rect.min.y)
+        .fold(f32::INFINITY, f32::min);
     let beams: Vec<(egui::Pos2, usize, (egui::Pos2, f32), Beam)> = beamed(&tiles, cursor)
         .into_iter()
         .filter_map(|(index, beam)| {
             let tick = ticks.get(index)?;
             let tile = tick.tile?;
-            Some((tick.rect.center_top(), tile, node_at(tile)?, beam))
+            let from = egui::pos2(tick.rect.center().x, top);
+            Some((from, tile, node_at(tile)?, beam))
         })
         .collect();
     let crowd = crowded(
@@ -252,7 +281,74 @@ pub(crate) fn shapes(
             ),
         });
     }
+    if let Some(cursor) = cursor {
+        shapes.extend(steps(&tiles, cursor, &node_at));
+    }
     shapes
+}
+
+/// On the map itself, where execution goes: a short faint arrow from the cursor's
+/// node toward the next call's, and a fainter one from the previous call's node
+/// toward the cursor's.
+fn steps(
+    tiles: &[Option<usize>],
+    cursor: usize,
+    node_at: impl Fn(usize) -> Option<(egui::Pos2, f32)>,
+) -> Vec<egui::Shape> {
+    let node = |index: Option<usize>| {
+        let tile = (*tiles.get(index?)?)?;
+        Some((tile, node_at(tile)?))
+    };
+    let here = node(Some(cursor));
+    let legs = [
+        (node(cursor.checked_sub(1)), here, 0.5),
+        (here, node(Some(cursor + 1)), 0.9),
+    ];
+    let mut shapes = Vec::new();
+    for (from, to, strength) in legs {
+        let (Some((a, from)), Some((b, to))) = (from, to) else {
+            continue;
+        };
+        if a == b {
+            continue;
+        }
+        let Some([start, end]) = pointer(from, to, 0.6, 110.0) else {
+            continue;
+        };
+        let back = (start - end).normalized() * 9.0;
+        let head = |turn: f32| end + egui::emath::Rot2::from_angle(turn) * back;
+        // On a dark edge, so it reads over the links it crosses.
+        for stroke in [
+            egui::Stroke::new(5.0, egui::Color32::from_black_alpha(150)),
+            egui::Stroke::new(2.0, egui::Color32::WHITE.gamma_multiply(strength)),
+        ] {
+            shapes.push(egui::Shape::line_segment([start, end], stroke));
+            shapes.push(egui::Shape::line(
+                vec![head(0.45), end, head(-0.45)],
+                stroke,
+            ));
+        }
+    }
+    shapes
+}
+
+/// A short arrow from one node toward another, given each one's middle and how far
+/// its edge is: leaving the first's edge and covering `share` of the way to the
+/// second's, at most `longest` pixels; none where the two nearly touch.
+pub(crate) fn pointer(
+    (from, from_edge): (egui::Pos2, f32),
+    (to, to_edge): (egui::Pos2, f32),
+    share: f32,
+    longest: f32,
+) -> Option<[egui::Pos2; 2]> {
+    let way = to - from;
+    let open = way.length() - from_edge - to_edge - 8.0;
+    if open < 12.0 {
+        return None;
+    }
+    let along = way.normalized();
+    let start = from + along * (from_edge + 4.0);
+    Some([start, start + along * (open * share).min(longest)])
 }
 
 /// Where a beam ends: around its node, so far out, or under its name.
@@ -363,6 +459,30 @@ mod tests {
         // Two calls of one node never crowd each other; a node 20 pixels off does.
         let targets = [(1, at(0.0)), (1, at(0.0)), (2, at(20.0)), (3, at(300.0))];
         assert_eq!(crowded(&targets), [true, true, true, false]);
+    }
+
+    #[test]
+    fn staggered_calls_alternate_rows_and_span_two_shares() {
+        assert_eq!(tick_spans(2, false), [(0.0, 1.0, 0), (1.0, 2.0, 0)]);
+        assert_eq!(
+            tick_spans(3, true),
+            [(0.0, 2.0, 0), (1.0, 3.0, 1), (2.0, 4.0, 0)]
+        );
+    }
+
+    #[test]
+    fn a_step_arrow_leaves_the_node_and_goes_part_way() {
+        let from = (egui::pos2(0.0, 0.0), 6.0);
+        let to = (egui::pos2(200.0, 0.0), 6.0);
+        assert_eq!(
+            pointer(from, to, 0.5, 90.0),
+            Some([egui::pos2(10.0, 0.0), egui::pos2(100.0, 0.0)])
+        );
+        assert_eq!(
+            pointer(from, to, 0.25, 90.0),
+            Some([egui::pos2(10.0, 0.0), egui::pos2(55.0, 0.0)])
+        );
+        assert_eq!(pointer(from, (egui::pos2(20.0, 0.0), 6.0), 0.5, 90.0), None);
     }
 
     #[test]

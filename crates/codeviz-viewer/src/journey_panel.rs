@@ -44,6 +44,8 @@ pub(crate) struct JourneyPanel {
     lit_node: bool,
     /// Whether beams tie the journey's calls to their nodes (Z).
     pub(crate) beams: bool,
+    /// How many rows the strip of calls took when last drawn.
+    strip_rows: usize,
 }
 
 impl JourneyPanel {
@@ -83,7 +85,7 @@ pub(crate) fn split(
         // and the graph the space above it; the strip holds every call, so the
         // journey is the strip and its header.
         PanelMode::Docked if panel.beams => {
-            let height = beams::STRIP + HEADER;
+            let height = beams::strip_height(panel.strip_rows) + HEADER;
             let top = area.max.y - height;
             (
                 egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, top)),
@@ -175,7 +177,10 @@ pub(crate) fn draw(
             // With beams, the strip of calls they rise from takes the bars' place,
             // along the top edge, with the header under it.
             let strip = panel.beams.then(|| {
-                egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), beams::STRIP))
+                egui::Rect::from_min_size(
+                    rect.min,
+                    egui::vec2(rect.width(), beams::strip_height(panel.strip_rows)),
+                )
             });
             let header = egui::Rect::from_min_size(
                 egui::pos2(rect.min.x, strip.map_or(rect.min.y, |s| s.max.y)),
@@ -207,7 +212,8 @@ fn strip_of_calls(
     tethers: &mut Tethers,
 ) {
     let response = ui.interact(rect, ui.id().with("call_strip"), egui::Sense::click());
-    let (ticks, cursor) = draw_strip(ui, rect, explorer, diff);
+    let (ticks, cursor, rows) = draw_strip(ui, rect, explorer, diff);
+    panel.strip_rows = rows;
     let hovered = response.hover_pos().and_then(|p| {
         ticks
             .iter()
@@ -242,7 +248,7 @@ fn draw_strip(
     rect: egui::Rect,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-) -> (Vec<Tick>, Option<usize>) {
+) -> (Vec<Tick>, Option<usize>, usize) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(90));
     let track = explorer.track();
@@ -250,24 +256,57 @@ fn draw_strip(
     let (calls, cursor) = beams::calls(explorer);
     let inner = rect.shrink2(egui::vec2(PAD, 3.0));
     let pitch = inner.width() / calls.len().max(1) as f32;
-    let gap = if pitch > 5.0 { 1.0 } else { 0.0 };
+    let labels: Vec<(String, String)> = calls
+        .iter()
+        .map(|&(span, _)| {
+            let number = disclosed.number(span).unwrap_or_default().to_owned();
+            // The module shows in the fill; the name alone fits more.
+            let label = explorer.label(span);
+            let name = label
+                .rsplit(['.', ':'])
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            (number, name)
+        })
+        .collect();
+    // Where names do not fit in one row, two rows give each twice the room, if that
+    // is room enough to name anything.
+    let whole = |(number, name): &(String, String), width: f32| {
+        tick_label(number, name, width).is_some_and(|l| !l.ends_with('…') && l != *number)
+    };
+    let stagger = pitch * 2.0 >= STAGGER_ROOM && !labels.iter().all(|l| whole(l, pitch));
+    let rows = if stagger { 2 } else { 1 };
+    let row_height = (inner.height() - 2.0 * (rows - 1) as f32) / rows as f32;
+    let gap = match () {
+        () if stagger => 4.0,
+        () if pitch > 5.0 => 1.0,
+        () => 0.0,
+    };
     let ticks: Vec<Tick> = calls
         .iter()
-        .enumerate()
-        .map(|(index, &(span, tile))| {
+        .zip(beams::tick_spans(calls.len(), stagger))
+        .map(|(&(span, tile), (start, end, row))| {
             // A call further in stands lower, so the nesting shows.
             let depth = disclosed.number(span).map_or(0, |n| n.matches('.').count());
-            let drop = (depth as f32 * NEST_DROP).min(inner.height() * 0.4);
+            let drop = (depth as f32 * NEST_DROP).min(row_height * 0.3);
+            let top = inner.min.y + row as f32 * (row_height + 2.0);
             Tick {
                 span,
                 rect: egui::Rect::from_min_max(
-                    egui::pos2(inner.min.x + index as f32 * pitch, inner.min.y + drop),
-                    egui::pos2(inner.min.x + (index + 1) as f32 * pitch - gap, inner.max.y),
+                    egui::pos2(inner.min.x + start * pitch, top + drop),
+                    egui::pos2(
+                        (inner.min.x + end * pitch - gap).min(inner.max.x),
+                        top + row_height,
+                    ),
                 ),
                 tile,
             }
         })
         .collect();
+    if stagger {
+        draw_stems(&painter, rect, &ticks, cursor);
+    }
     for (index, tick) in ticks.iter().enumerate() {
         let base = egui_color(tick.tile.map_or_else(
             || lane_color(track.color(tick.span) % PALETTE.len()),
@@ -280,45 +319,14 @@ fn draw_strip(
             base
         };
         painter.rect_filled(tick.rect, 2.0, fill);
-        // As on the bars: dashed when it only sometimes runs, a red end where it can fail.
-        if track.span(tick.span).is_some_and(is_conditional) && tick.rect.width() > 6.0 {
-            dashed_outline(
-                &painter,
-                tick.rect.shrink(0.75),
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(150)),
-            );
-        }
-        if disclosed.fails(tick.span) && tick.rect.width() > 6.0 {
-            let mark = egui::Rect::from_min_max(
-                egui::pos2(tick.rect.max.x - 3.0, tick.rect.min.y),
-                tick.rect.max,
-            );
-            painter.rect_filled(mark, 0.0, ERROR);
-        }
-        // A node the pointer is over in the graph lights its calls here.
-        if tick.tile.is_some() && tick.tile == explorer.hovered_tile {
-            painter.rect_stroke(
-                tick.rect.expand(0.5),
-                2.0,
-                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(200)),
-                egui::StrokeKind::Outside,
-            );
-        }
+        tick_marks(&painter, tick, explorer);
         let text = if future {
             egui::Color32::from_rgb(200, 205, 216)
         } else {
             egui::Color32::from_rgb(14, 16, 22)
         };
-        if let Some(label) = tick_label(
-            disclosed.number(tick.span).unwrap_or_default(),
-            // The module shows in the fill; the name alone fits more.
-            explorer
-                .label(tick.span)
-                .rsplit(['.', ':'])
-                .next()
-                .unwrap_or_default(),
-            tick.rect.width(),
-        ) {
+        let (number, name) = &labels[index];
+        if let Some(label) = tick_label(number, name, tick.rect.width()) {
             painter.with_clip_rect(tick.rect).text(
                 tick.rect.left_center() + egui::vec2(4.0, 0.0),
                 egui::Align2::LEFT_CENTER,
@@ -336,8 +344,61 @@ fn draw_strip(
             egui::StrokeKind::Outside,
         );
     }
-    (ticks, cursor)
+    (ticks, cursor, rows)
 }
+
+/// What the bars mark, marked on a call's tick: dashed when it only sometimes runs, a
+/// red end where it can fail, and an outline while the pointer is over its node.
+fn tick_marks(painter: &egui::Painter, tick: &Tick, explorer: &Explorer) {
+    let track = explorer.track();
+    let disclosed = explorer.disclosure();
+    // As on the bars: dashed when it only sometimes runs, a red end where it can fail.
+    if track.span(tick.span).is_some_and(is_conditional) && tick.rect.width() > 6.0 {
+        dashed_outline(
+            painter,
+            tick.rect.shrink(0.75),
+            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(150)),
+        );
+    }
+    if disclosed.fails(tick.span) && tick.rect.width() > 6.0 {
+        let mark = egui::Rect::from_min_max(
+            egui::pos2(tick.rect.max.x - 3.0, tick.rect.min.y),
+            tick.rect.max,
+        );
+        painter.rect_filled(mark, 0.0, ERROR);
+    }
+    // A node the pointer is over in the graph lights its calls here.
+    if tick.tile.is_some() && tick.tile == explorer.hovered_tile {
+        painter.rect_stroke(
+            tick.rect.expand(0.5),
+            2.0,
+            egui::Stroke::new(1.5, egui::Color32::from_white_alpha(200)),
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
+/// A beam from a call on the strip's lower row rises through the gap above it to the
+/// strip's edge.
+fn draw_stems(painter: &egui::Painter, rect: egui::Rect, ticks: &[Tick], cursor: Option<usize>) {
+    let tiles: Vec<Option<usize>> = ticks.iter().map(|t| t.tile).collect();
+    for (index, beam) in beams::beamed(&tiles, cursor) {
+        let Some(tick) = ticks.get(index).filter(|_| index % 2 == 1) else {
+            continue;
+        };
+        let x = tick.rect.center().x;
+        painter.line_segment(
+            [egui::pos2(x, tick.rect.min.y), egui::pos2(x, rect.min.y)],
+            egui::Stroke::new(
+                1.0 + beam.strength() * 1.2,
+                egui::Color32::WHITE.gamma_multiply(beam.strength() * 0.92),
+            ),
+        );
+    }
+}
+
+/// Pixels two shares of the strip need before staggering its calls is worth it.
+const STAGGER_ROOM: f32 = 70.0;
 
 /// How much lower each level of calls stands on the strip.
 const NEST_DROP: f32 = 5.0;
