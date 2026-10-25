@@ -159,6 +159,8 @@ pub(crate) struct TimeView {
     pub(crate) turn: Turn,
     /// How it shows, as last placed.
     pub(crate) mode: TimeMode,
+    /// In 3D, what the eye looks at and from how far before zooming, eased.
+    fit: Option<(Vec3, f32)>,
     /// In 3D, the foot of the time ruler: the floor's corner nearest the eye.
     pub(crate) ruler: Option<Vec3>,
 }
@@ -456,7 +458,9 @@ type Markers<'w, 's> = Query<
 >;
 
 /// Aims the time camera, places the markers and draws their lines.
+#[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn aim(
+    time: Res<Time>,
     chrome: Res<Chrome>,
     explorer: Res<Explorer>,
     mut view: ResMut<TimeView>,
@@ -487,7 +491,8 @@ fn aim(
         side_on(&explorer, &view, size, orbit, map, perspective)
     } else {
         view.window = window(view.calls.len(), cursor, MOST_RISING);
-        let Some(layout) = rising(&explorer, &view, size) else {
+        let ease = 1.0 - (-time.delta_secs() * 6.0).exp();
+        let Some(layout) = rising(&explorer, &mut view, size, ease) else {
             return;
         };
         layout
@@ -593,7 +598,7 @@ const RISE: f32 = 1.6;
 
 /// In 3D: calls rise from the floor over their nodes, seen from where the view is
 /// turned, far enough back to take in the whole rise.
-fn rising(explorer: &Explorer, view: &TimeView, size: Vec2) -> Option<Layout> {
+fn rising(explorer: &Explorer, view: &mut TimeView, size: Vec2, ease: f32) -> Option<Layout> {
     let shown = view.window.clone();
     let floor: Vec<Vec3> = view.calls[shown.clone()]
         .iter()
@@ -621,7 +626,14 @@ fn rising(explorer: &Explorer, view: &TimeView, size: Vec2) -> Option<Layout> {
     // The floor square reaches out to its corners.
     let bound = (reach * 1.15 * std::f32::consts::SQRT_2).hypot(rise / 2.0);
     let half = (fov / 2.0).tan() * aspect.min(1.0);
-    let distance = bound / half.atan().sin() / view.turn.zoom;
+    // A new fit eases in, so opening or folding calls does not jump the view.
+    let goal = (center, bound / half.atan().sin());
+    let (center, fit) = match view.fit {
+        Some((at, far)) => (at.lerp(goal.0, ease), far + (goal.1 - far) * ease),
+        None => goal,
+    };
+    view.fit = Some((center, fit));
+    let distance = fit / view.turn.zoom;
     Some(Layout {
         eye: Transform::from_translation(center + view.turn.eye(distance))
             .looking_at(center, Vec3::Z),
@@ -1169,7 +1181,7 @@ fn interact(
 }
 
 /// How many calls either side of the cursor the 3D view names.
-const NAMED_AROUND: usize = 8;
+const NAMED_AROUND: usize = 12;
 
 /// Names on the time view's calls.
 struct Names<'a> {
