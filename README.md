@@ -68,7 +68,11 @@ until only a trace and no name is left. Everything off the journey stays on the 
 A function called more than once sits at its call nearest the cursor's. `fly` moves
 calls straight off the plane, so what is to come drifts out from the middle of the
 view as it nears; `held` slides each along the line of sight instead, so it keeps its
-spot on the map and only its size and fade say when it runs.
+spot on the map and only its size and fade say when it runs. While it shows, the camera
+holds the cursor's neighborhood in time in the middle, so stepping glides along the
+journey, pulling back when the calls either side of the cursor need more room and
+flying in once they need far less; and each name leads with the number of the call its
+node sits at, with `×n` when the journey calls it more than once.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

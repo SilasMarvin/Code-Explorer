@@ -735,15 +735,15 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 }
 
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
-/// follows it as the graph moves. With time as depth, the cursor's node instead, so
-/// stepping flies from call to call.
+/// follows it as the graph moves. With time as depth, the cursor's neighborhood in time
+/// instead, so stepping flies from call to call.
 /// Not once the viewer has panned or zoomed away.
 pub(crate) fn hold_center(
     explorer: Res<Explorer>,
     flight: Res<Flight>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
-    let Some(at) = center_tile(&explorer, &flight).and_then(|t| explorer.force_point(t)) else {
+    let Some(at) = center_point(&explorer, &flight) else {
         return;
     };
     for mut camera in &mut cameras {
@@ -753,23 +753,32 @@ pub(crate) fn hold_center(
     }
 }
 
-/// The node the camera holds in the middle: where the journey starts, or with time as
-/// depth, the cursor's node.
-fn center_tile(explorer: &Explorer, flight: &Flight) -> Option<usize> {
-    if flight.on() {
-        explorer.graph_focus()
-    } else {
-        explorer.anchor()
+/// What the camera holds in the middle: the node the journey starts at, or with time as
+/// depth, the middle of the calls either side of the cursor's on the map, so stepping
+/// glides along the journey and the cursor's neighbors in time stay in view.
+fn center_point(explorer: &Explorer, flight: &Flight) -> Option<Vec3> {
+    if !flight.on() {
+        return explorer.anchor().and_then(|t| explorer.force_point(t));
     }
+    let window: Vec<Vec3> = fly::window(explorer)
+        .into_iter()
+        .filter_map(|t| explorer.force_point(t))
+        .collect();
+    if window.is_empty() {
+        return explorer.graph_focus().and_then(|t| explorer.force_point(t));
+    }
+    #[expect(clippy::cast_precision_loss, reason = "a handful of points")]
+    Some(window.iter().sum::<Vec3>() / window.len() as f32)
 }
 
-/// With time as depth, looks at the cursor's node from far enough back to see the calls
-/// either side of it on the map: `snug` refits to them, else it pulls back as far as
-/// they need and comes in only once it is more than twice as far back as they need,
-/// so stepping through one neighborhood never pumps the view in and out, while
-/// stepping into a tighter one flies in to it.
+/// With time as depth, looks at `at`, the middle of the cursor's neighborhood in time,
+/// from far enough back to see the calls either side of the cursor's: `snug` refits to
+/// them, else it pulls back as far as they need and comes in only once it is more than
+/// twice as far back as they need, so stepping through one neighborhood never pumps
+/// the view in and out, while stepping into a tighter one flies in to it.
 fn frame_flight(
     explorer: &Explorer,
+    flight: &Flight,
     at: Vec3,
     snug: bool,
     camera: &mut OrbitCamera,
@@ -780,7 +789,8 @@ fn frame_flight(
         .into_iter()
         .filter_map(|t| explorer.force_point(t))
         .collect();
-    let needed = fit_distance(&window, at, transform.rotation, perspective);
+    // Room for calls to come drawn out from the middle, as they are when they fly.
+    let needed = fit_distance(&window, at, transform.rotation, perspective) * flight.spread() * 1.1;
     let distance = if snug || needed > camera.distance || needed * 2.0 < camera.distance {
         needed
     } else {
@@ -865,7 +875,7 @@ pub(crate) fn follow_focus(
         disclosed: Some(disclosure),
         flying: flight.on(),
     };
-    let Some(at) = center_tile(&explorer, &flight).and_then(|t| explorer.force_point(t)) else {
+    let Some(at) = center_point(&explorer, &flight) else {
         return;
     };
     for (mut camera, transform, projection) in &mut cameras {
@@ -874,7 +884,15 @@ pub(crate) fn follow_focus(
                 && (aimed || took_off || !camera.free && (opened || moved))
             {
                 let snug = aimed || took_off || opened && !moved;
-                frame_flight(&explorer, at, snug, &mut camera, transform, perspective);
+                frame_flight(
+                    &explorer,
+                    &flight,
+                    at,
+                    snug,
+                    &mut camera,
+                    transform,
+                    perspective,
+                );
             }
             continue;
         }

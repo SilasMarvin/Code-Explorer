@@ -102,6 +102,16 @@ impl Flight {
             .map(|(number, count)| (number.as_str(), *count))
     }
 
+    /// How much further from the middle of the view the calls the camera frames can be
+    /// drawn than where they sit on the map: flying, calls to come drift outwards.
+    pub(crate) fn spread(&self) -> f32 {
+        match self.mode {
+            #[expect(clippy::cast_precision_loss, reason = "a small count")]
+            TimeMode::Fly => 1.0 / (1.0 - depth(WINDOW as f32)),
+            TimeMode::Held | TimeMode::Off => 1.0,
+        }
+    }
+
     /// Calls between the cursor's and a node's nearest, when it is on the journey.
     pub(crate) fn step(&self, tile: usize) -> Option<f32> {
         self.steps.get(&tile).copied()
@@ -498,6 +508,27 @@ mod tests {
         );
         assert!(depth(100.0) <= NEAREST, "never most of the way to the eye");
         assert!(depth(-100.0) >= -DEEPEST);
+    }
+
+    #[test]
+    fn held_keeps_a_call_on_its_line_of_sight_and_fly_moves_it_straight_up() {
+        let (eye, flat) = (Vec3::new(2.0, 1.0, 50.0), Vec3::new(10.0, -6.0, 0.0));
+        let held = lift(TimeMode::Held, flat, 20.0, eye);
+        assert!((held.z - 20.0).abs() < 1e-4, "as far towards the eye");
+        let sight = (flat - eye).normalize();
+        assert!(
+            (held - eye).normalize().dot(sight) > 1.0 - 1e-5,
+            "where the map put it on screen"
+        );
+        let flown = lift(TimeMode::Fly, flat, 20.0, eye);
+        assert_eq!(flown, flat + Vec3::Z * 20.0);
+    }
+
+    #[test]
+    fn names_size_with_their_calls_within_reason() {
+        assert!((apparent_size(0.0) - 1.0).abs() < 1e-6);
+        assert!(apparent_size(1.0) > 1.0 && apparent_size(-1.0) < 1.0);
+        assert!(apparent_size(50.0) <= 1.3 && apparent_size(-50.0) >= 0.8);
     }
 
     #[test]
