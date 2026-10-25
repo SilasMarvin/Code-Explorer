@@ -24,6 +24,7 @@ use crate::{
     cues::{self, Eye},
     explorer::Explorer,
     graph_view::{node_color, node_size},
+    journey_panel::{self, JourneyPanel, PanelMode},
     ui::{Chrome, egui_color, node_name},
 };
 
@@ -243,8 +244,16 @@ impl Floors {
             .map(|c| (c, self.calls.get(c).map_or(c, |call| call.end)));
         // Other calls to the cursor's function are tethered too, as hovering its node
         // tethers them, so each meets the cursor's string at the node.
+        // And the calls beside it, made by the same caller, faintly.
         match tether_of(cursor, index) {
             Tether::Other if self.again(index) => Tether::Made,
+            Tether::Other
+                if self
+                    .cursor
+                    .is_some_and(|c| sibling(|i| self.calls.get(i).map(|c| c.depth), c, index)) =>
+            {
+                Tether::Beside
+            }
             tether => tether,
         }
     }
@@ -253,7 +262,7 @@ impl Floors {
     /// calls it makes.
     pub(crate) fn lit_tiles(&self) -> HashSet<usize> {
         (0..self.calls.len())
-            .filter(|&i| self.shows(i) && self.tether(i) != Tether::Other)
+            .filter(|&i| self.shows(i) && matches!(self.tether(i), Tether::Cursor | Tether::Made))
             .map(|i| self.calls[i].tile)
             .chain(self.hover)
             .collect()
@@ -305,6 +314,22 @@ impl Floors {
     pub(crate) fn showing(&self) -> bool {
         self.lift > 0.01 && !self.calls.is_empty()
     }
+}
+
+/// The graph's area and the journey panel's in `area`: while the deck is up a docked
+/// panel steps aside, since the deck shows the same journey over the map.
+pub(crate) fn split(
+    panel: &JourneyPanel,
+    floors: &Floors,
+    area: egui::Rect,
+    explorer: &Explorer,
+) -> (egui::Rect, Option<egui::Rect>) {
+    let mode = if panel.mode == PanelMode::Docked && floors.showing() {
+        PanelMode::Hidden
+    } else {
+        panel.mode
+    };
+    journey_panel::split(mode, area, journey_panel::extent(explorer))
 }
 
 pub(crate) struct FloorsPlugin;
@@ -453,8 +478,23 @@ pub(crate) enum Tether {
     Cursor,
     /// A call the cursor's call makes: bright in its node's color, one traceable line.
     Made,
+    /// Another call made by the cursor's caller: faint, in its node's color.
+    Beside,
     /// Any other: not drawn, or faint if asked for.
     Other,
+}
+
+/// Whether call `index` is made by the same call as call `cursor`, for calls in
+/// depth-first order each `depth` deep.
+pub(crate) fn sibling(depth: impl Fn(usize) -> Option<usize>, cursor: usize, index: usize) -> bool {
+    let (Some(at), Some(other)) = (depth(cursor), depth(index)) else {
+        return false;
+    };
+    if index == cursor || other != at || at == 0 {
+        return false;
+    }
+    // Nothing shallower between them: both run under the same caller.
+    (cursor.min(index)..=cursor.max(index)).all(|i| depth(i).is_some_and(|d| d >= at))
 }
 
 /// How call `index`'s string is drawn, for a cursor on the call that runs from its
@@ -477,6 +517,7 @@ pub(crate) fn string_strength(tether: Tether, others: bool) -> Option<(f32, f32)
     match tether {
         Tether::Cursor => Some((1.0, 0.25)),
         Tether::Made => Some((0.9, 0.15)),
+        Tether::Beside => Some((0.45, 0.5)),
         Tether::Other => others.then_some((0.22, 0.8)),
     }
 }
@@ -669,7 +710,7 @@ fn place_calls(
     let (deck, lift) = (floors.deck, floors.lift());
     let graph = explorer.graph();
     #[expect(clippy::cast_precision_loss, reason = "a small count")]
-    let half = 0.5 / shown.len().max(1) as f32;
+    let half = BALL_AT / shown.len().max(1) as f32;
     let mut placed: Vec<Call> = calls
         .into_iter()
         .enumerate()
@@ -906,7 +947,9 @@ pub(crate) fn draw_strings(
         let tint = match shown_as {
             Tether::Cursor => Color::WHITE,
             Tether::Made => node_color(&explorer, None, call.tile).mix(&Color::WHITE, 0.35),
-            Tether::Other => node_color(&explorer, None, call.tile).mix(&STRING, 0.55),
+            Tether::Beside | Tether::Other => {
+                node_color(&explorer, None, call.tile).mix(&STRING, 0.55)
+            }
         };
         let points = &call.string;
         let pieces = points.len().saturating_sub(1);
@@ -939,9 +982,6 @@ pub(crate) fn draw_strings(
 }
 
 // ---- painting the deck ----
-
-/// Names on the deck are light, set at a slant so a crowd of columns each has room.
-const SLANT: f32 = -0.85;
 
 /// How many pixels across a call's ball is, the cursor's bigger.
 pub(crate) fn marker_radius(nearness: f32, cursor: bool) -> f32 {
@@ -1151,29 +1191,49 @@ fn name_call(
     } else {
         format!("{} {name}", call.number)
     };
-    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(size), color);
-    // Level along its tile where the name fits before the tile ends, else slanting
-    // up from the ball, starting just clear of it either way.
+    // Level along its tile, the name cut short with an ellipsis where the tile ends
+    // and the number always whole; the cursor's in full on a dark pill over whatever
+    // it runs past.
     let deck = floors.deck;
     let shown = &floors.window;
     let columns = call.end.min(shown.end.saturating_sub(1)) + 1 - index;
     #[expect(clippy::cast_precision_loss, reason = "small counts")]
-    let reach = deck.size.x * (columns as f32 - 0.5) / shown.len().max(1) as f32;
+    let reach = deck.size.x * (columns as f32 - BALL_AT) / shown.len().max(1) as f32;
     let room = project(call.marker + Vec3::X * reach).map_or(0.0, |end| end.distance(at));
-    let flat = level(galley.size().x, radius, room);
-    let angle = if flat { 0.0 } else { SLANT };
-    // Level over the cursor's brightly filled tile, the name is dark to read on it.
-    let color = if flat && away == Some(0) {
-        egui::Color32::from_rgb(18, 20, 26)
-    } else {
-        color
-    };
-    let start = at + egui::vec2(angle.cos(), angle.sin()) * (radius + 3.0);
+    let cursor = floors.cursor == Some(index);
+    let font = egui::FontId::proportional(size);
+    let mut galley = painter.layout_no_wrap(text.clone(), font.clone(), color);
+    let least = call.number.chars().count() + 2;
+    let mut keep = text.chars().count();
+    while !cursor && keep > least && !level(galley.size().x, radius, room) {
+        keep -= 1;
+        galley = painter.layout_no_wrap(shortened(&text, keep), font.clone(), color);
+    }
+    let start = at + egui::vec2(radius + 3.0, 0.0);
     let corner = start - egui::vec2(0.0, galley.size().y * 0.5);
-    let shape = egui::epaint::TextShape::new(corner, galley, color)
-        .with_angle_and_anchor(angle, egui::Align2::LEFT_CENTER)
-        .with_override_text_color(color.gamma_multiply(fade));
-    painter.add(shape);
+    if cursor {
+        let pill = egui::Rect::from_min_size(corner, galley.size()).expand2(egui::vec2(4.0, 1.0));
+        painter.rect_filled(
+            pill,
+            3.0,
+            egui::Color32::from_rgb(18, 20, 26).gamma_multiply(fade),
+        );
+    }
+    painter.galley_with_override_text_color(corner, galley, color.gamma_multiply(fade));
+}
+
+/// Where a call's ball sits across its first column, as a share of it: near the
+/// tile's start, leaving the rest of the tile to its name.
+const BALL_AT: f32 = 0.18;
+
+/// `text` cut to its first `keep` characters and an ellipsis, or whole if that long.
+pub(crate) fn shortened(text: &str, keep: usize) -> String {
+    if text.chars().count() <= keep {
+        return text.to_owned();
+    }
+    let mut short: String = text.chars().take(keep.saturating_sub(1)).collect();
+    short.push('…');
+    short
 }
 
 /// Whether a name `width` wide fits level beside a ball of `radius`, with `room`
@@ -1305,6 +1365,23 @@ mod tests {
     fn the_comb_orders_strings_by_where_they_land() {
         assert_eq!(slots(&[5.0, 1.0, 3.0]), vec![2, 0, 1]);
         assert_eq!(slots(&[1.0, 1.0]), vec![0, 1], "ties keep time order");
+    }
+
+    #[test]
+    fn calls_beside_the_cursor_share_its_caller() {
+        // 0 makes 1 and 3; 1 makes 2; 3 makes 4.
+        let depths = [0, 1, 2, 1, 2];
+        let depth = |i: usize| depths.get(i).copied();
+        assert!(sibling(depth, 1, 3));
+        assert!(!sibling(depth, 2, 4), "different callers");
+        assert!(!sibling(depth, 1, 1));
+        assert!(!sibling(depth, 0, 0));
+    }
+
+    #[test]
+    fn a_long_name_is_cut_short_with_an_ellipsis() {
+        assert_eq!(shortened("5.10 stack", 20), "5.10 stack");
+        assert_eq!(shortened("5.10 stack", 7), "5.10 s…");
     }
 
     #[test]
