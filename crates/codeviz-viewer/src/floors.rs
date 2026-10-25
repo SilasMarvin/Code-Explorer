@@ -74,6 +74,16 @@ pub(crate) enum Route {
     Comb,
 }
 
+/// Which calls hang strings down to their nodes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Strings {
+    /// The cursor's call and the calls it makes; the rest are matched by number.
+    #[default]
+    Tethered,
+    /// Every call, the rest faint.
+    All,
+}
+
 /// The upper floor as it stands this frame.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct Floors {
@@ -81,6 +91,8 @@ pub(crate) struct Floors {
     pub(crate) stand: Stand,
     /// How strings run down to the map.
     pub(crate) route: Route,
+    /// Which calls hang strings.
+    pub(crate) strings: Strings,
     /// The call whose tile is under the pointer, as last painted.
     pub(crate) pointed: Option<usize>,
     /// The node lit by the pointer: a pointed tile's, else the node under it.
@@ -164,10 +176,11 @@ pub(crate) struct Call {
 
 impl Floors {
     /// A deck that stands and strings that run as asked.
-    pub(crate) fn styled(stand: Stand, route: Route) -> Self {
+    pub(crate) fn styled(stand: Stand, route: Route, strings: Strings) -> Self {
         Self {
             stand,
             route,
+            strings,
             ..default()
         }
     }
@@ -221,11 +234,20 @@ impl Floors {
         })
     }
 
-    /// The nodes the bright strings land on: the cursor's call's, its neighbors' and
-    /// those of other calls to its function.
+    /// How call `index`'s string is drawn: the cursor's call and the calls it makes
+    /// are tethered to their nodes; the rest are left to their number badges.
+    pub(crate) fn tether(&self, index: usize) -> Tether {
+        let cursor = self
+            .cursor
+            .map(|c| (c, self.calls.get(c).map_or(c, |call| call.end)));
+        tether_of(cursor, index)
+    }
+
+    /// The nodes the bright strings land on: the cursor's call's and those of the
+    /// calls it makes.
     pub(crate) fn lit_tiles(&self) -> HashSet<usize> {
         (0..self.calls.len())
-            .filter(|&i| self.shows(i) && self.away(i).is_some_and(|away| away <= NEAR))
+            .filter(|&i| self.shows(i) && self.tether(i) != Tether::Other)
             .map(|i| self.calls[i].tile)
             .chain(self.hover)
             .collect()
@@ -300,7 +322,7 @@ pub(crate) struct StringGizmos;
 pub(crate) struct CursorGizmos;
 
 fn line_widths(mut store: ResMut<GizmoConfigStore>) {
-    store.config_mut::<StringGizmos>().0.line.width = 1.6;
+    store.config_mut::<StringGizmos>().0.line.width = 1.9;
     store.config_mut::<CursorGizmos>().0.line.width = 2.4;
 }
 
@@ -418,18 +440,34 @@ pub(crate) fn deck_spot(index: usize, depth: usize, shown: &Range<usize>, rows: 
     Vec2::new(column / columns, (row + 0.5) / rows)
 }
 
-/// Calls either side of the cursor whose strings draw bright.
-const NEAR: usize = 2;
+/// How a call's string is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tether {
+    /// The cursor's call: white and bold.
+    Cursor,
+    /// A call the cursor's call makes: bright in its node's color, one traceable line.
+    Made,
+    /// Any other: not drawn, or faint if asked for.
+    Other,
+}
 
-/// How strongly a string draws, for a call `away` calls from the cursor's: the
-/// cursor's in full, its two neighbors either side bright, the rest faint.
-pub(crate) fn string_alpha(away: Option<usize>) -> f32 {
-    match away {
-        Some(0) => 1.0,
-        Some(1) => 0.8,
-        Some(2) => 0.6,
-        None => 0.4,
-        Some(_) => 0.25,
+/// How call `index`'s string is drawn, for a cursor on the call that runs from its
+/// index to the end of the calls it makes.
+pub(crate) fn tether_of(cursor: Option<(usize, usize)>, index: usize) -> Tether {
+    match cursor {
+        Some((start, _)) if index == start => Tether::Cursor,
+        Some((start, end)) if index > start && index <= end => Tether::Made,
+        _ => Tether::Other,
+    }
+}
+
+/// How strongly a string draws at the deck, and how much of that it loses by the
+/// time it reaches the map; none for the others unless they are asked for.
+pub(crate) fn string_strength(tether: Tether, others: bool) -> Option<(f32, f32)> {
+    match tether {
+        Tether::Cursor => Some((1.0, 0.25)),
+        Tether::Made => Some((0.9, 0.15)),
+        Tether::Other => others.then_some((0.22, 0.8)),
     }
 }
 
@@ -843,30 +881,31 @@ pub(crate) fn draw_strings(
         if !floors.shows(index) {
             continue;
         }
-        let away = floors.away(index);
+        let tether = floors.tether(index);
         let hovered = floors.hovered(index);
-        let alpha = if hovered { 1.0 } else { string_alpha(away) } * fade;
-        let tint = if away == Some(0) {
-            Color::WHITE
-        } else if hovered {
-            node_color(&explorer, None, call.tile).mix(&Color::WHITE, 0.3)
+        // What the pointer lights is tethered whatever it is.
+        let shown_as = if hovered && tether == Tether::Other {
+            Tether::Made
         } else {
-            node_color(&explorer, None, call.tile).mix(&STRING, 0.55)
+            tether
+        };
+        let Some((alpha, thin)) = string_strength(shown_as, floors.strings == Strings::All) else {
+            continue;
+        };
+        let alpha = alpha * fade;
+        let tint = match shown_as {
+            Tether::Cursor => Color::WHITE,
+            Tether::Made => node_color(&explorer, None, call.tile).mix(&Color::WHITE, 0.35),
+            Tether::Other => node_color(&explorer, None, call.tile).mix(&STRING, 0.55),
         };
         let points = &call.string;
         let pieces = points.len().saturating_sub(1);
-        let strong = (away == Some(0) && floors.cursor == Some(index)) || hovered;
+        let strong = tether == Tether::Cursor || hovered;
         for (i, pair) in points.windows(2).enumerate() {
-            // Brightest at the deck, thinning towards the map: a little for the bright
-            // strings, most of the way for the rest, whose pools mark where they land,
-            // so a crowd of strings doesn't knot over a crowd of nodes.
+            // Brightest at the deck, thinning a little towards the map, so each
+            // tethered string stays traceable to its node.
             #[expect(clippy::cast_precision_loss, reason = "a few pieces")]
             let t = i as f32 / pieces.max(1) as f32;
-            let thin = if hovered || away.is_some_and(|a| a <= NEAR) {
-                0.35
-            } else {
-                0.8
-            };
             let color = tint.with_alpha(alpha * (1.0 - thin * t));
             if strong {
                 bold.line(pair[0], pair[1], color);
@@ -1103,13 +1142,34 @@ fn name_call(
         format!("{} {name}", call.number)
     };
     let galley = painter.layout_no_wrap(text, egui::FontId::proportional(size), color);
-    // Starting just clear of the ball, along the slant.
-    let start = at + egui::vec2(SLANT.cos(), SLANT.sin()) * (radius + 3.0);
+    // Level along its tile where the name fits before the tile ends, else slanting
+    // up from the ball, starting just clear of it either way.
+    let deck = floors.deck;
+    let shown = &floors.window;
+    let columns = call.end.min(shown.end.saturating_sub(1)) + 1 - index;
+    #[expect(clippy::cast_precision_loss, reason = "small counts")]
+    let reach = deck.size.x * (columns as f32 - 0.5) / shown.len().max(1) as f32;
+    let room = project(call.marker + Vec3::X * reach).map_or(0.0, |end| end.distance(at));
+    let flat = level(galley.size().x, radius, room);
+    let angle = if flat { 0.0 } else { SLANT };
+    // Level over the cursor's brightly filled tile, the name is dark to read on it.
+    let color = if flat && away == Some(0) {
+        egui::Color32::from_rgb(18, 20, 26)
+    } else {
+        color
+    };
+    let start = at + egui::vec2(angle.cos(), angle.sin()) * (radius + 3.0);
     let corner = start - egui::vec2(0.0, galley.size().y * 0.5);
     let shape = egui::epaint::TextShape::new(corner, galley, color)
-        .with_angle_and_anchor(SLANT, egui::Align2::LEFT_CENTER)
+        .with_angle_and_anchor(angle, egui::Align2::LEFT_CENTER)
         .with_override_text_color(color.gamma_multiply(fade));
     painter.add(shape);
+}
+
+/// Whether a name `width` wide fits level beside a ball of `radius`, with `room`
+/// to its tile's end.
+pub(crate) fn level(width: f32, radius: f32, room: f32) -> bool {
+    radius + 3.0 + width + 4.0 <= room
 }
 
 /// Says how many calls lie past the window at either end of the deck.
@@ -1238,6 +1298,12 @@ mod tests {
     }
 
     #[test]
+    fn a_name_lies_level_only_where_its_tile_has_room() {
+        assert!(level(60.0, 5.0, 100.0));
+        assert!(!level(60.0, 5.0, 65.0));
+    }
+
+    #[test]
     fn a_crowd_pulls_the_name_up() {
         let near = [Vec3::X, Vec3::Y, Vec3::NEG_X];
         assert!(crowded(Vec3::ZERO, &near, 2.0, 3));
@@ -1256,11 +1322,27 @@ mod tests {
     }
 
     #[test]
-    fn strings_are_brightest_round_the_cursor() {
-        assert!(string_alpha(Some(0)) > string_alpha(Some(1)));
-        assert!(string_alpha(Some(1)) > string_alpha(Some(2)));
-        assert!(string_alpha(Some(2)) > string_alpha(Some(3)));
-        assert!(string_alpha(Some(30)) > 0.0, "never gone");
+    fn only_the_cursor_and_its_calls_are_tethered() {
+        // 0 makes 1 and 3; 1 makes 2; the cursor is on 1.
+        let tethers: Vec<Tether> = (0..4).map(|i| tether_of(Some((1, 2)), i)).collect();
+        assert_eq!(
+            tethers,
+            vec![Tether::Other, Tether::Cursor, Tether::Made, Tether::Other]
+        );
+        let (cursor, made) = (
+            string_strength(Tether::Cursor, false).unwrap(),
+            string_strength(Tether::Made, false).unwrap(),
+        );
+        assert!(cursor.0 >= made.0);
+        assert_eq!(
+            string_strength(Tether::Other, false),
+            None,
+            "left to badges"
+        );
+        assert!(
+            string_strength(Tether::Other, true).unwrap().0 < made.0,
+            "faint"
+        );
     }
 
     #[test]

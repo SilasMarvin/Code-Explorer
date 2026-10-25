@@ -138,6 +138,8 @@ enum TimeArg {
     FloorsComb,
     /// The deck standing beyond the journey, its strings through a comb.
     FloorsBehindComb,
+    /// Faint strings from every call too, not only the cursor's and its calls'.
+    FloorsAll,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -256,6 +258,7 @@ pub(crate) fn open(
             TimeArg::FloorsBehind => "floors+behind",
             TimeArg::FloorsComb => "floors+comb",
             TimeArg::FloorsBehindComb => "floors+behind+comb",
+            TimeArg::FloorsAll => "floors+all",
         });
     }
     if let Some(path) = &args.screenshot {

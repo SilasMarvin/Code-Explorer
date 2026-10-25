@@ -69,6 +69,7 @@ pub struct Viewer {
     time: floors::TimeMode,
     stand: floors::Stand,
     route: floors::Route,
+    strings: floors::Strings,
     rock_at: Option<f32>,
 }
 
@@ -106,6 +107,7 @@ impl Viewer {
             time: floors::TimeMode::Off,
             stand: floors::Stand::default(),
             route: floors::Route::default(),
+            strings: floors::Strings::default(),
             rock_at: None,
         }
     }
@@ -247,7 +249,8 @@ impl Viewer {
     /// Shows call order in depth: `floors` lifts the journey as a diagram on a second
     /// floor, strung to its nodes. `+behind` stands the deck beyond the journey's far
     /// edge rather than over it; `+comb` runs the strings through a comb under the
-    /// deck's near edge rather than straight to their nodes.
+    /// deck's near edge rather than straight to their nodes; `+all` hangs faint
+    /// strings from every call, not only the cursor's and the calls it makes.
     #[must_use]
     pub fn with_time(mut self, mode: &str) -> Self {
         let mut parts = mode.split('+');
@@ -261,6 +264,7 @@ impl Viewer {
                 "behind" => self.stand = floors::Stand::Behind,
                 "direct" => self.route = floors::Route::Direct,
                 "comb" => self.route = floors::Route::Comb,
+                "all" => self.strings = floors::Strings::All,
                 _ => {}
             }
         }
@@ -401,7 +405,7 @@ impl Viewer {
             time: self.time,
             ..default()
         })
-        .insert_resource(floors::Floors::styled(self.stand, self.route))
+        .insert_resource(floors::Floors::styled(self.stand, self.route, self.strings))
         .insert_resource(cues::Rock {
             held_at: self.rock_at,
             ..default()
