@@ -109,6 +109,7 @@ fn on_node_click(
     click: On<PointerClick>,
     tiles: Query<&Tile>,
     keys: Res<ButtonInput<KeyCode>>,
+    floors: Res<floors::Floors>,
     mut explorer: ResMut<Explorer>,
     mut panel: ResMut<JourneyPanel>,
 ) {
@@ -118,7 +119,8 @@ fn on_node_click(
     let Ok(tile) = tiles.get(click.entity) else {
         return;
     };
-    if !explorer.shown(tile.0) {
+    // A click on the deck's tile is the deck's, not the node's behind it.
+    if !explorer.shown(tile.0) || floors.pointed.is_some() {
         return;
     }
     if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {

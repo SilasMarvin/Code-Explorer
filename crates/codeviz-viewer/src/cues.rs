@@ -428,7 +428,11 @@ fn cast_footprints(
             *visibility = Visibility::Hidden;
             continue;
         };
-        let away = floors.away(index);
+        let away = if floors.hovered(index) {
+            Some(0)
+        } else {
+            floors.away(index)
+        };
         let size = node_size(explorer.graph(), call.tile);
         let radius = size * if away == Some(0) { 3.2 } else { 2.2 };
         // Round the node itself rather than on the floor straight under it: the map

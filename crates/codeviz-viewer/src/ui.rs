@@ -18,7 +18,7 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
-    cues, depth_meter,
+    depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
     floors::{self, Floors, TimeMode},
@@ -150,7 +150,7 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    floors: Res<Floors>,
+    mut floors: ResMut<Floors>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
@@ -198,18 +198,17 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
-        let eye = cues::Eye::of(transform, orbit.distance);
         draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
             diff.as_deref(),
             transform.up().into(),
-            floors.showing().then(|| floors.lit_tiles()).as_ref(),
+            &floors,
         );
-        floors::draw_deck(&painter, (&camera, transform), &explorer, &floors, eye);
-        // The graph's right edge clear of the diff card above and a docked journey
-        // below, for the depth meter.
+        floors::draw_deck(&painter, (&camera, transform), &explorer, &floors, &orbit);
+        point_deck(ctx, graph_area, &to_screen, &mut floors, &mut explorer);
+        // The depth meter keeps clear of the diff card and a docked journey.
         let mut clear = above(graph_area, panel_area);
         if let Some(diff) = diff.as_deref_mut().filter(|_| !chrome.bare) {
             let card = diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
@@ -364,6 +363,30 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     });
     if clustering != explorer.clustering() {
         explorer.set_clustering(clustering);
+    }
+}
+
+/// A deck tile under the pointer lights its string and node; a click on one moves the
+/// cursor to its call.
+fn point_deck(
+    ctx: &egui::Context,
+    graph_area: egui::Rect,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    floors: &mut Floors,
+    explorer: &mut Explorer,
+) {
+    let over = ctx
+        .pointer_hover_pos()
+        .filter(|&p| graph_area.contains(p))
+        .filter(|&p| {
+            ctx.layer_id_at(p)
+                .is_none_or(|l| l.order == egui::Order::Background)
+        });
+    floors.pointed = over.and_then(|p| floors::pointed_call(floors, to_screen, p));
+    if let Some(call) = floors.pointed.and_then(|i| floors.calls.get(i))
+        && ctx.input(|i| i.pointer.primary_clicked())
+    {
+        explorer.select(Some(call.span));
     }
 }
 
@@ -1283,8 +1306,13 @@ fn draw_graph_labels(
     explorer: &Explorer,
     diff: Option<&DiffView>,
     up: Vec3,
-    quiet: Option<&HashSet<usize>>,
+    floors: &Floors,
 ) {
+    // While the upper floor is up, what it lights, and names pulled up off a crowd.
+    let quiet = floors.showing().then(|| floors.lit_tiles());
+    let quiet = quiet.as_ref();
+    let tags = floors.tags();
+    let on_deck = floors.shown_tiles();
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
     let diff_tier = |tile: usize| {
@@ -1319,10 +1347,12 @@ fn draw_graph_labels(
     // Where each shown node sits on screen, and how far its edge is from its middle.
     let discs: Vec<Option<(egui::Pos2, f32)>> = (0..map.tiles.len())
         .map(|tile| {
-            // Only what the lens shows at least half way gets a name.
+            // Only what the lens shows at least half way gets a name; a name pulled up
+            // off a crowd sits where its string lands.
             let world = explorer
                 .tile_point(tile)
                 .filter(|_| explorer.visibility(tile) >= 0.5)?;
+            let world = tags.get(&tile).copied().unwrap_or(world);
             let node = to_screen(world)?;
             let radius = graph_view::node_size(graph, tile) / 2.0;
             let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
@@ -1359,8 +1389,11 @@ fn draw_graph_labels(
             None => continue,
         };
         // While the upper floor hangs over the map, only the focus and the nodes
-        // its bright strings land on are named, so each name pairs with a string.
-        if quiet.is_some_and(|lit| tier > 0 && !lit.contains(&tile) && hovered != Some(tile)) {
+        // its bright strings land on are named, so each name pairs with a string;
+        // the journey's other nodes keep their numbers, to match against the deck.
+        if quiet.is_some_and(|lit| tier > 0 && !lit.contains(&tile) && hovered != Some(tile))
+            && !on_deck.contains(&tile)
+        {
             continue;
         }
         order.push((
@@ -1447,8 +1480,11 @@ fn draw_graph_labels(
                     continue;
                 };
                 let change = diff.and_then(|d| d.change(tile));
+                let numbered_only = quiet
+                    .is_some_and(|lit| tier > 0 && !lit.contains(&tile) && hovered != Some(tile));
                 // A change is named in full: `new` alone could be any type's.
                 let name = match (change, explorer.tile_unit(tile)) {
+                    _ if numbered_only => String::new(),
                     (Some(_), Some(unit)) => explorer.unit_name(unit),
                     _ => node_name(explorer, tile),
                 };
@@ -1516,7 +1552,8 @@ fn draw_graph_labels(
                 let aside = [aside, (!marks.is_empty()).then(|| marks.join(" · "))]
                     .into_iter()
                     .flatten()
-                    .reduce(|a, b| format!("{a} · {b}"));
+                    .reduce(|a, b| format!("{a} · {b}"))
+                    .filter(|_| !numbered_only);
                 // A node the journey runs leads with its place in it, as its bar does.
                 let order = journey
                     .get(&tile)

@@ -67,6 +67,8 @@ pub struct Viewer {
     bare: bool,
     diff: Option<Comparison>,
     time: floors::TimeMode,
+    stand: floors::Stand,
+    route: floors::Route,
     rock_at: Option<f32>,
 }
 
@@ -102,6 +104,8 @@ impl Viewer {
             bare: false,
             diff: None,
             time: floors::TimeMode::Off,
+            stand: floors::Stand::default(),
+            route: floors::Route::default(),
             rock_at: None,
         }
     }
@@ -240,14 +244,26 @@ impl Viewer {
         self
     }
 
-    /// Shows call order in depth: `floors` lifts the journey over the map as a
-    /// diagram on a second floor, strung to its nodes.
+    /// Shows call order in depth: `floors` lifts the journey as a diagram on a second
+    /// floor, strung to its nodes. `+behind` stands the deck beyond the journey's far
+    /// edge rather than over it; `+comb` runs the strings through a comb under the
+    /// deck's near edge rather than straight to their nodes.
     #[must_use]
     pub fn with_time(mut self, mode: &str) -> Self {
-        self.time = match mode {
-            "floors" => floors::TimeMode::Floors,
+        let mut parts = mode.split('+');
+        self.time = match parts.next() {
+            Some("floors") => floors::TimeMode::Floors,
             _ => floors::TimeMode::Off,
         };
+        for part in parts {
+            match part {
+                "over" => self.stand = floors::Stand::Over,
+                "behind" => self.stand = floors::Stand::Behind,
+                "direct" => self.route = floors::Route::Direct,
+                "comb" => self.route = floors::Route::Comb,
+                _ => {}
+            }
+        }
         self
     }
 
@@ -385,6 +401,7 @@ impl Viewer {
             time: self.time,
             ..default()
         })
+        .insert_resource(floors::Floors::styled(self.stand, self.route))
         .insert_resource(cues::Rock {
             held_at: self.rock_at,
             ..default()

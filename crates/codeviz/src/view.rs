@@ -132,6 +132,12 @@ enum NearArg {
 enum TimeArg {
     /// The journey as a diagram on a second floor over the map, strung to its nodes.
     Floors,
+    /// The deck standing beyond the journey's far edge instead of over it.
+    FloorsBehind,
+    /// Strings through a comb under the deck's near edge, in the order their nodes lie.
+    FloorsComb,
+    /// The deck standing beyond the journey, its strings through a comb.
+    FloorsBehindComb,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -244,8 +250,13 @@ pub(crate) fn open(
     if args.bare {
         viewer = viewer.bare();
     }
-    if let Some(TimeArg::Floors) = args.time {
-        viewer = viewer.with_time("floors");
+    if let Some(time) = args.time {
+        viewer = viewer.with_time(match time {
+            TimeArg::Floors => "floors",
+            TimeArg::FloorsBehind => "floors+behind",
+            TimeArg::FloorsComb => "floors+comb",
+            TimeArg::FloorsBehindComb => "floors+behind+comb",
+        });
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer

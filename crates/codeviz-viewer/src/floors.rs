@@ -52,9 +52,39 @@ impl TimeMode {
     }
 }
 
+/// Where the deck stands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Stand {
+    /// Flat over the journey's part of the map, towards the eye.
+    #[default]
+    Over,
+    /// Rising beyond the journey's far edge, so its strings fall forward onto the map.
+    Behind,
+}
+
+/// How strings run from the deck to the map.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// Straight from each ball, bending down to its node.
+    #[default]
+    Direct,
+    /// Down the deck to its near edge, across a narrow band to a slot in the order
+    /// their nodes lie left to right, then fanning out to them, so the crossings
+    /// gather in the band instead of over the map.
+    Comb,
+}
+
 /// The upper floor as it stands this frame.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct Floors {
+    /// Where the deck stands.
+    pub(crate) stand: Stand,
+    /// How strings run down to the map.
+    pub(crate) route: Route,
+    /// The call whose tile is under the pointer, as last painted.
+    pub(crate) pointed: Option<usize>,
+    /// The node lit by the pointer: a pointed tile's, else the node under it.
+    pub(crate) hover: Option<usize>,
     /// How far it has risen: 0 down on the map, 1 at full height.
     lift: f32,
     /// The camera's angles before the deck turned it, to turn back to.
@@ -75,27 +105,39 @@ pub(crate) struct Floors {
     region: (Vec2, Vec2),
 }
 
-/// The glass deck: where its middle is over the map, how big it is, and how high.
+/// The glass deck: where its near edge's middle is over the map, how big it is, how
+/// high its near edge floats, and how far it leans up from flat.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Deck {
-    pub(crate) middle: Vec2,
+    pub(crate) near: Vec2,
     pub(crate) size: Vec2,
     pub(crate) height: f32,
+    pub(crate) lean: f32,
 }
 
 impl Deck {
     /// Where a point `(across, up)` of the deck lies in the world, each 0 to 1 from its
     /// left and near edge, at `lift` of its height.
     pub(crate) fn at(&self, across: f32, up: f32, lift: f32) -> Vec3 {
-        let corner = self.middle - self.size / 2.0;
-        (corner + self.size * Vec2::new(across, up)).extend(self.height * lift)
+        let rise = self.rise() * self.size.y * up;
+        Vec3::new(
+            self.near.x + self.size.x * (across - 0.5),
+            self.near.y + rise.y,
+            (self.height + rise.z) * lift,
+        )
+    }
+
+    /// The way up the deck, from its near edge to its far one.
+    pub(crate) fn rise(&self) -> Vec3 {
+        Vec3::new(0.0, self.lean.cos(), self.lean.sin())
     }
 
     fn eased(self, goal: Self, ease: f32) -> Self {
         Self {
-            middle: self.middle.lerp(goal.middle, ease),
+            near: self.near.lerp(goal.near, ease),
             size: self.size.lerp(goal.size, ease),
             height: self.height + (goal.height - self.height) * ease,
+            lean: self.lean + (goal.lean - self.lean) * ease,
         }
     }
 }
@@ -103,6 +145,7 @@ impl Deck {
 /// One call on the deck.
 #[derive(Debug, Clone)]
 pub(crate) struct Call {
+    pub(crate) span: SpanId,
     pub(crate) tile: usize,
     pub(crate) number: String,
     /// How many calls under the journey's start it runs.
@@ -113,9 +156,22 @@ pub(crate) struct Call {
     pub(crate) marker: Vec3,
     /// Where its string meets its node.
     pub(crate) foot: Vec3,
+    /// Where its string ends: its node, or the node's name pulled up over a crowd.
+    pub(crate) lands: Vec3,
+    /// Its string, from its ball to where it lands.
+    pub(crate) string: Vec<Vec3>,
 }
 
 impl Floors {
+    /// A deck that stands and strings that run as asked.
+    pub(crate) fn styled(stand: Stand, route: Route) -> Self {
+        Self {
+            stand,
+            route,
+            ..default()
+        }
+    }
+
     /// How far above the map the camera looks while the deck is up: part way up, so
     /// both floors share the view.
     pub(crate) fn middle(&self) -> f32 {
@@ -171,6 +227,33 @@ impl Floors {
         (0..self.calls.len())
             .filter(|&i| self.shows(i) && self.away(i).is_some_and(|away| away <= NEAR))
             .map(|i| self.calls[i].tile)
+            .chain(self.hover)
+            .collect()
+    }
+
+    /// Whether call `index` runs the node the pointer lights.
+    pub(crate) fn hovered(&self, index: usize) -> bool {
+        self.hover
+            .is_some_and(|tile| self.calls.get(index).is_some_and(|c| c.tile == tile))
+    }
+
+    /// Nodes whose names are pulled up off a crowd, to where their strings land.
+    pub(crate) fn tags(&self) -> HashMap<usize, Vec3> {
+        self.calls
+            .iter()
+            .filter(|c| c.lands != c.foot)
+            .map(|c| (c.tile, c.lands))
+            .collect()
+    }
+
+    /// The nodes of the calls the deck shows, which keep their numbers on the map.
+    pub(crate) fn shown_tiles(&self) -> HashSet<usize> {
+        if !self.showing() {
+            return HashSet::new();
+        }
+        self.calls[self.window.clone()]
+            .iter()
+            .map(|c| c.tile)
             .collect()
     }
 
@@ -283,24 +366,42 @@ const LOWEST: f32 = 14.0;
 const CLEAR: f32 = 0.9;
 const HIGHEST: f32 = 1.0;
 
+/// How far a standing deck leans up from flat, in radians: nearly upright, tipped
+/// back a little to face a camera looking down on the map.
+const LEAN: f32 = 1.2;
+/// How far beyond the journey's far edge a standing deck stands, and how high its
+/// near edge floats, as shares of its width.
+const BEYOND: f32 = 0.08;
+const FOOT: f32 = 0.12;
+
 /// The deck for `columns` calls `rows` deep over a journey whose nodes span `min` to
-/// `max` on the map: centered over them, as wide as they are or wide enough for its
-/// columns, and high enough to clear them.
-pub(crate) fn plan_deck(min: Vec2, max: Vec2, columns: usize, rows: usize) -> Deck {
+/// `max` on the map: as wide as they are or wide enough for its columns, and either
+/// centered over them high enough to clear them, or standing beyond their far edge.
+pub(crate) fn plan_deck(min: Vec2, max: Vec2, columns: usize, rows: usize, stand: Stand) -> Deck {
     let span = max - min;
     #[expect(clippy::cast_precision_loss, reason = "small counts")]
     let (columns, rows) = (columns.max(1) as f32, rows.max(1) as f32);
     let width = (span.max_element() * WIDE).max(columns * COLUMN);
     let column = width / columns;
     let depth = (rows * column * ROW).min(width * SHALLOW);
-    Deck {
-        middle: (min + max) / 2.0,
-        size: Vec2::new(width, depth),
-        // High enough that, seen from in front at the view's tilt, the deck mostly
-        // clears the journey's region of the map under it.
-        height: ((span.y + depth) * CLEAR)
-            .clamp(width * HEIGHT, width * HIGHEST)
-            .max(LOWEST),
+    let middle = (min + max) / 2.0;
+    match stand {
+        Stand::Over => Deck {
+            near: Vec2::new(middle.x, middle.y - depth / 2.0),
+            size: Vec2::new(width, depth),
+            // High enough that, seen from in front at the view's tilt, the deck mostly
+            // clears the journey's region of the map under it.
+            height: ((span.y + depth) * CLEAR)
+                .clamp(width * HEIGHT, width * HIGHEST)
+                .max(LOWEST),
+            lean: 0.0,
+        },
+        Stand::Behind => Deck {
+            near: Vec2::new(middle.x, max.y + width * BEYOND),
+            size: Vec2::new(width, depth),
+            height: width * FOOT,
+            lean: LEAN,
+        },
     }
 }
 
@@ -333,11 +434,12 @@ pub(crate) fn string_alpha(away: Option<usize>) -> f32 {
 }
 
 /// Points along a string from `top` on the deck to `foot` on the map: it leaves the
-/// deck straight down and arrives at its node straight down, bending between, so
-/// both ends read as hanging.
-pub(crate) fn string_points(top: Vec3, foot: Vec3, pieces: usize) -> Vec<Vec3> {
-    let drop = (top.z - foot.z).max(0.0) * 0.45;
-    let (a, b) = (top - Vec3::Z * drop, foot + Vec3::Z * drop);
+/// deck along `out` and arrives at its node straight down, bending between, so both
+/// ends read as hanging.
+pub(crate) fn string_points(top: Vec3, out: Vec3, foot: Vec3, pieces: usize) -> Vec<Vec3> {
+    let gap = top - foot;
+    let drop = gap.z.max(gap.truncate().length() * 0.5).max(0.0) * 0.45;
+    let (a, b) = (top + out * drop, foot + Vec3::Z * drop);
     (0..=pieces)
         .map(|i| {
             #[expect(clippy::cast_precision_loss, reason = "a few pieces")]
@@ -347,6 +449,35 @@ pub(crate) fn string_points(top: Vec3, foot: Vec3, pieces: usize) -> Vec<Vec3> {
         })
         .collect()
 }
+
+/// For string feet across the screen at `xs`, each one's slot in the comb: its rank
+/// left to right, ties kept in time order.
+pub(crate) fn slots(xs: &[f32]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..xs.len()).collect();
+    order.sort_by(|&a, &b| xs[a].total_cmp(&xs[b]).then(a.cmp(&b)));
+    let mut slot = vec![0; xs.len()];
+    for (rank, i) in order.into_iter().enumerate() {
+        slot[i] = rank;
+    }
+    slot
+}
+
+/// Whether `at` sits in a crowd: at least `many` of `others` lie within `radius`.
+pub(crate) fn crowded(at: Vec3, others: &[Vec3], radius: f32, many: usize) -> bool {
+    others
+        .iter()
+        .filter(|o| o.truncate().distance(at.truncate()) < radius)
+        .count()
+        >= many
+}
+
+/// How far below the deck's near edge the comb's slots lie, as a share of its depth.
+const COMB: f32 = 0.45;
+/// How close other strings' nodes crowd the cursor's, as a share of the deck's width,
+/// and how many make a crowd; how high its name is then pulled up.
+const CROWD_RADIUS: f32 = 0.08;
+const CROWD: usize = 3;
+const TAG: f32 = 0.06;
 
 /// The disclosed journey's calls in order, each with its node, number, and depth;
 /// calls whose node the graph lacks are left out.
@@ -433,7 +564,7 @@ pub(crate) fn raise(
         floors.calls.clear();
         return;
     }
-    let plan = plan_deck(min, max, shown.len(), rows);
+    let plan = plan_deck(min, max, shown.len(), rows, floors.stand);
     let fresh = floors.deck.size == Vec2::ZERO;
     floors.deck = if fresh {
         plan
@@ -469,10 +600,15 @@ pub(crate) fn raise(
     }
     floors.calls = place_calls(&explorer, &floors, calls, &shown, rows);
     floors.window = shown;
+    floors.hover = floors
+        .pointed
+        .and_then(|i| floors.calls.get(i))
+        .map(|c| c.tile)
+        .or(explorer.hovered_tile);
 }
 
-/// Places each call's ball on the deck, in the window `shown` of it `rows` deep, and
-/// the foot of its string on its node.
+/// Places each call's ball on the deck, in the window `shown` of it `rows` deep, the
+/// foot of its string on its node, and its string between them.
 fn place_calls(
     explorer: &Explorer,
     floors: &Floors,
@@ -484,24 +620,84 @@ fn place_calls(
     let ends = ends(&depths);
     let (deck, lift) = (floors.deck, floors.lift());
     let graph = explorer.graph();
-    calls
+    #[expect(clippy::cast_precision_loss, reason = "a small count")]
+    let half = 0.5 / shown.len().max(1) as f32;
+    let mut placed: Vec<Call> = calls
         .into_iter()
         .enumerate()
-        .filter_map(|(i, (_, tile, number, depth))| {
+        .filter_map(|(i, (span, tile, number, depth))| {
             let at = explorer.tile_point(tile)?;
             let spot = deck_spot(i.clamp(shown.start, shown.end), depth, shown, rows);
-            #[expect(clippy::cast_precision_loss, reason = "a small count")]
-            let half = 0.5 / shown.len().max(1) as f32;
+            let foot = at + Vec3::Z * node_size(graph, tile) * 0.5;
             Some(Call {
+                span,
                 tile,
                 number,
                 depth,
                 end: ends[i],
                 marker: deck.at(spot.x + half, spot.y, lift),
-                foot: at + Vec3::Z * node_size(graph, tile) * 0.5,
+                foot,
+                lands: foot,
+                string: Vec::new(),
             })
         })
-        .collect()
+        .collect();
+    // Over a crowd, the cursor's string lands on its name, pulled up off the crowd.
+    let feet: Vec<Vec3> = placed
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| shown.contains(&i) && floors.cursor != Some(i))
+        .map(|(_, c)| c.foot)
+        .collect();
+    if let Some(call) = floors.cursor.and_then(|c| placed.get_mut(c))
+        && crowded(call.foot, &feet, deck.size.x * CROWD_RADIUS, CROWD)
+    {
+        call.lands = call.foot + Vec3::Z * deck.size.x * TAG * lift;
+    }
+    // Leaving a flat deck straight down; a standing one, down its face.
+    let out = match floors.stand {
+        Stand::Over => Vec3::NEG_Z,
+        Stand::Behind => -deck.rise(),
+    };
+    let in_window: Vec<usize> = (0..placed.len()).filter(|i| shown.contains(i)).collect();
+    let slot = slots(
+        &in_window
+            .iter()
+            .map(|&i| placed[i].lands.x)
+            .collect::<Vec<_>>(),
+    );
+    for (k, &i) in in_window.iter().enumerate() {
+        let call = &mut placed[i];
+        call.string = match floors.route {
+            Route::Direct => string_points(call.marker, out, call.lands, 16),
+            Route::Comb => {
+                #[expect(clippy::cast_precision_loss, reason = "a small count")]
+                let (from, to) = (
+                    (k as f32 + 0.5) / in_window.len() as f32,
+                    (slot[k] as f32 + 0.5) / in_window.len() as f32,
+                );
+                let edge = deck.at(from, 0.0, lift);
+                let s = |a: f32, u: f32| deck.at(a, u, lift);
+                let band = (0..=6).map(|j| {
+                    #[expect(clippy::cast_precision_loss, reason = "a few pieces")]
+                    let t = j as f32 / 6.0;
+                    let ease = t * t * (3.0 - 2.0 * t);
+                    s(from + (to - from) * ease, -COMB * t)
+                });
+                let slot = s(to, -COMB);
+                // Out of the comb half towards its node, so a string bound back under
+                // the deck doesn't loop out first.
+                let toward = (call.lands - slot).normalize_or_zero();
+                let out = (out + toward).normalize_or(out);
+                std::iter::once(call.marker)
+                    .chain(std::iter::once(edge))
+                    .chain(band.skip(1))
+                    .chain(string_points(slot, out, call.lands, 14).into_iter().skip(1))
+                    .collect()
+            }
+        };
+    }
+    placed
 }
 
 /// How far back to stand, in reaches either side of the middle.
@@ -599,7 +795,8 @@ fn place_glass(
     // A margin round the diagram, so its tiles don't run to the glass's edge.
     let size = deck.size + Vec2::splat(MARGIN * 2.0);
     *visibility = Visibility::Visible;
-    *transform = Transform::from_translation(deck.middle.extend(deck.height * floors.lift()))
+    *transform = Transform::from_translation(deck.at(0.5, 0.5, floors.lift()))
+        .with_rotation(Quat::from_rotation_x(deck.lean))
         .with_scale(size.extend(1.0));
     if let Some(mut material) = materials.get_mut(&material.0) {
         material.base_color = GLASS.with_alpha(GLASS.alpha() * floors.lift());
@@ -627,7 +824,7 @@ pub(crate) fn draw_strings(
     }
     let fade = floors.lift();
     let deck = floors.deck;
-    let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(x, y)| {
+    let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(x, y): (f32, f32)| {
         let pad = Vec2::splat(MARGIN) / deck.size.max(Vec2::splat(1e-3));
         deck.at(
             x * (1.0 + 2.0 * pad.x) - pad.x,
@@ -647,31 +844,43 @@ pub(crate) fn draw_strings(
             continue;
         }
         let away = floors.away(index);
-        let alpha = string_alpha(away) * fade;
+        let hovered = floors.hovered(index);
+        let alpha = if hovered { 1.0 } else { string_alpha(away) } * fade;
         let tint = if away == Some(0) {
             Color::WHITE
+        } else if hovered {
+            node_color(&explorer, None, call.tile).mix(&Color::WHITE, 0.3)
         } else {
             node_color(&explorer, None, call.tile).mix(&STRING, 0.55)
         };
-        let points = string_points(call.marker, call.foot, 16);
+        let points = &call.string;
         let pieces = points.len().saturating_sub(1);
+        let strong = (away == Some(0) && floors.cursor == Some(index)) || hovered;
         for (i, pair) in points.windows(2).enumerate() {
             // Brightest at the deck, thinning towards the map: a little for the bright
             // strings, most of the way for the rest, whose pools mark where they land,
             // so a crowd of strings doesn't knot over a crowd of nodes.
             #[expect(clippy::cast_precision_loss, reason = "a few pieces")]
             let t = i as f32 / pieces.max(1) as f32;
-            let thin = if away.is_some_and(|a| a <= NEAR) {
+            let thin = if hovered || away.is_some_and(|a| a <= NEAR) {
                 0.35
             } else {
                 0.8
             };
             let color = tint.with_alpha(alpha * (1.0 - thin * t));
-            if away == Some(0) && floors.cursor == Some(index) {
+            if strong {
                 bold.line(pair[0], pair[1], color);
             } else {
                 gizmos.line(pair[0], pair[1], color);
             }
+        }
+        // A name pulled up off a crowd hangs a short thread down to its node.
+        if call.lands != call.foot {
+            gizmos.line(
+                call.lands,
+                call.foot,
+                Color::srgba(1.0, 1.0, 1.0, 0.5 * fade),
+            );
         }
     }
     if let Some(call) = floors.cursor.and_then(|c| floors.calls.get(c)) {
@@ -699,11 +908,12 @@ pub(crate) fn draw_deck(
     (camera, transform): (&Camera, &GlobalTransform),
     explorer: &Explorer,
     floors: &Floors,
-    eye: Eye,
+    orbit: &OrbitCamera,
 ) {
     if !floors.showing() {
         return;
     }
+    let eye = Eye::of(transform, orbit.distance);
     let project = |position: Vec3| {
         camera
             .world_to_viewport(transform, position)
@@ -714,32 +924,12 @@ pub(crate) fn draw_deck(
     let fade = floors.lift();
     let backdrop = egui_color(cues::BACKDROP);
     let shown = floors.window.clone();
-    let rows = floors.calls[shown.clone()]
-        .iter()
-        .map(|c| c.depth + 1)
-        .max()
-        .unwrap_or(1);
-    let deck = floors.deck;
+    let rows = deck_rows(floors);
     // Tiles first, shallow rows first.
     for (index, call) in floors.calls.iter().enumerate() {
-        let on_deck = floors.shows(index) || (index < shown.start && call.end >= shown.start);
-        if !on_deck {
-            continue;
-        }
-        let first = index.max(shown.start);
-        let last = call.end.min(shown.end.saturating_sub(1));
-        let left = deck_spot(first, call.depth, &shown, rows);
-        let right = deck_spot(last + 1, call.depth, &shown, rows);
-        #[expect(clippy::cast_precision_loss, reason = "small counts")]
-        let (half, inset) = (0.5 / rows as f32 * 0.5, 0.08 / shown.len().max(1) as f32);
-        let quad = [
-            (left.x + inset, left.y - half),
-            (right.x - inset, left.y - half),
-            (right.x - inset, left.y + half),
-            (left.x + inset, left.y + half),
-        ]
-        .map(|(x, y)| project(deck.at(x, y, fade)));
-        let [Some(a), Some(b), Some(c), Some(d)] = quad else {
+        let Some([Some(a), Some(b), Some(c), Some(d)]) =
+            tile_corners(floors, index, rows).map(|q| q.map(project))
+        else {
             continue;
         };
         let away = floors.away(index);
@@ -758,7 +948,7 @@ pub(crate) fn draw_deck(
         mesh.add_triangle(0, 1, 2);
         mesh.add_triangle(0, 2, 3);
         painter.add(mesh);
-        if floors.cursor == Some(index) || floors.again(index) {
+        if floors.cursor == Some(index) || floors.again(index) || floors.hovered(index) {
             let width = if floors.cursor == Some(index) {
                 1.8
             } else {
@@ -785,12 +975,102 @@ pub(crate) fn draw_deck(
         };
         cues::sphere(painter, at, radius, fill, egui::vec2(-0.6, -0.8), fade);
     }
+    // The calls the window opens inside of are named off its left edge, level with
+    // their tiles, so every tile on the deck reads by name.
+    for index in (0..shown.start).filter(|&i| floors.calls[i].end >= shown.start) {
+        let call = &floors.calls[index];
+        let row = deck_spot(shown.start, call.depth, &shown, rows).y;
+        if let Some(at) = project(floors.deck.at(0.0, row, fade)) {
+            let name = node_name(explorer, call.tile);
+            painter.text(
+                at - egui::vec2(12.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                format!("{} {name} ▸", call.number).trim_start(),
+                egui::FontId::proportional(12.5),
+                egui::Color32::from_rgb(204, 210, 222).gamma_multiply(fade),
+            );
+        }
+    }
     for index in shown.clone() {
         let call = &floors.calls[index];
         let radius = marker_radius(eye.nearness(call.marker), floors.cursor == Some(index));
         name_call(painter, project, explorer, floors, index, (radius, fade));
     }
-    count_beyond(painter, project, floors, rows, fade);
+    count_beyond(painter, project, floors, fade);
+}
+
+/// The rows the deck's window runs deep.
+fn deck_rows(floors: &Floors) -> usize {
+    floors.calls[floors.window.clone()]
+        .iter()
+        .map(|c| c.depth + 1)
+        .max()
+        .unwrap_or(1)
+}
+
+/// The corners of call `index`'s tile on a deck `rows` deep, from its start across
+/// the calls it makes; none if the deck doesn't show it.
+fn tile_corners(floors: &Floors, index: usize, rows: usize) -> Option<[Vec3; 4]> {
+    let call = floors.calls.get(index)?;
+    let shown = &floors.window;
+    let on_deck = floors.shows(index) || (index < shown.start && call.end >= shown.start);
+    if !on_deck {
+        return None;
+    }
+    let first = index.max(shown.start);
+    let last = call.end.min(shown.end.saturating_sub(1));
+    let left = deck_spot(first, call.depth, shown, rows);
+    let right = deck_spot(last + 1, call.depth, shown, rows);
+    #[expect(clippy::cast_precision_loss, reason = "small counts")]
+    let (half, inset) = (0.5 / rows as f32 * 0.5, 0.08 / shown.len().max(1) as f32);
+    Some(
+        [
+            (left.x + inset, left.y - half),
+            (right.x - inset, left.y - half),
+            (right.x - inset, left.y + half),
+            (left.x + inset, left.y + half),
+        ]
+        .map(|(x, y)| floors.deck.at(x, y, floors.lift())),
+    )
+}
+
+/// Whether `point` lies inside the convex `quad`, its corners in order either way
+/// round.
+pub(crate) fn inside(quad: [egui::Pos2; 4], point: egui::Pos2) -> bool {
+    let sides: Vec<f32> = (0..4)
+        .map(|i| {
+            let (a, b) = (quad[i], quad[(i + 1) % 4]);
+            (b - a).x * (point - a).y - (b - a).y * (point - a).x
+        })
+        .collect();
+    sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0)
+}
+
+/// The call whose tile or ball is under `pointer`, deepest first, as the deck draws.
+pub(crate) fn pointed_call(
+    floors: &Floors,
+    project: impl Fn(Vec3) -> Option<egui::Pos2>,
+    pointer: egui::Pos2,
+) -> Option<usize> {
+    if !floors.showing() {
+        return None;
+    }
+    let rows = deck_rows(floors);
+    let ball = |index: usize| {
+        floors
+            .calls
+            .get(index)
+            .filter(|_| floors.shows(index))
+            .and_then(|c| project(c.marker))
+            .is_some_and(|at| at.distance(pointer) < 9.0)
+    };
+    (0..floors.calls.len()).rev().find(|&index| {
+        ball(index)
+            || tile_corners(floors, index, rows)
+                .map(|q| q.map(&project))
+                .and_then(|[a, b, c, d]| Some([a?, b?, c?, d?]))
+                .is_some_and(|quad| inside(quad, pointer))
+    })
 }
 
 /// Names call `index` on a slant up and right from its ball: the cursor's white and
@@ -810,10 +1090,11 @@ fn name_call(
     let away = floors.away(index);
     let (size, color) = match away {
         Some(0) if floors.cursor == Some(index) => (15.0, egui::Color32::WHITE),
-        Some(0) => (12.5, egui::Color32::from_rgb(235, 238, 246)),
-        Some(1..=2) => (12.5, egui::Color32::from_rgb(214, 219, 230)),
-        None => (12.0, egui::Color32::from_rgb(196, 202, 216)),
-        Some(_) => (11.5, egui::Color32::from_rgb(172, 179, 194)),
+        _ if floors.hovered(index) => (13.5, egui::Color32::WHITE),
+        Some(0) => (13.0, egui::Color32::from_rgb(235, 238, 246)),
+        Some(1..=2) => (13.0, egui::Color32::from_rgb(222, 226, 236)),
+        // Every call reads by name, the far ones only a little dimmer.
+        None | Some(_) => (12.5, egui::Color32::from_rgb(204, 210, 222)),
     };
     let name = node_name(explorer, call.tile);
     let text = if call.number.is_empty() {
@@ -836,7 +1117,6 @@ fn count_beyond(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     floors: &Floors,
-    rows: usize,
     fade: f32,
 ) {
     let deck = floors.deck;
@@ -844,8 +1124,8 @@ fn count_beyond(
         floors.window.start,
         floors.calls.len().saturating_sub(floors.window.end),
     );
-    #[expect(clippy::cast_precision_loss, reason = "small counts")]
-    let row = 0.5 / rows as f32;
+    // Just off the deck's near edge, clear of the names of the calls it opens inside.
+    let row = -0.12;
     let color = egui::Color32::from_rgb(170, 178, 196).gamma_multiply(fade);
     let font = egui::FontId::proportional(11.0);
     if before > 0
@@ -908,17 +1188,35 @@ mod tests {
 
     #[test]
     fn the_deck_is_wide_enough_for_its_columns_and_clears_the_map() {
-        let small = plan_deck(Vec2::ZERO, Vec2::new(100.0, 40.0), 4, 2);
+        let small = plan_deck(Vec2::ZERO, Vec2::new(100.0, 40.0), 4, 2, Stand::Over);
         assert!(
             (small.size.x - 100.0 * WIDE).abs() < 1e-4,
             "as wide as the journey"
         );
-        assert_eq!(small.middle, Vec2::new(50.0, 20.0));
-        let crowd = plan_deck(Vec2::ZERO, Vec2::new(10.0, 10.0), 21, 1);
+        assert!(
+            small
+                .at(0.5, 0.5, 1.0)
+                .truncate()
+                .distance(Vec2::new(50.0, 20.0))
+                < 1e-4
+        );
+        let crowd = plan_deck(Vec2::ZERO, Vec2::new(10.0, 10.0), 21, 1, Stand::Over);
         assert!(crowd.size.x >= 21.0 * COLUMN - 1e-4, "room for each column");
         assert!(crowd.height >= LOWEST);
-        let deep = plan_deck(Vec2::ZERO, Vec2::new(10.0, 10.0), 21, 3);
+        let deep = plan_deck(Vec2::ZERO, Vec2::new(10.0, 10.0), 21, 3, Stand::Over);
         assert!(deep.size.y > crowd.size.y, "deeper with more rows");
+    }
+
+    #[test]
+    fn a_standing_deck_rises_beyond_the_journey() {
+        let deck = plan_deck(Vec2::ZERO, Vec2::new(100.0, 40.0), 4, 2, Stand::Behind);
+        let (near, far) = (deck.at(0.5, 0.0, 1.0), deck.at(0.5, 1.0, 1.0));
+        assert!(near.y > 40.0, "beyond the far edge");
+        assert!(
+            far.z > near.z * 2.0 && far.y > near.y,
+            "rising, leaning back"
+        );
+        assert!(far.z - near.z > far.y - near.y, "nearly upright");
     }
 
     #[test]
@@ -934,6 +1232,30 @@ mod tests {
     }
 
     #[test]
+    fn the_comb_orders_strings_by_where_they_land() {
+        assert_eq!(slots(&[5.0, 1.0, 3.0]), vec![2, 0, 1]);
+        assert_eq!(slots(&[1.0, 1.0]), vec![0, 1], "ties keep time order");
+    }
+
+    #[test]
+    fn a_crowd_pulls_the_name_up() {
+        let near = [Vec3::X, Vec3::Y, Vec3::NEG_X];
+        assert!(crowded(Vec3::ZERO, &near, 2.0, 3));
+        assert!(!crowded(Vec3::ZERO, &near, 0.5, 3));
+    }
+
+    #[test]
+    fn a_point_is_inside_a_tile_either_way_round() {
+        let quad =
+            [(0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (0.0, 4.0)].map(|(x, y)| egui::pos2(x, y));
+        assert!(inside(quad, egui::pos2(5.0, 2.0)));
+        assert!(!inside(quad, egui::pos2(11.0, 2.0)));
+        let mut reversed = quad;
+        reversed.reverse();
+        assert!(inside(reversed, egui::pos2(5.0, 2.0)));
+    }
+
+    #[test]
     fn strings_are_brightest_round_the_cursor() {
         assert!(string_alpha(Some(0)) > string_alpha(Some(1)));
         assert!(string_alpha(Some(1)) > string_alpha(Some(2)));
@@ -945,7 +1267,7 @@ mod tests {
     fn a_string_hangs_straight_down_at_both_ends() {
         let top = Vec3::new(10.0, 5.0, 20.0);
         let foot = Vec3::new(0.0, 0.0, 0.0);
-        let points = string_points(top, foot, 20);
+        let points = string_points(top, Vec3::NEG_Z, foot, 20);
         assert_eq!(points.first(), Some(&top));
         assert!(points.last().unwrap().distance(foot) < 1e-4);
         let leaving = points[1] - points[0];
