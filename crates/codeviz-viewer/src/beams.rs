@@ -14,7 +14,7 @@ use codeviz_core::SpanId;
 use crate::{explorer::Explorer, journey_panel::JourneyPanel};
 
 /// Height of the strip of calls along the top of the journey.
-pub(crate) const STRIP: f32 = 24.0;
+pub(crate) const STRIP: f32 = 28.0;
 /// How many calls either side of the cursor's get a beam.
 const REACH: usize = 2;
 /// Height each beam rises before it may bend, and the step between beams' bends.

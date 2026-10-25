@@ -60,12 +60,17 @@ view's settings, outcomes, source and details), `H` lists every key, and `Esc` c
 whichever of those is on top, or the spotlight.
 
 `Z` ties the journey's order to the graph with beams (`--time beams` opens with them;
-the top bar's `Beams` shows they are on). The journey docks along the bottom, full
-width, under a strip that holds every disclosed call once, in the order they run, and
-pale beams rise from the strip to the nodes: brightest from the cursor's call, fainter
-from the two calls either side of it in time, and dotted from the other calls of the
-cursor's function. While they show, the graph's links step back and only the journey's
-nodes and the modules are named, the nodes the beams reach brighter than the rest.
+the top bar's `Beams` shows they are on). The journey becomes one strip along the
+bottom, full width: every disclosed call once, in the order they run, each named where
+it fits, a call further in standing a little lower, dashed when it only sometimes runs
+and red-ended where it can fail. Pale beams rise from the strip to the nodes:
+brightest from the cursor's call, fainter from the two calls either side of it in
+time, and dotted from the other calls of the cursor's function; where two of those
+nodes sit close together, a beam lands on the node's name instead. Hovering a call
+lights its node, clicking it moves the cursor there, and a node the pointer is over
+in the graph outlines its calls. While beams show, the graph's links step back and
+only the journey's nodes and the modules are named, the nodes the beams reach brighter
+than the rest.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view

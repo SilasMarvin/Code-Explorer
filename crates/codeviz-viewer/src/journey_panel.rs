@@ -62,8 +62,6 @@ const ROW: f32 = 22.0;
 const ROW_GAP: f32 = 5.0;
 /// Share of a slot left between consecutive bars on a row.
 const BAR_GAP: f32 = 0.06;
-/// Rows the strip of calls stands for while beams show: the root and its calls.
-const BEAM_ROWS: usize = 2;
 /// Pixels a slot needs to name its call.
 const NAMED_SLOT: f32 = 110.0;
 
@@ -81,14 +79,11 @@ pub(crate) fn split(
 ) -> (egui::Rect, Option<egui::Rect>) {
     match panel.mode {
         PanelMode::Hidden => (area, None),
-        // Beams rise from the journey's top edge, so it takes the bottom full width,
-        // as tall as it needs, and the graph the space above it.
+        // Beams rise from the journey's top edge, so it takes the bottom full width
+        // and the graph the space above it; the strip holds every call, so the
+        // journey is the strip and its header.
         PanelMode::Docked if panel.beams => {
-            // The strip holds the root's calls, so only the rows below them take room.
-            let deeper = rows.saturating_sub(BEAM_ROWS) as f32;
-            let height = (beams::STRIP + HEADER + PAD * 2.0 + deeper * (ROW + ROW_GAP))
-                .min((area.height() * 0.4).max(160.0))
-                .min(area.height() * 0.6);
+            let height = beams::STRIP + HEADER;
             let top = area.max.y - height;
             (
                 egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, top)),
@@ -177,28 +172,23 @@ pub(crate) fn draw(
                 egui::Stroke::new(1.0, egui::Color32::from_white_alpha(28)),
                 egui::StrokeKind::Inside,
             );
-            // With beams, the strip of calls they rise from runs along the top edge,
-            // the deeper rows right under it, and the header at the bottom.
-            let (strip, header, content) = if panel.beams {
-                let strip =
-                    egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), beams::STRIP));
-                let header =
-                    egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - HEADER), rect.max);
-                let content = egui::Rect::from_min_max(
-                    egui::pos2(rect.min.x, strip.max.y),
-                    egui::pos2(rect.max.x, header.min.y),
-                );
-                (Some(strip), header, content)
-            } else {
-                let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER));
-                let content =
-                    egui::Rect::from_min_max(egui::pos2(rect.min.x, header.max.y), rect.max);
-                (None, header, content)
-            };
+            // With beams, the strip of calls they rise from takes the bars' place,
+            // along the top edge, with the header under it.
+            let strip = panel.beams.then(|| {
+                egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), beams::STRIP))
+            });
+            let header = egui::Rect::from_min_size(
+                egui::pos2(rect.min.x, strip.map_or(rect.min.y, |s| s.max.y)),
+                egui::vec2(rect.width(), HEADER),
+            );
             header_bar(ui, header.shrink2(egui::vec2(10.0, 2.0)), explorer, panel);
-            tethers = canvas(ui, content.shrink(PAD), explorer, panel, diff);
             if let Some(strip) = strip {
                 strip_of_calls(ui, strip, explorer, panel, diff, &mut tethers);
+            } else {
+                let content =
+                    egui::Rect::from_min_max(egui::pos2(rect.min.x, header.max.y), rect.max)
+                        .shrink(PAD);
+                tethers = canvas(ui, content, explorer, panel, diff);
             }
         });
     tethers
@@ -264,13 +254,18 @@ fn draw_strip(
     let ticks: Vec<Tick> = calls
         .iter()
         .enumerate()
-        .map(|(index, &(span, tile))| Tick {
-            span,
-            rect: egui::Rect::from_min_size(
-                egui::pos2(inner.min.x + index as f32 * pitch, inner.min.y),
-                egui::vec2((pitch - gap).max(1.0), inner.height()),
-            ),
-            tile,
+        .map(|(index, &(span, tile))| {
+            // A call further in stands lower, so the nesting shows.
+            let depth = disclosed.number(span).map_or(0, |n| n.matches('.').count());
+            let drop = (depth as f32 * NEST_DROP).min(inner.height() * 0.4);
+            Tick {
+                span,
+                rect: egui::Rect::from_min_max(
+                    egui::pos2(inner.min.x + index as f32 * pitch, inner.min.y + drop),
+                    egui::pos2(inner.min.x + (index + 1) as f32 * pitch - gap, inner.max.y),
+                ),
+                tile,
+            }
         })
         .collect();
     for (index, tick) in ticks.iter().enumerate() {
@@ -285,6 +280,21 @@ fn draw_strip(
             base
         };
         painter.rect_filled(tick.rect, 2.0, fill);
+        // As on the bars: dashed when it only sometimes runs, a red end where it can fail.
+        if track.span(tick.span).is_some_and(is_conditional) && tick.rect.width() > 6.0 {
+            dashed_outline(
+                &painter,
+                tick.rect.shrink(0.75),
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(150)),
+            );
+        }
+        if disclosed.fails(tick.span) && tick.rect.width() > 6.0 {
+            let mark = egui::Rect::from_min_max(
+                egui::pos2(tick.rect.max.x - 3.0, tick.rect.min.y),
+                tick.rect.max,
+            );
+            painter.rect_filled(mark, 0.0, ERROR);
+        }
         // A node the pointer is over in the graph lights its calls here.
         if tick.tile.is_some() && tick.tile == explorer.hovered_tile {
             painter.rect_stroke(
@@ -301,7 +311,12 @@ fn draw_strip(
         };
         if let Some(label) = tick_label(
             disclosed.number(tick.span).unwrap_or_default(),
-            &explorer.label(tick.span),
+            // The module shows in the fill; the name alone fits more.
+            explorer
+                .label(tick.span)
+                .rsplit(['.', ':'])
+                .next()
+                .unwrap_or_default(),
             tick.rect.width(),
         ) {
             painter.with_clip_rect(tick.rect).text(
@@ -323,6 +338,9 @@ fn draw_strip(
     }
     (ticks, cursor)
 }
+
+/// How much lower each level of calls stands on the strip.
+const NEST_DROP: f32 = 5.0;
 
 /// What a call's tick on the strip says in so many pixels: its number and name, or
 /// its number alone, or nothing.
@@ -493,11 +511,8 @@ fn canvas(
         panel.left = start;
     }
     let pitch = ROW + ROW_GAP;
-    // With beams, the strip stands for the root and its calls; the rows below follow.
-    let first_row = if panel.beams { BEAM_ROWS } else { 0 };
-    let rows = disclosed.rows().saturating_sub(first_row);
     let visible_rows = (content.height() / pitch).floor().max(1.0);
-    let max_top = (rows as f32 - visible_rows).max(0.0);
+    let max_top = (disclosed.rows() as f32 - visible_rows).max(0.0);
 
     // Zoom about the pointer: scroll or pinch. Drag pans; double-click fits.
     if response.hovered() {
@@ -538,7 +553,7 @@ fn canvas(
             if x < panel.left || x > panel.left + width * 0.9 {
                 panel.left = x - width * 0.15;
             }
-            let row = row.saturating_sub(first_row) as f32;
+            let row = row as f32;
             if row < panel.top_row || row > panel.top_row + visible_rows - 1.0 {
                 panel.top_row = row - (visible_rows / 3.0).floor();
             }
@@ -547,7 +562,7 @@ fn canvas(
     panel.top_row = panel.top_row.clamp(0.0, max_top);
     let scale = panel.zoom.unwrap_or(fit);
     let x_of = |x: f32| content.min.x + (x - panel.left) * scale;
-    let y_of = |row: usize| content.min.y + ((row - first_row) as f32 - panel.top_row) * pitch;
+    let y_of = |row: f32| content.min.y + (row - panel.top_row) * pitch;
 
     let map = explorer.map();
     let cursor_enter = cursor.and_then(|c| track.span(c)).map_or(0, |s| s.enter);
@@ -559,15 +574,15 @@ fn canvas(
         .nodes
         .iter()
         .map(|node| match placed.get(&node.span) {
-            Some(&(left, slots, row)) if row >= first_row => Bar {
+            Some(&(left, slots, row)) => Bar {
                 span: node.span,
                 rect: egui::Rect::from_min_size(
-                    egui::pos2(x_of(left), y_of(row)),
+                    egui::pos2(x_of(left), y_of(row as f32)),
                     egui::vec2(((slots - BAR_GAP) * scale).max(3.0), ROW),
                 ),
                 shown: true,
             },
-            _ => Bar {
+            None => Bar {
                 span: node.span,
                 rect: egui::Rect::NOTHING,
                 shown: false,
