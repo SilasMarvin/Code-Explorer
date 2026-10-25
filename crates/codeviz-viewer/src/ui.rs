@@ -1379,7 +1379,14 @@ fn draw_graph_labels(
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
-            _ if journey.contains_key(&tile) => 1,
+            // While beams show, the nodes they reach are named before the rest.
+            _ if journey.contains_key(&tile) => {
+                if beamed.is_some_and(|lit| !lit.contains(&tile)) {
+                    2
+                } else {
+                    1
+                }
+            }
             // While beams show, the journey's nodes alone are named, and the modules.
             _ if beamed.is_some() => continue,
             // A change is named even where the journey folds it away, after what the
@@ -1584,6 +1591,8 @@ fn draw_graph_labels(
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
                 // are named come what may.
+                // And while beams show, the nodes they reach: a beam to a nameless node
+                // says nothing.
                 let force = tier == 0
                     || hovered == Some(tile)
                     || spotlit.contains(&tile)
