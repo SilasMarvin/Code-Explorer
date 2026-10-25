@@ -64,7 +64,8 @@ pub(crate) struct Helix {
     /// new list winds out from its caller rather than jumping into place.
     caller: Option<usize>,
     grown: f32,
-    /// Where the helix stands, and which of a long list it shows.
+    /// Where the helix stands, and what its hub says: whose calls, and which of a
+    /// long list it shows.
     pub(crate) hub: Option<Vec3>,
     pub(crate) note: Option<String>,
 }
@@ -321,8 +322,21 @@ pub(crate) fn draw_helix(
     let (mut calls, mut cursor) = in_step(&explorer, &all);
     // A long list shows the turns round the cursor's, each call still at its hour.
     let shown = turns_shown(calls.len(), cursor);
-    helix.note = (shown.len() < calls.len())
-        .then(|| format!("{}–{} of {}", shown.start + 1, shown.end, calls.len()));
+    // The hub is named for the caller, and says which stretch of a long list shows.
+    let named = calls
+        .first()
+        .map(|c| node_name(&explorer, c.from))
+        .unwrap_or_default();
+    helix.note = Some(if shown.len() < calls.len() {
+        format!(
+            "{named} · {}–{} of {}",
+            shown.start + 1,
+            shown.end,
+            calls.len()
+        )
+    } else {
+        named
+    });
     cursor = cursor.and_then(|i| i.checked_sub(shown.start));
     calls.truncate(shown.end);
     calls.drain(..shown.start);
@@ -619,12 +633,12 @@ pub(crate) fn draw_labels(
     for (rect, job, cursor) in over {
         pill(painter, rect, job, cursor);
     }
-    // Which stretch of a long list shows, under the hub.
+    // The caller's name, and which stretch of a long list shows, under the hub.
     if let (Some(note), Some(hub)) = (&helix.note, helix.hub.and_then(to_screen)) {
         let galley = painter.layout_no_wrap(
             note.clone(),
-            egui::FontId::proportional(11.0),
-            egui::Color32::from_rgb(170, 176, 190),
+            egui::FontId::proportional(12.0),
+            egui::Color32::from_rgb(214, 219, 230),
         );
         let rect = egui::Rect::from_center_size(
             hub + egui::vec2(0.0, 22.0),

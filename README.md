@@ -70,9 +70,10 @@ hub says which (`13–48 of 66`). The calls the cursor's own call makes, where t
 shows them, wind round its marker on a small helix of their own. A new list winds out
 from its caller as the cursor steps into it. Each marker is its callee's color with its number and name, and a thin line
 runs from it down to the callee's node: pale, white for the cursor's call, whose marker is
-white. While it shows, the ordinary links fade back and the map goes quiet: only what the
-journey touches is named, a call the helix names shows only its number, and only the
-modules the journey runs through are named. `--time-tilt <radians>` turns the camera up
+white, and a white hand runs out to it from the axis; the hub names the caller. The rail
+is brighter as far as the cursor. While it shows, the ordinary links fade back and the
+map goes quiet: only the focus is named, a call the helix names shows only its number,
+and only the modules the journey runs through are named. `--time-tilt <radians>` turns the camera up
 from below instead of head-on.
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
