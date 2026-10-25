@@ -17,11 +17,11 @@ mod depth_meter;
 mod diff_view;
 mod disclosure;
 mod explorer;
+mod floors;
 mod graph_view;
 mod history;
 mod journey_panel;
 mod lens;
-mod ribbon;
 mod scene;
 mod source_diff;
 mod truth;
@@ -66,7 +66,7 @@ pub struct Viewer {
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
     diff: Option<Comparison>,
-    time: ribbon::TimeMode,
+    time: floors::TimeMode,
     rock_at: Option<f32>,
 }
 
@@ -101,7 +101,7 @@ impl Viewer {
             depth: None,
             bare: false,
             diff: None,
-            time: ribbon::TimeMode::Off,
+            time: floors::TimeMode::Off,
             rock_at: None,
         }
     }
@@ -240,13 +240,13 @@ impl Viewer {
         self
     }
 
-    /// Shows call order in depth: `ribbon` hangs the journey's calls over the map,
-    /// later calls higher.
+    /// Shows call order in depth: `floors` lifts the journey over the map as a
+    /// diagram on a second floor, strung to its nodes.
     #[must_use]
     pub fn with_time(mut self, mode: &str) -> Self {
         self.time = match mode {
-            "ribbon" => ribbon::TimeMode::Ribbon,
-            _ => ribbon::TimeMode::Off,
+            "floors" => floors::TimeMode::Floors,
+            _ => floors::TimeMode::Off,
         };
         self
     }
@@ -374,7 +374,7 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
-            ribbon::RibbonPlugin,
+            floors::FloorsPlugin,
             cues::CuesPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))

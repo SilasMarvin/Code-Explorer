@@ -23,8 +23,8 @@ use crate::{
     },
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
+    floors::Floors,
     lens::{Lens, SPECK, Source},
-    ribbon::Ribbon,
     scene::{PALETTE, Tile, lane_color},
 };
 
@@ -326,7 +326,7 @@ fn fade(hops: u32) -> f32 {
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
-    ribbon: Res<Ribbon>,
+    floors: Res<Floors>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
@@ -334,7 +334,7 @@ pub(crate) fn draw_graph(
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        None => draw_calls(&explorer, time, ribbon.map_strength(), &mut gizmos),
+        None => draw_calls(&explorer, time, floors.map_strength(), &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
     draw_attention(&explorer, &mut gizmos);
@@ -343,7 +343,7 @@ pub(crate) fn draw_graph(
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
 /// path, are pale arrows fading with distance; everything else is faint. All of them
-/// draw at `strength`, less while the ribbon hangs over them.
+/// draw at `strength`, less while the upper floor hangs over them.
 fn draw_calls(explorer: &Explorer, time: f32, strength: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();

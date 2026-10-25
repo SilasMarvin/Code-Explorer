@@ -33,7 +33,7 @@ impl Plugin for OrbitCameraPlugin {
                 PostUpdate,
                 (
                     crate::graph_view::hold_center,
-                    crate::ribbon::lift_view,
+                    crate::floors::lift_view,
                     apply_camera,
                 )
                     .chain()
@@ -124,11 +124,6 @@ impl OrbitCamera {
     /// The angles it is turned to, or easing towards.
     pub(crate) fn angles(&self) -> (f32, f32) {
         self.goal_angles.unwrap_or((self.yaw, self.pitch))
-    }
-
-    /// The distance it stands at, or is easing towards.
-    pub(crate) fn goal_distance(&self) -> f32 {
-        self.goal_distance.unwrap_or(self.distance)
     }
 
     /// Eases round to `(yaw, pitch)`.

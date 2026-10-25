@@ -1,10 +1,9 @@
-//! Depth cues for the time view, so a gentle tilt shows how high the ribbon's calls
-//! float without the camera turning steeply over the map. The map gets a floor that
-//! the markers cast soft shadows on, so a call's height is the gap between its marker
-//! and its shadow; haze thickens with distance from the eye, so the far side of the
-//! map and the journey's first calls recede; markers are lit spheres, nearer ones
-//! bigger and drawn over farther ones; and the camera rocks a few degrees from side
-//! to side, so what floats slides against the map under it. `Shift Z` holds it still.
+//! Depth cues for the two floors, so a gentle tilt shows the deck floating over the
+//! map without the camera turning steeply. The map gets a lit floor, and a soft pool
+//! of light where each string lands, in its node's color; haze thickens with distance
+//! from the eye, so the far side of the map recedes; balls are lit spheres, nearer
+//! ones bigger; and the camera rocks a few degrees from side to side, so the deck
+//! slides against the map under it. `Shift Z` holds it still.
 
 use std::f32::consts::TAU;
 
@@ -19,8 +18,8 @@ use bevy_egui::egui;
 use crate::{
     camera::OrbitCamera,
     explorer::Explorer,
+    floors::Floors,
     graph_view::{node_color, node_size},
-    ribbon::{self, Ribbon},
 };
 
 pub(crate) struct CuesPlugin;
@@ -34,7 +33,7 @@ impl Plugin for CuesPlugin {
             .add_systems(Startup, spawn_floor)
             .add_systems(
                 Update,
-                ((lay_floor, cast_footprints).chain(), haze_view, rock).after(crate::ribbon::rise),
+                ((lay_floor, cast_footprints).chain(), haze_view, rock).after(crate::floors::raise),
             );
     }
 }
@@ -99,13 +98,13 @@ pub(crate) fn haze(share: f32) -> f32 {
     ((share - HAZE_NEAR) / (HAZE_FAR - HAZE_NEAR)).clamp(0.0, 1.0) * HAZE
 }
 
-/// Haze on the scene's meshes, nodes and floor, while the ribbon is up.
+/// Haze on the scene's meshes, nodes and floor, while the upper floor is up.
 fn haze_view(
     mut commands: Commands,
-    ribbon: Res<Ribbon>,
+    floors: Res<Floors>,
     mut cameras: Query<(Entity, &OrbitCamera, Option<&mut DistanceFog>)>,
 ) {
-    let lift = ribbon.lift();
+    let lift = floors.lift();
     for (entity, camera, fog) in &mut cameras {
         let color = BACKDROP.with_alpha(HAZE * lift);
         let falloff = FogFalloff::Linear {
@@ -223,20 +222,20 @@ const GRID_PIECES: usize = 10;
 /// How strongly the grid draws where no haze dims it.
 const GRID: f32 = 0.09;
 
-/// Fits the floor under the nodes showing, fades it in with the ribbon, and draws
+/// Fits the floor under the nodes showing, fades it in with the upper floor, and draws
 /// its grid.
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn lay_floor(
     time: Res<Time>,
     explorer: Res<Explorer>,
-    ribbon: Res<Ribbon>,
+    floors: Res<Floors>,
     mut floor: ResMut<Floor>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut grounds: Query<(&mut Transform, &mut Visibility), With<Ground>>,
     cameras: Query<(&GlobalTransform, &OrbitCamera)>,
     mut gizmos: Gizmos<FloorGizmos>,
 ) {
-    let lift = ribbon.lift();
+    let lift = floors.lift();
     let Ok((mut transform, mut visibility)) = grounds.single_mut() else {
         return;
     };
@@ -335,17 +334,6 @@ pub(crate) fn spot_alpha(distance: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// How many calls from the cursor's call `index` is, the cursor's function called
-/// again counting as the cursor.
-fn away(ribbon: &Ribbon, index: usize) -> Option<usize> {
-    let cursor = ribbon.cursor?;
-    Some(if ribbon.again(index) {
-        0
-    } else {
-        cursor.abs_diff(index)
-    })
-}
-
 /// How brightly a footprint `away` calls from the cursor's glows, of `count` calls:
 /// the cursor's in full, its neighbors' less, the rest faintly, and fainter in a long
 /// journey, so the pools under a crowd of calls don't run together.
@@ -387,20 +375,19 @@ fn spot_image(size: u32) -> Image {
     )
 }
 
-/// Lays each call's footprint on the floor under its node, wider and fainter the
-/// higher the call floats.
+/// Lays a pool of light round each shown call's node, where its string lands.
 fn cast_footprints(
     mut commands: Commands,
     explorer: Res<Explorer>,
-    ribbon: Res<Ribbon>,
+    floors: Res<Floors>,
     mut footprints: ResMut<Footprints>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut drawn: Query<(&mut Transform, &mut Visibility), With<Footprint>>,
-    cameras: Query<(&Camera, &GlobalTransform, &OrbitCamera, &Projection)>,
+    cameras: Query<(&GlobalTransform, &OrbitCamera)>,
 ) {
-    let lift = ribbon.lift();
-    let count = if ribbon.showing() {
-        ribbon.calls.len()
+    let lift = floors.lift();
+    let count = if floors.showing() {
+        floors.calls.len()
     } else {
         0
     };
@@ -424,41 +411,35 @@ fn cast_footprints(
             .id();
         footprints.drawn.push((entity, material));
     }
-    let Ok((camera, transform, orbit, Projection::Perspective(lens))) = cameras.single() else {
+    let Ok((transform, orbit)) = cameras.single() else {
         return;
     };
     let eye = Eye::of(transform, orbit.distance);
-    // Pixels a world unit spans one unit in front of the eye.
-    let focal = camera
-        .logical_viewport_size()
-        .map_or(1000.0, |size| size.y / (2.0 * (lens.fov / 2.0).tan()));
+    let shown = floors.window.len();
     for (index, (entity, material)) in footprints.drawn.iter().enumerate() {
         let Ok((mut place, mut visibility)) = drawn.get_mut(*entity) else {
             continue;
         };
-        let Some(call) = ribbon.calls.get(index).filter(|_| index < count) else {
+        let Some(call) = floors
+            .calls
+            .get(index)
+            .filter(|_| index < count && floors.shows(index))
+        else {
             *visibility = Visibility::Hidden;
             continue;
         };
-        let rise = ribbon::rise_share(&ribbon, index);
-        let (spread, strength) = ribbon::shadow_shape(rise);
-        let cursor = ribbon.cursor == Some(index);
-        let pixels =
-            ribbon::marker_radius(eye.nearness(call.marker), cursor, ribbon.calls.len()) * spread;
+        let away = floors.away(index);
+        let size = node_size(explorer.graph(), call.tile);
+        let radius = size * if away == Some(0) { 3.2 } else { 2.2 };
         // Round the node itself rather than on the floor straight under it: the map
         // is not quite flat, and a tilted view would part the two.
-        let at = call.foot - Vec3::Z * node_size(explorer.graph(), call.tile) * 0.5;
-        let radius = pixels * eye.depth(at).max(1e-3) / focal;
+        let at = call.foot - Vec3::Z * size * 0.5;
         *visibility = Visibility::Visible;
         *place =
             Transform::from_translation(at).with_scale(Vec3::new(radius * 2.0, radius * 2.0, 1.0));
         if let Some(mut material) = materials.get_mut(material) {
             let tint = node_color(&explorer, None, call.tile).mix(&Color::WHITE, 0.4);
-            let strength = FOOTPRINT
-                * strength
-                * pool_share(away(&ribbon, index), ribbon.calls.len())
-                * lift
-                * (1.0 - eye.haze(at));
+            let strength = FOOTPRINT * pool_share(away, shown) * lift * (1.0 - eye.haze(at));
             material.base_color = tint.with_alpha(strength);
         }
     }
@@ -484,17 +465,17 @@ pub(crate) fn sway(phase: f32) -> f32 {
     ROCK * (phase * TAU).sin()
 }
 
-/// While the ribbon is up, rocks the view gently from side to side about the map, so
-/// what floats over it slides against it; easing in and out, and held still by
+/// While the upper floor is up, rocks the view gently from side to side about the
+/// map, so the deck over it slides against it; easing in and out, and held still by
 /// `Shift Z`.
 fn rock(
     time: Res<Time>,
     settings: Res<Rock>,
-    ribbon: Res<Ribbon>,
+    floors: Res<Floors>,
     mut amount: Local<f32>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
-    let on = if settings.still { 0.0 } else { ribbon.lift() };
+    let on = if settings.still { 0.0 } else { floors.lift() };
     let ease = 1.0 - (-time.delta_secs() * 2.0).exp();
     *amount += (on - *amount) * ease;
     let phase = settings
@@ -502,12 +483,12 @@ fn rock(
         .unwrap_or(time.elapsed_secs() / ROCK_PERIOD);
     for mut camera in &mut cameras {
         camera.sway = sway(phase) * *amount;
-        // About the map under the ribbon's middle, so the map holds still and the
-        // ribbon over it sways.
+        // About the map under the view's middle, so the map holds still and the deck
+        // over it sways.
         camera.pivot = if camera.free {
             Vec3::ZERO
         } else {
-            Vec3::NEG_Z * ribbon.middle()
+            Vec3::NEG_Z * floors.middle()
         };
     }
 }

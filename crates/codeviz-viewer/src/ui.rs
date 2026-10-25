@@ -21,10 +21,10 @@ use crate::{
     cues, depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
+    floors::{self, Floors, TimeMode},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    ribbon::{self, Ribbon, TimeMode},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -150,7 +150,7 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    ribbon: Res<Ribbon>,
+    floors: Res<Floors>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
@@ -205,9 +205,9 @@ fn draw_ui(
             &explorer,
             diff.as_deref(),
             transform.up().into(),
-            ribbon.showing(),
+            floors.showing(),
         );
-        ribbon::draw_markers(&painter, &to_screen, &explorer, &ribbon, eye);
+        floors::draw_deck(&painter, (&camera, transform), &explorer, &floors, eye);
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
         let mut clear = above(graph_area, panel_area);
@@ -246,7 +246,7 @@ fn draw_ui(
         if let Some(area) = panel_area {
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            let cursor = cursor_node(&explorer, &ribbon, &to_screen);
+            let cursor = cursor_node(&explorer, &floors, &to_screen);
             if let (Some(bar), Some(node)) = (tethers.cursor, cursor) {
                 tether(ctx, bar, node, false);
             }
@@ -303,8 +303,8 @@ fn panels(
                             format!("Time: {}", chrome.time.name()),
                         )
                         .on_hover_text(
-                            "Call order in depth: the journey's calls hang over the map, \
-                             later calls higher (Z)",
+                            "Call order in depth: the journey on a second floor over the map, \
+                             strung down to its nodes (Z)",
                         )
                         .clicked()
                     {
@@ -368,13 +368,13 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
 }
 
 /// Where the cursor's node is on screen, for the tether from its bar; its marker
-/// while the ribbon is up.
+/// while the upper floor is up.
 fn cursor_node(
     explorer: &Explorer,
-    ribbon: &Ribbon,
+    floors: &Floors,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
 ) -> Option<egui::Pos2> {
-    if let Some(marker) = ribbon.cursor_marker() {
+    if let Some(marker) = floors.cursor_marker() {
         return to_screen(marker);
     }
     explorer
@@ -1358,8 +1358,8 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
-        // While the ribbon hangs over the map, only the journey, the focus and its
-        // neighbors are named, so the ribbon's own names stand out.
+        // While the upper floor hangs over the map, only the journey, the focus and
+        // its neighbors are named, so the deck's own names stand out.
         if quiet && tier > 1 {
             continue;
         }
@@ -1374,7 +1374,7 @@ fn draw_graph_labels(
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
-    // While the ribbon is up, only the modules it runs through are named.
+    // While the upper floor is up, only the modules it runs through are named.
     let quiet_modules: Option<HashSet<usize>> = quiet.then(|| {
         journey
             .keys()
@@ -1779,7 +1779,10 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("Z", "time in depth: the journey as a ribbon over the map"),
+            (
+                "Z",
+                "time in depth: the journey on a second floor over the map",
+            ),
             (
                 "Shift Z",
                 "rock the camera gently while time shows, or hold it",

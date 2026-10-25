@@ -130,8 +130,8 @@ enum NearArg {
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum TimeArg {
-    /// The journey's calls as a ribbon hanging over the map, later calls higher.
-    Ribbon,
+    /// The journey as a diagram on a second floor over the map, strung to its nodes.
+    Floors,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -244,8 +244,8 @@ pub(crate) fn open(
     if args.bare {
         viewer = viewer.bare();
     }
-    if let Some(TimeArg::Ribbon) = args.time {
-        viewer = viewer.with_time("ribbon");
+    if let Some(TimeArg::Floors) = args.time {
+        viewer = viewer.with_time("floors");
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer

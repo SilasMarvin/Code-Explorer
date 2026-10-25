@@ -8,10 +8,10 @@ use crate::{
     cues,
     disclosure::Disclose,
     explorer::{Autoplay, Clustering, Explorer, Side, Step},
+    floors,
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
-    ribbon,
     ui::{Chrome, KeyHelp},
 };
 
@@ -34,12 +34,12 @@ impl Plugin for ScenePlugin {
                 reveal,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::follow_focus,
-                ribbon::rise,
+                floors::raise,
                 graph_view::frame_reveal,
                 graph_view::frame_spotlight,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
-                ribbon::draw_thread,
+                floors::draw_strings,
             )
                 .chain(),
         );
