@@ -203,6 +203,7 @@ fn draw_ui(
             &to_screen,
             &explorer,
             diff.as_deref(),
+            stairs.showing(),
             transform.up().into(),
         );
         stairs::draw_labels(&painter, &to_screen, &stairs);
@@ -1274,6 +1275,7 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
+    stairs: bool,
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
@@ -1349,6 +1351,10 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
+        // Up on the stairs, names off the journey would only pile up across them.
+        if stairs && tier > 1 && !journey.contains_key(&tile) {
+            continue;
+        }
         order.push((
             (tier, std::cmp::Reverse(graph.degree(tile)), tile),
             Named::Node(tile),

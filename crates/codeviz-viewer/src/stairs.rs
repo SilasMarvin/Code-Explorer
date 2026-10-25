@@ -340,7 +340,7 @@ impl Stairs {
     }
 
     /// Whether the stairs show at all.
-    fn showing(&self) -> bool {
+    pub(crate) fn showing(&self) -> bool {
         self.rise > 0.02 && !self.steps.is_empty()
     }
 }
@@ -371,7 +371,12 @@ pub(crate) fn draw_stairs(
             .iter()
             .map(|&s| strength(s, stairs.cursor))
             .fold(0.0, f32::max);
-        let color = STEM.with_alpha(STEM.alpha() * near * rise);
+        // The cursor's node stands out on a white stem, so its height reads at once.
+        let color = if stairs.cursor.is_some_and(|c| stairs.steps[c].tile == tile) {
+            MARK.with_alpha(rise)
+        } else {
+            STEM.with_alpha(STEM.alpha() * near * rise)
+        };
         let radius = node_size(graph, tile) * 0.5;
         let first = stairs.level(steps[0]);
         let last = stairs.level(*steps.last().unwrap_or(&steps[0]));
@@ -431,6 +436,24 @@ fn draw_ruler(
     let Some(step) = stairs.steps.get(cursor) else {
         return;
     };
+    // Faint treads from the ruler to the calls either side of the cursor's.
+    for index in cursor.saturating_sub(TREADS)..=(cursor + TREADS).min(count - 1) {
+        let Some(foot) = explorer
+            .force_point(stairs.steps[index].tile)
+            .filter(|_| index != cursor)
+        else {
+            continue;
+        };
+        let level = stairs.level(index);
+        let at = base + Vec3::Z * level;
+        dashed(
+            gizmos,
+            at,
+            foot + Vec3::Z * level,
+            tick,
+            STEM.with_alpha(0.25 * rise),
+        );
+    }
     let level = stairs.level(cursor);
     let mark = MARK.with_alpha(rise);
     let at = base + Vec3::Z * level;
@@ -447,6 +470,9 @@ fn draw_ruler(
         );
     }
 }
+
+/// Calls either side of the cursor's whose height is levelled to the ruler.
+const TREADS: usize = 2;
 
 /// A dashed line, dashes `dash` long.
 fn dashed(gizmos: &mut Gizmos<StemGizmos>, a: Vec3, b: Vec3, dash: f32, color: Color) {
