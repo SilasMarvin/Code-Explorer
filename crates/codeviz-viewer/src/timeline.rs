@@ -221,7 +221,12 @@ impl Timeline {
     /// `home` moved to `moment`, counted in calls from the journey's start; the
     /// window's first call stands where the first would.
     fn at_moment(&self, home: Vec3, moment: f32) -> Vec3 {
-        let depth = self.start + self.step * (moment - self.slide);
+        #[expect(clippy::cast_precision_loss, reason = "a call count")]
+        let span = self.window().len().saturating_sub(1).max(1) as f32;
+        // In the 3D view the window's first calls, furthest from the eye, are spread
+        // wider so perspective does not bunch them against the map.
+        let along = spread((moment - self.slide) / span, SPREAD * self.depth_view());
+        let depth = self.start + self.step * span * along;
         let settle = sheet(self.unfold);
         Vec3::new(
             home.x + (self.plane - home.x) * settle,
@@ -374,6 +379,17 @@ pub(crate) fn run_order<S: Copy>(
         stack.extend(children(call).into_iter().rev().map(|c| (c, Some(index))));
     }
     calls
+}
+
+/// How much wider the window's first calls stand than its last in the 3D view, as a
+/// share either way of an even step.
+const SPREAD: f32 = 0.45;
+
+/// Where along the window, 0 at its first call and 1 at its last, a call `along` of
+/// the way in evenly stands once its steps are widened by `amount` at the start and
+/// narrowed as much at the end: the window keeps its length.
+pub(crate) fn spread(along: f32, amount: f32) -> f32 {
+    along + amount * along * (1.0 - along)
 }
 
 /// The most calls that stand out at once; a longer journey shows that many round the
@@ -1212,6 +1228,16 @@ mod tests {
                 (4, Some(0), 4),
             ]
         );
+    }
+
+    #[test]
+    fn the_first_calls_stand_wider_and_the_window_keeps_its_length() {
+        assert!(spread(0.0, 0.3).abs() < 1e-6);
+        assert!((spread(1.0, 0.3) - 1.0).abs() < 1e-6);
+        let first = spread(0.1, 0.3) - spread(0.0, 0.3);
+        let last = spread(1.0, 0.3) - spread(0.9, 0.3);
+        assert!(first > 1.3 * last, "wider at the start");
+        assert!((spread(0.4, 0.0) - 0.4).abs() < 1e-6, "even from the side");
     }
 
     #[test]

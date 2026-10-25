@@ -68,8 +68,9 @@ hangs from its caller's lifeline, a rail running out from the caller's node for 
 as it runs. The 3D view, turned 55° and level so time runs flat across the screen, in perspective
 with fog, shows the map quieted (links a little over half, on a big map about a third, the
 journey's nodes only numbered, as their calls carry the names, every node with a call
-in view keeping its number, and names only on the focus's neighbors and the modules
-the journey runs through) on a lit plane with a faint grid that fades out at
+in view keeping its number, in a short list beside a crowd with a leader to its node
+where there is no room, and names only on the focus's neighbors and the modules the
+journey runs through) on a lit plane with a faint grid that fades out at
 its rim, and the calls standing out of it in one faint upright sheet from the journey's start,
 so each call drops straight from its caller's rail and none crosses another. Rails and
 calls are lit tubes that thicken towards the eye and grey into the fog, the calls lit
@@ -80,7 +81,9 @@ screenshot at one end). Balls are never drawn larger than a
 small share of the view however near the camera. From the side, near
 orthographic, the calls read left to right as a sequence diagram at their nodes'
 heights, a function called twice appearing twice, with the modules named down the left
-edge. A journey of more than 40 calls stands out only 40 at a time round the
+edge. The window's first calls stand a little wider apart in 3D, so perspective does
+not bunch them against the map, and the docked journey panel widens while time is in
+view so its bars carry whole names. A journey of more than 40 calls stands out only 40 at a time round the
 cursor's, the view fitted to them and sliding along as the cursor steps, with how many
 run earlier and later said at the rail's ends. Every angle in between unfolds as far as the camera has turned, and turning
 back folds each call into its node. Every call of the cursor's function is white, the

@@ -61,8 +61,10 @@ const ROW: f32 = 22.0;
 const ROW_GAP: f32 = 5.0;
 /// Share of a slot left between consecutive bars on a row.
 const BAR_GAP: f32 = 0.06;
-/// Pixels a slot needs to name its call.
+/// Pixels a slot needs to name its call; more while the calls stand out in time,
+/// where the graph's names are fewer and the panel's must carry whole names.
 const NAMED_SLOT: f32 = 110.0;
+const WIDE_SLOT: f32 = 175.0;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
@@ -70,18 +72,20 @@ const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 
 /// Where the graph renders and where the panel sits, within the space between the
-/// side panels.
+/// side panels; `wide` while the camera looks at time.
 pub(crate) fn split(
     mode: PanelMode,
     area: egui::Rect,
     (rows, slots): (usize, f32),
+    wide: bool,
 ) -> (egui::Rect, Option<egui::Rect>) {
+    let slot = if wide { WIDE_SLOT } else { NAMED_SLOT };
     match mode {
         PanelMode::Hidden => (area, None),
         PanelMode::Docked => {
             let size = egui::vec2(
                 // Wide enough to name each call, up to the whole width.
-                (slots * NAMED_SLOT + PAD * 2.0)
+                (slots * slot + PAD * 2.0)
                     .clamp(380.0, 960.0_f32.max(area.width() * 0.52))
                     .min(area.width() - MARGIN * 2.0),
                 // As tall as the journey needs, up to a share of the screen.
