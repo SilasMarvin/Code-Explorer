@@ -226,6 +226,9 @@ pub(crate) fn presence(at: f32, now: f32) -> f32 {
     (1.0 - beyond).clamp(TRACE, 1.0)
 }
 
+/// How many pillars draw their trace in full; more draw fainter.
+const TRACE_PILLARS: f32 = 20.0;
+
 /// What is left of the pillars outside the slab.
 const TRACE: f32 = 0.08;
 
@@ -451,7 +454,10 @@ pub(crate) fn draw_pillars(
         calls.entry(call.tile).or_default().push(index);
     }
     // The whole pillar, as a trace: the slab's beads and their stems draw over it.
-    let trace = PILLAR.with_alpha(PILLAR.alpha() * TRACE * 2.0 * rise);
+    // Fainter the more there are, so a long journey's don't hatch the map.
+    #[expect(clippy::cast_precision_loss, reason = "a node count")]
+    let many = (TRACE_PILLARS / calls.len().max(1) as f32).min(1.0);
+    let trace = PILLAR.with_alpha(PILLAR.alpha() * TRACE * 2.0 * many * rise);
     for (&tile, indices) in &calls {
         let Some(foot) = explorer.tile_point(tile) else {
             continue;
@@ -508,11 +514,20 @@ fn draw_plane_edge(pillars: &Pillars, gizmos: &mut Gizmos<PillarGizmos>, bright:
         gizmos.line(base, base + UP * top, pole);
     }
     let tick = (high - low).max_element() * 0.012;
+    let every = if count > 100 { 50 } else { 10 };
     #[expect(clippy::cast_precision_loss, reason = "step counts")]
     for index in 0..count {
+        // Ticks round now, and every tenth (or fiftieth) step, so a long journey's close-up steps
+        // stay a ruler rather than a bar.
+        let present = presence(index as f32, now);
+        let tenth = index % every == 0;
+        if present < 0.5 && !tenth {
+            continue;
+        }
         let at = base + UP * pillars.level(index);
-        let color = pole.with_alpha(pole.alpha() * presence(index as f32, now).max(0.3));
-        gizmos.line(at, at - Vec3::X * tick, color);
+        let long = if tenth { 2.0 } else { 1.0 };
+        let color = pole.with_alpha(pole.alpha() * present.max(0.3));
+        gizmos.line(at, at - Vec3::X * tick * long, color);
     }
 }
 
@@ -634,9 +649,9 @@ fn stem(
     let grey = egui::Color32::from_rgb(200, 206, 220);
     let (width, color) = match moment {
         When::Now => (2.0, egui::Color32::WHITE.gamma_multiply(0.9 * present)),
-        When::Open => (1.2, grey.gamma_multiply(0.45 * present)),
-        When::Past => (1.2, grey.gamma_multiply(0.35 * present)),
-        When::Later => (1.0, grey.gamma_multiply(0.25 * present)),
+        When::Open => (1.4, grey.gamma_multiply(0.6 * present)),
+        When::Past => (1.4, grey.gamma_multiply(0.5 * present)),
+        When::Later => (1.2, grey.gamma_multiply(0.4 * present)),
     };
     if let Some(node) = to_screen(foot) {
         painter.line_segment([node, bead], egui::Stroke::new(width, color));
@@ -644,9 +659,13 @@ fn stem(
     if moment == When::Open
         && let Some(plane) = to_screen(foot + UP * pillars.at(pillars.now))
     {
-        painter.line_segment(
-            [bead, plane],
-            egui::Stroke::new(1.8, egui::Color32::WHITE.gamma_multiply(0.7 * present)),
+        let white = egui::Color32::WHITE.gamma_multiply(0.7 * present);
+        painter.line_segment([bead, plane], egui::Stroke::new(1.8, white));
+        // Where the plane cuts it.
+        painter.rect_filled(
+            egui::Rect::from_center_size(plane, egui::vec2(5.0, 5.0)),
+            0.0,
+            white,
         );
     }
 }
