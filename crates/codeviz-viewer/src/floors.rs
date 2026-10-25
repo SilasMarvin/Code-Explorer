@@ -392,7 +392,7 @@ pub(crate) fn ends(depths: &[usize]) -> Vec<usize> {
 
 /// The most calls the deck shows at once; a longer journey shows a window round the
 /// cursor.
-pub(crate) const WINDOW: usize = 21;
+pub(crate) const WINDOW: usize = 15;
 
 /// Which of `count` calls the deck shows, at most `most` of them: all that fit, else a
 /// window centered on the cursor as far as the ends allow.
@@ -406,9 +406,12 @@ pub(crate) fn window(count: usize, cursor: Option<usize>, most: usize) -> Range<
 }
 
 /// How wide a column is at least, in world units, so a name has room.
-const COLUMN: f32 = 3.2;
+const COLUMN: f32 = 6.0;
 /// How wide the deck is at least, in the journey region's widest extent.
 const WIDE: f32 = 0.95;
+/// How wide the deck is at least, as a share of the camera's distance: about half
+/// the view across, and less than the camera backs off for it, so the two settle.
+const ACROSS: f32 = 0.7;
 /// How deep a row is, as a share of a column's width.
 const ROW: f32 = 0.8;
 /// How deep the deck is at most, as a share of its width.
@@ -430,11 +433,17 @@ const FOOT: f32 = 0.12;
 /// The deck for `columns` calls `rows` deep over a journey whose nodes span `min` to
 /// `max` on the map: as wide as they are or wide enough for its columns, and either
 /// centered over them high enough to clear them, or standing beyond their far edge.
-pub(crate) fn plan_deck(min: Vec2, max: Vec2, columns: usize, rows: usize, stand: Stand) -> Deck {
+pub(crate) fn plan_deck(
+    (min, max): (Vec2, Vec2),
+    columns: usize,
+    rows: usize,
+    stand: Stand,
+    least: f32,
+) -> Deck {
     let span = max - min;
     #[expect(clippy::cast_precision_loss, reason = "small counts")]
     let (columns, rows) = (columns.max(1) as f32, rows.max(1) as f32);
-    let width = (span.max_element() * WIDE).max(columns * COLUMN);
+    let width = (span.max_element() * WIDE).max(columns * COLUMN).max(least);
     let column = width / columns;
     let depth = (rows * column * ROW).min(width * SHALLOW);
     let middle = (min + max) / 2.0;
@@ -653,7 +662,10 @@ pub(crate) fn raise(
         floors.calls.clear();
         return;
     }
-    let plan = plan_deck(min, max, shown.len(), rows, floors.stand);
+    // At least a share of the view across, however small the window's part of the
+    // map, so its names have room at any distance.
+    let least = cameras.iter().next().map_or(0.0, |c| c.distance * ACROSS);
+    let plan = plan_deck((min, max), shown.len(), rows, floors.stand, least);
     let fresh = floors.deck.size == Vec2::ZERO;
     floors.deck = if fresh {
         plan
@@ -671,7 +683,8 @@ pub(crate) fn raise(
         (floors.deck, floors.lift) = (deck, lift);
         reach * FIT
     };
-    let grown = plan.size.x > floors.fitted * 1.1;
+    // And when it shrinks by much, so its columns keep their width on screen.
+    let grown = plan.size.x > floors.fitted * 1.1 || plan.size.x < floors.fitted * 0.8;
     if up && (turned || grown) {
         for mut camera in &mut cameras {
             if turned {
@@ -1080,7 +1093,12 @@ pub(crate) fn draw_deck(
             );
         }
     }
-    for index in shown.clone() {
+    // The cursor's last, its name in full over its neighbors'.
+    let cursor_last = shown
+        .clone()
+        .filter(|&i| floors.cursor != Some(i))
+        .chain(floors.cursor.filter(|&c| floors.shows(c)));
+    for index in cursor_last {
         let call = &floors.calls[index];
         let radius = marker_radius(eye.nearness(call.marker), floors.cursor == Some(index));
         name_call(painter, project, explorer, floors, index, (radius, fade));
@@ -1318,7 +1336,7 @@ mod tests {
 
     #[test]
     fn the_deck_is_wide_enough_for_its_columns_and_clears_the_map() {
-        let small = plan_deck(Vec2::ZERO, Vec2::new(100.0, 40.0), 4, 2, Stand::Over);
+        let small = plan_deck((Vec2::ZERO, Vec2::new(100.0, 40.0)), 4, 2, Stand::Over, 0.0);
         assert!(
             (small.size.x - 100.0 * WIDE).abs() < 1e-4,
             "as wide as the journey"
@@ -1330,16 +1348,22 @@ mod tests {
                 .distance(Vec2::new(50.0, 20.0))
                 < 1e-4
         );
-        let crowd = plan_deck(Vec2::ZERO, Vec2::new(10.0, 10.0), 21, 1, Stand::Over);
+        let crowd = plan_deck((Vec2::ZERO, Vec2::new(10.0, 10.0)), 21, 1, Stand::Over, 0.0);
         assert!(crowd.size.x >= 21.0 * COLUMN - 1e-4, "room for each column");
         assert!(crowd.height >= LOWEST);
-        let deep = plan_deck(Vec2::ZERO, Vec2::new(10.0, 10.0), 21, 3, Stand::Over);
+        let deep = plan_deck((Vec2::ZERO, Vec2::new(10.0, 10.0)), 21, 3, Stand::Over, 0.0);
         assert!(deep.size.y > crowd.size.y, "deeper with more rows");
     }
 
     #[test]
     fn a_standing_deck_rises_beyond_the_journey() {
-        let deck = plan_deck(Vec2::ZERO, Vec2::new(100.0, 40.0), 4, 2, Stand::Behind);
+        let deck = plan_deck(
+            (Vec2::ZERO, Vec2::new(100.0, 40.0)),
+            4,
+            2,
+            Stand::Behind,
+            0.0,
+        );
         let (near, far) = (deck.at(0.5, 0.0, 1.0), deck.at(0.5, 1.0, 1.0));
         assert!(near.y > 40.0, "beyond the far edge");
         assert!(

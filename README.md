@@ -65,37 +65,39 @@ journey's part of the map, towards the eye, and the camera tilts gently to show 
 floors. On the deck the disclosed journey is its own clean diagram, a flame graph
 standing on its root: time runs left to right, one column per call, and each call is a
 tile in its node's color, a row above the call that makes it and as wide as the calls it
-makes, with a lit ball at its start and its number and name beside it, level along the
-tile where it fits and slanting up from the ball where it doesn't. The cursor's tile is
-outlined and its ball white; other calls to the cursor's function are outlined too. The
-cursor's call, the calls it makes (the first 12, if it makes more) and other calls to
-its function hang strings down to their nodes, leaving the deck and reaching each node
-straight down: the cursor's white and bold, ending in a ring round its node, its calls'
-one bright line each in their node's color, so a function called three times under it
-has three strings meeting at its node. Every other call is matched by its number badge
-on the map (`--time floors-all` hangs faint strings from them too); over a crowd of
-nodes the cursor's string lands on its node's name, pulled up off the crowd on a short
-thread. Where the cursor's node and the node of the call just before or after it sit
-close together in a crowd of the map's nodes, a small lens at the map's lower left shows
-that patch magnified, those calls numbered in their colors and the cursor's in white,
-ringed on the map with a leader to the lens. A long journey shows a window of 21 calls
-round the cursor, with how many more lie either side, and names the calls it opens
-inside of off the deck's left edge. Pointing at a tile lights its string, pool and
-node's name, and clicking it moves the cursor there; pointing at a node on the map
-outlines its tiles and lights their strings. Depth cues carry the gap between the
-floors: the map lies on a faintly gridded floor that fades out at its rim, each shown
-call's node sits in a soft pool of its color, brightest for the cursor's, haze dims what
-is farther from the eye, and the view rocks a few degrees from side to side, so the deck
-slides against the map (`Shift Z` holds it still; `--rock-at 0.25` and `0.75` hold a
-screenshot at either end). While the deck is up the map steps back: links draw fainter;
-the focus and the nodes the strings land on are named, every other node the deck shows
-keeps its number badge, so tile `5.3` finds badge `5.3`, nudged just above the docked
-journey with a short leader where the journey covers its node, and only the modules the
-journey runs through are named. Two alternatives, kept for comparison: `--time
-floors-behind` stands the deck beyond the journey's far edge, rising, so its strings
-fall forward onto the map; `--time floors-comb` runs the strings down to the deck's near
-edge and through a comb that orders them as their nodes lie left to right before they
-fan out (`floors-behind-comb` does both).
+makes, with a lit ball at its start and its number and name level along it, the name cut
+short with an ellipsis where the tile ends; the cursor's reads in full on a dark pill.
+The cursor's tile is outlined and its ball white; other calls to the cursor's function
+are outlined too. The cursor's call, the calls it makes (the first 12, if it makes more)
+and other calls to its function hang strings down to their nodes, leaving the deck and
+reaching each node straight down: the cursor's white and bold, ending in a ring round
+its node, its calls' one bright line each in their node's color, so a function called
+three times under it has three strings meeting at its node. The other calls its caller
+makes hang faint strings too, and every other call is matched by its number badge on the
+map (`--time floors-all` hangs faint strings from them too); over a crowd of nodes the
+cursor's string lands on its node's name, pulled up off the crowd on a short thread.
+Where the cursor's node and the node of the call just before or after it sit close
+together in a crowd of the map's nodes, a small lens at the map's lower left shows that
+patch magnified, those calls numbered in their colors and the cursor's in white, ringed
+on the map with a leader to the lens. A long journey shows a window of 15 calls round
+the cursor, with how many more lie either side, and names the calls it opens inside of
+off the deck's left edge. Pointing at a tile lights its string, pool and node's name,
+and clicking it moves the cursor there; pointing at a node on the map outlines its tiles
+and lights their strings. While the deck is up a docked journey panel steps aside, since
+the deck shows the same journey. Depth cues carry the gap between the floors: the map
+lies on a faintly gridded floor that fades out at its rim, each shown call's node sits
+in a soft pool of its color, brightest for the cursor's, haze dims what is farther from
+the eye, and the view rocks a few degrees from side to side, so the deck slides against
+the map (`Shift Z` holds it still; `--rock-at 0.25` and `0.75` hold a screenshot at
+either end). While the deck is up the map steps back: links draw fainter; the focus and
+the nodes the strings land on are named, every other node the deck shows keeps its
+number badge, so tile `5.3` finds badge `5.3`, nudged just above the docked journey with
+a short leader where the journey covers its node, and only the modules the journey runs
+through are named. Two alternatives, kept for comparison: `--time floors-behind` stands
+the deck beyond the journey's far edge, rising, so its strings fall forward onto the
+map; `--time floors-comb` runs the strings down to the deck's near edge and through a
+comb that orders them as their nodes lie left to right before they fan out
+(`floors-behind-comb` does both).
 
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
