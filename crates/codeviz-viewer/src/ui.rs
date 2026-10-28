@@ -229,7 +229,12 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            legend(
+                ctx,
+                above(graph_area, panel_area),
+                diff.is_some(),
+                explorer.hourglass(),
+            );
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -1689,7 +1694,7 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, hourglass: bool) {
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1720,6 +1725,15 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             );
                         }
                     });
+                    if hourglass {
+                        ui.label(
+                            egui::RichText::new(
+                                "height = calls from the focus: callers above, callees below; \
+                                 a stem drops to its place on the map",
+                            )
+                            .size(12.5),
+                        );
+                    }
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for (color, text) in [
