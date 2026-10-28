@@ -319,7 +319,81 @@ fn length(a: [f32; 3]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use codeviz_ir::Document;
+
     use super::*;
+    use crate::{ForceConfig, MapConfig, map};
+
+    /// Crate `k1` holds modules `m1` (`a`, `b`, `c`) and `m2` (`d`); crate `k2` holds
+    /// `m3` (`e`, `f`). `a` calls `d` and `e`.
+    fn system() -> System {
+        let unit = |id: &str, kind: &str, parent: Option<&str>| {
+            let parent = parent.map_or_else(String::new, |p| format!(r#", "parent": "x:{p}""#));
+            let role = if kind == "fn" { "invocable" } else { "group" };
+            format!(
+                r#"{{ "id": "x:{id}", "name": "{id}", "kind": "{kind}", "role": "{role}"{parent} }}"#
+            )
+        };
+        let call = |to: &str| {
+            format!(
+                r#"{{ "key": "{to}#0", "text": "{to}", "targets": [{{ "unit": "x:{to}", "certainty": "exact" }}] }}"#
+            )
+        };
+        let caller = format!(
+            r#"{{ "id": "x:a", "name": "a", "kind": "fn", "role": "invocable", "parent": "x:m1", "calls": [{}, {}] }}"#,
+            call("d"),
+            call("e")
+        );
+        let units = [
+            unit("k1", "crate", None),
+            unit("k2", "crate", None),
+            unit("m1", "module", Some("k1")),
+            unit("m2", "module", Some("k1")),
+            unit("m3", "module", Some("k2")),
+            caller,
+            unit("b", "fn", Some("m1")),
+            unit("c", "fn", Some("m1")),
+            unit("d", "fn", Some("m2")),
+            unit("e", "fn", Some("m3")),
+            unit("f", "fn", Some("m3")),
+        ];
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(", ")
+        );
+        System::new([Document::from_json(&json).unwrap()])
+    }
+
+    #[test]
+    fn functions_sit_in_their_modules_and_modules_in_their_crates() {
+        let system = system();
+        let map = map(&system, &MapConfig::default());
+        let graph = ForceGraph::new(&system, &map, ForceConfig::default());
+        let packing = pack(&system, &map, &graph);
+        assert_eq!(packing, pack(&system, &map, &graph), "the same every time");
+        assert_eq!(packing.holders.len(), 2, "one per crate");
+        for tile in 0..map.tiles.len() {
+            let cluster = graph.cluster(tile).unwrap();
+            let ball = packing.modules[cluster];
+            let from_middle = length(sub(packing.positions[tile], ball.center));
+            assert!(
+                from_middle < ball.radius,
+                "tile {tile} is outside its module"
+            );
+        }
+        for (cluster, ball) in packing.modules.iter().enumerate() {
+            let holder = packing.holders[packing.holder_of[cluster]].ball;
+            let reach = length(sub(ball.center, holder.center)) + ball.radius;
+            assert!(reach <= holder.radius + 1e-3, "module {cluster} pokes out");
+        }
+        let tile = |id: &str| map.tile_of(&UnitId::new(id)).unwrap();
+        let module = |id: &str| graph.cluster(tile(id)).unwrap();
+        assert_eq!(module("x:a"), module("x:c"));
+        assert_ne!(
+            packing.holder_of[module("x:a")],
+            packing.holder_of[module("x:e")]
+        );
+    }
 
     #[test]
     fn balls_never_overlap_and_the_holder_holds_them() {

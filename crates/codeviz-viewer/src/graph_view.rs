@@ -274,6 +274,12 @@ pub(crate) fn style_nodes(
     for (tile, mut material, mut transform) in &mut nodes {
         let look = match &diff {
             Some(diff) => diff_look(&explorer, diff, tile.0),
+            // Packed, what is unrelated to the focus is a speck: its module's ball
+            // already says where it is, and the modules that matter read through.
+            None if explorer.packed() => match node_look(&explorer, tile.0) {
+                NodeLook::Faded(_) => NodeLook::Hidden,
+                look => look,
+            },
             None => node_look(&explorer, tile.0),
         };
         // What the lens leaves out shrinks as well as fades, down to a speck.
@@ -290,13 +296,6 @@ pub(crate) fn style_nodes(
                 reason = "clamped to 0..=LEVELS"
             )]
             (0.35 + 0.65 * shown, level as u8)
-        };
-        // Packed, what is unrelated to the focus shrinks too, so the modules that
-        // matter read through the rest.
-        let scale = if explorer.packed() && matches!(look, NodeLook::Faded(_)) {
-            scale * 0.4
-        } else {
-            scale
         };
         let size = node_size(explorer.graph(), tile.0) * scale;
         if (transform.scale.x - size).abs() > 0.001 {
@@ -766,6 +765,12 @@ pub(crate) fn frame_spotlight(
         let Projection::Perspective(perspective) = projection else {
             continue;
         };
+        // Packed, the view stays centered where it is.
+        let center = if explorer.packed() {
+            camera.target
+        } else {
+            center
+        };
         let needed = fit_distance(&points, center, transform.rotation, perspective);
         if needed > camera.distance {
             camera.glide_to(center, needed);
@@ -817,6 +822,10 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 /// follows it as the graph moves.
 /// Not once the viewer has panned or zoomed away.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
+    // Packed, nothing moves, and the view centers on the focus's neighborhood.
+    if explorer.packed() {
+        return;
+    }
     let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
         return;
     };
@@ -845,22 +854,25 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         .filter_map(|t| explorer.tile_point(t))
         .collect();
     if explorer.packed() {
-        // Packed, nothing moves, so the view fits what it must show exactly, as
-        // seen from where the camera is turning to, with the journey besides.
+        // Packed, nothing moves, so the view centers on all it must show, the
+        // journey besides, and fits it exactly as seen from where the camera is
+        // turning to.
         let journey = explorer
             .disclosure()
             .tiles()
             .keys()
             .filter_map(|&t| explorer.tile_point(t))
             .collect::<Vec<_>>();
-        let points: Vec<Vec3> = near.into_iter().chain(journey).collect();
+        let points: Vec<Vec3> = near.into_iter().chain(journey).chain([at]).collect();
+        let heading = camera.heading();
+        let middle = screen_middle(&points, heading);
         let view = PerspectiveProjection {
             aspect_ratio: 1.6,
             ..default()
         };
-        let fit = fit_distance(&points, at, camera.heading(), &view);
+        let fit = fit_distance(&points, middle, heading, &view);
         // A little further, so names at the edges clear the cards in the corners.
-        camera.glide_to(at, fit * 1.2);
+        camera.glide_to(middle, fit * 1.15);
         return;
     }
     let reach = near
@@ -868,6 +880,24 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);
     camera.glide_to(at, orbit_distance(reach));
+}
+
+/// The point that puts the middle of `points` in the middle of a view turned to
+/// `rotation`: halfway across and up between their extremes, at their mean depth.
+fn screen_middle(points: &[Vec3], rotation: Quat) -> Vec3 {
+    let axes = [rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z];
+    let mut middle = Vec3::ZERO;
+    for (index, axis) in axes.into_iter().enumerate() {
+        let along = points.iter().map(|p| p.dot(axis));
+        let at = if index < 2 {
+            let (low, high) = along.fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(v), h.max(v)));
+            f32::midpoint(low, high)
+        } else {
+            along.sum::<f32>() / points.len().max(1) as f32
+        };
+        middle += axis * at;
+    }
+    middle
 }
 
 /// How far from `at` the disclosed journey reaches.
@@ -925,7 +955,8 @@ pub(crate) fn follow_focus(
         return;
     };
     for (mut camera, transform, projection) in &mut cameras {
-        if aimed {
+        // Packed, the view refits the neighborhood whenever it changes.
+        if aimed || explorer.packed() && !camera.free && (opened || moved) {
             orbit_anchor(&explorer, &mut camera);
             continue;
         }
