@@ -603,6 +603,9 @@ fn lit(explorer: &Explorer, reach: &Reach) -> Vec<usize> {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
+/// The closest the camera comes to the layered diagram.
+const MIN_DIAGRAM_DISTANCE: f32 = 8.0;
+
 /// F turns to face the graph head-on, centered on the journey's start again; R pulls
 /// back to take in the whole graph.
 pub(crate) fn graph_keys(
@@ -717,6 +720,17 @@ fn fit_distance(
     rotation: Quat,
     perspective: &PerspectiveProjection,
 ) -> f32 {
+    fit_distance_from(MIN_ORBIT_DISTANCE, points, center, rotation, perspective)
+}
+
+/// [`fit_distance`], coming no closer than `closest`.
+fn fit_distance_from(
+    closest: f32,
+    points: &[Vec3],
+    center: Vec3,
+    rotation: Quat,
+    perspective: &PerspectiveProjection,
+) -> f32 {
     // The share of the half-view a point may use: the rest is room for its name, and
     // for the journey docked over the bottom right.
     const ROOM: f32 = 0.72;
@@ -731,7 +745,7 @@ fn fit_distance(
             let toward = offset.dot(back);
             (offset.dot(right).abs() / tan_x).max(offset.dot(up).abs() / tan_y) + toward
         })
-        .fold(MIN_ORBIT_DISTANCE, f32::max)
+        .fold(closest, f32::max)
 }
 
 /// Looks at the middle of `points` from far enough back to see them all.
@@ -770,22 +784,49 @@ pub(crate) fn held_point(explorer: &Explorer) -> Option<Vec3> {
     if explorer.layered().diagram().is_none() {
         return explorer.anchor().and_then(|t| explorer.tile_point(t));
     }
-    let Some((low, high)) = lit_box(explorer) else {
-        return Some(at);
-    };
-    Some((low + high) / 2.0)
+    Some(diagram_pose(explorer).map_or(at, |(at, _)| at))
 }
 
-/// The corners of the box round everything lit, where it is headed.
+/// Where the camera looks at the diagram from head-on, and how far back it stands: far
+/// enough to see everything lit, and when that is wider than it is tall, looking low
+/// enough that the lanes' heads sit near the top of the screen, not adrift mid-way.
+fn diagram_pose(explorer: &Explorer) -> Option<(Vec3, f32)> {
+    let (low, high) = lit_box(explorer)?;
+    let view = PerspectiveProjection {
+        aspect_ratio: 1.6,
+        ..default()
+    };
+    let middle = (low + high) / 2.0;
+    // Flat and head-on, the diagram can come closer than an orbit would: a small one
+    // fills the screen.
+    let distance = fit_distance_from(
+        MIN_DIAGRAM_DISTANCE,
+        &[low, high],
+        middle,
+        Quat::IDENTITY,
+        &view,
+    );
+    let half_height = distance * (view.fov / 2.0).tan();
+    let at = middle.with_y(middle.y.min(high.y - half_height * 0.86));
+    Some((at, distance))
+}
+
+/// The corners of the box round everything lit, where it is headed, with room round
+/// it for names, and more below for the legend and the journey docked over the bottom.
 fn lit_box(explorer: &Explorer) -> Option<(Vec3, Vec3)> {
     let reach = explorer.reach()?;
-    lit(explorer, reach)
+    let (low, high) = lit(explorer, reach)
         .into_iter()
         .filter_map(|tile| explorer.goal_point(tile))
         .fold(None, |bounds, p| match bounds {
             None => Some((p, p)),
             Some((low, high)) => Some((low.min(p), high.max(p))),
-        })
+        })?;
+    let below = 8.0 + (high.y - low.y) * 0.12;
+    Some((
+        low - Vec3::new(8.0, below, 0.0),
+        high + Vec3::new(8.0, 6.0, 0.0),
+    ))
 }
 
 /// Orbits the node the journey starts at from far enough back to see everything it
@@ -797,20 +838,9 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         return;
     };
     if explorer.layered().diagram().is_some()
-        && let (Some(at), Some((low, high))) = (held_point(explorer), lit_box(explorer))
+        && let Some((at, distance)) = diagram_pose(explorer)
     {
-        let view = PerspectiveProjection {
-            aspect_ratio: 1.6,
-            ..default()
-        };
-        // Room round the box for names and the lanes' heads, and below it for the
-        // legend and the journey docked over the bottom.
-        let below = 8.0 + (high.y - low.y) * 0.1;
-        let corners = [
-            low - Vec3::new(8.0, below, 0.0),
-            high + Vec3::new(8.0, 6.0, 0.0),
-        ];
-        camera.glide_to(at, fit_distance(&corners, at, Quat::IDENTITY, &view));
+        camera.glide_to(at, distance);
         return;
     }
     let Some(at) = explorer.tile_point(anchor) else {

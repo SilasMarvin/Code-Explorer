@@ -30,7 +30,7 @@ impl Default for LayerConfig {
         Self {
             column: 4.5,
             row: 3.6,
-            rank_gap: 5.0,
+            rank_gap: 9.0,
             lane_gap: 4.0,
             max_columns: 4,
         }

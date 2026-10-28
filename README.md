@@ -68,7 +68,9 @@ to bottom, numbered down the left edge. Functions calling each other round a cyc
 a row, and a declared entry stays on top even when something calls it, so a call that
 runs up is a callback or a cycle. Within a row, a function sits under what calls it, and
 a crowded row wraps within its lane. The diagram depends only on the call graph, never
-on the focus, so it can be learned. The camera faces it head-on and frames what is lit;
+on the focus, so it can be learned. In a small graph (150 functions or fewer) what is
+not lit is still named, faintly, so each lane shows what it holds. The camera faces it
+head-on and frames what is lit, with the lanes' heads near the top of the screen;
 the focus's callers' callers light too, the journey opens two levels deep, and calls
 away from the focus are left out. `Z` again goes back to the map.
 

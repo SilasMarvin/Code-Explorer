@@ -1246,6 +1246,10 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     }
 }
 
+/// The most nodes a layered diagram can hold and still name those nothing lit
+/// reaches.
+const FAINT_NAMES_UP_TO: usize = 150;
+
 /// Names beside graph nodes, most important first, each on a dark pill so it reads
 /// over links and glow. The focus's callees lead with the order it calls them in, and
 /// its callers note where in their own calls they call it. A name tries each side of
@@ -1304,6 +1308,7 @@ fn draw_graph_labels(
         })
         .collect();
 
+    let faint_names = explorer.layered().shown().is_some() && map.tiles.len() <= FAINT_NAMES_UP_TO;
     // Lower ranks are placed first and win any overlap.
     let mut order: Vec<(LabelRank, Named)> = Vec::new();
     for (tile, disc) in discs.iter().enumerate() {
@@ -1330,6 +1335,9 @@ fn draw_graph_labels(
             _ if explorer.journey_lane(tile).is_some() => 5,
             Some(_) => 6,
             None if center.is_none() => 6,
+            // A small diagram names the rest faintly too, so every lane shows what it
+            // holds.
+            None if faint_names => 7,
             None => continue,
         };
         order.push((
@@ -1422,6 +1430,7 @@ fn draw_graph_labels(
                     // Only what touches the focus is colored, as its links are.
                     (_, Some(_)) => egui::Color32::from_rgb(200, 205, 216),
                     (2 | 5, None) => egui::Color32::from_rgb(225, 229, 238),
+                    (7, None) => egui::Color32::from_rgb(112, 118, 132),
                     _ => egui::Color32::from_rgb(160, 167, 182),
                 };
                 let impacted =
@@ -1591,12 +1600,19 @@ fn diagram_headings(
             .into_iter()
             .map(|text| painter.layout_no_wrap(text, font.clone(), color))
             .filter(|galley| galley.size().x <= room)
-            .map(|galley| {
+            // A lit lane's name may step up a line to clear a neighbor's.
+            .flat_map(|galley| {
                 let size = galley.size();
                 let x = (f32::midpoint(left, right) - size.x / 2.0)
                     .clamp(bounds.left() + 2.0, bounds.right() - size.x - 2.0);
-                let rect = egui::Rect::from_min_size(egui::pos2(x, head_y - size.y), size);
-                (galley, rect)
+                let rises: &[f32] = if lit_here { &[0.0, 15.0] } else { &[0.0] };
+                rises
+                    .iter()
+                    .map(|&up| {
+                        let at = egui::pos2(x, head_y - size.y - up);
+                        (galley.clone(), egui::Rect::from_min_size(at, size))
+                    })
+                    .collect::<Vec<_>>()
             })
             .find(|(_, rect)| {
                 !taken
