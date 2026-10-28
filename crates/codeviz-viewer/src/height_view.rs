@@ -16,7 +16,7 @@ use crate::{
 /// How far under the lowest lit node the floor lies, in ranks.
 const FLOOR_GAP: f32 = 0.6;
 /// How far the rank lines run past the lit nodes, left and right.
-const RULE_LEFT: f32 = 10.0;
+const RULE_LEFT: f32 = 16.0;
 const RULE_RIGHT: f32 = 4.0;
 
 /// What height draws round the focus.
@@ -154,6 +154,13 @@ pub(crate) fn pose(
             orbit_anchor(&explorer, &mut camera);
         }
     }
+}
+
+/// Whether the call from `from` to `to` runs uphill: into a function ranked above its
+/// caller, as a callback or a call into an entry point does.
+pub(crate) fn uphill(explorer: &Explorer, from: usize, to: usize) -> bool {
+    let lift = explorer.lift();
+    lift.lifted() && lift.rank(to) < lift.rank(from)
 }
 
 /// How the camera turns to read height.

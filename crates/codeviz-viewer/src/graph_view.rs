@@ -443,6 +443,12 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                 gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, alpha * shown));
             }
         }
+        // Standing upright, a call that runs uphill, against the flow, is doubled.
+        if (lit.is_some() || path.contains(&(from, to))) && height_view::uphill(explorer, from, to)
+        {
+            let side = (b - a).cross(Vec3::Z).normalize_or(Vec3::X) * 0.4;
+            gizmos.line(a + side, b - back + side, FURTHER.with_alpha(0.75 * shown));
+        }
     }
 }
 

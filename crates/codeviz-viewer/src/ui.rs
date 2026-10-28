@@ -1747,11 +1747,16 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explo
                     if let Some(by) = height {
                         ui.label(
                             egui::RichText::new(format!(
-                                "height = calls down from the entry points ({}): \
-                                 callers stand above, callees below",
+                                "height = calls down from the entry points ({}): callers \
+                                 above, callees below",
                                 by.label()
                             ))
                             .size(12.5),
+                        );
+                        ui.label(
+                            egui::RichText::new("═ a call that runs uphill, against the flow")
+                                .size(12.5)
+                                .color(MUTED),
                         );
                     }
                 });

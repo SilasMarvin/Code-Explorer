@@ -68,7 +68,8 @@ top even when something calls it. A rank never depends on the focus, so the shap
 be learned: the focus's callers stand above it and what it calls below, and a call
 that runs uphill is a callback or a layering violation. `Shift+Z` (or
 `--z rank-shortest`) counts the shortest way down instead, which keeps ranks shallow
-but lets calls run uphill wherever they take a shortcut. Upright, the camera turns to
+but lets calls run uphill wherever they take a shortcut. A lit call that runs uphill is
+drawn doubled. Upright, the camera turns to
 look across the graph from a little above, a faint line runs across what is lit at each
 rank, named at its left end, and every lit function stands on a stalk down to a floor
 where its module lies as a ring; labels say which module each lives in, the callers'
