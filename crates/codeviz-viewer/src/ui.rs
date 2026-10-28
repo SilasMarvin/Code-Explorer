@@ -25,7 +25,7 @@ use crate::{
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
     scene::{PALETTE, lane_color},
-    source_diff,
+    source_diff, strata,
 };
 
 pub(crate) struct UiPlugin;
@@ -228,7 +228,12 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            legend(
+                ctx,
+                above(graph_area, panel_area),
+                &explorer,
+                diff.is_some(),
+            );
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -243,11 +248,8 @@ fn draw_ui(
                 tether(ctx, bar, node, false);
             }
             // The bar under the pointer, to the node it stands for.
-            let hovered = explorer
-                .hovered_tile
-                .and_then(|tile| explorer.tile_point(tile))
-                .and_then(to_screen);
-            if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
+            let hovered = explorer.hovered_tile.and_then(|t| explorer.tile_point(t));
+            if let (Some(bar), Some(node)) = (tethers.hovered, hovered.and_then(to_screen)) {
                 tether(ctx, bar, node, true);
             }
         }
@@ -1282,6 +1284,7 @@ fn draw_graph_labels(
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
+    let layered = explorer.strata().is_some();
     let stack: Vec<usize> = explorer
         .selected()
         .map(|s| explorer.stack(s))
@@ -1321,6 +1324,8 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
+            // Strata light two calls either way, and name them.
+            Some(Relation::Upstream(2) | Relation::Downstream(2)) if layered => 3,
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1338,12 +1343,19 @@ fn draw_graph_labels(
     }
     // Modules are named at the top of their rings, ahead of most function names.
     let regions = graph_view::regions(explorer);
+    // In strata, the far edge of the column's ring, on its layer.
+    let ring_up = if layered { Vec3::NEG_Z } else { up };
     let ring_top = |cluster: usize| {
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
-        to_screen(middle + up * radius)
+        to_screen(middle + ring_up * radius)
     };
+    let lit = explorer.strata().map(|_| strata::lit_clusters(explorer));
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
+            // In strata, only the columns the focus's neighbors stand in.
+            if lit.as_ref().is_some_and(|lit| !lit.contains(&cluster)) {
+                continue;
+            }
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1364,11 +1376,13 @@ fn draw_graph_labels(
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .collect();
+    let layer_names = layer_names(painter, to_screen, explorer);
     // And off the nodes that matter, so they never hide a neighbor.
     let mut placer = Placer::new(
         painter,
         cards
             .into_iter()
+            .chain(layer_names.iter().map(|(rect, _)| *rect))
             .chain(
                 order
                     .iter()
@@ -1446,6 +1460,17 @@ fn draw_graph_labels(
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color, None)), None)
                     }
+                    // Two calls out, strata say through which neighbor.
+                    (Some(Relation::Upstream(2)), Some(_)) if layered => (
+                        None,
+                        strata::through(explorer, tile, true)
+                            .map(|next| format!("calls {}", node_name(explorer, next))),
+                    ),
+                    (Some(Relation::Downstream(2)), Some(_)) if layered => (
+                        None,
+                        strata::through(explorer, tile, false)
+                            .map(|before| format!("called by {}", node_name(explorer, before))),
+                    ),
                     // With the spotlight on, names alone, so more of them fit.
                     (Some(Relation::Upstream(1)), Some(_)) if !spotlit.is_empty() => (None, None),
                     (Some(Relation::Upstream(1)), Some(focus)) => {
@@ -1466,10 +1491,22 @@ fn draw_graph_labels(
                 .into_iter()
                 .filter_map(|(on, mark)| on.then_some(mark))
                 .collect();
-                let aside = [aside, (!marks.is_empty()).then(|| marks.join(" · "))]
-                    .into_iter()
-                    .flatten()
-                    .reduce(|a, b| format!("{a} · {b}"));
+                // In strata, the module a lit node lives in, as its column is far off.
+                let module = (layered
+                    && (tier == 0
+                        || matches!(relation, Some(Relation::Upstream(h) | Relation::Downstream(h))
+                            if h <= graph_view::STRATA_REACH)))
+                .then(|| graph.cluster(tile))
+                .flatten()
+                .map(|cluster| format!("in {}", explorer.cluster_name(cluster)));
+                let aside = [
+                    aside,
+                    (!marks.is_empty()).then(|| marks.join(" · ")),
+                    module,
+                ]
+                .into_iter()
+                .flatten()
+                .reduce(|a, b| format!("{a} · {b}"));
                 // A node the journey runs leads with its place in it, as its bar does.
                 let order = journey
                     .get(&tile)
@@ -1523,6 +1560,39 @@ fn draw_graph_labels(
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
+    for (rect, galley) in layer_names {
+        painter.galley(rect.min, galley, MUTED);
+    }
+}
+
+/// Each layer's number beside its tick on the plumb line through the focus; the top
+/// one says it holds the entry points.
+/// Laid out where they go, so function names keep off them.
+fn layer_names(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+) -> Vec<(egui::Rect, std::sync::Arc<egui::Galley>)> {
+    let Some(strata) = explorer.strata() else {
+        return Vec::new();
+    };
+    let focus = explorer.graph_focus().map(|t| strata.rank(t));
+    strata::layer_marks(explorer, strata)
+        .into_iter()
+        .filter_map(|(at, rank)| {
+            let at = to_screen(at)?;
+            // The focus is named on its own layer already.
+            let text = match rank {
+                _ if Some(rank) == focus => return None,
+                0 => "layer 0 · entries".to_owned(),
+                _ => format!("layer {rank}"),
+            };
+            let galley = painter.layout_no_wrap(text, egui::FontId::proportional(11.0), MUTED);
+            let rect =
+                egui::Align2::RIGHT_CENTER.anchor_size(at - egui::vec2(10.0, 0.0), galley.size());
+            Some((rect, galley))
+        })
+        .collect()
 }
 
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
@@ -1632,7 +1702,8 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &Explorer, diffing: bool) {
+    let layered = explorer.strata().is_some();
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1656,6 +1727,13 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             swatch(ui, "●", diff_view::REMOVED, "removed");
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+                        } else if layered {
+                            ui.label(
+                                egui::RichText::new(
+                                    "node color = its module, as the column it stands in",
+                                )
+                                .size(12.5),
+                            );
                         } else {
                             ui.label(
                                 egui::RichText::new("node color = its module, as its ring")
@@ -1663,6 +1741,15 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             );
                         }
                     });
+                    if layered {
+                        ui.label(
+                            egui::RichText::new(
+                                "layers: entry points on top, every call steps down; \
+                                 callers above the focus, its calls below",
+                            )
+                            .size(12.5),
+                        );
+                    }
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for (color, text) in [
@@ -1732,6 +1819,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            ("Z", "strata: layers by how far down the calls run"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

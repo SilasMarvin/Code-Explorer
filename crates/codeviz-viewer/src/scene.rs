@@ -10,6 +10,7 @@ use crate::{
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
+    strata,
     ui::{Chrome, KeyHelp},
 };
 
@@ -19,7 +20,12 @@ impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
-            (graph_view::create_node_materials, spawn_nodes).chain(),
+            (
+                graph_view::create_node_materials,
+                strata::create_glass,
+                spawn_nodes,
+            )
+                .chain(),
         )
         .add_systems(
             Update,
@@ -29,11 +35,14 @@ impl Plugin for ScenePlugin {
                 autoplay,
                 graph_view::track_attention,
                 simulate,
+                strata::place_nodes,
+                strata::build_glass,
                 reveal,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::follow_focus,
                 graph_view::frame_reveal,
                 graph_view::frame_spotlight,
+                strata::frame,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
             )
@@ -316,6 +325,7 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
     }
+    strata::toggle(&keys, &mut explorer);
     if keys.just_pressed(KeyCode::KeyS) {
         chrome.side = !chrome.side;
     }

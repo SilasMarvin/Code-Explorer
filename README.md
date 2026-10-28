@@ -18,6 +18,7 @@ codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
+codeviz view app.json --z strata     # layers by how far down the calls run
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -67,6 +68,27 @@ camera orbits where the journey starts and turns only when you start somewhere n
 stepping through the journey at most pulls it back to keep the cursor's node in sight.
 Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
 brings it back.
+
+## Strata
+
+`--z strata`, or `Z` at any time, stacks the graph in glass layers by how far down the
+flow of calls each function runs. Entry points, and what nothing calls, are on the top
+layer, and every call steps down at least one layer, so what calls the focus is always
+above it and what it calls below. Each module stands on its place on the map as a
+translucent column through the layers its functions occupy, so a function keeps its map
+position and sits inside its module's column, on its layer. A function nothing calls
+that is no entry point hangs just above the highest of its calls, and one that neither
+calls nor is called rests on the bottom layer, with the leaves. Calls round a cycle
+cannot step down: they share a layer and bow up over it, which makes them stand out.
+
+The camera looks down on the stack from a little above. A plumb line runs through the
+focus with each layer's number on it; the focus's layer is glazed and edged brightest.
+Two calls either way of the focus light up, whatever the journey shows: violet into it,
+blue out of it, pale beyond, and each is named with the module it lives in and, two
+calls out, the neighbor it goes through (`calls place`, `called by quote`). Only the
+modules they live in rise as columns; every other module leaves its footprint on the
+focus's layer, and calls away from the focus are not drawn. `F` turns back to look down
+on the stack.
 
 ## Diffs
 

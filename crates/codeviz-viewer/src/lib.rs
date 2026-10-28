@@ -22,6 +22,7 @@ mod journey_panel;
 mod lens;
 mod scene;
 mod source_diff;
+mod strata;
 mod truth;
 mod ui;
 
@@ -63,7 +64,18 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// What the third dimension shows at first.
+    z: ZView,
     diff: Option<Comparison>,
+}
+
+/// What the third dimension shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZView {
+    /// Whatever the simulation puts there.
+    Free,
+    /// Layers by how far down the calls each function runs.
+    Strata,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -96,6 +108,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            z: ZView::Free,
             diff: None,
         }
     }
@@ -234,6 +247,19 @@ impl Viewer {
         self
     }
 
+    /// What the third dimension shows: `strata` stacks the graph in layers by how far
+    /// down the calls each function runs, each module a column through them. Anything
+    /// else leaves it to the simulation.
+    #[must_use]
+    pub fn with_z(mut self, name: &str) -> Self {
+        self.z = if name == "strata" {
+            ZView::Strata
+        } else {
+            ZView::Free
+        };
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -286,6 +312,7 @@ impl Viewer {
             }
         }
         explorer.set_clustering(self.clustering);
+        explorer.set_strata(self.z == ZView::Strata);
         explorer.set_lens(self.lens);
         if let Some(tile) = self
             .focus

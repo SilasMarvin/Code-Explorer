@@ -19,6 +19,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     history::{History, View},
     lens::{self, Distances, Lens},
+    strata::Strata,
 };
 
 /// What a disclosure was worked out for: the journey's revision, how it discloses,
@@ -279,6 +280,8 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// The layers each function sits on, while the graph is laid out in strata.
+    strata: Option<Strata>,
 }
 
 impl Explorer {
@@ -332,6 +335,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            strata: None,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -364,6 +368,9 @@ impl Explorer {
         self.graph.retire(gone);
         self.reach = None;
         self.rewired += 1;
+        if self.strata.is_some() {
+            self.strata = Some(self.layer());
+        }
     }
 
     /// The journey.
@@ -617,9 +624,50 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node sits in the world: where the simulation put it, or in
+    /// strata, its map point on its layer.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        let at = *self.graph.positions.get(tile)?;
+        Some(match &self.strata {
+            Some(strata) => strata.place(tile, at),
+            None => Vec3::from(at),
+        })
+    }
+
+    /// The layers, while the graph is laid out in strata.
+    pub(crate) fn strata(&self) -> Option<&Strata> {
+        self.strata.as_ref()
+    }
+
+    /// Lays the graph out in strata, by how far down the calls each function runs
+    /// from the entry points, or back as the simulation places it.
+    pub(crate) fn set_strata(&mut self, on: bool) {
+        self.strata = on.then(|| self.layer());
+    }
+
+    fn layer(&self) -> Strata {
+        let entries: HashSet<usize> = self
+            .system
+            .entries()
+            .iter()
+            .filter_map(|entry| self.map.tile_of(&entry.unit))
+            .collect();
+        let (low, high) = self.graph.positions.iter().fold(
+            (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)),
+            |(low, high), p| {
+                (
+                    low.min(Vec2::new(p[0], p[1])),
+                    high.max(Vec2::new(p[0], p[1])),
+                )
+            },
+        );
+        let span = (high - low).max_element().max(0.0);
+        Strata::new(self.map.tiles.len(), &self.graph.calls, &entries, span)
+    }
+
+    /// Bumped whenever nodes move.
+    pub(crate) fn moved(&self) -> u64 {
+        self.moved
     }
 
     pub(crate) fn clustering(&self) -> Clustering {

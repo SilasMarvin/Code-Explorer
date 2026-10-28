@@ -25,6 +25,7 @@ use crate::{
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
+    strata,
 };
 
 /// Calls into the focus.
@@ -39,6 +40,9 @@ pub(crate) const FURTHER: Color = Color::srgb(0.82, 0.85, 0.92);
 
 /// Calls away from the focus that still get their own shade; further is drawn as this.
 const FARTHEST_SHADE: u32 = 3;
+
+/// How many calls either way of the focus light up in strata.
+pub(crate) const STRATA_REACH: u32 = 2;
 
 /// How a node is drawn right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -225,12 +229,18 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
 
 /// How many calls from the focus a node is, when it is near enough to light: with a
 /// journey open, what the focus calls lights as far as the journey is disclosed, and
-/// only its direct callers light above it. The spotlight lights what it picks out.
+/// only its direct callers light above it. The spotlight lights what it picks out. In
+/// strata, two calls either way light, whatever the journey shows.
 pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u32> {
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     match relation(reach, tile) {
+        Some(Relation::Upstream(hops) | Relation::Downstream(hops))
+            if explorer.strata().is_some() && hops <= STRATA_REACH =>
+        {
+            Some(hops)
+        }
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
@@ -328,7 +338,10 @@ pub(crate) fn draw_graph(
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
-    draw_regions(&explorer, &mut gizmos);
+    match explorer.strata() {
+        Some(strata) => strata::draw(&explorer, strata, &mut gizmos),
+        None => draw_regions(&explorer, &mut gizmos),
+    }
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
@@ -362,6 +375,9 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     let spotlit = explorer.spotlit();
+    let strata = explorer.strata();
+    // In strata, two calls either way light whatever the journey shows.
+    let layered = |outer: u32| strata.is_some() && outer <= STRATA_REACH;
     // Calls from the focus, counting the focus itself as zero.
     let hops = |side: &HashMap<usize, u32>, tile: usize| {
         if center == Some(tile) {
@@ -386,13 +402,15 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             let down = hops(&reach.downstream, from).zip(hops(&reach.downstream, to));
             match (up, down) {
                 (Some((outer, inner)), _)
-                    if outer == inner + 1 && (!opened || outer == 1 || spotlit.contains(&from)) =>
+                    if outer == inner + 1
+                        && (layered(outer) || !opened || outer == 1 || spotlit.contains(&from)) =>
                 {
                     Some((CALLER, outer))
                 }
                 (_, Some((inner, outer)))
                     if outer == inner + 1
-                        && (!opened
+                        && (layered(outer)
+                            || !opened
                             || journey.contains_key(&to) && journey.contains_key(&from)
                             || spotlit.contains(&to)) =>
                 {
@@ -402,6 +420,17 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             }
         });
         let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
+        if strata.is_some_and(|s| strata::climbs(s, from, to))
+            && draw_climb(
+                gizmos,
+                lit,
+                path.contains(&(from, to)),
+                (a, b - back),
+                shown,
+            )
+        {
+            continue;
+        }
         match lit {
             // Stop at the callee's surface so the head stays visible.
             Some((color, 1)) => {
@@ -419,6 +448,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                     .arrow(a, b - back, FURTHER.with_alpha(0.4 * shown))
                     .with_tip_length(0.8);
             }
+            // Strata keep to the focus's calls: across layers, the rest is a tangle.
+            None if strata.is_some() && center.is_some() => {}
             None => {
                 let alpha = if center.is_some() {
                     0.04
@@ -432,6 +463,25 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             }
         }
     }
+}
+
+/// In strata, a call that cannot step down, lit or on the journey's path, bowed up
+/// over its layer in the color it would have had. Returns whether it drew one.
+fn draw_climb(
+    gizmos: &mut Gizmos,
+    lit: Option<(Color, u32)>,
+    on_path: bool,
+    (a, b): (Vec3, Vec3),
+    shown: f32,
+) -> bool {
+    let color = match lit {
+        Some((color, 1)) => color.with_alpha(fade(1) * shown),
+        Some((_, outer)) => FURTHER.with_alpha(fade(outer) * 0.8 * shown),
+        None if on_path => FURTHER.with_alpha(0.4 * shown),
+        None => return false,
+    };
+    strata::draw_bow(gizmos, a, b, color);
+    true
 }
 
 /// Dots running along a call from caller to callee, so which way it goes reads
@@ -517,8 +567,11 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 }
 
 /// Each module's region, as the functions showing place it: its cluster, middle, and
-/// a radius holding most of them.
+/// a radius holding most of them. In strata, its column where the focus's layer cuts it.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
+    if let Some(strata) = explorer.strata() {
+        return strata::regions(explorer, strata);
+    }
     let graph = explorer.graph();
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
     for tile in 0..explorer.map().tiles.len() {
@@ -574,7 +627,12 @@ pub(crate) fn graph_keys(
 ) {
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(FRONT);
+            // Strata are read looking down on them.
+            camera.turn_to(if explorer.strata().is_some() {
+                strata::POSE
+            } else {
+                FRONT
+            });
             orbit_anchor(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {
