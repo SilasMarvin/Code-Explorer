@@ -734,15 +734,24 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 }
 
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
-/// follows it as the graph moves.
+/// follows it as the graph moves. Standing as towers, it keeps the middle of what
+/// the towers' view fits around the anchor instead.
 /// Not once the viewer has panned or zoomed away.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    let Some(anchor) = explorer.anchor() else {
         return;
+    };
+    let Some(at) = explorer.tile_point(anchor) else {
+        return;
+    };
+    let aim = if explorer.towers().is_some() {
+        towers_aim(&towers_points(&explorer, anchor, at), at)
+    } else {
+        at
     };
     for mut camera in &mut cameras {
         if !camera.free {
-            camera.target = at;
+            camera.target = aim;
         }
     }
 }
@@ -758,7 +767,9 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         return;
     };
     if explorer.towers().is_some() {
-        camera.glide_to(at, towers_distance(explorer, anchor, at));
+        let points = towers_points(explorer, anchor, at);
+        let aim = towers_aim(&points, at);
+        camera.glide_to(aim, towers_distance(&points, aim));
         return;
     }
     let reach = graph
@@ -772,33 +783,75 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
     camera.glide_to(at, orbit_distance(reach));
 }
 
-/// How far back to look down on the towers from their usual angle to see the focus,
-/// everything that calls the anchor and everything it calls, and the journey as
-/// disclosed: the city stands taller than it is deep, so it fits by what the view
-/// actually shows rather than by distance alone.
-fn towers_distance(explorer: &Explorer, anchor: usize, at: Vec3) -> f32 {
+/// What the towers' view fits: the focus, what calls it and what it calls, the
+/// journey as disclosed, and whatever lit two calls away stands not much farther off
+/// than those. A two-hop node across the city is left to its line rather than pulling
+/// the whole view back to it.
+fn towers_points(explorer: &Explorer, anchor: usize, at: Vec3) -> Vec<Vec3> {
     let graph = explorer.graph();
-    let points: Vec<Vec3> = graph
+    let mut points: Vec<Vec3> = graph
         .callers(anchor)
         .chain(graph.callees(anchor))
         .filter(|&t| explorer.shown(t))
         .chain(explorer.graph_focus())
+        .chain(Some(anchor))
         .chain(explorer.disclosure().tiles().keys().copied())
         .filter_map(|t| explorer.tile_point(t))
         .collect();
+    let close = points.iter().map(|p| p.distance(at)).fold(0.0, f32::max);
+    if let Some(reach) = explorer.reach() {
+        points.extend(
+            reach
+                .upstream
+                .keys()
+                .chain(reach.downstream.keys())
+                .copied()
+                .filter(|&t| explorer.shown(t) && near(explorer, reach, t) == Some(2))
+                .filter_map(|t| explorer.tile_point(t))
+                .filter(|p| p.distance(at) <= close * TWO_HOP_REACH),
+        );
+    }
+    points
+}
+
+/// The towers' rotation, looking down on the city from the front.
+fn towers_rotation() -> Quat {
     let (yaw, pitch) = TOWERS_VIEW;
+    Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)
+}
+
+/// Where to aim at the towers: the middle of `points` across the view, so that what
+/// stands mostly below the focus does not leave the sky above it empty.
+fn towers_aim(points: &[Vec3], at: Vec3) -> Vec3 {
+    let rotation = towers_rotation();
+    let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+    let span = |axis: Vec3| {
+        let (low, high) = points
+            .iter()
+            .map(|p| (*p - at).dot(axis))
+            .fold((0.0_f32, 0.0_f32), |(low, high), d| {
+                (low.min(d), high.max(d))
+            });
+        f32::midpoint(low, high)
+    };
+    at + right * span(right) + up * span(up)
+}
+
+/// How far back to look down on the towers from their usual angle to see `points`
+/// around `aim`: the city stands taller than it is deep, so it fits by what the view
+/// actually shows rather than by distance alone.
+fn towers_distance(points: &[Vec3], aim: Vec3) -> f32 {
     let view = PerspectiveProjection {
         aspect_ratio: 1.6,
         ..default()
     };
     // With room to spare for names, and for the journey docked over the bottom right.
-    fit_distance(
-        &points,
-        at,
-        Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0),
-        &view,
-    ) * 1.3
+    fit_distance(points, aim, towers_rotation(), &view) * 1.15
 }
+
+/// How much farther than the focus's own neighbours a lit node two calls away may
+/// stand and still be fitted into the towers' view.
+const TWO_HOP_REACH: f32 = 1.4;
 
 /// How far from `at` the disclosed journey reaches.
 fn journey_reach(explorer: &Explorer, at: Vec3) -> f32 {

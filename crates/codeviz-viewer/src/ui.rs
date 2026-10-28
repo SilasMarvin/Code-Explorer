@@ -1402,13 +1402,14 @@ fn draw_graph_labels(
                 let Some(at) = ring_top(group) else {
                     continue;
                 };
-                let color = egui_color(lane_color(group % PALETTE.len())).gamma_multiply(
-                    if center.is_none() || lit(group) {
-                        0.95
-                    } else {
-                        0.6
-                    },
-                );
+                let color =
+                    egui_color(lane_color(group % PALETTE.len())).gamma_multiply(match center {
+                        _ if lit(group) => 0.95,
+                        None => 0.9,
+                        // Standing as towers, the unlit city is named only faintly.
+                        Some(_) if standing => 0.4,
+                        Some(_) => 0.6,
+                    });
                 let label = explorer.cluster_name(group);
                 let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
                 placer.place(named, at, 0.0, job, None, false);
