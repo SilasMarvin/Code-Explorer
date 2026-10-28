@@ -750,9 +750,6 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
     let Some(at) = explorer.tile_point(anchor) else {
         return;
     };
-    if explorer.spheres() {
-        camera.turn_to(spheres::clear_view(explorer));
-    }
     let reach = graph
         .callers(anchor)
         .chain(graph.callees(anchor))
@@ -761,6 +758,9 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         .filter_map(|t| explorer.tile_point(t))
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);
+    if explorer.spheres() {
+        camera.turn_to(spheres::clear_view(explorer, orbit_distance(reach)));
+    }
     camera.glide_to(at, orbit_distance(reach));
 }
 

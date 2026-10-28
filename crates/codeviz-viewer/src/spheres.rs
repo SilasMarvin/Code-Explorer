@@ -13,6 +13,7 @@ use crate::{
     explorer::Explorer,
     graph_view::{NodeLook, node_look},
     scene::{PALETTE, Tile, lane_color},
+    ui::node_name,
 };
 
 /// Room between a sphere and the middles of its outermost functions, so they sit
@@ -24,8 +25,9 @@ const FIT_STEPS: u32 = 48;
 const HUDDLE: f32 = 0.4;
 /// How quickly a sphere huddles or opens out, per second.
 const HUDDLE_SPEED: f32 = 6.0;
-/// Room a function's name needs round it, when picking an angle.
-const NAME_ROOM: f32 = 2.5;
+/// How tall a function's name is on screen, and how far right of it, in pixels.
+const NAME_HEIGHT: f32 = 20.0;
+const NAME_GAP: f32 = 10.0;
 /// Angles either side of the default an opening view tries.
 const VIEW_STEPS: i32 = 6;
 /// How far Q and E swing the camera round.
@@ -172,9 +174,16 @@ fn lit_tiles(explorer: &Explorer) -> HashSet<usize> {
 /// default three-quarter view, the one where the lit spheres overlap least, the lit
 /// functions' names have room, and calls to and from the focus cross no other lit
 /// sphere; the nearer the default the better.
-pub(crate) fn clear_view(explorer: &Explorer) -> (f32, f32) {
+/// `distance` is how far back the camera will be, which sets how much room a name
+/// takes up in the world.
+pub(crate) fn clear_view(explorer: &Explorer, distance: f32) -> (f32, f32) {
     let graph = explorer.graph();
     let lit = lit_tiles(explorer);
+    // About what a pixel spans at that distance, in a typical window.
+    let pixel = distance * 0.83 / 900.0;
+    // How wide each lit function's name runs to its right, asides and pill included.
+    #[expect(clippy::cast_precision_loss, reason = "a short name")]
+    let width = |tile: usize| (node_name(explorer, tile).chars().count() as f32 + 12.0) * 7.0;
     let shells: Vec<Shell> = shells(explorer)
         .into_iter()
         .filter(|shell| shell.lit)
@@ -202,11 +211,25 @@ pub(crate) fn clear_view(explorer: &Explorer) -> (f32, f32) {
                     crowding += (a.radius + b.radius - apart).max(0.0);
                 }
             }
-            // Names over names.
-            for (i, &(_, a)) in named.iter().enumerate() {
-                for &(_, b) in &named[i + 1..] {
-                    let apart = flat(a).distance(flat(b));
-                    crowding += 2.0 * (2.0 * NAME_ROOM - apart).max(0.0);
+            // Names over names, and over the functions they would hide.
+            let boxes: Vec<Rect> = named
+                .iter()
+                .map(|&(tile, at)| {
+                    let left = flat(at) + Vec2::new(NAME_GAP * pixel, -NAME_HEIGHT * pixel / 2.0);
+                    Rect::from_corners(left, left + Vec2::new(width(tile), NAME_HEIGHT) * pixel)
+                })
+                .collect();
+            for (i, a) in boxes.iter().enumerate() {
+                for b in &boxes[i + 1..] {
+                    let both = a.intersect(*b);
+                    if !both.is_empty() {
+                        crowding += 2.0 * both.width().min(both.height() * 4.0);
+                    }
+                }
+                for (j, &(_, at)) in named.iter().enumerate() {
+                    if i != j && a.contains(flat(at)) {
+                        crowding += NAME_HEIGHT * pixel * 2.0;
+                    }
                 }
             }
             // A call to or from the focus across a sphere neither end is in.
@@ -376,10 +399,9 @@ pub(crate) fn draw_rims(
     let eye = camera.translation();
     let focused = explorer.graph_focus().is_some();
     let shells = shells(&explorer);
-    let lit: Vec<&Shell> = shells.iter().filter(|shell| shell.lit).collect();
+    let veiled = veiled(&shells, eye);
     for shell in &shells {
-        // An outline seen over or through a lit sphere would read as part of it.
-        if !shell.lit && lit.iter().any(|other| overlaps(shell, other, eye)) {
+        if veiled.contains(&shell.cluster) {
             continue;
         }
         let Some((middle, radius, facing)) = outline(shell.center, shell.radius, eye) else {
@@ -399,6 +421,40 @@ pub(crate) fn draw_rims(
                 .circle(isometry, radius * share, color.with_alpha(alpha))
                 .resolution(64);
         }
+    }
+}
+
+/// The modules the focus does not touch that are seen over or through a lit sphere:
+/// drawn, they would read as part of it.
+fn veiled(shells: &[Shell], eye: Vec3) -> HashSet<usize> {
+    let lit: Vec<&Shell> = shells.iter().filter(|shell| shell.lit).collect();
+    shells
+        .iter()
+        .filter(|shell| !shell.lit && lit.iter().any(|other| overlaps(shell, other, eye)))
+        .map(|shell| shell.cluster)
+        .collect()
+}
+
+/// Hides the faded functions of every veiled module, so no stray points seem to sit
+/// in a lit sphere; anything lit in them still shows.
+pub(crate) fn veil(
+    explorer: Res<Explorer>,
+    cameras: Query<&GlobalTransform, With<OrbitCamera>>,
+    mut nodes: Query<(&Tile, &mut Visibility)>,
+) {
+    let veiled = match cameras.single() {
+        Ok(camera) if explorer.spheres() => veiled(&shells(&explorer), camera.translation()),
+        _ => HashSet::new(),
+    };
+    let graph = explorer.graph();
+    for (tile, mut visibility) in &mut nodes {
+        let hidden = graph.cluster(tile.0).is_some_and(|c| veiled.contains(&c))
+            && matches!(node_look(&explorer, tile.0), NodeLook::Faded(_));
+        visibility.set_if_neq(if hidden {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        });
     }
 }
 

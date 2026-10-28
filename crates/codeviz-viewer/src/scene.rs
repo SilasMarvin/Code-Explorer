@@ -46,6 +46,7 @@ impl Plugin for ScenePlugin {
                 graph_view::draw_graph,
                 spheres::place_shells,
                 spheres::draw_rims,
+                spheres::veil,
             )
                 .chain(),
         );
