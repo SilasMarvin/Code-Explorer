@@ -116,6 +116,12 @@ impl OrbitCamera {
         self.yaw -= turns * std::f32::consts::TAU;
         self.goal_angles = Some((yaw, pitch));
     }
+
+    /// Swings round the point orbited by `angle` radians, easing there.
+    pub(crate) fn swing(&mut self, angle: f32) {
+        let (yaw, pitch) = self.goal_angles.unwrap_or((self.yaw, self.pitch));
+        self.turn_to((yaw + angle, pitch));
+    }
 }
 
 const ORBIT_SPEED: f32 = 0.005;

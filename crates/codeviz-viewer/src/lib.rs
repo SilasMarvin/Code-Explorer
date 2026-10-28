@@ -22,6 +22,7 @@ mod journey_panel;
 mod lens;
 mod scene;
 mod source_diff;
+mod spheres;
 mod truth;
 mod ui;
 
@@ -63,7 +64,18 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// How the graph opens in space.
+    space: Space,
     diff: Option<Comparison>,
+}
+
+/// How the graph uses space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Space {
+    /// Mostly flat, modules side by side like regions on a map.
+    Flat,
+    /// All three dimensions, each module a sphere of its functions.
+    Spheres,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -96,6 +108,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            space: Space::Flat,
             diff: None,
         }
     }
@@ -234,6 +247,18 @@ impl Viewer {
         self
     }
 
+    /// What the third dimension shows: `force` lays the graph out in all three, each
+    /// module a sphere of its functions. Anything else keeps the graph mostly flat.
+    #[must_use]
+    pub fn with_z(mut self, name: &str) -> Self {
+        self.space = if name == "force" {
+            Space::Spheres
+        } else {
+            Space::Flat
+        };
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -286,6 +311,11 @@ impl Viewer {
             }
         }
         explorer.set_clustering(self.clustering);
+        if self.space == Space::Spheres {
+            explorer.set_spheres(true);
+            // Opens with the spheres formed, not still rising out of the flat map.
+            explorer.settle_now();
+        }
         explorer.set_lens(self.lens);
         if let Some(tile) = self
             .focus

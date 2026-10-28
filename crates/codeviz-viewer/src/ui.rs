@@ -139,6 +139,10 @@ pub(crate) struct Chrome {
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "lays out every piece of chrome in turn"
+)]
 fn draw_ui(
     mut contexts: EguiContexts,
     mut explorer: ResMut<Explorer>,
@@ -228,7 +232,12 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            legend(
+                ctx,
+                above(graph_area, panel_area),
+                diff.is_some(),
+                explorer.spheres(),
+            );
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -1342,6 +1351,11 @@ fn draw_graph_labels(
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
+    let sphere_disc = |cluster: usize| {
+        let &(_, middle, _) = regions.iter().find(|r| r.0 == cluster)?;
+        let center = to_screen(middle)?;
+        Some((center, ring_top(cluster)?.distance(center)))
+    };
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
             #[expect(
@@ -1350,7 +1364,13 @@ fn draw_graph_labels(
                 reason = "a rough size for ordering"
             )]
             let size = radius as usize;
-            let tier = if center.is_some() { 4 } else { 1 };
+            // A lit sphere is named ahead of all but the focus's neighbors: it says
+            // where they live.
+            let tier = match center {
+                Some(_) if explorer.spheres() => 2,
+                Some(_) => 4,
+                None => 1,
+            };
             order.push((
                 (tier, std::cmp::Reverse(size), cluster),
                 Named::Group(cluster),
@@ -1389,11 +1409,24 @@ fn draw_graph_labels(
                 let Some(at) = ring_top(group) else {
                     continue;
                 };
-                let color = egui_color(lane_color(group % PALETTE.len()))
-                    .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
+                let color = egui_color(lane_color(group % PALETTE.len())).gamma_multiply(
+                    if center.is_some() && !explorer.spheres() {
+                        0.6
+                    } else {
+                        0.9
+                    },
+                );
                 let label = explorer.cluster_name(group);
                 let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
-                placer.place(named, at, 0.0, job, None, false);
+                if placer.place(named, at, 0.0, job.clone(), None, false) || !explorer.spheres() {
+                    continue;
+                }
+                // A lit sphere says where its functions live, so it is named come what
+                // may: beside its outline when its top is taken.
+                let Some((middle, outline)) = sphere_disc(group) else {
+                    continue;
+                };
+                placer.place(named, middle, outline, job, None, true);
             }
             Named::Node(tile) => {
                 let Some((node, edge)) = discs[tile] else {
@@ -1632,7 +1665,7 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, spheres: bool) {
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1657,9 +1690,12 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
                         } else {
+                            let holder = if spheres { "sphere" } else { "ring" };
                             ui.label(
-                                egui::RichText::new("node color = its module, as its ring")
-                                    .size(12.5),
+                                egui::RichText::new(format!(
+                                    "node color = its module, as its {holder}"
+                                ))
+                                .size(12.5),
                             );
                         }
                     });
@@ -1732,6 +1768,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            ("Z", "modules as spheres in space / a flat map"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
@@ -1747,6 +1784,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("wheel", "zoom towards the pointer"),
             ("left / middle drag", "orbit"),
             ("right / Shift drag", "pan"),
+            ("Q / E", "swing round the focus"),
         ],
     ),
     (

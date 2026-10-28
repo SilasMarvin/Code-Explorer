@@ -38,6 +38,15 @@ color beside the node, so a bar finds its node at a glance; hovering a bar draws
 to it. `I` picks out everything that calls the focus and `O` everything it calls,
 pulling the camera back only as far as it takes to show them all.
 
+`--z force` (or `Z`) spreads the graph through all three dimensions: each module's
+functions gather in a ball of their own, drawn as a softly shaded sphere fitted to them,
+so space says where a function lives and nothing else. The spheres holding the focus,
+what calls it and what it calls are lit and named; every other module huddles into a
+small, faint outline where it was, out of the way. The camera opens at whichever angle
+keeps the lit spheres, their names and the calls between them clearest, and `Q`/`E`
+swing it round the focus to see the same spheres from another side. `Z` again lays the
+graph back flat.
+
 The focus is where you are in the journey: the node under its cursor, ringed in white
 and named in the top bar beside how many calls it makes and takes. The arrows, a digit
 (the call with that number on its badge and bar) and a click on a node the journey runs

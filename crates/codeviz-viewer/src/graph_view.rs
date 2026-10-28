@@ -25,6 +25,7 @@ use crate::{
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
+    spheres,
 };
 
 /// Calls into the focus.
@@ -419,6 +420,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                     .arrow(a, b - back, FURTHER.with_alpha(0.4 * shown))
                     .with_tip_length(0.8);
             }
+            // Among spheres, what does not touch the focus would only be a hairball.
+            None if center.is_some() && explorer.spheres() => {}
             None => {
                 let alpha = if center.is_some() {
                     0.04
@@ -517,8 +520,17 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 }
 
 /// Each module's region, as the functions showing place it: its cluster, middle, and
-/// a radius holding most of them.
+/// a radius holding most of them. Among spheres, the lit spheres, or every one when
+/// nothing is focused.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
+    if explorer.spheres() {
+        let focused = explorer.graph_focus().is_some();
+        return spheres::shells(explorer)
+            .into_iter()
+            .filter(|shell| shell.lit || !focused)
+            .map(|shell| (shell.cluster, shell.center, shell.radius))
+            .collect();
+    }
     let graph = explorer.graph();
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
     for tile in 0..explorer.map().tiles.len() {
@@ -548,8 +560,11 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
         .collect()
 }
 
-/// A faint ring round each module's region, in its color.
+/// A faint ring round each module's region, in its color; spheres draw their own.
 fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
+    if explorer.spheres() {
+        return;
+    }
     for (cluster, middle, radius) in regions(explorer) {
         let color = lane_color(cluster % PALETTE.len());
         gizmos
@@ -735,6 +750,9 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
     let Some(at) = explorer.tile_point(anchor) else {
         return;
     };
+    if explorer.spheres() {
+        camera.turn_to(spheres::clear_view(explorer));
+    }
     let reach = graph
         .callers(anchor)
         .chain(graph.callees(anchor))

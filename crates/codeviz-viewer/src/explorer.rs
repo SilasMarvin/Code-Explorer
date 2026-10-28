@@ -207,6 +207,27 @@ impl Clustering {
             },
         }
     }
+
+    /// The same forces in all three dimensions: nothing pulls towards a plane, and a
+    /// module's functions hold tighter, so each gathers as a ball apart from the rest.
+    pub(crate) fn spheres(self) -> ForceConfig {
+        let flat = self.forces();
+        match self {
+            Self::Modules => ForceConfig {
+                flatten: 0.0,
+                cohesion: 0.3,
+                containment: 0.6,
+                balance: true,
+                cross_spring: 0.15,
+                separation: 0.6,
+                ..flat
+            },
+            Self::Calls => ForceConfig {
+                flatten: 0.0,
+                ..flat
+            },
+        }
+    }
 }
 
 /// How hard crowding containers push apart when clustered by module.
@@ -279,6 +300,11 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// Whether the graph spreads through all three dimensions, each module a sphere.
+    spheres: bool,
+    /// Per module cluster, the middle its functions huddle towards and how far out of
+    /// it they show: all the way, or less for a sphere the focus does not touch.
+    huddles: Vec<(Vec3, f32)>,
 }
 
 impl Explorer {
@@ -332,6 +358,8 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            spheres: false,
+            huddles: Vec::new(),
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -617,9 +645,31 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node sits in the world: where the graph put it, drawn in towards
+    /// its module's middle while the module huddles.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        let at = Vec3::from(*self.graph.positions.get(tile)?);
+        Some(
+            match self.graph.cluster(tile).and_then(|c| self.huddles.get(c)) {
+                Some(&(middle, share)) if share < 1.0 => middle + (at - middle) * share,
+                _ => at,
+            },
+        )
+    }
+
+    /// Per module cluster, the middle its functions huddle towards and how far out of
+    /// it they show.
+    pub(crate) fn huddles(&self) -> &[(Vec3, f32)] {
+        &self.huddles
+    }
+
+    pub(crate) fn set_huddles(&mut self, huddles: Vec<(Vec3, f32)>) {
+        self.huddles = huddles;
+    }
+
+    /// Bumped whenever nodes move.
+    pub(crate) fn moved(&self) -> u64 {
+        self.moved
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -630,8 +680,31 @@ impl Explorer {
     pub(crate) fn set_clustering(&mut self, clustering: Clustering) {
         if self.clustering != clustering {
             self.clustering = clustering;
-            self.graph.set_config(clustering.forces());
+            self.graph.set_config(self.forces());
             self.settling = true;
+        }
+    }
+
+    /// Whether the graph spreads through all three dimensions, each module a sphere.
+    pub(crate) fn spheres(&self) -> bool {
+        self.spheres
+    }
+
+    /// Spreads the graph through all three dimensions, or lays it back mostly flat; it
+    /// moves until it settles.
+    pub(crate) fn set_spheres(&mut self, spheres: bool) {
+        if self.spheres != spheres {
+            self.spheres = spheres;
+            self.graph.set_config(self.forces());
+            self.settling = true;
+        }
+    }
+
+    fn forces(&self) -> ForceConfig {
+        if self.spheres {
+            self.clustering.spheres()
+        } else {
+            self.clustering.forces()
         }
     }
 
