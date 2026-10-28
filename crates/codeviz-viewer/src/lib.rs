@@ -10,6 +10,7 @@
     reason = "Bevy system parameters are taken by value"
 )]
 
+mod arcs;
 mod camera;
 mod capture;
 mod depth_meter;
@@ -63,7 +64,18 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// What the third dimension shows at first.
+    z: ZView,
     diff: Option<Comparison>,
+}
+
+/// What the third dimension shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZView {
+    /// Whatever the graph's layout puts there.
+    Free,
+    /// The map lies flat; calls into the focus arc over it, calls out of it under it.
+    Arcs,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -96,6 +108,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            z: ZView::Free,
             diff: None,
         }
     }
@@ -234,6 +247,18 @@ impl Viewer {
         self
     }
 
+    /// What the third dimension shows: `arcs` lays the map flat and arcs calls into
+    /// the focus over it and calls out of it under it. Anything else leaves it alone.
+    #[must_use]
+    pub fn with_z(mut self, name: &str) -> Self {
+        self.z = if name == "arcs" {
+            ZView::Arcs
+        } else {
+            ZView::Free
+        };
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -286,6 +311,7 @@ impl Viewer {
             }
         }
         explorer.set_clustering(self.clustering);
+        explorer.set_arcs(self.z == ZView::Arcs);
         explorer.set_lens(self.lens);
         if let Some(tile) = self
             .focus

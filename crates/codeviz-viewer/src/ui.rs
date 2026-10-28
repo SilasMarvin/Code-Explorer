@@ -17,6 +17,7 @@ use codeviz_core::{Change, Level, SpanTarget};
 use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
+    arcs,
     camera::OrbitCamera,
     depth_meter,
     diff_view::{self, DiffStyle, DiffView},
@@ -228,7 +229,12 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            legend(
+                ctx,
+                above(graph_area, panel_area),
+                &explorer,
+                diff.is_some(),
+            );
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -237,22 +243,41 @@ fn draw_ui(
             key_help(ctx, graph_area, &mut help.0);
         }
         if let Some(area) = panel_area {
-            let tethers =
-                journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(&explorer, &to_screen)) {
-                tether(ctx, bar, node, false);
-            }
-            // The bar under the pointer, to the node it stands for.
-            let hovered = explorer
-                .hovered_tile
-                .and_then(|tile| explorer.tile_point(tile))
-                .and_then(to_screen);
-            if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
-                tether(ctx, bar, node, true);
-            }
+            draw_journey(
+                ctx,
+                area,
+                &mut explorer,
+                &mut panel,
+                diff.as_deref(),
+                &to_screen,
+            );
         }
     }
     Ok(())
+}
+
+/// The journey in its panel, tied by a line to the node of its cursor's bar and of the
+/// bar under the pointer.
+fn draw_journey(
+    ctx: &egui::Context,
+    area: egui::Rect,
+    explorer: &mut Explorer,
+    panel: &mut JourneyPanel,
+    diff: Option<&DiffView>,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    let tethers = journey_panel::draw(ctx, area, explorer, panel, diff);
+    if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(explorer, to_screen)) {
+        tether(ctx, bar, node, false);
+    }
+    // The bar under the pointer, to the node it stands for.
+    let hovered = explorer
+        .hovered_tile
+        .and_then(|tile| explorer.tile_point(tile))
+        .and_then(to_screen);
+    if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
+        tether(ctx, bar, node, true);
+    }
 }
 
 /// The panels around the graph, and how much of each edge they take: top, bottom, left
@@ -1321,6 +1346,8 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
+            // The arcs reach two calls out either side, and name what they reach.
+            Some(Relation::Upstream(2) | Relation::Downstream(2)) if explorer.arcs() => 3,
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1338,9 +1365,11 @@ fn draw_graph_labels(
     }
     // Modules are named at the top of their rings, ahead of most function names.
     let regions = graph_view::regions(explorer);
+    // On a flat map, the ring's far edge, so the name stays on the map.
+    let ring_up = if explorer.arcs() { Vec3::Y } else { up };
     let ring_top = |cluster: usize| {
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
-        to_screen(middle + up * radius)
+        to_screen(middle + ring_up * radius)
     };
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
@@ -1446,6 +1475,17 @@ fn draw_graph_labels(
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color, None)), None)
                     }
+                    // Two calls out, the arcs say through which neighbor.
+                    (Some(Relation::Upstream(2)), Some(_)) if explorer.arcs() => (
+                        None,
+                        arcs::through(explorer, tile, true)
+                            .map(|next| format!("calls {}", node_name(explorer, next))),
+                    ),
+                    (Some(Relation::Downstream(2)), Some(_)) if explorer.arcs() => (
+                        None,
+                        arcs::through(explorer, tile, false)
+                            .map(|before| format!("called by {}", node_name(explorer, before))),
+                    ),
                     // With the spotlight on, names alone, so more of them fit.
                     (Some(Relation::Upstream(1)), Some(_)) if !spotlit.is_empty() => (None, None),
                     (Some(Relation::Upstream(1)), Some(focus)) => {
@@ -1632,7 +1672,7 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, explorer: &Explorer, diffing: bool) {
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1663,6 +1703,10 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             );
                         }
                     });
+                    if explorer.arcs() && !diffing {
+                        arcs_legend(ui);
+                        return;
+                    }
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for (color, text) in [
@@ -1694,6 +1738,28 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
             egui::FontId::proportional(12.0),
             MUTED,
         );
+}
+
+/// With the arcs on, what over and under the map mean.
+fn arcs_legend(ui: &mut egui::Ui) {
+    for (mark, color, text) in [
+        (
+            "↑",
+            CALLER,
+            "over the map: calls into the focus; higher and pale, their callers",
+        ),
+        (
+            "↓",
+            CALLEE,
+            "under the map: calls out of it; deeper and pale, what those call",
+        ),
+    ] {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(egui::RichText::new(mark).color(egui_color(color)));
+            ui.label(egui::RichText::new(text).size(12.5));
+        });
+    }
 }
 
 /// Every key, grouped by what it moves.
@@ -1732,6 +1798,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            ("Z", "arcs: callers over a flat map, calls under it"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

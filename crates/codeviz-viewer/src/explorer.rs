@@ -279,6 +279,8 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// Whether the graph lies flat on its map, with calls arcing above and below it.
+    arcs: bool,
 }
 
 impl Explorer {
@@ -332,6 +334,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            arcs: false,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -617,9 +620,21 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node sits in the world: on the map's plane while calls arc over
+    /// and under it.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        let at = self.graph.positions.get(tile).map(|&p| Vec3::from(p))?;
+        Some(if self.arcs { at.with_z(0.0) } else { at })
+    }
+
+    /// Whether calls arc over and under a flat map: into the focus above it, out of
+    /// it below.
+    pub(crate) fn arcs(&self) -> bool {
+        self.arcs
+    }
+
+    pub(crate) fn set_arcs(&mut self, arcs: bool) {
+        self.arcs = arcs;
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -648,6 +663,11 @@ impl Explorer {
         self.settling = speed > SETTLED_SPEED;
         self.moved += 1;
         true
+    }
+
+    /// Bumped whenever nodes move.
+    pub(crate) fn moved(&self) -> u64 {
+        self.moved
     }
 
     /// Runs the simulation until the graph settles, all at once.

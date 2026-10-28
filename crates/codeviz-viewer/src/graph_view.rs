@@ -17,6 +17,7 @@ use codeviz_core::Change;
 use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
+    arcs,
     camera::{FRONT, OrbitCamera},
     diff_view::{
         ADDED, DiffView, MODIFIED, MOVED, REMOVED, change_color, diff_look, draw_diff_graph,
@@ -226,11 +227,18 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
 /// How many calls from the focus a node is, when it is near enough to light: with a
 /// journey open, what the focus calls lights as far as the journey is disclosed, and
 /// only its direct callers light above it. The spotlight lights what it picks out.
+/// With the arcs on, everything they reach lights.
 pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u32> {
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     match relation(reach, tile) {
+        // Arcs reach two calls out either side, journey or not.
+        Some(Relation::Upstream(hops) | Relation::Downstream(hops))
+            if explorer.arcs() && hops <= arcs::HOPS =>
+        {
+            Some(hops)
+        }
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
@@ -332,6 +340,7 @@ pub(crate) fn draw_graph(
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
+        None if explorer.arcs() => arcs::draw_arcs(&explorer, time, &mut gizmos),
         None => draw_calls(&explorer, time, &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
@@ -720,7 +729,7 @@ pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut Orbit
     };
     for mut camera in &mut cameras {
         if !camera.free {
-            camera.target = at;
+            camera.target = at + camera.offset;
         }
     }
 }

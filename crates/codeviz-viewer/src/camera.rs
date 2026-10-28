@@ -59,6 +59,9 @@ pub(crate) struct OrbitCamera {
     /// Whether the viewer has panned or zoomed away from the focused node, so the
     /// camera stops holding it in the middle.
     pub(crate) free: bool,
+    /// How far from the focused node the point held in the middle sits, for a view
+    /// whose content lies more to one side of it.
+    pub(crate) offset: Vec3,
 }
 
 impl Default for OrbitCamera {
@@ -72,6 +75,7 @@ impl Default for OrbitCamera {
             goal_distance: None,
             goal_angles: None,
             free: false,
+            offset: Vec3::ZERO,
         }
     }
 }
