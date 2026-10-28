@@ -1330,12 +1330,14 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
-            // Gathered round the focus's module, what it names two calls away is named.
-            Some(Relation::Upstream(2) | Relation::Downstream(2))
+            // Gathered round the focus's module, whatever it names is named, whether
+            // or not the journey shows it.
+            Some(Relation::Upstream(1) | Relation::Downstream(1))
                 if nucleus.is_some_and(|n| n.names(tile)) =>
             {
-                3
+                1
             }
+            _ if nucleus.is_some_and(|n| n.names(tile)) => 3,
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1363,8 +1365,8 @@ fn draw_graph_labels(
         to_screen(middle + up * radius)
     };
     if let Some(nucleus) = nucleus {
-        // The nucleus is named first, the open modules next, and of the rest only
-        // the biggest, where there is room.
+        // The nucleus and the open modules are named first, and of the rest only the
+        // biggest, where there is room.
         let mut closed: Vec<(usize, usize)> = nucleus
             .balls()
             .filter(|(_, ball)| ball.body == Body::Closed)
@@ -1396,8 +1398,8 @@ fn draw_graph_labels(
             .collect();
         for (cluster, ball) in nucleus.balls() {
             let tier = match ball.body {
-                Body::Nucleus => 0,
-                Body::Open => 2,
+                // Which module a named function lives in matters as much as its name.
+                Body::Nucleus | Body::Open => 0,
                 Body::Closed if named.contains(&cluster) => 6,
                 Body::Closed => continue,
             };

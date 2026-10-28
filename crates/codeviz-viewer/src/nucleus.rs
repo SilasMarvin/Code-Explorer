@@ -20,9 +20,9 @@ use bevy::prelude::*;
 use codeviz_layout::ForceGraph;
 
 use crate::{
-    camera::OrbitCamera,
+    camera::{ANGLED, OrbitCamera},
     explorer::Explorer,
-    graph_view::{CALLEE, CALLER, FURTHER, fit_distance, flow, node_size},
+    graph_view::{CALLEE, CALLER, FURTHER, fit_distance, flow, node_size, orbit_anchor},
     scene::{PALETTE, lane_color},
 };
 
@@ -860,14 +860,20 @@ pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>) {
 
 /// Looks at the nucleus from far enough back to see it and every open module, turning
 /// to a three-quarter view from above when it first opens; again whenever the view is
-/// pointed somewhere new.
+/// pointed somewhere new. Turns back to the usual view when the graph lies flat again.
 pub(crate) fn frame(
     explorer: Res<Explorer>,
     mut last: Local<Option<(Option<usize>, u64)>>,
     mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
 ) {
     let Some(nucleus) = explorer.nucleus() else {
-        *last = None;
+        // Laid flat again: back to the usual angle, round the journey's start.
+        if last.take().is_some() {
+            for (mut camera, ..) in &mut cameras {
+                camera.turn_to(ANGLED);
+                orbit_anchor(&explorer, &mut camera);
+            }
+        }
         return;
     };
     let key = (nucleus.focus(), explorer.aim());
