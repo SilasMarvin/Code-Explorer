@@ -19,6 +19,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     history::{History, View},
     lens::{self, Distances, Lens},
+    nucleus::Nucleus,
 };
 
 /// What a disclosure was worked out for: the journey's revision, how it discloses,
@@ -279,6 +280,8 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// The graph gathered round the focus's module, when it is.
+    nucleus: Option<Nucleus>,
 }
 
 impl Explorer {
@@ -332,6 +335,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            nucleus: None,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -617,9 +621,57 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node sits in the world: in its module's sphere when the graph
+    /// is gathered round the focus's module, else where the simulation put it.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        match &self.nucleus {
+            Some(nucleus) => nucleus.point(tile),
+            None => self.graph.positions.get(tile).map(|&p| Vec3::from(p)),
+        }
+    }
+
+    /// Bumped whenever nodes move.
+    pub(crate) fn moved(&self) -> u64 {
+        self.moved
+    }
+
+    /// The graph gathered round the focus's module, when it is.
+    pub(crate) fn nucleus(&self) -> Option<&Nucleus> {
+        self.nucleus.as_ref()
+    }
+
+    /// Gathers the graph round the focus's module, or lays it flat again. The
+    /// nucleus keeps its module's own map from the flat graph, so the graph settles
+    /// first.
+    pub(crate) fn set_nucleus(&mut self, on: bool) {
+        if on == self.nucleus.is_some() {
+            return;
+        }
+        self.nucleus = if on {
+            self.settle_now();
+            Some(Nucleus::new(&self.graph, self.graph_focus()))
+        } else {
+            None
+        };
+        self.moved += 1;
+    }
+
+    /// Re-centers the nucleus when the focus moved to another function, and eases it
+    /// along by `dt` seconds. Returns whether what it shows changed, rather than only
+    /// moved.
+    pub(crate) fn ease_nucleus(&mut self, dt: f32) -> bool {
+        let focus = self.graph_focus();
+        let Some(nucleus) = &mut self.nucleus else {
+            return false;
+        };
+        let recentered = nucleus.focus() != focus;
+        if recentered {
+            nucleus.recenter(&self.graph, focus);
+        }
+        if nucleus.advance(dt) || recentered {
+            self.moved += 1;
+        }
+        recentered
     }
 
     pub(crate) fn clustering(&self) -> Clustering {

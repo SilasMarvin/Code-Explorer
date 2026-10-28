@@ -4,7 +4,7 @@
 //! colors, and a search box on `/`.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -24,6 +24,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
+    nucleus::{self, Body},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -228,7 +229,7 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            legend(ctx, clear, diff.is_some(), &explorer);
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -1282,6 +1283,7 @@ fn draw_graph_labels(
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
+    let nucleus = explorer.nucleus();
     let stack: Vec<usize> = explorer
         .selected()
         .map(|s| explorer.stack(s))
@@ -1293,11 +1295,18 @@ fn draw_graph_labels(
     let discs: Vec<Option<(egui::Pos2, f32)>> = (0..map.tiles.len())
         .map(|tile| {
             // Only what the lens shows at least half way gets a name.
+            // And, gathered round the focus's module, only what is drawn.
             let world = explorer
                 .tile_point(tile)
-                .filter(|_| explorer.visibility(tile) >= 0.5)?;
+                .filter(|_| explorer.visibility(tile) >= 0.5)
+                .filter(|_| nucleus.is_none_or(|n| n.shows(tile)))?;
             let node = to_screen(world)?;
-            let radius = graph_view::node_size(graph, tile) / 2.0;
+            let scale = if nucleus.is_some() {
+                nucleus::NODE_SCALE
+            } else {
+                1.0
+            };
+            let radius = graph_view::node_size(graph, tile) * scale / 2.0;
             let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
             Some((node, edge))
         })
@@ -1321,6 +1330,12 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
+            // Gathered round the focus's module, what it names two calls away is named.
+            Some(Relation::Upstream(2) | Relation::Downstream(2))
+                if nucleus.is_some_and(|n| n.names(tile)) =>
+            {
+                3
+            }
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1338,11 +1353,60 @@ fn draw_graph_labels(
     }
     // Modules are named at the top of their rings, ahead of most function names.
     let regions = graph_view::regions(explorer);
+    // Gathered round the focus's module, at the top of their spheres.
     let ring_top = |cluster: usize| {
+        if let Some(nucleus) = nucleus {
+            let ball = nucleus.ball(cluster)?;
+            return to_screen(ball.center + up * ball.radius);
+        }
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
-    if explorer.lens().reach.is_none() {
+    if let Some(nucleus) = nucleus {
+        // The nucleus is named first, the open modules next, and of the rest only
+        // the biggest, where there is room.
+        let mut closed: Vec<(usize, usize)> = nucleus
+            .balls()
+            .filter(|(_, ball)| ball.body == Body::Closed)
+            .map(|(cluster, _)| (nucleus.count(cluster), cluster))
+            .collect();
+        closed.sort_unstable_by(|a, b| b.cmp(a));
+        // None is named through the glass of a sphere in front, nor so near one
+        // that its name would lie over it.
+        let discs: Vec<(egui::Pos2, f32)> = nucleus
+            .balls()
+            .filter(|(_, ball)| ball.body != Body::Closed)
+            .filter_map(|(_, ball)| {
+                let middle = to_screen(ball.center)?;
+                let edge = to_screen(ball.center + up * ball.radius)?;
+                Some((middle, middle.distance(edge)))
+            })
+            .collect();
+        let hidden = |cluster: usize| {
+            nucleus
+                .ball(cluster)
+                .and_then(|ball| to_screen(ball.center))
+                .is_none_or(|at| discs.iter().any(|&(m, r)| at.distance(m) < r + 110.0))
+        };
+        let named: HashSet<usize> = closed
+            .iter()
+            .filter(|&&(_, cluster)| !hidden(cluster))
+            .take(CLOSED_NAMED)
+            .map(|&(_, cluster)| cluster)
+            .collect();
+        for (cluster, ball) in nucleus.balls() {
+            let tier = match ball.body {
+                Body::Nucleus => 0,
+                Body::Open => 2,
+                Body::Closed if named.contains(&cluster) => 6,
+                Body::Closed => continue,
+            };
+            order.push((
+                (tier, std::cmp::Reverse(nucleus.count(cluster)), cluster),
+                Named::Group(cluster),
+            ));
+        }
+    } else if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1389,11 +1453,27 @@ fn draw_graph_labels(
                 let Some(at) = ring_top(group) else {
                     continue;
                 };
-                let color = egui_color(lane_color(group % PALETTE.len()))
-                    .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
+                let body = nucleus.and_then(|n| n.ball(group)).map(|b| b.body);
+                let color =
+                    egui_color(lane_color(group % PALETTE.len())).gamma_multiply(match body {
+                        Some(Body::Nucleus | Body::Open) => 1.0,
+                        Some(Body::Closed) => 0.35,
+                        None if center.is_some() => 0.6,
+                        None => 0.9,
+                    });
                 let label = explorer.cluster_name(group);
-                let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
-                placer.place(named, at, 0.0, job, None, false);
+                // An open module says how much of it is named.
+                let note = nucleus
+                    .filter(|_| body == Some(Body::Open))
+                    .map(|n| format!("{} of {}", n.opened(group), n.count(group)));
+                let size = match body {
+                    Some(Body::Nucleus) => 15.0,
+                    Some(Body::Closed) => 10.5,
+                    _ => 12.0,
+                };
+                let job = label_job(None, &label.to_uppercase(), note, color, size, false);
+                let force = body == Some(Body::Nucleus);
+                placer.place(named, at, 0.0, job, None, force);
             }
             Named::Node(tile) => {
                 let Some((node, edge)) = discs[tile] else {
@@ -1632,7 +1712,8 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
+    let gathered = explorer.nucleus().is_some();
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1656,6 +1737,15 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             swatch(ui, "●", diff_view::REMOVED, "removed");
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+                        } else if gathered {
+                            ui.label(
+                                egui::RichText::new(
+                                    "each sphere = a module · middle: the focus's, \
+                                     every function inside · near: those holding its \
+                                     callers and callees, named",
+                                )
+                                .size(12.5),
+                            );
                         } else {
                             ui.label(
                                 egui::RichText::new("node color = its module, as its ring")
@@ -1663,6 +1753,15 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             );
                         }
                     });
+                    if gathered && !diffing {
+                        ui.label(
+                            egui::RichText::new(
+                                "thick arrow = every call from one module to the other; \
+                                 the named calls run inside it",
+                            )
+                            .size(12.5),
+                        );
+                    }
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for (color, text) in [
@@ -1695,6 +1794,9 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
             MUTED,
         );
 }
+
+/// Gathered round the focus's module, how many of the other modules are named.
+const CLOSED_NAMED: usize = 16;
 
 /// Every key, grouped by what it moves.
 const KEYS: [(&str, &[(&str, &str)]); 4] = [
@@ -1732,6 +1834,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            ("Z", "gather round the focus's module / lay flat"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
@@ -1747,6 +1850,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("wheel", "zoom towards the pointer"),
             ("left / middle drag", "orbit"),
             ("right / Shift drag", "pan"),
+            ("Q / E", "turn an eighth of the way round"),
         ],
     ),
     (

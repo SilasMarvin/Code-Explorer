@@ -10,6 +10,7 @@ use crate::{
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
+    nucleus,
     ui::{Chrome, KeyHelp},
 };
 
@@ -19,7 +20,12 @@ impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
-            (graph_view::create_node_materials, spawn_nodes).chain(),
+            (
+                graph_view::create_node_materials,
+                nucleus::create_looks,
+                spawn_nodes,
+            )
+                .chain(),
         )
         .add_systems(
             Update,
@@ -28,14 +34,18 @@ impl Plugin for ScenePlugin {
                 keyboard.run_if(not(egui_wants_any_keyboard_input)),
                 autoplay,
                 graph_view::track_attention,
+                nucleus::follow,
                 simulate,
                 reveal,
+                nucleus::place_bodies,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::follow_focus,
+                nucleus::frame,
                 graph_view::frame_reveal,
                 graph_view::frame_spotlight,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
+                nucleus::draw,
             )
                 .chain(),
         );
@@ -316,6 +326,7 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
     }
+    nucleus::toggle(&keys, &mut explorer);
     if keys.just_pressed(KeyCode::KeyS) {
         chrome.side = !chrome.side;
     }
@@ -365,11 +376,18 @@ fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>) {
     }
 }
 
-/// Lets the graph settle, moving its nodes as it does.
-fn simulate(mut explorer: ResMut<Explorer>, mut nodes: Query<(&Tile, &mut Transform)>) {
-    if !explorer.bypass_change_detection().simulate(2) {
+/// Lets the graph settle, moving its nodes as it does, and moves them wherever else
+/// they go, as when the graph gathers round the focus's module.
+fn simulate(
+    mut explorer: ResMut<Explorer>,
+    mut placed: Local<Option<u64>>,
+    mut nodes: Query<(&Tile, &mut Transform)>,
+) {
+    explorer.bypass_change_detection().simulate(2);
+    if *placed == Some(explorer.moved()) {
         return;
     }
+    *placed = Some(explorer.moved());
     for (tile, mut transform) in &mut nodes {
         if let Some(at) = explorer.tile_point(tile.0) {
             transform.translation = at;

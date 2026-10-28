@@ -18,6 +18,7 @@ codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
+codeviz view app.json --z nucleus    # the focus's module in the middle, the rest round it
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -67,6 +68,28 @@ camera orbits where the journey starts and turns only when you start somewhere n
 stepping through the journey at most pulls it back to keep the cursor's node in sight.
 Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
 brings it back.
+
+## Nucleus
+
+`Z` (or `--z nucleus`, which opens on it) gathers the graph round the focus's module.
+Each module is a sphere, and space says only where things are. The focus's module is a
+large glass sphere in the middle with every one of its functions inside, where its own
+corner of the flat map has them. Modules holding what calls the focus or what it calls
+come into a ring round it, small glass spheres opened just far enough to name those
+functions, `3 of 9` saying how much of the module that is; a module holding what calls
+those callers, or what those callees call, sits just beyond the module it reaches the
+focus through. Every other module is a small dark sphere further back, in the
+direction a fixed 3D layout of the modules (modules that call each other more sit
+closer) has it from the focus's module, so a module keeps its bearing as the focus
+moves.
+
+A thick arrow joins two modules whenever a call this view names runs between them, as
+thick as all the calls from one to the other: violet into the focus's module, blue out
+of it, pale one call further out. The named calls run inside it, function to function,
+violet and blue ones with dots flowing along them. A new focus in another module eases
+every sphere to its new place, the new module coming in to the middle. `Q` and `E` turn
+the view an eighth of the way round, refitting it, so the depth shows; `F` comes back to
+the usual three-quarter view, and `Z` again lays the graph flat.
 
 ## Diffs
 

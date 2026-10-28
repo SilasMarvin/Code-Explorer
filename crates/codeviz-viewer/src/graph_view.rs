@@ -24,6 +24,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
+    nucleus::{self, NODE_SCALE, QUIET_SCALE},
     scene::{PALETTE, Tile, lane_color},
 };
 
@@ -230,8 +231,11 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
+    // Gathered round the focus's module, whatever it names lights.
+    let named = explorer.nucleus().is_some_and(|n| n.names(tile));
     match relation(reach, tile) {
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
+        Some(Relation::Upstream(hops) | Relation::Downstream(hops)) if named => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
         _ if explorer.spotlit().contains(&tile) => Some(1),
@@ -265,15 +269,38 @@ pub(crate) fn style_nodes(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
     materials: Res<NodeMaterials>,
-    mut nodes: Query<(&Tile, &mut MeshMaterial3d<StandardMaterial>, &mut Transform)>,
+    mut nodes: Query<(
+        &Tile,
+        &mut MeshMaterial3d<StandardMaterial>,
+        &mut Transform,
+        &mut Visibility,
+    )>,
 ) {
     if !explorer.is_changed() && !diff.as_ref().is_some_and(DetectChanges::is_changed) {
         return;
     }
-    for (tile, mut material, mut transform) in &mut nodes {
+    let nucleus = explorer.nucleus();
+    for (tile, mut material, mut transform, mut visibility) in &mut nodes {
+        // Gathered round the focus's module, what a module folds away is not drawn.
+        let folded = nucleus.is_some_and(|n| !n.shows(tile.0));
+        visibility.set_if_neq(if folded {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        });
+        if folded {
+            continue;
+        }
         let look = match &diff {
             Some(diff) => diff_look(&explorer, diff, tile.0),
             None => node_look(&explorer, tile.0),
+        };
+        // Inside the nucleus, what relates to nothing named is small, and solid
+        // enough to read through the glass.
+        let quiet = nucleus.is_some() && matches!(look, NodeLook::Faded(_));
+        let look = match look {
+            NodeLook::Faded(color) if quiet => NodeLook::Plain(color),
+            look => look,
         };
         // What the lens leaves out shrinks as well as fades, down to a speck.
         let shown = explorer.visibility(tile.0);
@@ -289,6 +316,11 @@ pub(crate) fn style_nodes(
                 reason = "clamped to 0..=LEVELS"
             )]
             (0.35 + 0.65 * shown, level as u8)
+        };
+        let (scale, level) = match nucleus {
+            Some(_) if quiet => (QUIET_SCALE, LEVELS / 3),
+            Some(_) => (scale * NODE_SCALE, level),
+            None => (scale, level),
         };
         let size = node_size(explorer.graph(), tile.0) * scale;
         if (transform.scale.x - size).abs() > 0.001 {
@@ -328,10 +360,15 @@ pub(crate) fn draw_graph(
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
-    draw_regions(&explorer, &mut gizmos);
+    let gathered = explorer.nucleus().is_some();
+    if !gathered {
+        draw_regions(&explorer, &mut gizmos);
+    }
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
+        // Gathered round the focus's module, the nucleus draws its own calls.
+        None if gathered => {}
         None => draw_calls(&explorer, time, &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
@@ -565,17 +602,36 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F turns to face the graph head-on, centered on the journey's start again; R pulls
-/// back to take in the whole graph.
+/// F turns to face the graph head-on, centered on the journey's start again (or,
+/// gathered round the focus's module, back to the nucleus's three-quarter view); R
+/// pulls back to take in the whole graph; Q and E turn the view an eighth of the way
+/// round, left and right.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
-    mut cameras: Query<&mut OrbitCamera>,
+    mut cameras: Query<(&mut OrbitCamera, &Projection)>,
 ) {
-    for mut camera in &mut cameras {
+    for (mut camera, projection) in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(FRONT);
-            orbit_anchor(&explorer, &mut camera);
+            if let Some(gathered) = explorer.nucleus() {
+                camera.turn_to(nucleus::VIEW);
+                let (yaw, pitch) = nucleus::VIEW;
+                let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
+                nucleus::fit(gathered, &mut camera, rotation, projection);
+            } else {
+                camera.turn_to(FRONT);
+                orbit_anchor(&explorer, &mut camera);
+            }
+        }
+        for (key, turn) in [(KeyCode::KeyQ, 1.0), (KeyCode::KeyE, -1.0)] {
+            if keys.just_pressed(key) {
+                camera.turn_by(turn * std::f32::consts::FRAC_PI_4);
+                // The nucleus refits to what the new angle sees.
+                if let Some(gathered) = explorer.nucleus() {
+                    let rotation = camera.aim_rotation();
+                    nucleus::fit(gathered, &mut camera, rotation, projection);
+                }
+            }
         }
         if keys.just_pressed(KeyCode::KeyR) {
             frame_all(&explorer, &mut camera);
@@ -600,6 +656,9 @@ pub(crate) fn frame_reveal(
     mut last: Local<Option<Lens>>,
     mut cameras: Query<&mut OrbitCamera>,
 ) {
+    if explorer.nucleus().is_some() {
+        return;
+    }
     let lens = explorer.lens();
     let opening = last.is_none();
     // A reveal set from the start frames what it shows too.
@@ -644,7 +703,7 @@ pub(crate) fn frame_spotlight(
     mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
 ) {
     let spotlight = explorer.spotlight();
-    if spotlight == *last {
+    if spotlight == *last || explorer.nucleus().is_some() {
         return;
     }
     *last = spotlight;
@@ -673,7 +732,7 @@ pub(crate) fn frame_spotlight(
 
 /// How far back a camera turned to `rotation` and looking at `center` must be for
 /// every one of `points` to sit inside the middle of its view, clear of the edges.
-fn fit_distance(
+pub(crate) fn fit_distance(
     points: &[Vec3],
     center: Vec3,
     rotation: Quat,
@@ -712,10 +771,16 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 }
 
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
-/// follows it as the graph moves.
+/// follows it as the graph moves. Gathered round the focus's module, it orbits the
+/// nucleus instead, which is always the middle.
 /// Not once the viewer has panned or zoomed away.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    let at = if explorer.nucleus().is_some() {
+        Some(Vec3::ZERO)
+    } else {
+        explorer.anchor().and_then(|t| explorer.tile_point(t))
+    };
+    let Some(at) = at else {
         return;
     };
     for mut camera in &mut cameras {
@@ -800,6 +865,10 @@ pub(crate) fn follow_focus(
     let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
         return;
     };
+    // Gathered round the focus's module, the nucleus frames itself.
+    if explorer.nucleus().is_some() {
+        return;
+    }
     for (mut camera, transform, projection) in &mut cameras {
         if aimed {
             orbit_anchor(&explorer, &mut camera);
