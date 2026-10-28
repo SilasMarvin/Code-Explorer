@@ -943,6 +943,10 @@ pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
         )
 }
 
+/// At most this many callers and callees together are all named come what may when
+/// terraced.
+const FEW_SIDES: usize = 12;
+
 /// What a graph label names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Named {
@@ -1309,6 +1313,9 @@ fn draw_graph_labels(
         })
         .collect();
 
+    let few_sides = center.is_some_and(|focus| {
+        graph.callers(focus).count() + graph.callees(focus).count() <= FEW_SIDES
+    });
     // Lower ranks are placed first and win any overlap.
     let mut order: Vec<(LabelRank, Named)> = Vec::new();
     for (tile, disc) in discs.iter().enumerate() {
@@ -1407,8 +1414,10 @@ fn draw_graph_labels(
                 reason = "a rough size for ordering"
             )]
             let size = plateau.extent() as usize;
+            // Smaller first: a module claims its own rim before what holds it, whose
+            // rim runs along the same edge there.
             order.push((
-                (tier, std::cmp::Reverse(size), index),
+                (tier, std::cmp::Reverse(usize::MAX - size), index),
                 Named::Plateau(index),
             ));
         }
@@ -1604,7 +1613,16 @@ fn draw_graph_labels(
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
                 // are named come what may.
-                let force = tier == 0 || hovered == Some(tile) || spotlit.contains(&tile);
+                // Terraced, so are the focus's own callers and callees, while there are
+                // few enough of them to read.
+                let next_door = explorer.terraced()
+                    && few_sides
+                    && matches!(
+                        relation,
+                        Some(Relation::Upstream(1) | Relation::Downstream(1))
+                    );
+                let force =
+                    tier == 0 || hovered == Some(tile) || spotlit.contains(&tile) || next_door;
                 placer.place(named, node, edge, job, stroke, force);
             }
         }

@@ -833,7 +833,9 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         .filter_map(|t| explorer.tile_point(t))
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);
-    camera.glide_to(at, orbit_distance(reach));
+    // Seen from low down the ground foreshortens, so terraces can be orbited nearer.
+    let near = if explorer.terraced() { 0.85 } else { 1.0 };
+    camera.glide_to(at, orbit_distance(reach) * near);
 }
 
 /// How far from `at` the disclosed journey reaches.
