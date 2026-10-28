@@ -19,6 +19,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     history::{History, View},
     lens::{self, Distances, Lens},
+    towers::Towers,
 };
 
 /// What a disclosure was worked out for: the journey's revision, how it discloses,
@@ -279,6 +280,8 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// The graph stood up as module towers, when it is.
+    towers: Option<Towers>,
 }
 
 impl Explorer {
@@ -332,6 +335,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            towers: None,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -355,6 +359,9 @@ impl Explorer {
     pub(crate) fn place_nodes(&mut self, positions: &[[f32; 3]]) {
         self.graph.positions.clone_from_slice(positions);
         self.settling = false;
+        if self.towers.is_some() {
+            self.raise_towers();
+        }
         self.moved += 1;
     }
 
@@ -617,9 +624,49 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node sits in the world: in its module's tower when the graph
+    /// stands as towers, else where the simulation put it.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        match &self.towers {
+            Some(towers) => towers.point(tile),
+            None => self.graph.positions.get(tile).map(|&p| Vec3::from(p)),
+        }
+    }
+
+    /// Bumped whenever nodes move.
+    pub(crate) fn moved(&self) -> u64 {
+        self.moved
+    }
+
+    /// The graph stood up as module towers, when it is.
+    pub(crate) fn towers(&self) -> Option<&Towers> {
+        self.towers.as_ref()
+    }
+
+    /// Stands the graph up as module towers, or lays it flat again. The towers stand
+    /// on the settled map, so the graph settles first.
+    pub(crate) fn set_towers(&mut self, on: bool) {
+        if on == self.towers.is_some() {
+            return;
+        }
+        if on {
+            self.settle_now();
+            self.raise_towers();
+        } else {
+            self.towers = None;
+        }
+        self.moved += 1;
+    }
+
+    /// Stands every node in its tower where the map has it now.
+    fn raise_towers(&mut self) {
+        let entries: Vec<usize> = self
+            .system
+            .entries()
+            .iter()
+            .filter_map(|entry| self.map.tile_of(&entry.unit))
+            .collect();
+        self.towers = Some(Towers::raise(&self.graph, &entries));
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -646,6 +693,9 @@ impl Explorer {
             speed = self.graph.step();
         }
         self.settling = speed > SETTLED_SPEED;
+        if self.towers.is_some() {
+            self.raise_towers();
+        }
         self.moved += 1;
         true
     }
@@ -658,6 +708,9 @@ impl Explorer {
             }
         }
         self.settling = false;
+        if self.towers.is_some() {
+            self.raise_towers();
+        }
         self.moved += 1;
     }
 

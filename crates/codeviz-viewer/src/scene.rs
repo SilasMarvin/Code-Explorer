@@ -10,6 +10,7 @@ use crate::{
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
+    towers,
     ui::{Chrome, KeyHelp},
 };
 
@@ -30,6 +31,9 @@ impl Plugin for ScenePlugin {
                 graph_view::track_attention,
                 simulate,
                 reveal,
+                towers::frame,
+                towers::build_bodies,
+                towers::light_bodies,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::follow_focus,
                 graph_view::frame_reveal,
@@ -316,6 +320,7 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
     }
+    towers::toggle(&keys, &mut explorer);
     if keys.just_pressed(KeyCode::KeyS) {
         chrome.side = !chrome.side;
     }
@@ -365,11 +370,18 @@ fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>) {
     }
 }
 
-/// Lets the graph settle, moving its nodes as it does.
-fn simulate(mut explorer: ResMut<Explorer>, mut nodes: Query<(&Tile, &mut Transform)>) {
-    if !explorer.bypass_change_detection().simulate(2) {
+/// Lets the graph settle, moving its nodes as it does, and moves them wherever else
+/// they go, as when the graph stands up as towers.
+fn simulate(
+    mut explorer: ResMut<Explorer>,
+    mut placed: Local<Option<u64>>,
+    mut nodes: Query<(&Tile, &mut Transform)>,
+) {
+    explorer.bypass_change_detection().simulate(2);
+    if *placed == Some(explorer.moved()) {
         return;
     }
+    *placed = Some(explorer.moved());
     for (tile, mut transform) in &mut nodes {
         if let Some(at) = explorer.tile_point(tile.0) {
             transform.translation = at;

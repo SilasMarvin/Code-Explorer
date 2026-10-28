@@ -22,6 +22,7 @@ mod journey_panel;
 mod lens;
 mod scene;
 mod source_diff;
+mod towers;
 mod truth;
 mod ui;
 
@@ -63,7 +64,18 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// What the third dimension shows at first.
+    z: ZView,
     diff: Option<Comparison>,
+}
+
+/// What the third dimension shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZView {
+    /// Whatever the graph's layout puts there.
+    Free,
+    /// Each module a tower, callers standing above what they call.
+    Towers,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -96,6 +108,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            z: ZView::Free,
             diff: None,
         }
     }
@@ -234,6 +247,14 @@ impl Viewer {
         self
     }
 
+    /// Opens with the graph standing as module towers, height as flow from the entry
+    /// points down; Z lays it flat again.
+    #[must_use]
+    pub fn with_towers(mut self) -> Self {
+        self.z = ZView::Towers;
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -286,6 +307,7 @@ impl Viewer {
             }
         }
         explorer.set_clustering(self.clustering);
+        explorer.set_towers(self.z == ZView::Towers);
         explorer.set_lens(self.lens);
         if let Some(tile) = self
             .focus

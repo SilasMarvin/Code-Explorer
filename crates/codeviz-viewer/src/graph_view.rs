@@ -25,6 +25,7 @@ use crate::{
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
+    towers::{self, TOWERS_VIEW},
 };
 
 /// Calls into the focus.
@@ -230,8 +231,11 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
+    // Standing as towers, two calls either way light whatever the journey shows.
+    let standing = explorer.towers().is_some();
     match relation(reach, tile) {
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
+        Some(Relation::Upstream(2) | Relation::Downstream(2)) if standing => Some(2),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
         _ if explorer.spotlit().contains(&tile) => Some(1),
@@ -328,7 +332,11 @@ pub(crate) fn draw_graph(
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
-    draw_regions(&explorer, &mut gizmos);
+    if explorer.towers().is_some() {
+        towers::draw(&explorer, &mut gizmos);
+    } else {
+        draw_regions(&explorer, &mut gizmos);
+    }
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
@@ -362,6 +370,7 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     let spotlit = explorer.spotlit();
+    let standing = explorer.towers().is_some();
     // Calls from the focus, counting the focus itself as zero.
     let hops = |side: &HashMap<usize, u32>, tile: usize| {
         if center == Some(tile) {
@@ -386,7 +395,11 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             let down = hops(&reach.downstream, from).zip(hops(&reach.downstream, to));
             match (up, down) {
                 (Some((outer, inner)), _)
-                    if outer == inner + 1 && (!opened || outer == 1 || spotlit.contains(&from)) =>
+                    if outer == inner + 1
+                        && (!opened
+                            || outer == 1
+                            || standing && outer == 2
+                            || spotlit.contains(&from)) =>
                 {
                     Some((CALLER, outer))
                 }
@@ -394,6 +407,7 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                     if outer == inner + 1
                         && (!opened
                             || journey.contains_key(&to) && journey.contains_key(&from)
+                            || standing && outer == 2
                             || spotlit.contains(&to)) =>
                 {
                     Some((CALLEE, outer))
@@ -419,6 +433,9 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                     .arrow(a, b - back, FURTHER.with_alpha(0.4 * shown))
                     .with_tip_length(0.8);
             }
+            // Standing as towers, the rest of the city's wiring would be a haze of
+            // long lines between floors: it is left out.
+            None if standing && center.is_some() => {}
             None => {
                 let alpha = if center.is_some() {
                     0.04
@@ -574,7 +591,12 @@ pub(crate) fn graph_keys(
 ) {
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(FRONT);
+            // Head-on to the map, which in towers lies on the ground.
+            camera.turn_to(if explorer.towers().is_some() {
+                TOWERS_VIEW
+            } else {
+                FRONT
+            });
             orbit_anchor(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {
@@ -735,6 +757,10 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
     let Some(at) = explorer.tile_point(anchor) else {
         return;
     };
+    if explorer.towers().is_some() {
+        camera.glide_to(at, towers_distance(explorer, anchor, at));
+        return;
+    }
     let reach = graph
         .callers(anchor)
         .chain(graph.callees(anchor))
@@ -744,6 +770,34 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);
     camera.glide_to(at, orbit_distance(reach));
+}
+
+/// How far back to look down on the towers from their usual angle to see the focus,
+/// everything that calls the anchor and everything it calls, and the journey as
+/// disclosed: the city stands taller than it is deep, so it fits by what the view
+/// actually shows rather than by distance alone.
+fn towers_distance(explorer: &Explorer, anchor: usize, at: Vec3) -> f32 {
+    let graph = explorer.graph();
+    let points: Vec<Vec3> = graph
+        .callers(anchor)
+        .chain(graph.callees(anchor))
+        .filter(|&t| explorer.shown(t))
+        .chain(explorer.graph_focus())
+        .chain(explorer.disclosure().tiles().keys().copied())
+        .filter_map(|t| explorer.tile_point(t))
+        .collect();
+    let (yaw, pitch) = TOWERS_VIEW;
+    let view = PerspectiveProjection {
+        aspect_ratio: 1.6,
+        ..default()
+    };
+    // With room to spare for names, and for the journey docked over the bottom right.
+    fit_distance(
+        &points,
+        at,
+        Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0),
+        &view,
+    ) * 1.3
 }
 
 /// How far from `at` the disclosed journey reaches.

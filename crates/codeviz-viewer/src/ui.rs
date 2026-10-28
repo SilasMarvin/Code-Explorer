@@ -25,7 +25,7 @@ use crate::{
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
     scene::{PALETTE, lane_color},
-    source_diff,
+    source_diff, towers,
 };
 
 pub(crate) struct UiPlugin;
@@ -228,7 +228,7 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            legend(ctx, clear, diff.is_some(), &explorer);
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -1282,6 +1282,7 @@ fn draw_graph_labels(
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
+    let standing = explorer.towers().is_some();
     let stack: Vec<usize> = explorer
         .selected()
         .map(|s| explorer.stack(s))
@@ -1321,6 +1322,8 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
+            // Standing as towers, two calls either way are named too.
+            Some(Relation::Upstream(2) | Relation::Downstream(2)) if standing => 3,
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1338,11 +1341,17 @@ fn draw_graph_labels(
     }
     // Modules are named at the top of their rings, ahead of most function names.
     let regions = graph_view::regions(explorer);
+    // Standing as towers, on their roofs.
     let ring_top = |cluster: usize| {
+        if standing {
+            return to_screen(towers::roof(explorer, cluster)?);
+        }
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
-    if explorer.lens().reach.is_none() {
+    // A tower that lights up is named ahead of the functions two calls away.
+    let lit = |cluster: usize| standing && towers::tower_light(explorer, cluster) >= 0.7;
+    if explorer.lens().reach.is_none() || standing {
         for &(cluster, _, radius) in &regions {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1350,7 +1359,11 @@ fn draw_graph_labels(
                 reason = "a rough size for ordering"
             )]
             let size = radius as usize;
-            let tier = if center.is_some() { 4 } else { 1 };
+            let tier = match center {
+                _ if lit(cluster) => 2,
+                Some(_) => 4,
+                None => 1,
+            };
             order.push((
                 (tier, std::cmp::Reverse(size), cluster),
                 Named::Group(cluster),
@@ -1389,8 +1402,13 @@ fn draw_graph_labels(
                 let Some(at) = ring_top(group) else {
                     continue;
                 };
-                let color = egui_color(lane_color(group % PALETTE.len()))
-                    .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
+                let color = egui_color(lane_color(group % PALETTE.len())).gamma_multiply(
+                    if center.is_none() || lit(group) {
+                        0.95
+                    } else {
+                        0.6
+                    },
+                );
                 let label = explorer.cluster_name(group);
                 let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
                 placer.place(named, at, 0.0, job, None, false);
@@ -1632,7 +1650,8 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
+    let standing = explorer.towers().is_some();
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1656,6 +1675,11 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             swatch(ui, "●", diff_view::REMOVED, "removed");
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+                        } else if standing {
+                            ui.label(
+                                egui::RichText::new("each tower = a module, where the map has it")
+                                    .size(12.5),
+                            );
                         } else {
                             ui.label(
                                 egui::RichText::new("node color = its module, as its ring")
@@ -1663,6 +1687,15 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             );
                         }
                     });
+                    if standing {
+                        ui.label(
+                            egui::RichText::new(
+                                "height = calls down from an entry point: \
+                                 callers stand above what they call",
+                            )
+                            .size(12.5),
+                        );
+                    }
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for (color, text) in [
@@ -1732,6 +1765,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            ("Z", "modules as towers, callers above / lay flat"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
