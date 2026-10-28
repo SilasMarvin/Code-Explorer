@@ -19,6 +19,7 @@ mod explorer;
 mod graph_view;
 mod history;
 mod journey_panel;
+mod layered;
 mod lens;
 mod scene;
 mod source_diff;
@@ -38,6 +39,14 @@ use crate::{
     journey_panel::{JourneyPanel, PanelMode},
     lens::{Lens, Measure, Source},
 };
+
+/// Another view of the graph, behind `Z`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZView {
+    /// Flat, as a flow diagram: each module a vertical lane, each function in its lane
+    /// at its rank in the flow from the entry points, the camera head-on to it.
+    Layered,
+}
 
 /// Configures and launches the viewer window.
 #[derive(Debug)]
@@ -63,6 +72,8 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// Another view of the graph it opens in (`Z`).
+    z: Option<ZView>,
     diff: Option<Comparison>,
 }
 
@@ -96,6 +107,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            z: None,
             diff: None,
         }
     }
@@ -234,6 +246,13 @@ impl Viewer {
         self
     }
 
+    /// Opens in another view of the graph (`Z`).
+    #[must_use]
+    pub fn with_z(mut self, view: ZView) -> Self {
+        self.z = Some(view);
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -287,6 +306,10 @@ impl Viewer {
         }
         explorer.set_clustering(self.clustering);
         explorer.set_lens(self.lens);
+        if self.z == Some(ZView::Layered) {
+            explorer.set_layered(true);
+            explorer.settle_layered();
+        }
         if let Some(tile) = self
             .focus
             .take()
@@ -328,7 +351,10 @@ impl Viewer {
             explorer.refresh_reach();
             view
         });
-        if let Some(depth) = self.depth {
+        // In the diagram the journey opens two levels deep, so what the focus's callees
+        // call in turn shows below them.
+        let depth = self.depth.or((self.z == Some(ZView::Layered)).then_some(2));
+        if let Some(depth) = depth {
             explorer.set_disclose(disclosure::Disclose::Depth(depth));
         }
         // Back starts from the view as it opens.

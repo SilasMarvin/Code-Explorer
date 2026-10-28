@@ -228,7 +228,8 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            // Only its bottom left matters, which the diff card leaves alone.
+            legend(ctx, clear, diff.is_some(), &explorer);
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -1322,7 +1323,7 @@ fn draw_graph_labels(
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
             Some(Relation::Downstream(_)) if opened => continue,
-            Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
+            Some(Relation::Upstream(hops)) if opened && hops > explorer.upstream_lit() => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
             _ if stack.contains(&tile) => 2,
             Some(Relation::Upstream(2) | Relation::Downstream(2)) => 3,
@@ -1338,11 +1339,18 @@ fn draw_graph_labels(
     }
     // Modules are named at the top of their rings, ahead of most function names.
     let regions = graph_view::regions(explorer);
+    // In the diagram, lanes are named at their heads instead, and ranks at the left.
+    let diagram = explorer.layered().shown().is_some();
+    let headings = if diagram {
+        diagram_headings(painter, to_screen, explorer)
+    } else {
+        Vec::new()
+    };
     let ring_top = |cluster: usize| {
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
-    if explorer.lens().reach.is_none() {
+    if explorer.lens().reach.is_none() && !diagram {
         for &(cluster, _, radius) in &regions {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1369,6 +1377,7 @@ fn draw_graph_labels(
         painter,
         cards
             .into_iter()
+            .chain(headings)
             .chain(
                 order
                     .iter()
@@ -1525,6 +1534,121 @@ fn draw_graph_labels(
     });
 }
 
+/// Names each lane of the diagram over its head, kept on screen as the lane runs off
+/// its top, as long as fits over the lane: lit lanes bright, the rest dim. Numbers each
+/// rank down the left edge. Returns where the names went, for other labels to keep off.
+fn diagram_headings(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+) -> Vec<egui::Rect> {
+    let Some(layers) = explorer.layered().shown() else {
+        return Vec::new();
+    };
+    let bounds = painter.clip_rect();
+    // Head-on, the diagram's plane maps to the screen by a scale and a shift, found
+    // from the focus and a point beside it, so places off screen can be found too.
+    let middle = bounds.center();
+    let probe = explorer
+        .graph_focus()
+        .and_then(|tile| explorer.tile_point(tile))
+        .unwrap_or(Vec3::ZERO);
+    let Some((origin, step)) = to_screen(probe).zip(to_screen(probe + Vec3::new(0.5, 0.5, 0.0)))
+    else {
+        return Vec::new();
+    };
+    let scale = (step - origin) / 0.5;
+    let screen_x = |x: f32| origin.x + (x - probe.x) * scale.x;
+    let screen_y = |y: f32| origin.y + (y - probe.y) * scale.y;
+    let lit = graph_view::lit_clusters(explorer);
+    let mut taken = Vec::new();
+    let head_y = screen_y(layers.top() + 3.0).max(bounds.top() + 20.0) - 2.0;
+    let is_lit = |cluster: usize| lit.as_ref().is_none_or(|lit| lit.contains(&cluster));
+    // The focus's lane is named first, then the others lit, which may spill over
+    // their neighbors' heads.
+    let home = explorer
+        .graph_focus()
+        .and_then(|tile| explorer.graph().cluster(tile));
+    let mut lanes: Vec<_> = layers.lanes.iter().collect();
+    lanes.sort_by_key(|lane| (home != Some(lane.cluster), !is_lit(lane.cluster)));
+    for lane in lanes {
+        let (left, right) = (screen_x(lane.left - 1.2), screen_x(lane.right + 1.2));
+        if right < bounds.left() || left > bounds.right() {
+            continue;
+        }
+        let (left, right) = (left.max(bounds.left()), right.min(bounds.right()));
+        let lit_here = is_lit(lane.cluster);
+        let room = if lit_here {
+            (right - left) * 2.0 + 80.0
+        } else {
+            right - left + 6.0
+        };
+        let color = egui_color(lane_color(lane.cluster % PALETTE.len()))
+            .gamma_multiply(if lit_here { 1.0 } else { 0.45 });
+        let font = egui::FontId::proportional(if lit_here { 12.5 } else { 10.5 });
+        let name = explorer.cluster_name(lane.cluster).to_uppercase();
+        let placed = shortenings(&name)
+            .into_iter()
+            .map(|text| painter.layout_no_wrap(text, font.clone(), color))
+            .filter(|galley| galley.size().x <= room)
+            .map(|galley| {
+                let size = galley.size();
+                let x = (f32::midpoint(left, right) - size.x / 2.0)
+                    .clamp(bounds.left() + 2.0, bounds.right() - size.x - 2.0);
+                let rect = egui::Rect::from_min_size(egui::pos2(x, head_y - size.y), size);
+                (galley, rect)
+            })
+            .find(|(_, rect)| {
+                !taken
+                    .iter()
+                    .any(|r: &egui::Rect| r.intersects(rect.expand(3.0)))
+            });
+        if let Some((galley, rect)) = placed {
+            painter.galley(rect.min, galley, color);
+            taken.push(rect);
+        }
+    }
+    // Ranks down the left, against the diagram or the screen's edge.
+    let left = screen_x(layers.lanes.first().map_or(0.0, |lane| lane.left) - 2.0)
+        .max(bounds.left() + 34.0)
+        .min(middle.x);
+    for band in &layers.bands {
+        let y = screen_y(f32::midpoint(band.top, band.bottom));
+        if !(bounds.top() + 30.0..bounds.bottom()).contains(&y) {
+            continue;
+        }
+        let text = if band.rank == 0 {
+            "entry".to_owned()
+        } else {
+            band.rank.to_string()
+        };
+        let rect = painter.text(
+            egui::pos2(left, y),
+            egui::Align2::RIGHT_CENTER,
+            text,
+            egui::FontId::proportional(11.0),
+            MUTED,
+        );
+        taken.push(rect);
+    }
+    taken
+}
+
+/// Ways to write a module's `name`, longest first: whole, by its last part, then that
+/// cut shorter and shorter.
+fn shortenings(name: &str) -> Vec<String> {
+    let last = name.rsplit(['.', ':']).next().unwrap_or(name);
+    let mut tries = vec![name.to_owned()];
+    if last != name {
+        tries.push(last.to_owned());
+    }
+    let chars: Vec<char> = last.chars().collect();
+    for keep in (3..chars.len()).rev() {
+        tries.push(format!("{}…", chars[..keep].iter().collect::<String>()));
+    }
+    tries
+}
+
 /// The focus by name, then a button for each side of it: what calls it (I) and what it
 /// calls (O), each in the color its links are drawn in. A button puts its side in the
 /// spotlight, which frames everything it picks out. The name says what those keys, and
@@ -1632,7 +1756,8 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
+    let diagram = explorer.layered().shown().is_some();
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1656,6 +1781,14 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             swatch(ui, "●", diff_view::REMOVED, "removed");
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+                        } else if diagram {
+                            ui.label(
+                                egui::RichText::new(
+                                    "column = module, named at its head · row = calls down \
+                                     from an entry point",
+                                )
+                                .size(12.5),
+                            );
                         } else {
                             ui.label(
                                 egui::RichText::new("node color = its module, as its ring")
@@ -1732,6 +1865,10 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            (
+                "Z",
+                "lay flat as a flow diagram: modules as lanes, calls running down",
+            ),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
@@ -1849,6 +1986,14 @@ mod tests {
             .and_then(|labels| labels.get(&Named::Node(0)).cloned())
             .unwrap_or_else(|| panic!("the label was not remembered"));
         (shown.side, shown.offset)
+    }
+
+    #[test]
+    fn a_module_name_shortens_to_its_last_part_then_cut() {
+        let tries = shortenings("SHOP.SERVICES.ORDERS");
+        assert_eq!(tries[..3], ["SHOP.SERVICES.ORDERS", "ORDERS", "ORDER…"]);
+        assert_eq!(tries.last().map(String::as_str), Some("ORD…"));
+        assert_eq!(shortenings("UI"), ["UI"]);
     }
 
     #[test]

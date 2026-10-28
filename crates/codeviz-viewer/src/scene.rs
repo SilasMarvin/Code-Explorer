@@ -9,6 +9,7 @@ use crate::{
     explorer::{Autoplay, Clustering, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
+    layered,
     lens::Lens,
     ui::{Chrome, KeyHelp},
 };
@@ -34,6 +35,7 @@ impl Plugin for ScenePlugin {
                 graph_view::follow_focus,
                 graph_view::frame_reveal,
                 graph_view::frame_spotlight,
+                layered::pose,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
             )
@@ -255,6 +257,11 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
     }
+    // Z lays the graph flat as a flow diagram, or puts it back on the map.
+    if keys.just_pressed(KeyCode::KeyZ) {
+        let on = !explorer.layered().on();
+        explorer.set_layered(on);
+    }
     if keys.just_pressed(KeyCode::KeyK) {
         let next = match explorer.clustering() {
             Clustering::Modules => Clustering::Calls,
@@ -365,9 +372,17 @@ fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>) {
     }
 }
 
-/// Lets the graph settle, moving its nodes as it does.
-fn simulate(mut explorer: ResMut<Explorer>, mut nodes: Query<(&Tile, &mut Transform)>) {
-    if !explorer.bypass_change_detection().simulate(2) {
+/// Lets the graph settle, and move into or out of the diagram, moving its nodes as it
+/// does.
+fn simulate(
+    time: Res<Time>,
+    mut explorer: ResMut<Explorer>,
+    mut nodes: Query<(&Tile, &mut Transform)>,
+) {
+    let explorer = explorer.bypass_change_detection();
+    let settling = explorer.simulate(2);
+    let laying = explorer.ease_layered(time.delta_secs());
+    if !settling && !laying {
         return;
     }
     for (tile, mut transform) in &mut nodes {

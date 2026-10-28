@@ -18,6 +18,7 @@ use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConf
 use crate::{
     disclosure::{Disclose, Disclosed},
     history::{History, View},
+    layered::Layered,
     lens::{self, Distances, Lens},
 };
 
@@ -279,6 +280,8 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// The graph laid flat as a flow diagram, while `Z` is on.
+    layered: Layered,
 }
 
 impl Explorer {
@@ -332,6 +335,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            layered: Layered::default(),
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -619,7 +623,66 @@ impl Explorer {
 
     /// Where a graph node sits in the world.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        self.graph
+            .positions
+            .get(tile)
+            .map(|&p| Vec3::from(self.layered.place(tile, p)))
+    }
+
+    /// Where a node is headed: its place in the diagram while it is on, else where it
+    /// is.
+    pub(crate) fn goal_point(&self, tile: usize) -> Option<Vec3> {
+        match self.layered.diagram() {
+            Some(layers) => layers
+                .positions
+                .get(tile)
+                .map(|&[x, y]| Vec3::new(x, y, 0.0)),
+            None => self.tile_point(tile),
+        }
+    }
+
+    /// The graph laid flat as a flow diagram.
+    pub(crate) fn layered(&self) -> &Layered {
+        &self.layered
+    }
+
+    /// Lays the graph out as a flow diagram, each module a lane ordered as it sits
+    /// across the map now, or puts it back on the map.
+    pub(crate) fn set_layered(&mut self, on: bool) {
+        let clusters: Vec<usize> = (0..self.map.tiles.len())
+            .map(|tile| self.graph.cluster(tile).unwrap_or_default())
+            .collect();
+        let entries: Vec<usize> = self
+            .system
+            .entries()
+            .iter()
+            .filter_map(|entry| self.map.tile_of(&entry.unit))
+            .collect();
+        let map_x: Vec<f32> = self.graph.positions.iter().map(|p| p[0]).collect();
+        self.layered
+            .set(on, &clusters, &self.graph.calls, &entries, &map_x);
+    }
+
+    /// Eases nodes towards the diagram or the map. Returns whether any moved.
+    pub(crate) fn ease_layered(&mut self, dt: f32) -> bool {
+        let moved = self.layered.ease(dt);
+        if moved {
+            self.moved += 1;
+        }
+        moved
+    }
+
+    /// Puts every node in the diagram, or on the map, at once.
+    pub(crate) fn settle_layered(&mut self) {
+        self.layered.settle();
+        self.moved += 1;
+    }
+
+    /// How many calls up from the focus its callers light while a journey is open:
+    /// only the direct ones on the map; in the diagram, where callers sit above, their
+    /// callers too.
+    pub(crate) fn upstream_lit(&self) -> u32 {
+        if self.layered.on() { 2 } else { 1 }
     }
 
     pub(crate) fn clustering(&self) -> Clustering {

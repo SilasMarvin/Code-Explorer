@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::bail;
 use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::Document;
-use codeviz_viewer::Viewer;
+use codeviz_viewer::{Viewer, ZView};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ViewArgs {
@@ -72,6 +72,9 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
+    /// Open in another view of the graph (Z toggles it).
+    #[arg(long, value_enum, value_name = "VIEW")]
+    z: Option<ZArg>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -119,6 +122,13 @@ enum NearArg {
     Space,
     /// Distance in the graph, with each call between counting against it.
     Blend,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ZArg {
+    /// Flat, as a flow diagram: each module a vertical lane, each function in its
+    /// lane at its rank down from the entry points, so control reads top to bottom.
+    Layered,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -230,6 +240,9 @@ pub(crate) fn open(
     }
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some(ZArg::Layered) = args.z {
+        viewer = viewer.with_z(ZView::Layered);
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

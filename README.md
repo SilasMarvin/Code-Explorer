@@ -59,6 +59,19 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
+`Z` (or `--z layered`) lays the graph flat as a flow diagram. Each module becomes a
+vertical lane, named at its head, the lanes running left to right roughly as the modules
+sit on the map, nudged towards the lanes they call. Each function sits in its module's
+lane at the row of its rank: how many calls down it is from the entry points (HTTP
+handlers, `main`, whatever nothing calls), the longest way there, so control reads top
+to bottom, numbered down the left edge. Functions calling each other round a cycle share
+a row, and a declared entry stays on top even when something calls it, so a call that
+runs up is a callback or a cycle. Within a row, a function sits under what calls it, and
+a crowded row wraps within its lane. The diagram depends only on the call graph, never
+on the focus, so it can be learned. The camera faces it head-on and frames what is lit;
+the focus's callers' callers light too, the journey opens two levels deep, and calls
+away from the focus are left out. `Z` again goes back to the map.
+
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
 before it, cursor, outcome, depth, opened calls and spotlight included, and
