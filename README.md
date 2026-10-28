@@ -59,6 +59,22 @@ In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` g
 view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
 whichever of those is on top, or the spotlight.
 
+`Z` (or `--z rank`) stands the graph up by the flow of control. Every function keeps
+its place on the map and rises by its rank: how many calls down it is from the entry
+points (HTTP handlers, `main`, whatever nothing calls), the longest way there, so the
+entry points stand on top and the leaves (storage, IO, helpers) at the bottom.
+Functions calling each other round a cycle share a rank, and a declared entry stays on
+top even when something calls it. A rank never depends on the focus, so the shape can
+be learned: the focus's callers stand above it and what it calls below, and a call
+that runs uphill is a callback or a layering violation. `Shift+Z` (or
+`--z rank-shortest`) counts the shortest way down instead, which keeps ranks shallow
+but lets calls run uphill wherever they take a shortcut. Upright, the camera turns to
+look across the graph from a little above, a faint line runs across what is lit at each
+rank, named at its left end, and every lit function stands on a stalk down to a floor
+where its module lies as a ring; labels say which module each lives in, the callers'
+callers light up as well, and the journey opens two levels deep. Calls away from the
+focus are left out, so they do not haze every rank. `Z` again lays it flat.
+
 Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
 `Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
 before it, cursor, outcome, depth, opened calls and spotlight included, and

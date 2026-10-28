@@ -17,12 +17,13 @@ use codeviz_core::Change;
 use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
-    camera::{FRONT, OrbitCamera},
+    camera::{FRONT, OrbitCamera, TILTED},
     diff_view::{
         ADDED, DiffView, MODIFIED, MOVED, REMOVED, change_color, diff_look, draw_diff_graph,
     },
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
+    height_view,
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
 };
@@ -225,13 +226,15 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
 
 /// How many calls from the focus a node is, when it is near enough to light: with a
 /// journey open, what the focus calls lights as far as the journey is disclosed, and
-/// only its direct callers light above it. The spotlight lights what it picks out.
+/// only its direct callers light above it (with height, their callers too). The
+/// spotlight lights what it picks out.
 pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u32> {
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
+    let upstream = explorer.upstream_lit();
     match relation(reach, tile) {
-        Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
+        Some(Relation::Upstream(hops)) if !opened || hops <= upstream => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
         _ if explorer.spotlit().contains(&tile) => Some(1),
@@ -329,6 +332,9 @@ pub(crate) fn draw_graph(
     mut gizmos: Gizmos,
 ) {
     draw_regions(&explorer, &mut gizmos);
+    if diff.is_none() {
+        height_view::draw(&explorer, &mut gizmos);
+    }
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
@@ -362,6 +368,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     let spotlit = explorer.spotlit();
+    let upstream = explorer.upstream_lit();
+    let upright = explorer.lift().lifted();
     // Calls from the focus, counting the focus itself as zero.
     let hops = |side: &HashMap<usize, u32>, tile: usize| {
         if center == Some(tile) {
@@ -386,7 +394,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             let down = hops(&reach.downstream, from).zip(hops(&reach.downstream, to));
             match (up, down) {
                 (Some((outer, inner)), _)
-                    if outer == inner + 1 && (!opened || outer == 1 || spotlit.contains(&from)) =>
+                    if outer == inner + 1
+                        && (!opened || outer <= upstream || spotlit.contains(&from)) =>
                 {
                     Some((CALLER, outer))
                 }
@@ -419,6 +428,9 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                     .arrow(a, b - back, FURTHER.with_alpha(0.4 * shown))
                     .with_tip_length(0.8);
             }
+            // Standing upright, calls far from the focus would cross every rank as a
+            // haze, so they go.
+            None if upright && center.is_some() => {}
             None => {
                 let alpha = if center.is_some() {
                     0.04
@@ -520,6 +532,16 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// a radius holding most of them.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
     let graph = explorer.graph();
+    // Standing upright, only the modules of what is lit, on the floor under it.
+    let stage = height_view::stage(explorer);
+    let floor = stage.as_ref().map(|stage| stage.floor);
+    let lit: Option<HashSet<usize>> = stage.map(|stage| {
+        stage
+            .lit
+            .iter()
+            .filter_map(|&(tile, _)| graph.cluster(tile))
+            .collect()
+    });
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
     for tile in 0..explorer.map().tiles.len() {
         if explorer.visibility(tile) < 0.5 {
@@ -535,6 +557,7 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
         .iter()
         .enumerate()
         .filter(|(_, points)| !points.is_empty())
+        .filter(|(cluster, _)| lit.as_ref().is_none_or(|lit| lit.contains(cluster)))
         .map(|(cluster, points)| {
             let middle = points.iter().copied().sum::<Vec3>() / points.len() as f32;
             let mut distances: Vec<f32> = points
@@ -543,6 +566,8 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
                 .collect();
             distances.sort_by(f32::total_cmp);
             let radius = distances[(distances.len() * 9 / 10).min(distances.len() - 1)] + 4.0;
+            // With height, a module lies on the floor under its functions, as their shadow.
+            let middle = floor.map_or(middle, |floor| middle.with_z(floor));
             (cluster, middle, radius)
         })
         .collect()
@@ -565,7 +590,8 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// The closest the orbit comes to the focused node.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
-/// F turns to face the graph head-on, centered on the journey's start again; R pulls
+/// F turns to face the graph head-on (with height, tilted to read it), centered on the
+/// journey's start again; R pulls
 /// back to take in the whole graph.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
@@ -574,7 +600,12 @@ pub(crate) fn graph_keys(
 ) {
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(FRONT);
+            // Upright, head-on would hide the height: it turns to read it instead.
+            camera.turn_to(if explorer.lift().by().is_some() {
+                TILTED
+            } else {
+                FRONT
+            });
             orbit_anchor(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {
@@ -651,7 +682,7 @@ pub(crate) fn frame_spotlight(
     if spotlight.is_none() {
         return;
     }
-    let Some(center) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    let Some(center) = held_point(&explorer) else {
         return;
     };
     let points: Vec<Vec3> = explorer
@@ -715,7 +746,7 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 /// follows it as the graph moves.
 /// Not once the viewer has panned or zoomed away.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    let Some(at) = held_point(&explorer) else {
         return;
     };
     for mut camera in &mut cameras {
@@ -725,6 +756,16 @@ pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut Orbit
     }
 }
 
+/// Where the camera holds still: the node the journey starts at, or with height, the
+/// middle of what stands round it, from its highest lit node down to the floor.
+pub(crate) fn held_point(explorer: &Explorer) -> Option<Vec3> {
+    let at = explorer.anchor().and_then(|t| explorer.tile_point(t))?;
+    Some(
+        height_view::stage(explorer)
+            .map_or(at, |stage| at.with_z(f32::midpoint(stage.top, stage.floor))),
+    )
+}
+
 /// Orbits the node the journey starts at from far enough back to see everything it
 /// calls and everything that calls it, the journey as disclosed, and the cursor.
 pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
@@ -732,9 +773,25 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
     let Some(anchor) = explorer.anchor() else {
         return;
     };
-    let Some(at) = explorer.tile_point(anchor) else {
+    let Some(at) = held_point(explorer) else {
         return;
     };
+    // Standing upright, near enough that what is lit and its floor fill the view as
+    // turned to read it.
+    if let Some(stage) = height_view::stage(explorer) {
+        let points: Vec<Vec3> = stage
+            .lit
+            .iter()
+            .filter_map(|&(tile, _)| explorer.tile_point(tile))
+            .flat_map(|p| [p, p.with_z(stage.floor)])
+            .collect();
+        let view = PerspectiveProjection {
+            aspect_ratio: 1.6,
+            ..default()
+        };
+        camera.glide_to(at, fit_distance(&points, at, height_view::tilted(), &view));
+        return;
+    }
     let reach = graph
         .callers(anchor)
         .chain(graph.callees(anchor))
@@ -797,7 +854,7 @@ pub(crate) fn follow_focus(
         focus,
         disclosed: Some(disclosure),
     };
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    let Some(at) = held_point(&explorer) else {
         return;
     };
     for (mut camera, transform, projection) in &mut cameras {

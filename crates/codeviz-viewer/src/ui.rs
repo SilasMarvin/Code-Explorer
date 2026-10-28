@@ -22,6 +22,7 @@ use crate::{
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
+    height_view,
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
     scene::{PALETTE, lane_color},
@@ -228,7 +229,8 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            let corner = above(graph_area, panel_area);
+            legend(ctx, corner, diff.is_some(), &explorer);
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -1258,6 +1260,12 @@ fn draw_graph_labels(
     diff: Option<&DiffView>,
     up: Vec3,
 ) {
+    // Standing upright, each rank is named first, and the rest keep off those names.
+    let taken = if diff.is_none() {
+        rank_labels(painter, to_screen, explorer)
+    } else {
+        Vec::new()
+    };
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
     let diff_tier = |tile: usize| {
@@ -1322,7 +1330,7 @@ fn draw_graph_labels(
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
             Some(Relation::Downstream(_)) if opened => continue,
-            Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
+            Some(Relation::Upstream(hops)) if opened && hops > explorer.upstream_lit() => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
             _ if stack.contains(&tile) => 2,
             Some(Relation::Upstream(2) | Relation::Downstream(2)) => 3,
@@ -1369,6 +1377,7 @@ fn draw_graph_labels(
         painter,
         cards
             .into_iter()
+            .chain(taken)
             .chain(
                 order
                     .iter()
@@ -1466,10 +1475,22 @@ fn draw_graph_labels(
                 .into_iter()
                 .filter_map(|(on, mark)| on.then_some(mark))
                 .collect();
-                let aside = [aside, (!marks.is_empty()).then(|| marks.join(" · "))]
-                    .into_iter()
-                    .flatten()
-                    .reduce(|a, b| format!("{a} · {b}"));
+                // Standing upright, a node's module ring lies far below it on the floor,
+                // so its name says which module it lives in.
+                let module = graph
+                    .cluster(tile)
+                    .filter(|_| diff.is_none() && explorer.lift().by().is_some())
+                    .map(|cluster| explorer.cluster_name(cluster))
+                    .filter(|name| !name.is_empty())
+                    .map(|name| format!("in {name}"));
+                let aside = [
+                    module,
+                    aside,
+                    (!marks.is_empty()).then(|| marks.join(" · ")),
+                ]
+                .into_iter()
+                .flatten()
+                .reduce(|a, b| format!("{a} · {b}"));
                 // A node the journey runs leads with its place in it, as its bar does.
                 let order = journey
                     .get(&tile)
@@ -1514,7 +1535,14 @@ fn draw_graph_labels(
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
                 // are named come what may.
-                let force = tier == 0 || hovered == Some(tile) || spotlit.contains(&tile);
+                // Standing upright, callers and callees crowd onto the same few ranks,
+                // so they are named come what may too.
+                let adjacent = matches!(
+                    relation,
+                    Some(Relation::Upstream(1) | Relation::Downstream(1))
+                ) && explorer.lift().by().is_some();
+                let force =
+                    tier == 0 || hovered == Some(tile) || spotlit.contains(&tile) || adjacent;
                 placer.place(named, node, edge, job, stroke, force);
             }
         }
@@ -1632,7 +1660,41 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+/// Each rank's name at the left end of its line across what is lit, the focus's
+/// brighter. Returns where they went, for other labels to keep off.
+fn rank_labels(
+    painter: &egui::Painter,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+) -> Vec<egui::Rect> {
+    let Some(stage) = height_view::stage(explorer) else {
+        return Vec::new();
+    };
+    let mut taken = Vec::new();
+    let share = explorer.lift().share();
+    for &rank in &stage.ranks {
+        let (left, _) = stage.rung(explorer, rank);
+        let Some(at) = to_screen(left) else {
+            continue;
+        };
+        let color = if rank == stage.focus_rank {
+            egui::Color32::from_rgb(200, 205, 216)
+        } else {
+            MUTED
+        };
+        taken.push(painter.text(
+            at - egui::vec2(6.0, 0.0),
+            egui::Align2::RIGHT_CENTER,
+            height_view::rank_name(rank),
+            egui::FontId::proportional(11.5),
+            color.gamma_multiply(share),
+        ));
+    }
+    taken
+}
+
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
+    let height = explorer.lift().by();
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1682,6 +1744,16 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                                 .color(MUTED),
                         );
                     });
+                    if let Some(by) = height {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "height = calls down from the entry points ({}): \
+                                 callers stand above, callees below",
+                                by.label()
+                            ))
+                            .size(12.5),
+                        );
+                    }
                 });
         });
     ctx.layer_painter(egui::LayerId::background())
@@ -1732,6 +1804,8 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            ("Z", "stand the graph up by rank in the flow / lay it flat"),
+            ("Shift Z", "rank by the longest / shortest path down"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

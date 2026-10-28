@@ -72,6 +72,9 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
+    /// Open with height on (Z), the camera tilted to read it.
+    #[arg(long, value_enum, value_name = "HEIGHT")]
+    z: Option<HeightArg>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -119,6 +122,15 @@ enum NearArg {
     Space,
     /// Distance in the graph, with each call between counting against it.
     Blend,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum HeightArg {
+    /// Every node raised by its rank in the flow: the longest path of calls down from
+    /// the entry points, which sit on top, to it. Shift+Z switches to the shortest.
+    Rank,
+    /// The same by the shortest path down.
+    RankShortest,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -230,6 +242,12 @@ pub(crate) fn open(
     }
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some(height) = args.z {
+        viewer = viewer.with_height(match height {
+            HeightArg::Rank => "rank",
+            HeightArg::RankShortest => "rank-shortest",
+        });
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

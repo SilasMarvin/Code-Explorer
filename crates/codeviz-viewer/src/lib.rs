@@ -17,6 +17,8 @@ mod diff_view;
 mod disclosure;
 mod explorer;
 mod graph_view;
+mod height;
+mod height_view;
 mod history;
 mod journey_panel;
 mod lens;
@@ -31,6 +33,7 @@ use bevy::{prelude::*, window::WindowPlugin};
 use bevy_egui::EguiPlugin;
 use codeviz_core::{Diff, JourneyOptions, System};
 use codeviz_ir::{Document, UnitId};
+use codeviz_layout::RankBy;
 
 use crate::{
     diff_view::{DiffStyle, DiffView},
@@ -63,6 +66,8 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// How nodes are raised by rank in the flow, if they are.
+    height: Option<RankBy>,
     diff: Option<Comparison>,
 }
 
@@ -96,6 +101,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            height: None,
             diff: None,
         }
     }
@@ -234,6 +240,18 @@ impl Viewer {
         self
     }
 
+    /// Opens with height on (`Z`): `rank` raises every node by its rank in the flow,
+    /// the longest path down from the entry points, `rank-shortest` by the shortest.
+    #[must_use]
+    pub fn with_height(mut self, name: &str) -> Self {
+        self.height = match name {
+            "rank" => Some(RankBy::Longest),
+            "rank-shortest" => Some(RankBy::Shortest),
+            _ => None,
+        };
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -287,6 +305,10 @@ impl Viewer {
         }
         explorer.set_clustering(self.clustering);
         explorer.set_lens(self.lens);
+        if self.height.is_some() {
+            explorer.set_height(self.height);
+            explorer.settle_lift();
+        }
         if let Some(tile) = self
             .focus
             .take()
@@ -328,7 +350,10 @@ impl Viewer {
             explorer.refresh_reach();
             view
         });
-        if let Some(depth) = self.depth {
+        // Standing upright, the journey opens two levels deep, so what the focus's
+        // callees call in turn shows below them.
+        let depth = self.depth.or(self.height.map(|_| 2));
+        if let Some(depth) = depth {
             explorer.set_disclose(disclosure::Disclose::Depth(depth));
         }
         // Back starts from the view as it opens.

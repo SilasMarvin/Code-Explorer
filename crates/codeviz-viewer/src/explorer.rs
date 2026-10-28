@@ -13,10 +13,13 @@ use codeviz_core::{
     display_name, scenarios,
 };
 use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
-use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
+use codeviz_layout::{
+    CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, RankBy, Reach, Scene,
+};
 
 use crate::{
     disclosure::{Disclose, Disclosed},
+    height::Lift,
     history::{History, View},
     lens::{self, Distances, Lens},
 };
@@ -279,6 +282,8 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// Each node's height by its rank in the flow, while `Z` is on.
+    lift: Lift,
 }
 
 impl Explorer {
@@ -332,6 +337,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            lift: Lift::default(),
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -619,7 +625,51 @@ impl Explorer {
 
     /// Where a graph node sits in the world.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        self.graph
+            .positions
+            .get(tile)
+            .map(|&p| Vec3::from(self.lift.place(tile, p)))
+    }
+
+    /// Each node's height by its rank in the flow.
+    pub(crate) fn lift(&self) -> &Lift {
+        &self.lift
+    }
+
+    /// Raises every node to its rank in the flow, counted `by` the longest or shortest
+    /// path down from the entry points, or lays the graph flat with none.
+    pub(crate) fn set_height(&mut self, by: Option<RankBy>) {
+        let entries: Vec<usize> = self
+            .system
+            .entries()
+            .iter()
+            .filter_map(|entry| self.map.tile_of(&entry.unit))
+            .collect();
+        let width = map_width(&self.graph.positions);
+        self.lift
+            .set(by, self.map.tiles.len(), &self.graph.calls, &entries, width);
+    }
+
+    /// Eases nodes towards their heights. Returns whether any moved.
+    pub(crate) fn ease_lift(&mut self, dt: f32) -> bool {
+        let moved = self.lift.ease(dt);
+        if moved {
+            self.moved += 1;
+        }
+        moved
+    }
+
+    /// Puts every node at its height at once.
+    pub(crate) fn settle_lift(&mut self) {
+        self.lift.settle();
+        self.moved += 1;
+    }
+
+    /// How many calls up from the focus its callers light while a journey is open:
+    /// only the direct ones on the flat map; with height, where callers stand above,
+    /// their callers too.
+    pub(crate) fn upstream_lit(&self) -> u32 {
+        if self.lift.by().is_some() { 2 } else { 1 }
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -1204,6 +1254,25 @@ impl Explorer {
         }
         next
     }
+}
+
+/// How wide the map is: across most of its nodes, ignoring a few far outliers.
+fn map_width(positions: &[[f32; 3]]) -> f32 {
+    if positions.is_empty() {
+        return 0.0;
+    }
+    #[expect(clippy::cast_precision_loss, reason = "a node count")]
+    let count = positions.len() as f32;
+    let middle = positions
+        .iter()
+        .fold(Vec2::ZERO, |sum, p| sum + Vec2::new(p[0], p[1]))
+        / count;
+    let mut distances: Vec<f32> = positions
+        .iter()
+        .map(|p| Vec2::new(p[0], p[1]).distance(middle))
+        .collect();
+    distances.sort_by(f32::total_cmp);
+    distances[(distances.len() * 9 / 10).min(distances.len() - 1)] * 2.0
 }
 
 fn is_within(journey: &Journey, span: SpanId, ancestor: SpanId) -> bool {

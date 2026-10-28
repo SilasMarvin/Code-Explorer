@@ -42,6 +42,19 @@ impl Plugin for OrbitCameraPlugin {
 pub(crate) const FRONT: (f32, f32) = (0.0, 0.0);
 /// The default three-quarter view.
 pub(crate) const ANGLED: (f32, f32) = (-0.35, -0.2);
+/// Looking down on a graph stood upright from the front and above, so its height reads
+/// as up and its map lies behind it: turned a little, so what stands over what does not
+/// line up.
+pub(crate) const TILTED: (f32, f32) = (-0.15, -0.26);
+
+/// Which way is up for the orbit: the graph's own `Y`, flat on screen as a map.
+pub(crate) const MAP_UP: Quat = Quat::IDENTITY;
+
+/// Up along the graph's `Z`, its height when stood upright: orbiting turns round it, and
+/// looking straight down shows the flat map as it was.
+pub(crate) fn height_up() -> Quat {
+    Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
+}
 
 #[derive(Component, Debug)]
 pub(crate) struct OrbitCamera {
@@ -59,6 +72,10 @@ pub(crate) struct OrbitCamera {
     /// Whether the viewer has panned or zoomed away from the focused node, so the
     /// camera stops holding it in the middle.
     pub(crate) free: bool,
+    /// Turns the orbit's own frame into the world's: which way is up as it turns.
+    frame: Quat,
+    /// A frame being eased towards.
+    goal_frame: Option<Quat>,
 }
 
 impl Default for OrbitCamera {
@@ -72,6 +89,8 @@ impl Default for OrbitCamera {
             goal_distance: None,
             goal_angles: None,
             free: false,
+            frame: MAP_UP,
+            goal_frame: None,
         }
     }
 }
@@ -107,6 +126,11 @@ impl OrbitCamera {
         self.goal_angles = None;
         self.yaw -= delta.x * ORBIT_SPEED;
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    /// Eases round to orbiting with `frame` as up.
+    pub(crate) fn stand(&mut self, frame: Quat) {
+        self.goal_frame = Some(frame);
     }
 
     /// Eases round to `(yaw, pitch)`.
@@ -250,7 +274,15 @@ fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Tran
                 camera.goal_angles = None;
             }
         }
-        let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+        if let Some(goal) = camera.goal_frame {
+            camera.frame = camera.frame.slerp(goal, ease);
+            if camera.frame.angle_between(goal) < 1e-4 {
+                camera.frame = goal;
+                camera.goal_frame = None;
+            }
+        }
+        let rotation =
+            camera.frame * Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
         transform.translation = camera.focus + rotation * Vec3::Z * camera.distance;
         transform.rotation = rotation;
     }

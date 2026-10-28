@@ -8,6 +8,7 @@ use crate::{
     disclosure::Disclose,
     explorer::{Autoplay, Clustering, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
+    height_view,
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
     ui::{Chrome, KeyHelp},
@@ -34,6 +35,7 @@ impl Plugin for ScenePlugin {
                 graph_view::follow_focus,
                 graph_view::frame_reveal,
                 graph_view::frame_spotlight,
+                height_view::pose,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
             )
@@ -255,6 +257,17 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
     }
+    // Z stands the graph up by rank in the flow or lays it flat; Shift+Z counts rank
+    // by the other path, longest or shortest.
+    if keys.just_pressed(KeyCode::KeyZ) {
+        let lift = explorer.lift();
+        let by = match (shift, lift.by()) {
+            (true, by) => Some(by.unwrap_or(lift.last_by()).next()),
+            (false, Some(_)) => None,
+            (false, None) => Some(lift.last_by()),
+        };
+        explorer.set_height(by);
+    }
     if keys.just_pressed(KeyCode::KeyK) {
         let next = match explorer.clustering() {
             Clustering::Modules => Clustering::Calls,
@@ -365,9 +378,16 @@ fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>) {
     }
 }
 
-/// Lets the graph settle, moving its nodes as it does.
-fn simulate(mut explorer: ResMut<Explorer>, mut nodes: Query<(&Tile, &mut Transform)>) {
-    if !explorer.bypass_change_detection().simulate(2) {
+/// Lets the graph settle and rise to its heights, moving its nodes as it does.
+fn simulate(
+    time: Res<Time>,
+    mut explorer: ResMut<Explorer>,
+    mut nodes: Query<(&Tile, &mut Transform)>,
+) {
+    let explorer = explorer.bypass_change_detection();
+    let settling = explorer.simulate(2);
+    let lifting = explorer.ease_lift(time.delta_secs());
+    if !settling && !lifting {
         return;
     }
     for (tile, mut transform) in &mut nodes {
