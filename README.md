@@ -68,6 +68,22 @@ stepping through the journey at most pulls it back to keep the cursor's node in 
 Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
 brings it back.
 
+`Z` (or `--z terraces` to open on it) stands the graph up as terraces, so module
+boundaries are ground you can see. Height means one thing, how deeply a function's
+container is nested: each crate or package is a slab, each module a plateau raised on
+the one holding it, each type a plateau on its module, and every function sits on top of
+its own container's plateau. A plateau is filled a muted shade of its module's color,
+lighter for a type, slate for a crate, a package or a module holding only modules, and
+its rim is drawn in that color. A call that leaves its container arcs over the edges
+between, higher the further it goes; one that stays runs along the plateau. Two calls
+either way of the focus light, journey or not: violet and blue for its own callers and
+callees, pale arrows a call further, and those are named. Plateaus holding the focus and
+what is near it are named on their rims, crates too, the rest left to color and height.
+The layout gathers every level of container and keeps siblings apart, so each plateau
+sits whole on the one under it; the map keeps its place across the ground, and the
+camera looks at it from low down to the south, as at a relief map. `F` returns to that
+angle, and `Z` again lays the graph flat.
+
 ## Diffs
 
 `codeviz diff` checks out each revision with `git archive`, analyzes both, and draws

@@ -184,7 +184,9 @@ pub(crate) enum Clustering {
 }
 
 impl Clustering {
-    pub(crate) fn forces(self) -> ForceConfig {
+    /// The forces for this clustering; `nested` gathers every level of container, for
+    /// terraces, and keeps the graph flat so what stands apart on the map is apart.
+    pub(crate) fn forces(self, nested: bool) -> ForceConfig {
         // Spread out, so names have room.
         let spread = ForceConfig {
             repulsion: 50.0,
@@ -192,6 +194,15 @@ impl Clustering {
             // Mostly flat, so clusters sit side by side like regions on a map.
             flatten: 0.1,
             ..ForceConfig::default()
+        };
+        let spread = if nested {
+            ForceConfig {
+                nested,
+                flatten: 1.0,
+                ..spread
+            }
+        } else {
+            spread
         };
         match self {
             // Each container a cluster of its own, with clear space between them.
@@ -240,6 +251,11 @@ pub(crate) struct Explorer {
     /// The codebase as a graph of calls.
     graph: ForceGraph,
     clustering: Clustering,
+    /// Whether the graph stands as terraces: each container a plateau, raised on the
+    /// one it sits in, with its functions on top.
+    terraced: bool,
+    /// How high each node stands when terraced, by tile.
+    terrace_heights: Vec<f32>,
     /// Whether the graph is still moving.
     settling: bool,
     /// Map tiles the journey runs, with the color each is drawn in there.
@@ -299,11 +315,12 @@ impl Explorer {
         let placed = layout.as_ref().unwrap_or(&system);
         let map = codeviz_layout::map(placed, &MapConfig::default());
         let clustering = Clustering::default();
-        let mut graph = ForceGraph::new(placed, &map, clustering.forces());
+        let mut graph = ForceGraph::new(placed, &map, clustering.forces(false));
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
         }
         let tiles = map.tiles.len();
+        let terrace_heights = crate::terraces::heights(&graph);
         let mut explorer = Self {
             system,
             layout_system: layout,
@@ -313,6 +330,8 @@ impl Explorer {
             map,
             graph,
             clustering,
+            terraced: false,
+            terrace_heights,
             settling: true,
             journey_tiles: HashMap::new(),
             reach: None,
@@ -617,9 +636,36 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node sits in the world: terraced, on top of its container's
+    /// plateau.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        let [x, y, z] = *self.graph.positions.get(tile)?;
+        let z = if self.terraced {
+            self.terrace_heights.get(tile).copied().unwrap_or_default()
+        } else {
+            z
+        };
+        Some(Vec3::new(x, y, z))
+    }
+
+    pub(crate) fn terraced(&self) -> bool {
+        self.terraced
+    }
+
+    /// Stands the graph as terraces, or lays it flat again; it moves until it settles,
+    /// as every level of container gathers or lets go.
+    pub(crate) fn set_terraced(&mut self, terraced: bool) {
+        if self.terraced != terraced {
+            self.terraced = terraced;
+            self.graph.set_config(self.clustering.forces(terraced));
+            self.settling = true;
+            self.moved += 1;
+        }
+    }
+
+    /// Bumped whenever nodes move.
+    pub(crate) fn moved(&self) -> u64 {
+        self.moved
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -630,7 +676,7 @@ impl Explorer {
     pub(crate) fn set_clustering(&mut self, clustering: Clustering) {
         if self.clustering != clustering {
             self.clustering = clustering;
-            self.graph.set_config(clustering.forces());
+            self.graph.set_config(clustering.forces(self.terraced));
             self.settling = true;
         }
     }
@@ -1048,6 +1094,12 @@ impl Explorer {
     /// The color index for a node: its module's, so each module reads as one region.
     pub(crate) fn tile_color(&self, tile: usize) -> usize {
         self.graph.cluster(tile).unwrap_or_default()
+    }
+
+    /// A container's name, or its id when the system lacks it.
+    pub(crate) fn container_name(&self, id: &UnitId) -> String {
+        self.any_unit(id)
+            .map_or_else(|| id.to_string(), |unit| unit.name.clone())
     }
 
     /// A module cluster's name: the module's own, else its container's.

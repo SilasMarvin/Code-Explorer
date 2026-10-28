@@ -22,6 +22,7 @@ mod journey_panel;
 mod lens;
 mod scene;
 mod source_diff;
+mod terraces;
 mod truth;
 mod ui;
 
@@ -63,7 +64,19 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// What the graph's third dimension shows as it opens.
+    z: ZView,
     diff: Option<Comparison>,
+}
+
+/// What the graph's third dimension shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ZView {
+    /// Whatever the layout leaves there: the graph lies nearly flat.
+    #[default]
+    Flat,
+    /// Each container a plateau on the one it sits in.
+    Terraces,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -96,6 +109,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            z: ZView::Flat,
             diff: None,
         }
     }
@@ -234,6 +248,18 @@ impl Viewer {
         self
     }
 
+    /// What the third dimension shows: `terraces` stands each container as a plateau
+    /// on the one it sits in, the camera posed over it as over a relief map. Anything
+    /// else leaves the graph as it is.
+    #[must_use]
+    pub fn with_z(mut self, name: &str) -> Self {
+        self.z = match name {
+            "terraces" => ZView::Terraces,
+            _ => ZView::Flat,
+        };
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -286,6 +312,13 @@ impl Viewer {
             }
         }
         explorer.set_clustering(self.clustering);
+        if self.z == ZView::Terraces {
+            explorer.set_terraced(true);
+            // Gathering every level of container takes longer than one settle allows.
+            for _ in 0..3 {
+                explorer.settle_now();
+            }
+        }
         explorer.set_lens(self.lens);
         if let Some(tile) = self
             .focus

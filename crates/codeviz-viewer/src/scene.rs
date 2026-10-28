@@ -10,6 +10,7 @@ use crate::{
     graph_view::{self, NodeMaterials},
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
+    terraces,
     ui::{Chrome, KeyHelp},
 };
 
@@ -17,28 +18,32 @@ pub(crate) struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Startup,
-            (graph_view::create_node_materials, spawn_nodes).chain(),
-        )
-        .add_systems(
-            Update,
-            (
-                stop_on_rebuild,
-                keyboard.run_if(not(egui_wants_any_keyboard_input)),
-                autoplay,
-                graph_view::track_attention,
-                simulate,
-                reveal,
-                graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
-                graph_view::follow_focus,
-                graph_view::frame_reveal,
-                graph_view::frame_spotlight,
-                graph_view::style_nodes,
-                graph_view::draw_graph,
+        app.init_resource::<terraces::Terrain>()
+            .add_systems(
+                Startup,
+                (graph_view::create_node_materials, spawn_nodes).chain(),
             )
-                .chain(),
-        );
+            .add_systems(
+                Update,
+                (
+                    stop_on_rebuild,
+                    keyboard.run_if(not(egui_wants_any_keyboard_input)),
+                    autoplay,
+                    graph_view::track_attention,
+                    simulate,
+                    reveal,
+                    graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
+                    terraces::terrace_keys.run_if(not(egui_wants_any_keyboard_input)),
+                    graph_view::follow_focus,
+                    graph_view::frame_reveal,
+                    graph_view::frame_spotlight,
+                    terraces::open_posed,
+                    graph_view::style_nodes,
+                    terraces::build_terrain,
+                    graph_view::draw_graph,
+                )
+                    .chain(),
+            );
     }
 }
 

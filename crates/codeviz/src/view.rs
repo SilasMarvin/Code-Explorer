@@ -72,6 +72,9 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
+    /// What the third dimension shows; Z toggles it in the viewer.
+    #[arg(long, value_enum)]
+    z: Option<ZArg>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -119,6 +122,12 @@ enum NearArg {
     Space,
     /// Distance in the graph, with each call between counting against it.
     Blend,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ZArg {
+    /// Each container a plateau raised on the one it sits in, functions on top.
+    Terraces,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -230,6 +239,11 @@ pub(crate) fn open(
     }
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some(z) = args.z {
+        viewer = viewer.with_z(match z {
+            ZArg::Terraces => "terraces",
+        });
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

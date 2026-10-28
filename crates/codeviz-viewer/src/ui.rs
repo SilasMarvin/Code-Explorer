@@ -26,6 +26,7 @@ use crate::{
     lens::{Measure, Source},
     scene::{PALETTE, lane_color},
     source_diff,
+    terraces::{self, Ground, Terrain},
 };
 
 pub(crate) struct UiPlugin;
@@ -149,6 +150,7 @@ fn draw_ui(
     mut chrome: ResMut<Chrome>,
     time: Res<Time>,
     mut diff: Option<ResMut<DiffView>>,
+    terrain: Res<Terrain>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) -> Result {
@@ -199,6 +201,7 @@ fn draw_ui(
             &to_screen,
             &explorer,
             diff.as_deref(),
+            &terrain,
             transform.up().into(),
         );
         // The graph's right edge clear of the diff card above and a docked journey
@@ -945,6 +948,8 @@ pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
 enum Named {
     Node(usize),
     Group(usize),
+    /// A terraced container, by index into the terrain's plateaus.
+    Plateau(usize),
 }
 
 /// Tier, then bigger first, then a stable tiebreak.
@@ -1256,6 +1261,7 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
+    terrain: &Terrain,
     up: Vec3,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
@@ -1321,6 +1327,8 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
+            // Terraced, two calls either way are named, after the focus's own.
+            Some(Relation::Upstream(2) | Relation::Downstream(2)) if explorer.terraced() => 3,
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1342,7 +1350,69 @@ fn draw_graph_labels(
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
-    if explorer.lens().reach.is_none() {
+    // Terraced, each plateau is named on its far rim instead: modules and what holds
+    // them after the names near the focus, types after those.
+    let rim_spots = |index: usize| -> Vec<egui::Pos2> {
+        let Some(plateau) = terrain.plateaus.get(index) else {
+            return Vec::new();
+        };
+        let rim: Vec<egui::Pos2> = plateau
+            .outline
+            .iter()
+            .filter_map(|p| to_screen(p.extend(plateau.top)))
+            .collect();
+        // Its far edge first, then its near edge, then either side.
+        let extreme = |key: fn(&egui::Pos2) -> f32| {
+            rim.iter().copied().min_by(|a, b| key(a).total_cmp(&key(b)))
+        };
+        [
+            extreme(|p| p.y),
+            extreme(|p| -p.y),
+            extreme(|p| p.x),
+            extreme(|p| -p.x),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    };
+    let rim_top = |index: usize| rim_spots(index).first().copied();
+    if explorer.terraced() {
+        // With a focus, what holds the focus and what is next to it is named first,
+        // so where those live reads; then what holds two calls away, then crates.
+        // The rest go unnamed, their color and height enough to tell them apart.
+        let nearest = |plateau: &terraces::Plateau| {
+            plateau
+                .tiles
+                .iter()
+                .filter_map(|&tile| match related(tile) {
+                    _ if center == Some(tile) => Some(0),
+                    Some(Relation::Upstream(hops) | Relation::Downstream(hops)) => Some(hops),
+                    None => None,
+                })
+                .min()
+        };
+        for (index, plateau) in terrain.plateaus.iter().enumerate() {
+            let outermost = !matches!(plateau.look, Ground::Type(_)) && plateau.bottom < 0.0;
+            let tier = match (center, nearest(plateau)) {
+                (None, _) if matches!(plateau.look, Ground::Type(_)) => 6,
+                (None, _) => 1,
+                (Some(_), Some(0 | 1)) => 2,
+                (Some(_), Some(2)) => 4,
+                _ if outermost => 5,
+                _ => continue,
+            };
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a rough size for ordering"
+            )]
+            let size = plateau.extent() as usize;
+            order.push((
+                (tier, std::cmp::Reverse(size), index),
+                Named::Plateau(index),
+            ));
+        }
+    } else if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1375,7 +1445,7 @@ fn draw_graph_labels(
                     .filter(|((tier, _, _), _)| *tier <= 3)
                     .filter_map(|&(_, named)| match named {
                         Named::Node(tile) => discs[tile],
-                        Named::Group(_) => None,
+                        Named::Group(_) | Named::Plateau(_) => None,
                     })
                     .map(|(node, edge)| {
                         egui::Rect::from_center_size(node, egui::Vec2::splat(edge * 2.0))
@@ -1394,6 +1464,26 @@ fn draw_graph_labels(
                 let label = explorer.cluster_name(group);
                 let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
                 placer.place(named, at, 0.0, job, None, false);
+            }
+            Named::Plateau(index) => {
+                let Some(plateau) = terrain.plateaus.get(index) else {
+                    continue;
+                };
+                let color = egui_color(plateau.look.rim().with_alpha(1.0))
+                    .gamma_multiply(if center.is_some() { 0.75 } else { 0.95 });
+                let name = explorer.container_name(&plateau.unit);
+                // Modules and what holds them in capitals, as on a map; types as written.
+                let label = match plateau.look {
+                    Ground::Type(_) => name,
+                    _ => name.to_uppercase(),
+                };
+                let job = label_job(None, &label, None, color, 12.0, false);
+                // Wherever round its rim the name fits.
+                for at in rim_spots(index) {
+                    if placer.place(named, at, 0.0, job.clone(), None, false) {
+                        break;
+                    }
+                }
             }
             Named::Node(tile) => {
                 let Some((node, edge)) = discs[tile] else {
@@ -1522,6 +1612,7 @@ fn draw_graph_labels(
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
+        Named::Plateau(index) => rim_top(index),
     });
 }
 
@@ -1732,7 +1823,11 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("F", "follow the journey's start again, head-on"),
+            ("Z", "terraces: containers as raised plateaus / flat"),
+            (
+                "F",
+                "follow the journey's start again, head-on (terraced: as a relief)",
+            ),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
             ("T", "play or pause the morph"),

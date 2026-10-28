@@ -25,6 +25,7 @@ use crate::{
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
+    terraces::{self, Terrain},
 };
 
 /// Calls into the focus.
@@ -231,6 +232,11 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     match relation(reach, tile) {
+        Some(Relation::Upstream(hops) | Relation::Downstream(hops))
+            if explorer.terraced() && hops <= 2 =>
+        {
+            Some(hops)
+        }
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
@@ -325,10 +331,15 @@ fn fade(hops: u32) -> f32 {
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     diff: Option<Res<DiffView>>,
+    terrain: Res<Terrain>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
-    draw_regions(&explorer, &mut gizmos);
+    if explorer.terraced() {
+        terraces::draw_rims(&terrain, &mut gizmos);
+    } else {
+        draw_regions(&explorer, &mut gizmos);
+    }
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
@@ -362,6 +373,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     let spotlit = explorer.spotlit();
+    // Terraced, two calls either way of the focus light, journey or not.
+    let terraced = explorer.terraced();
     // Calls from the focus, counting the focus itself as zero.
     let hops = |side: &HashMap<usize, u32>, tile: usize| {
         if center == Some(tile) {
@@ -386,13 +399,18 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             let down = hops(&reach.downstream, from).zip(hops(&reach.downstream, to));
             match (up, down) {
                 (Some((outer, inner)), _)
-                    if outer == inner + 1 && (!opened || outer == 1 || spotlit.contains(&from)) =>
+                    if outer == inner + 1
+                        && (!opened
+                            || outer == 1
+                            || terraced && outer <= 2
+                            || spotlit.contains(&from)) =>
                 {
                     Some((CALLER, outer))
                 }
                 (_, Some((inner, outer)))
                     if outer == inner + 1
                         && (!opened
+                            || terraced && outer <= 2
                             || journey.contains_key(&to) && journey.contains_key(&from)
                             || spotlit.contains(&to)) =>
                 {
@@ -401,23 +419,28 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                 _ => None,
             }
         });
-        let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
+        // Terraced, a call leaving its container arcs over the edge between.
+        let course = if terraced && terraces::arcs(explorer, from, to) {
+            terraces::course(a, b)
+        } else {
+            vec![a, b]
+        };
         match lit {
             // Stop at the callee's surface so the head stays visible.
             Some((color, 1)) => {
                 let color = color.with_alpha(fade(1) * shown);
-                gizmos.arrow(a, b - back, color).with_tip_length(1.1);
-                flow(gizmos, a, b - back, color, time, index);
+                let course = short_of(course, node_size(graph, to) * 0.5);
+                arrow_along(gizmos, &course, color, 1.1);
+                flow_along(gizmos, &course, color, time, index);
             }
             Some((_, outer)) => {
-                gizmos
-                    .arrow(a, b - back, FURTHER.with_alpha(fade(outer) * 0.8 * shown))
-                    .with_tip_length(0.8);
+                let course = short_of(course, node_size(graph, to) * 0.5);
+                let color = FURTHER.with_alpha(fade(outer) * 0.8 * shown);
+                arrow_along(gizmos, &course, color, 0.8);
             }
             None if path.contains(&(from, to)) => {
-                gizmos
-                    .arrow(a, b - back, FURTHER.with_alpha(0.4 * shown))
-                    .with_tip_length(0.8);
+                let course = short_of(course, node_size(graph, to) * 0.5);
+                arrow_along(gizmos, &course, FURTHER.with_alpha(0.4 * shown), 0.8);
             }
             None => {
                 let alpha = if center.is_some() {
@@ -428,8 +451,70 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                     // Calls between modules step back, so each module's own wiring reads.
                     0.06
                 };
-                gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, alpha * shown));
+                gizmos.linestrip(course, Color::srgba(0.6, 0.66, 0.8, alpha * shown));
             }
+        }
+    }
+}
+
+/// `course` stopped `gap` short of its end, so an arrow's head stays clear of the
+/// node it points at.
+fn short_of(mut course: Vec<Vec3>, gap: f32) -> Vec<Vec3> {
+    if let [.., before, last] = course.as_mut_slice() {
+        let back = (*last - *before).normalize_or_zero() * gap.min(before.distance(*last) * 0.9);
+        *last -= back;
+    }
+    course
+}
+
+/// An arrow following `course`, its head on the last stretch.
+fn arrow_along(gizmos: &mut Gizmos, course: &[Vec3], color: Color, tip: f32) {
+    match course {
+        [] | [_] => {}
+        [a, b] => {
+            gizmos.arrow(*a, *b, color).with_tip_length(tip);
+        }
+        [.., before, last] => {
+            gizmos.linestrip(course[..course.len() - 1].iter().copied(), color);
+            gizmos.arrow(*before, *last, color).with_tip_length(tip);
+        }
+    }
+}
+
+/// Dots running along `course`, as [`flow`] runs them along a straight call.
+fn flow_along(gizmos: &mut Gizmos, course: &[Vec3], color: Color, time: f32, seed: usize) {
+    if let [a, b] = course {
+        flow(gizmos, *a, *b, color, time, seed);
+        return;
+    }
+    let lengths: Vec<f32> = course.windows(2).map(|w| w[0].distance(w[1])).collect();
+    let length: f32 = lengths.iter().sum();
+    if length < 1.0 {
+        return;
+    }
+    let count = (length / 7.0).ceil().clamp(1.0, 7.0);
+    #[expect(clippy::cast_precision_loss, reason = "a seed for a phase")]
+    let offset = (seed as f32 * 0.618_034).fract();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 1..=7"
+    )]
+    for dot in 0..count as u32 {
+        #[expect(clippy::cast_precision_loss, reason = "a small count")]
+        let phase = (time * 5.0 / length + (dot as f32 + offset) / count).fract();
+        let mut along = phase * length;
+        for (window, &stretch) in course.windows(2).zip(&lengths) {
+            if along <= stretch {
+                let at = window[0].lerp(window[1], along / stretch.max(1e-4));
+                gizmos.sphere(
+                    Isometry3d::from_translation(at),
+                    0.22,
+                    color.with_alpha((color.alpha() + 0.15).min(1.0)),
+                );
+                break;
+            }
+            along -= stretch;
         }
     }
 }
@@ -574,7 +659,12 @@ pub(crate) fn graph_keys(
 ) {
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(FRONT);
+            // Terraced, back to the relief map's angle: head-on, they would lie flat.
+            camera.turn_to(if explorer.terraced() {
+                terraces::RELIEF
+            } else {
+                FRONT
+            });
             orbit_anchor(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {

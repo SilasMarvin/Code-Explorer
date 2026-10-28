@@ -339,7 +339,7 @@ fn versions(
     changes: &HashMap<usize, Change>,
 ) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
     let settle = |system: &System| {
-        let forces = explorer.clustering().forces();
+        let forces = explorer.clustering().forces(explorer.terraced());
         let mut version = ForceGraph::new(system, explorer.map(), forces);
         version.positions.clone_from(&explorer.graph().positions);
         for _ in 0..VERSION_STEPS {
