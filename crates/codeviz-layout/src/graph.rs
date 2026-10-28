@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use codeviz_core::System;
 use codeviz_ir::UnitId;
 
-use crate::CodebaseMap;
+use crate::{CodebaseMap, Nesting};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ForceConfig {
@@ -35,6 +35,9 @@ pub struct ForceConfig {
     pub flatten: f32,
     /// Velocity kept per step.
     pub damping: f32,
+    /// Whether every level of container gathers its functions and keeps clear of its
+    /// siblings, crate down to type, rather than the nearest module alone.
+    pub nested: bool,
 }
 
 impl Default for ForceConfig {
@@ -49,6 +52,7 @@ impl Default for ForceConfig {
             gravity: 0.004,
             flatten: 0.0,
             damping: 0.82,
+            nested: false,
         }
     }
 }
@@ -64,6 +68,8 @@ pub struct ForceGraph {
     clusters: Vec<usize>,
     /// The module each cluster stands for, by cluster.
     cluster_units: Vec<Option<UnitId>>,
+    /// Every container around the functions, nested.
+    nesting: Nesting,
     /// Links between tiles, each pair once, lower index first.
     pub links: Vec<(usize, usize)>,
     /// The same links with their direction: `(caller, callee)`, sorted.
@@ -147,6 +153,7 @@ impl ForceGraph {
         calls.sort_unstable();
 
         let (clusters, cluster_units) = module_clusters(system, map);
+        let nesting = Nesting::new(system, map);
         let radius = (map.tiles.len() as f32).sqrt() * 2.0;
         let positions = map
             .tiles
@@ -158,6 +165,7 @@ impl ForceGraph {
             groups: map.tiles.iter().map(|t| t.group).collect(),
             clusters,
             cluster_units,
+            nesting,
             positions,
             links,
             calls,
@@ -233,6 +241,12 @@ impl ForceGraph {
     #[must_use]
     pub fn cluster_unit(&self, cluster: usize) -> Option<&UnitId> {
         self.cluster_units.get(cluster)?.as_ref()
+    }
+
+    /// Every container around the functions, nested.
+    #[must_use]
+    pub fn nesting(&self) -> &Nesting {
+        &self.nesting
     }
 
     /// How many clusters there are.
@@ -316,7 +330,9 @@ impl ForceGraph {
         for &(a, b) in &self.links {
             let delta = sub(self.positions[b], self.positions[a]);
             let distance = dot(delta, delta).sqrt().max(0.01);
-            let spring = if self.clusters.get(a) == self.clusters.get(b) {
+            let spring = if config.nested {
+                config.spring * self.nested_spring(a, b)
+            } else if self.clusters.get(a) == self.clusters.get(b) {
                 config.spring
             } else {
                 config.spring * config.cross_spring
@@ -325,67 +341,15 @@ impl ForceGraph {
             forces[a] = add(forces[a], pull);
             forces[b] = sub(forces[b], pull);
         }
-        let mut centers: Vec<([f32; 3], f32)> = Vec::new();
-        for (position, &group) in self.positions.iter().zip(&self.clusters) {
-            if centers.len() <= group {
-                centers.resize(group + 1, ([0.0; 3], 0.0));
-            }
-            if let Some((sum, n)) = centers.get_mut(group) {
-                *sum = add(*sum, *position);
-                *n += 1.0;
-            }
-        }
-        // Containers keep apart as wholes. Each takes up a ball as wide as its
-        // functions spread; two balls closer than their radii plus a gap push apart,
-        // harder the more they overlap, the smaller one moving more. So a cluster
-        // stays whole and clear of its neighbors however many calls cross between.
-        let mut apart = vec![[0.0_f32; 3]; centers.len()];
-        if config.separation > 0.0 {
-            let middles: Vec<[f32; 3]> = centers
-                .iter()
-                .map(|&(sum, n)| scale(sum, 1.0 / n.max(1.0)))
-                .collect();
-            let mut spread = vec![0.0_f32; centers.len()];
-            for (position, &group) in self.positions.iter().zip(&self.clusters) {
-                let offset = sub(*position, middles[group]);
-                spread[group] += dot(offset, offset);
-            }
-            let radii: Vec<f32> = spread
-                .iter()
-                .zip(&centers)
-                .map(|(&sum, &(_, n))| (sum / n.max(1.0)).sqrt() * 1.8 + config.link_length * 0.5)
-                .collect();
-            let gap = config.link_length * 2.0;
-            for a in 0..centers.len() {
-                for b in (a + 1)..centers.len() {
-                    let (n_a, n_b) = (centers[a].1, centers[b].1);
-                    if n_a == 0.0 || n_b == 0.0 {
-                        continue;
-                    }
-                    let delta = sub(middles[a], middles[b]);
-                    let distance = dot(delta, delta).sqrt().max(0.01);
-                    let overlap = radii[a] + radii[b] + gap - distance;
-                    if overlap <= 0.0 {
-                        continue;
-                    }
-                    let push = scale(delta, config.separation * overlap / distance);
-                    let total = n_a + n_b;
-                    apart[a] = add(apart[a], scale(push, n_b / total));
-                    apart[b] = sub(apart[b], scale(push, n_a / total));
-                }
-            }
-        }
+        let gathered = if config.nested {
+            self.gather(&self.nesting_groups())
+        } else {
+            self.gather(&self.cluster_groups())
+        };
         for (i, force) in forces.iter_mut().enumerate() {
-            let position = self.positions[i];
-            if let Some(&push) = self.clusters.get(i).and_then(|&g| apart.get(g)) {
-                *force = add(*force, push);
-            }
-            if let Some(&(sum, n)) = self.clusters.get(i).and_then(|&g| centers.get(g)) {
-                let center = scale(sum, 1.0 / n);
-                *force = add(*force, scale(sub(center, position), config.cohesion));
-            }
-            *force = sub(*force, scale(position, config.gravity));
-            force[2] -= position[2] * config.flatten;
+            *force = add(*force, gathered[i]);
+            *force = sub(*force, scale(self.positions[i], config.gravity));
+            force[2] -= self.positions[i][2] * config.flatten;
         }
 
         let mut speed = 0.0;
@@ -404,6 +368,154 @@ impl ForceGraph {
             speed += length.min(2.0);
         }
         speed / count as f32
+    }
+}
+
+/// Groups of tiles that gather and keep apart: per tile the groups it is in, and per
+/// group its parent, how hard its tiles pull together and the gap it keeps from its
+/// siblings.
+struct Groups {
+    of_tile: Vec<Vec<usize>>,
+    parent: Vec<Option<usize>>,
+    cohesion: Vec<f32>,
+    gap: Vec<f32>,
+    /// Whether a group's room is set by how many tiles it holds rather than how far
+    /// they spread: a group torn by calls across its edge then does not claim more
+    /// room, which would push its neighbors away and tear it further.
+    by_count: bool,
+}
+
+impl ForceGraph {
+    /// How hard a link pulls when nested, as a share of the spring: fully within one
+    /// container, less across the edge of one, less again across the edge of the
+    /// outermost, so calls between crates bend them towards each other without
+    /// tearing them apart.
+    fn nested_spring(&self, a: usize, b: usize) -> f32 {
+        let (Some(from), Some(to)) = (self.nesting.paths.get(a), self.nesting.paths.get(b)) else {
+            return self.config.cross_spring;
+        };
+        if from.last() == to.last() {
+            1.0
+        } else if from.first() == to.first() {
+            self.config.cross_spring
+        } else {
+            self.config.cross_spring * self.config.cross_spring
+        }
+    }
+
+    /// Each tile in its module cluster, the clusters side by side.
+    fn cluster_groups(&self) -> Groups {
+        let count = self.clusters.iter().max().map_or(0, |c| c + 1);
+        Groups {
+            of_tile: self.clusters.iter().map(|&c| vec![c]).collect(),
+            parent: vec![None; count],
+            cohesion: vec![self.config.cohesion; count],
+            gap: vec![self.config.link_length * 2.0; count],
+            by_count: false,
+        }
+    }
+
+    /// Each tile in every container around it. The innermost pull hardest; an outer
+    /// one pulls a little, enough to keep what it holds together. Innermost siblings
+    /// keep a narrower gap, as they share a container.
+    fn nesting_groups(&self) -> Groups {
+        let nests = &self.nesting.nests;
+        let innermost: Vec<bool> = (0..nests.len())
+            .map(|n| nests[n].loose || self.nesting.innermost(n))
+            .collect();
+        let config = self.config;
+        Groups {
+            of_tile: self.nesting.paths.clone(),
+            parent: nests.iter().map(|n| n.parent).collect(),
+            cohesion: innermost
+                .iter()
+                .map(|&inner| config.cohesion * if inner { 1.0 } else { 0.6 })
+                .collect(),
+            gap: innermost
+                .iter()
+                .map(|&inner| config.link_length * if inner { 0.9 } else { 2.0 })
+                .collect(),
+            by_count: true,
+        }
+    }
+
+    /// The pull of each tile towards the middle of its groups, and the push apart of
+    /// sibling groups that crowd each other. Each group takes up a ball as wide as
+    /// its tiles spread; two siblings closer than their radii plus a gap push apart,
+    /// harder the more they overlap, the smaller one moving more. So a group stays
+    /// whole and clear of its neighbors however many calls cross between.
+    fn gather(&self, groups: &Groups) -> Vec<[f32; 3]> {
+        let config = self.config;
+        let count = groups.parent.len();
+        let mut sums = vec![([0.0_f32; 3], 0.0_f32); count];
+        for (position, of) in self.positions.iter().zip(&groups.of_tile) {
+            for &group in of {
+                let (sum, n) = &mut sums[group];
+                *sum = add(*sum, *position);
+                *n += 1.0;
+            }
+        }
+        let middles: Vec<[f32; 3]> = sums
+            .iter()
+            .map(|&(sum, n)| scale(sum, 1.0 / n.max(1.0)))
+            .collect();
+        let mut apart = vec![[0.0_f32; 3]; count];
+        if config.separation > 0.0 {
+            let mut spread = vec![0.0_f32; count];
+            for (position, of) in self.positions.iter().zip(&groups.of_tile) {
+                for &group in of {
+                    let offset = sub(*position, middles[group]);
+                    spread[group] += dot(offset, offset);
+                }
+            }
+            let radii: Vec<f32> = spread
+                .iter()
+                .zip(&sums)
+                .map(|(&sum, &(_, n))| {
+                    let spread = if groups.by_count {
+                        n.sqrt() * config.link_length * 0.6
+                    } else {
+                        (sum / n.max(1.0)).sqrt() * 1.8
+                    };
+                    spread + config.link_length * 0.5
+                })
+                .collect();
+            let mut siblings: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
+            for group in (0..count).filter(|&g| sums[g].1 > 0.0) {
+                siblings
+                    .entry(groups.parent[group])
+                    .or_default()
+                    .push(group);
+            }
+            for family in siblings.values() {
+                for (i, &a) in family.iter().enumerate() {
+                    for &b in &family[i + 1..] {
+                        let delta = sub(middles[a], middles[b]);
+                        let distance = dot(delta, delta).sqrt().max(0.01);
+                        let gap = groups.gap[a].max(groups.gap[b]);
+                        let overlap = radii[a] + radii[b] + gap - distance;
+                        if overlap <= 0.0 {
+                            continue;
+                        }
+                        let push = scale(delta, config.separation * overlap / distance);
+                        let (n_a, n_b) = (sums[a].1, sums[b].1);
+                        let total = n_a + n_b;
+                        apart[a] = add(apart[a], scale(push, n_b / total));
+                        apart[b] = sub(apart[b], scale(push, n_a / total));
+                    }
+                }
+            }
+        }
+        self.positions
+            .iter()
+            .zip(&groups.of_tile)
+            .map(|(&position, of)| {
+                of.iter().fold([0.0; 3], |force, &group| {
+                    let pull = scale(sub(middles[group], position), groups.cohesion[group]);
+                    add(add(force, apart[group]), pull)
+                })
+            })
+            .collect()
     }
 }
 
@@ -542,6 +654,58 @@ mod tests {
         assert_eq!(
             stats.iter().map(|s| s.internal + s.outgoing).sum::<usize>(),
             2
+        );
+    }
+
+    #[test]
+    fn nested_containers_settle_apart_without_flying_off() {
+        let json = r#"{
+          "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" },
+          "units": [
+            { "id": "x:app", "name": "app", "kind": "crate", "role": "group" },
+            { "id": "x:api", "name": "api", "kind": "module", "role": "group", "parent": "x:app" },
+            { "id": "x:db", "name": "db", "kind": "module", "role": "group", "parent": "x:app" },
+            { "id": "y:lib", "name": "lib", "kind": "crate", "role": "group" },
+            { "id": "x:api::a", "name": "a", "kind": "fn", "role": "invocable", "parent": "x:api",
+              "calls": [{ "key": "b#0", "text": "b", "targets": [{ "unit": "x:db::b", "certainty": "exact" }] },
+                        { "key": "c#0", "text": "c", "targets": [{ "unit": "y:lib::c", "certainty": "exact" }] }] },
+            { "id": "x:api::a2", "name": "a2", "kind": "fn", "role": "invocable", "parent": "x:api" },
+            { "id": "x:db::b", "name": "b", "kind": "fn", "role": "invocable", "parent": "x:db",
+              "calls": [{ "key": "c#0", "text": "c", "targets": [{ "unit": "y:lib::c", "certainty": "exact" }] }] },
+            { "id": "x:db::b2", "name": "b2", "kind": "fn", "role": "invocable", "parent": "x:db" },
+            { "id": "y:lib::c", "name": "c", "kind": "fn", "role": "invocable", "parent": "y:lib" },
+            { "id": "y:lib::d", "name": "d", "kind": "fn", "role": "invocable", "parent": "y:lib" }
+          ]
+        }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let map = map(&system, &MapConfig::default());
+        let config = ForceConfig {
+            cohesion: 0.15,
+            separation: 0.4,
+            cross_spring: 0.3,
+            nested: true,
+            flatten: 1.0,
+            ..ForceConfig::default()
+        };
+        let mut graph = ForceGraph::new(&system, &map, config);
+        let mut speed = f32::MAX;
+        for _ in 0..2000 {
+            speed = graph.step();
+        }
+        assert!(speed < 0.01, "settles, got {speed}");
+        let tile = |name: &str| map.tile_of(&UnitId::new(name)).unwrap();
+        let at = |name: &str| graph.positions[tile(name)];
+        let distance = |a: &str, b: &str| {
+            let d = sub(at(a), at(b));
+            dot(d, d).sqrt()
+        };
+        assert!(
+            distance("x:api::a", "x:api::a2") < distance("x:api::a", "y:lib::d"),
+            "a module's functions sit nearer each other than another crate's"
+        );
+        assert!(
+            graph.positions.iter().all(|p| dot(*p, *p).sqrt() < 200.0),
+            "nothing flies off"
         );
     }
 
