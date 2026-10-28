@@ -18,6 +18,7 @@ codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
+codeviz view app.json --focus orders::place --z arcs   # callers over a flat map, calls under
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -67,6 +68,16 @@ camera orbits where the journey starts and turns only when you start somewhere n
 stepping through the journey at most pulls it back to keep the cursor's node in sight.
 Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
 brings it back.
+
+`Z` (or `--z arcs`) lays the map flat and spends the third dimension on which way calls
+run. Every node stays where the map puts it, on a pane of glass, and only the links
+leave it: calls into the focus arc over the glass, violet, and calls out of it arc
+under, blue and dashed, as seen through it. One call further on either side, the
+focus's callers' callers and what its callees call, arc higher or deeper and pale,
+and each of their nodes is named with the neighbor that links it (`calls POST /users/{id}/orders`,
+`called by quote`). So over is upstream and under is downstream at a glance. The
+camera tilts to look across the map from its near edge, so over and under separate on
+screen, and frames every arc; `Z` again lifts the graph back into 3D.
 
 ## Diffs
 
