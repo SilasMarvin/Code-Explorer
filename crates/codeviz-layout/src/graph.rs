@@ -24,6 +24,14 @@ pub struct ForceConfig {
     /// How hard two containers that crowd each other push apart, so each reads as its
     /// own cluster with space around it; zero lets them mingle.
     pub separation: f32,
+    /// How hard a function that strays out of its container's ball is pulled back in,
+    /// per unit it strays: the ball grows with the cube root of what it holds, so a
+    /// container stays one compact cluster however hard its calls pull outwards.
+    pub containment: f32,
+    /// Whether a link moves its end with fewer links more, so a function many others
+    /// call holds its place in its container and they come to it, rather than it
+    /// being dragged out towards them.
+    pub balance: bool,
     /// How hard a link between two containers pulls, as a share of [`Self::spring`]:
     /// below one, calls across containers bend the clusters towards each other without
     /// merging them.
@@ -45,6 +53,8 @@ impl Default for ForceConfig {
             link_length: 6.0,
             cohesion: 0.02,
             separation: 0.0,
+            containment: 0.0,
+            balance: false,
             cross_spring: 1.0,
             gravity: 0.004,
             flatten: 0.0,
@@ -73,6 +83,8 @@ pub struct ForceGraph {
     pub ghosts: Vec<(usize, usize)>,
     /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
     sequences: Vec<Vec<usize>>,
+    /// Per tile, how many links touch it.
+    link_counts: Vec<f32>,
     config: ForceConfig,
 }
 
@@ -146,6 +158,11 @@ impl ForceGraph {
         let mut calls: Vec<(usize, usize)> = calls.into_iter().collect();
         calls.sort_unstable();
 
+        let mut link_counts = vec![0.0; map.tiles.len()];
+        for &(a, b) in &links {
+            link_counts[a] += 1.0;
+            link_counts[b] += 1.0;
+        }
         let (clusters, cluster_units) = module_clusters(system, map);
         let radius = (map.tiles.len() as f32).sqrt() * 2.0;
         let positions = map
@@ -163,6 +180,7 @@ impl ForceGraph {
             calls,
             ghosts: Vec::new(),
             sequences,
+            link_counts,
             config,
         }
     }
@@ -294,6 +312,31 @@ impl ForceGraph {
         self.links.binary_search(&(a.min(b), a.max(b))).is_ok()
     }
 
+    /// Each link pulls its ends towards its rest length.
+    fn pull_links(&self, forces: &mut [[f32; 3]]) {
+        let config = self.config;
+        for &(a, b) in &self.links {
+            let delta = sub(self.positions[b], self.positions[a]);
+            let distance = dot(delta, delta).sqrt().max(0.01);
+            let spring = if self.clusters.get(a) == self.clusters.get(b) {
+                config.spring
+            } else {
+                config.spring * config.cross_spring
+            };
+            let pull = scale(delta, spring * (distance - config.link_length) / distance);
+            // Balanced, each end takes the share of the pull the other end's links
+            // make up, times two so a link between equals pulls as it would unbalanced.
+            let (share_a, share_b) = if config.balance {
+                let (n_a, n_b) = (self.link_counts[a], self.link_counts[b]);
+                (2.0 * n_b / (n_a + n_b), 2.0 * n_a / (n_a + n_b))
+            } else {
+                (1.0, 1.0)
+            };
+            forces[a] = add(forces[a], scale(pull, share_a));
+            forces[b] = sub(forces[b], scale(pull, share_b));
+        }
+    }
+
     /// Advances the simulation one step. Returns the mean speed, which falls towards
     /// zero as the graph settles.
     pub fn step(&mut self) -> f32 {
@@ -313,18 +356,7 @@ impl ForceGraph {
                 forces[j] = sub(forces[j], push);
             }
         }
-        for &(a, b) in &self.links {
-            let delta = sub(self.positions[b], self.positions[a]);
-            let distance = dot(delta, delta).sqrt().max(0.01);
-            let spring = if self.clusters.get(a) == self.clusters.get(b) {
-                config.spring
-            } else {
-                config.spring * config.cross_spring
-            };
-            let pull = scale(delta, spring * (distance - config.link_length) / distance);
-            forces[a] = add(forces[a], pull);
-            forces[b] = sub(forces[b], pull);
-        }
+        self.pull_links(&mut forces);
         let mut centers: Vec<([f32; 3], f32)> = Vec::new();
         for (position, &group) in self.positions.iter().zip(&self.clusters) {
             if centers.len() <= group {
@@ -382,7 +414,14 @@ impl ForceGraph {
             }
             if let Some(&(sum, n)) = self.clusters.get(i).and_then(|&g| centers.get(g)) {
                 let center = scale(sum, 1.0 / n);
-                *force = add(*force, scale(sub(center, position), config.cohesion));
+                let inward = sub(center, position);
+                *force = add(*force, scale(inward, config.cohesion));
+                let distance = dot(inward, inward).sqrt();
+                let room = ball_radius(n, config.link_length);
+                if config.containment > 0.0 && distance > room {
+                    let back = config.containment * (distance - room) / distance;
+                    *force = add(*force, scale(inward, back));
+                }
             }
             *force = sub(*force, scale(position, config.gravity));
             force[2] -= position[2] * config.flatten;
@@ -405,6 +444,12 @@ impl ForceGraph {
         }
         speed / count as f32
     }
+}
+
+/// How far from its middle a container of `count` functions may spread before
+/// containment pulls them back.
+fn ball_radius(count: f32, link_length: f32) -> f32 {
+    link_length * 0.75 * count.cbrt()
 }
 
 /// A point in a ball of `radius`, fixed by `key`, so the same codebase always starts
@@ -543,6 +588,37 @@ mod tests {
             stats.iter().map(|s| s.internal + s.outgoing).sum::<usize>(),
             2
         );
+    }
+
+    #[test]
+    fn containment_keeps_a_hub_in_its_ball() {
+        let system = system();
+        let map = map(&system, &MapConfig::default());
+        let config = ForceConfig {
+            cohesion: 0.3,
+            containment: 0.5,
+            ..ForceConfig::default()
+        };
+        let mut graph = ForceGraph::new(&system, &map, config);
+        for _ in 0..500 {
+            graph.step();
+        }
+        for cluster in 0..graph.cluster_count() {
+            let members: Vec<[f32; 3]> = (0..map.tiles.len())
+                .filter(|&t| graph.cluster(t) == Some(cluster))
+                .map(|t| graph.positions[t])
+                .collect();
+            let count = members.len() as f32;
+            let middle = scale(
+                members.iter().fold([0.0; 3], |sum, &p| add(sum, p)),
+                1.0 / count,
+            );
+            let room = ball_radius(count, config.link_length);
+            for position in members {
+                let offset = sub(position, middle);
+                assert!(dot(offset, offset).sqrt() < room + 1.0);
+            }
+        }
     }
 
     #[test]
