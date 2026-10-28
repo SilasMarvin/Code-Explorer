@@ -42,6 +42,9 @@ impl Plugin for OrbitCameraPlugin {
 pub(crate) const FRONT: (f32, f32) = (0.0, 0.0);
 /// The default three-quarter view.
 pub(crate) const ANGLED: (f32, f32) = (-0.35, -0.2);
+/// Looking across the map laid flat as a floor, from above its bottom edge and a
+/// little to the left, so height stands up on screen.
+pub(crate) const OVER_FLOOR: (f32, f32) = (-0.25, -0.3);
 
 #[derive(Component, Debug)]
 pub(crate) struct OrbitCamera {
@@ -59,6 +62,10 @@ pub(crate) struct OrbitCamera {
     /// Whether the viewer has panned or zoomed away from the focused node, so the
     /// camera stops holding it in the middle.
     pub(crate) free: bool,
+    /// How far the map is laid down as a floor, from 0 (facing it, as a wall) to 1
+    /// (lying flat, with the graph's z standing up), and where that is easing to.
+    tilt: f32,
+    goal_tilt: f32,
 }
 
 impl Default for OrbitCamera {
@@ -72,6 +79,8 @@ impl Default for OrbitCamera {
             goal_distance: None,
             goal_angles: None,
             free: false,
+            tilt: 0.0,
+            goal_tilt: 0.0,
         }
     }
 }
@@ -107,6 +116,29 @@ impl OrbitCamera {
         self.goal_angles = None;
         self.yaw -= delta.x * ORBIT_SPEED;
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    /// Lays the map down as a floor, or stands it back up as a wall, turning to
+    /// `angles` as it goes; at once when `now`, as when the viewer opens that way.
+    pub(crate) fn lay_down(&mut self, floor: bool, angles: (f32, f32), now: bool) {
+        self.goal_tilt = if floor { 1.0 } else { 0.0 };
+        self.turn_to(angles);
+        if now {
+            self.tilt = self.goal_tilt;
+            (self.yaw, self.pitch) = angles;
+            self.goal_angles = None;
+        }
+    }
+
+    /// The distance being eased towards, if any.
+    pub(crate) fn goal_distance(&self) -> Option<f32> {
+        self.goal_distance
+    }
+
+    /// How the camera will be turned once it has eased to its goals.
+    pub(crate) fn settled_rotation(&self) -> Quat {
+        let (yaw, pitch) = self.goal_angles.unwrap_or((self.yaw, self.pitch));
+        rotation(self.goal_tilt, yaw, pitch)
     }
 
     /// Eases round to `(yaw, pitch)`.
@@ -233,6 +265,13 @@ fn camera_input(
     }
 }
 
+/// The camera's turn: `yaw` and `pitch` about the map, laid down by `tilt`, which
+/// turns its y axis away from the camera and its z up.
+fn rotation(tilt: f32, yaw: f32, pitch: f32) -> Quat {
+    let floor = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 * tilt);
+    floor * Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)
+}
+
 fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Transform)>) {
     let ease = 1.0 - (-EASING * time.delta_secs()).exp();
     for (mut camera, mut transform) in &mut cameras {
@@ -250,7 +289,8 @@ fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Tran
                 camera.goal_angles = None;
             }
         }
-        let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+        camera.tilt += (camera.goal_tilt - camera.tilt) * ease;
+        let rotation = rotation(camera.tilt, camera.yaw, camera.pitch);
         transform.translation = camera.focus + rotation * Vec3::Z * camera.distance;
         transform.rotation = rotation;
     }

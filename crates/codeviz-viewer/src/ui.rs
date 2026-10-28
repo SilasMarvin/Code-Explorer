@@ -22,6 +22,7 @@ use crate::{
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
     graph_view::{self, CALLEE, CALLER, Relation, relation},
+    hourglass,
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
     scene::{PALETTE, lane_color},
@@ -940,6 +941,35 @@ pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
         )
 }
 
+/// Under the hourglass, each level's name beside its ring on the axis through the
+/// focus, left of it, kept clear of every other label.
+fn level_names(
+    placer: &mut Placer,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+    explorer: &Explorer,
+) {
+    for (step, name, at) in hourglass::level_marks(explorer) {
+        let Some(mark) = to_screen(at) else {
+            continue;
+        };
+        let (arrow, color) = if step > 0 {
+            ("↑", CALLER_TEXT)
+        } else {
+            ("↓", CALLEE_TEXT)
+        };
+        let text = format!("{arrow}{} {name}", step.unsigned_abs());
+        let galley = placer.painter.layout_no_wrap(
+            text,
+            egui::FontId::proportional(11.0),
+            color.gamma_multiply(0.85),
+        );
+        let rect =
+            egui::Align2::RIGHT_CENTER.anchor_size(mark - egui::vec2(10.0, 0.0), galley.size());
+        placer.painter.galley(rect.min, galley, color);
+        placer.taken.push(rect.expand(2.0));
+    }
+}
+
 /// What a graph label names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Named {
@@ -1321,6 +1351,9 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
+            // The hourglass lifts two calls either way, and names what it lifts.
+            Some(Relation::Upstream(1) | Relation::Downstream(1)) if explorer.hourglass() => 1,
+            Some(Relation::Upstream(2) | Relation::Downstream(2)) if explorer.hourglass() => 3,
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1338,10 +1371,20 @@ fn draw_graph_labels(
     }
     // Modules are named at the top of their rings, ahead of most function names.
     let regions = graph_view::regions(explorer);
+    // On a map laid flat, the far edge of the ring, which is its top on screen.
+    let ring_up = if explorer.hourglass() {
+        up.with_z(0.0).try_normalize().unwrap_or(up)
+    } else {
+        up
+    };
     let ring_top = |cluster: usize| {
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
-        to_screen(middle + up * radius)
+        to_screen(middle + ring_up * radius)
     };
+    // Under the hourglass, only the modules something lifted lives in, and those
+    // ahead of names two levels off: which module a caller or callee is in matters
+    // more there than the rest of the map.
+    let lifted = hourglass::lifted_clusters(explorer);
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
             #[expect(
@@ -1350,7 +1393,12 @@ fn draw_graph_labels(
                 reason = "a rough size for ordering"
             )]
             let size = radius as usize;
-            let tier = if center.is_some() { 4 } else { 1 };
+            let tier = match &lifted {
+                Some(lifted) if !lifted.contains(&cluster) => continue,
+                Some(_) => 3,
+                None if center.is_some() => 4,
+                None => 1,
+            };
             order.push((
                 (tier, std::cmp::Reverse(size), cluster),
                 Named::Group(cluster),
@@ -1383,6 +1431,7 @@ fn draw_graph_labels(
             )
             .collect(),
     );
+    level_names(&mut placer, to_screen, explorer);
     for ((tier, _, _), named) in order {
         match named {
             Named::Group(group) => {
@@ -1442,6 +1491,14 @@ fn draw_graph_labels(
                             .map(|was| format!("was {}", tail(was))),
                     ),
                     _ if impact_note.is_some() => (None, impact_note),
+                    // Under the hourglass, two levels off says so, as height alone
+                    // can mislead from an angle.
+                    (Some(Relation::Upstream(2)), Some(_)) if explorer.hourglass() => {
+                        (None, Some("↑2 calls a caller".to_owned()))
+                    }
+                    (Some(Relation::Downstream(2)), Some(_)) if explorer.hourglass() => {
+                        (None, Some("↓2 a callee calls it".to_owned()))
+                    }
                     (Some(Relation::Downstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color, None)), None)
@@ -1732,7 +1789,11 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("F", "follow the journey's start again, head-on"),
+            (
+                "F",
+                "follow the journey's start again, head-on (under Z, over the floor)",
+            ),
+            ("Z", "hourglass: callers above the focus, callees below"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
             ("T", "play or pause the morph"),

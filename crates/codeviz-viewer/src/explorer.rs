@@ -18,6 +18,7 @@ use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConf
 use crate::{
     disclosure::{Disclose, Disclosed},
     history::{History, View},
+    hourglass,
     lens::{self, Distances, Lens},
 };
 
@@ -279,6 +280,19 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// Whether height says how many calls each node is from the focus: callers above
+    /// it, callees below, the rest on the floor (Z).
+    hourglass: bool,
+    /// The height each node stands at under the hourglass, by tile, eased towards
+    /// its level.
+    height: Vec<f32>,
+    /// How far the hourglass has come on, from 0 (the graph as laid out) to 1 (every
+    /// node at its height), eased.
+    laid: f32,
+    /// Each node's level under the hourglass, by tile, as last worked out.
+    levels: Vec<i8>,
+    /// How high one level stands, as last worked out.
+    rung: f32,
 }
 
 impl Explorer {
@@ -332,6 +346,11 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            hourglass: false,
+            height: vec![0.0; tiles],
+            laid: 0.0,
+            levels: vec![0; tiles],
+            rung: 0.0,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -617,9 +636,97 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node sits in the world: at its level as far as the hourglass
+    /// has come on, else where the graph lays it.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        let point = Vec3::from(*self.graph.positions.get(tile)?);
+        let height = self.height.get(tile).copied().unwrap_or_default();
+        Some(point.with_z(point.z + (height - point.z) * self.laid))
+    }
+
+    /// Where a graph node sits on the map, whatever its level: on the floor as far
+    /// as the hourglass has come on, else where the graph lays it.
+    pub(crate) fn floor_point(&self, tile: usize) -> Option<Vec3> {
+        let point = Vec3::from(*self.graph.positions.get(tile)?);
+        Some(point.with_z(point.z * (1.0 - self.laid)))
+    }
+
+    /// Whether height says how many calls each node is from the focus.
+    pub(crate) fn hourglass(&self) -> bool {
+        self.hourglass
+    }
+
+    /// Turns the hourglass on or off; nodes rise and sink to their new heights.
+    pub(crate) fn set_hourglass(&mut self, on: bool) {
+        self.hourglass = on;
+    }
+
+    /// How high one call from the focus stands, as last worked out.
+    pub(crate) fn level_height(&self) -> f32 {
+        self.rung
+    }
+
+    /// How many levels above the focus a node is headed (below when negative), as
+    /// last eased; zero with the hourglass off.
+    pub(crate) fn level(&self, tile: usize) -> i8 {
+        self.levels.get(tile).copied().unwrap_or_default()
+    }
+
+    /// Works out every node's level afresh.
+    fn relevel(&mut self) {
+        let levels = (0..self.graph.positions.len())
+            .map(|tile| match self.reach() {
+                Some(reach) if self.hourglass => hourglass::level(self, reach, tile),
+                _ => 0,
+            })
+            .collect();
+        self.levels = levels;
+        let focus = self.graph_focus().and_then(|t| self.graph.positions.get(t));
+        let spread: Vec<f32> = focus
+            .map(|&focus| {
+                let focus = Vec3::from(focus).truncate();
+                (0..self.levels.len())
+                    .filter(|&t| self.levels[t] != 0)
+                    .filter_map(|t| self.graph.positions.get(t))
+                    .map(|&p| Vec3::from(p).truncate().distance(focus))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.rung = hourglass::level_height(&self.graph.positions, &spread);
+    }
+
+    /// Where a node is headed: under the hourglass, each lit node a level per call
+    /// above the focus if it calls it, below if called by it, the rest on the floor.
+    pub(crate) fn raised_point(&self, tile: usize) -> Option<Vec3> {
+        let floor = Vec3::from(*self.graph.positions.get(tile)?).with_z(0.0);
+        Some(floor + Vec3::Z * f32::from(self.level(tile)) * self.level_height())
+    }
+
+    /// The height each node is headed for under the hourglass, by tile.
+    fn height_targets(&self) -> Vec<f32> {
+        let rung = self.level_height();
+        (0..self.graph.positions.len())
+            .map(|tile| f32::from(self.level(tile)) * rung)
+            .collect()
+    }
+
+    /// Eases every node towards its level, and the map towards lying flat or not.
+    /// Returns whether anything moved.
+    pub(crate) fn ease_lift(&mut self, dt: f32) -> bool {
+        self.relevel();
+        let targets = self.height_targets();
+        let goal = if self.hourglass { 1.0 } else { 0.0 };
+        let mut laid = [self.laid];
+        let flattened = hourglass::ease(&mut laid, &[goal], dt);
+        self.laid = laid[0];
+        hourglass::ease(&mut self.height, &targets, dt) || flattened
+    }
+
+    /// Puts every node at its level, and the map flat, at once.
+    pub(crate) fn settle_lift(&mut self) {
+        self.relevel();
+        self.height = self.height_targets();
+        self.laid = if self.hourglass { 1.0 } else { 0.0 };
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -1494,6 +1601,45 @@ pub(crate) mod tests {
         assert!(explorer.go_back());
         explorer.refresh_reach();
         assert_eq!(explorer.graph_focus(), Some(a));
+    }
+
+    #[test]
+    fn the_hourglass_stands_callers_above_and_callees_below() {
+        let mut explorer = explorer();
+        let tile = |explorer: &Explorer, name: &str| {
+            explorer
+                .map()
+                .tile_of(&UnitId::new(format!("x:{name}")))
+                .unwrap()
+        };
+        let (main, a, b, c) = (
+            tile(&explorer, "main"),
+            tile(&explorer, "a"),
+            tile(&explorer, "b"),
+            tile(&explorer, "c"),
+        );
+        explorer.focus_tile(a);
+        explorer.refresh_reach();
+        explorer.set_hourglass(true);
+        explorer.settle_lift();
+        assert_eq!(explorer.level(a), 0, "the focus is the neck");
+        assert_eq!(explorer.level(main), 1, "its caller a level up");
+        assert_eq!(explorer.level(c), -1, "its callee a level down");
+        assert_eq!(explorer.level(b), 0, "a sibling stays on the floor");
+        let rung = explorer.level_height();
+        let z = |t: usize| explorer.tile_point(t).unwrap().z;
+        assert!((z(main) - rung).abs() < 1e-3 && (z(c) + rung).abs() < 1e-3);
+        assert!(z(b).abs() < 1e-3 && z(a).abs() < 1e-3);
+
+        explorer.set_hourglass(false);
+        explorer.settle_lift();
+        assert_eq!(explorer.level(main), 0, "off, nothing is lifted");
+        let laid = Vec3::from(explorer.graph().positions[main]);
+        assert_eq!(
+            explorer.tile_point(main),
+            Some(laid),
+            "back where it was laid"
+        );
     }
 
     #[test]

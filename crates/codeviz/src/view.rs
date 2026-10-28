@@ -72,6 +72,9 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
+    /// What height means. Z switches it on and off in the viewer.
+    #[arg(long, value_enum)]
+    z: Option<ZArg>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -89,6 +92,13 @@ enum JourneyArg {
     Docked,
     /// Below a strip of graph.
     Full,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ZArg {
+    /// Callers of the focus stand a level above it per call, callees hang below, the
+    /// rest lies on the floor.
+    Hourglass,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -230,6 +240,9 @@ pub(crate) fn open(
     }
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some(ZArg::Hourglass) = args.z {
+        viewer = viewer.with_z("hourglass");
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

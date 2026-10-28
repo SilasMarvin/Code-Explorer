@@ -18,6 +18,7 @@ mod disclosure;
 mod explorer;
 mod graph_view;
 mod history;
+mod hourglass;
 mod journey_panel;
 mod lens;
 mod scene;
@@ -63,6 +64,8 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// What height opens meaning.
+    height: hourglass::Height,
     diff: Option<Comparison>,
 }
 
@@ -96,6 +99,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            height: hourglass::Height::default(),
             diff: None,
         }
     }
@@ -234,6 +238,19 @@ impl Viewer {
         self
     }
 
+    /// What height means: `hourglass` opens with callers of the focus stacked above
+    /// it and callees below, the camera posed over the map laid flat (Z switches).
+    /// Anything else leaves the graph as it is.
+    #[must_use]
+    pub fn with_z(mut self, name: &str) -> Self {
+        self.height = if name == "hourglass" {
+            hourglass::Height::Hourglass
+        } else {
+            hourglass::Height::Layout
+        };
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -286,6 +303,7 @@ impl Viewer {
             }
         }
         explorer.set_clustering(self.clustering);
+        explorer.set_hourglass(self.height == hourglass::Height::Hourglass);
         explorer.set_lens(self.lens);
         if let Some(tile) = self
             .focus
@@ -349,6 +367,7 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
+            hourglass::HourglassPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)

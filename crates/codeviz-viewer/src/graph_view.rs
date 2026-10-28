@@ -17,12 +17,13 @@ use codeviz_core::Change;
 use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
-    camera::{FRONT, OrbitCamera},
+    camera::{FRONT, OVER_FLOOR, OrbitCamera},
     diff_view::{
         ADDED, DiffView, MODIFIED, MOVED, REMOVED, change_color, diff_look, draw_diff_graph,
     },
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
+    hourglass,
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
 };
@@ -225,12 +226,17 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
 
 /// How many calls from the focus a node is, when it is near enough to light: with a
 /// journey open, what the focus calls lights as far as the journey is disclosed, and
-/// only its direct callers light above it. The spotlight lights what it picks out.
+/// only its direct callers light above it; under the hourglass, two calls either way
+/// light whatever the journey shows. The spotlight lights what it picks out.
 pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u32> {
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
+    let hourglass = explorer.hourglass();
     match relation(reach, tile) {
+        Some(Relation::Upstream(hops) | Relation::Downstream(hops)) if hourglass && hops <= 2 => {
+            Some(hops)
+        }
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
@@ -289,6 +295,12 @@ pub(crate) fn style_nodes(
                 reason = "clamped to 0..=LEVELS"
             )]
             (0.35 + 0.65 * shown, level as u8)
+        };
+        // Under the hourglass what is unrelated is small as well as faint, so the
+        // floor keeps the map's shape without crowding what stands over it.
+        let scale = match look {
+            NodeLook::Faded(_) if explorer.hourglass() => scale * 0.55,
+            _ => scale,
         };
         let size = node_size(explorer.graph(), tile.0) * scale;
         if (transform.scale.x - size).abs() > 0.001 {
@@ -362,6 +374,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     let spotlit = explorer.spotlit();
+    // The hourglass lifts two calls either way, so it draws the calls between them.
+    let lifted = |outer: u32| explorer.hourglass() && outer <= 2;
     // Calls from the focus, counting the focus itself as zero.
     let hops = |side: &HashMap<usize, u32>, tile: usize| {
         if center == Some(tile) {
@@ -386,13 +400,15 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
             let down = hops(&reach.downstream, from).zip(hops(&reach.downstream, to));
             match (up, down) {
                 (Some((outer, inner)), _)
-                    if outer == inner + 1 && (!opened || outer == 1 || spotlit.contains(&from)) =>
+                    if outer == inner + 1
+                        && (!opened || outer == 1 || lifted(outer) || spotlit.contains(&from)) =>
                 {
                     Some((CALLER, outer))
                 }
                 (_, Some((inner, outer)))
                     if outer == inner + 1
                         && (!opened
+                            || lifted(outer)
                             || journey.contains_key(&to) && journey.contains_key(&from)
                             || spotlit.contains(&to)) =>
                 {
@@ -419,6 +435,8 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                     .arrow(a, b - back, FURTHER.with_alpha(0.4 * shown))
                     .with_tip_length(0.8);
             }
+            // Under the hourglass the floor is quiet: only what is lifted is wired.
+            None if explorer.hourglass() => {}
             None => {
                 let alpha = if center.is_some() {
                     0.04
@@ -525,7 +543,8 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
         if explorer.visibility(tile) < 0.5 {
             continue;
         }
-        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.tile_point(tile))
+        // On the map, so a ring stays put as its members rise and sink.
+        if let (Some(cluster), Some(at)) = (graph.cluster(tile), explorer.floor_point(tile))
             && let Some(list) = members.get_mut(cluster)
         {
             list.push(at);
@@ -548,15 +567,21 @@ pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
         .collect()
 }
 
-/// A faint ring round each module's region, in its color.
+/// A faint ring round each module's region, in its color; under the hourglass, only
+/// the modules something lifted lives in stand out.
 fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
+    let lifted = hourglass::lifted_clusters(explorer);
     for (cluster, middle, radius) in regions(explorer) {
         let color = lane_color(cluster % PALETTE.len());
+        let alpha = match &lifted {
+            Some(lifted) if !lifted.contains(&cluster) => 0.05,
+            _ => 0.22,
+        };
         gizmos
             .circle(
                 Isometry3d::from_translation(middle),
                 radius,
-                color.with_alpha(0.22),
+                color.with_alpha(alpha),
             )
             .resolution(64);
     }
@@ -574,7 +599,11 @@ pub(crate) fn graph_keys(
 ) {
     for mut camera in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(FRONT);
+            camera.turn_to(if explorer.hourglass() {
+                OVER_FLOOR
+            } else {
+                FRONT
+            });
             orbit_anchor(&explorer, &mut camera);
         }
         if keys.just_pressed(KeyCode::KeyR) {
@@ -715,7 +744,11 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 /// follows it as the graph moves.
 /// Not once the viewer has panned or zoomed away.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
+    // Under the hourglass, at the anchor's place on the floor, as it rises and sinks.
+    // The hourglass turns about its neck, the focus, wherever the journey starts.
+    let center = hourglass_center(&explorer)
+        .or_else(|| explorer.anchor().and_then(|t| explorer.tile_point(t)));
+    let Some(at) = center else {
         return;
     };
     for mut camera in &mut cameras {
@@ -743,7 +776,49 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
         .filter_map(|t| explorer.tile_point(t))
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);
+    if let (Some(needed), Some(center)) = (
+        hourglass_distance(explorer, camera),
+        hourglass_center(explorer),
+    ) {
+        camera.glide_to(center, needed);
+        return;
+    }
     camera.glide_to(at, orbit_distance(reach));
+}
+
+/// How much further back than just fitting the hourglass is framed.
+const HOURGLASS_ROOM: f32 = 1.0;
+
+/// How far below the focus, in levels, the hourglass is centered.
+const HOURGLASS_DROP: f32 = 0.35;
+
+/// Under the hourglass, how far back to stand to see every level, where it is
+/// headed as it may still be rising, as the camera will be turned.
+pub(crate) fn hourglass_distance(explorer: &Explorer, camera: &OrbitCamera) -> Option<f32> {
+    let center = hourglass_center(explorer)?;
+    let points: Vec<Vec3> = (0..explorer.map().tiles.len())
+        .filter(|&t| explorer.level(t) != 0)
+        .chain(explorer.graph_focus())
+        .filter_map(|t| explorer.raised_point(t))
+        .collect();
+    let view = PerspectiveProjection {
+        aspect_ratio: 1.6,
+        ..default()
+    };
+    Some(fit_distance(&points, center, camera.settled_rotation(), &view) * HOURGLASS_ROOM)
+}
+
+/// Under the hourglass, what the camera turns about: the focus's place on the floor,
+/// a little below it, as what it calls hangs nearer the camera and the journey docks
+/// over the bottom of the view.
+pub(crate) fn hourglass_center(explorer: &Explorer) -> Option<Vec3> {
+    if !explorer.hourglass() {
+        return None;
+    }
+    let focus = explorer
+        .graph_focus()
+        .and_then(|t| explorer.raised_point(t))?;
+    Some(focus.with_z(0.0) - Vec3::Z * explorer.level_height() * HOURGLASS_DROP)
 }
 
 /// How far from `at` the disclosed journey reaches.
