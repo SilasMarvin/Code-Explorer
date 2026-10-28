@@ -960,6 +960,14 @@ const SIDES: [egui::Align2; 4] = [
     egui::Align2::CENTER_TOP,
 ];
 
+/// How many steps, and how far each, a label that must show may move out along its row
+/// to stay clear of others.
+const NUDGES: i32 = 10;
+const NUDGE: f32 = 30.0;
+/// And how many rows up or down.
+const ROWS: i32 = 3;
+/// Past this far from its node, a label is tied to it by a leader line.
+const LEADER: f32 = 16.0;
 /// Room kept around a label's text: its pill.
 const PILL_PAD: egui::Vec2 = egui::vec2(5.0, 2.0);
 /// How fast a label slides to a new side: the share of the way left it covers in a
@@ -1058,13 +1066,35 @@ impl<'a> Placer<'a> {
         let kept = previous
             .map(|p| p.side)
             .filter(|&side| fits(spot(side), egui::Vec2::ZERO));
-        let side = kept
+        let free = kept
             .or_else(|| (0..SIDES.len()).find(|&side| fits(spot(side), PILL_PAD)))
-            .or_else(|| force.then(|| previous.map_or(0, |p| p.side)));
-        let Some(side) = side else {
+            .map(|side| (side, spot(side)));
+        // A label that must show and finds no side free moves further out along its
+        // row, then a row or two up or down, before it overlaps another; a leader line
+        // ties it back to its node.
+        let rise = extent.y + PILL_PAD.y * 2.0 + 2.0;
+        let nudged = || {
+            let along = (1..=NUDGES).flat_map(|step| [(0, step, 0), (1, -step, 0)]);
+            let across =
+                (1..=ROWS).flat_map(|row| [(0, 0, row), (1, 0, row), (0, 0, -row), (1, 0, -row)]);
+            along
+                .chain(across)
+                .map(|(side, step, row)| {
+                    #[expect(clippy::cast_precision_loss, reason = "a few steps")]
+                    let shift = egui::vec2(NUDGE * step as f32, rise * row as f32);
+                    (side, spot(side).translate(shift))
+                })
+                .find(|&(_, rect)| fits(rect, PILL_PAD))
+        };
+        let placed = free.or_else(|| force.then(nudged).flatten()).or_else(|| {
+            force.then(|| {
+                let side = previous.map_or(0, |p| p.side);
+                (side, spot(side))
+            })
+        });
+        let Some((side, rect)) = placed else {
             return false;
         };
-        let rect = spot(side);
         self.taken.push(rect.expand2(PILL_PAD));
         let target = rect.min - node;
         let (offset, opacity) = match previous {
@@ -1130,6 +1160,16 @@ impl<'a> Placer<'a> {
             painter.pixels_per_point(),
         );
         let pill = egui::Rect::from_min_size(min, shown.galley.size()).expand2(PILL_PAD);
+        let near = pill.clamp(node);
+        if near.distance(node) > LEADER {
+            let color = shown
+                .stroke
+                .unwrap_or_else(|| egui::Color32::from_white_alpha(90));
+            painter.line_segment(
+                [node, near],
+                egui::Stroke::new(1.0, color.gamma_multiply(0.7)),
+            );
+        }
         painter.rect_filled(pill, 4.0, PILL);
         if let Some(color) = shown.stroke {
             painter.rect_stroke(
