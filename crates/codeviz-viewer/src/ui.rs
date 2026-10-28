@@ -140,6 +140,10 @@ pub(crate) struct Chrome {
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pass over everything drawn over the graph"
+)]
 fn draw_ui(
     mut contexts: EguiContexts,
     mut explorer: ResMut<Explorer>,
@@ -233,7 +237,7 @@ fn draw_ui(
                 ctx,
                 above(graph_area, panel_area),
                 diff.is_some(),
-                explorer.hourglass(),
+                &explorer,
             );
         }
         if orbit.free && !chrome.bare {
@@ -1694,7 +1698,7 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, hourglass: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1725,7 +1729,7 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, hourglass: bool)
                             );
                         }
                     });
-                    if hourglass {
+                    if explorer.hourglass() {
                         ui.label(
                             egui::RichText::new(
                                 "height = calls from the focus: callers above, callees below; \
