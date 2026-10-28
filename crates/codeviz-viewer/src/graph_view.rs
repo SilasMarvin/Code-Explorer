@@ -846,7 +846,7 @@ fn towers_distance(points: &[Vec3], aim: Vec3) -> f32 {
         ..default()
     };
     // With room to spare for names, and for the journey docked over the bottom right.
-    fit_distance(points, aim, towers_rotation(), &view) * 1.15
+    fit_distance(points, aim, towers_rotation(), &view) * 1.05
 }
 
 /// How much farther than the focus's own neighbours a lit node two calls away may
