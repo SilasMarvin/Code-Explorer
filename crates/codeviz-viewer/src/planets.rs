@@ -31,7 +31,7 @@ pub(crate) const HOPS: u32 = 2;
 /// Surface each function takes on its planet, so neighboring dots stay apart.
 const DOT_SPACING: f32 = 2.8;
 /// The smallest planet, for a module of a function or two.
-const MIN_RADIUS: f32 = 2.4;
+const MIN_RADIUS: f32 = 2.8;
 /// Clear space between two planets.
 const GAP: f32 = 5.0;
 /// How far a dot's middle sits above its planet's surface.
@@ -370,9 +370,10 @@ impl Planets {
                     .iter()
                     .filter(|w| w.involvement >= Involvement::Near)
                 {
+                    // Two that take part overlapping on screen hide one another,
+                    // whichever is nearer.
                     let offset = other.center - center;
-                    // Only what sits between it and the viewer hides it.
-                    if offset.dot(eye) <= radius || offset.length() < 1e-3 {
+                    if offset.length() < 1e-3 {
                         continue;
                     }
                     let apart = (offset - eye * offset.dot(eye)).length();
@@ -426,7 +427,7 @@ fn sphere_points(count: usize) -> Vec<Vec3> {
 fn arrange(radii: &[f32], seeds: &[Vec3], weights: &HashMap<(usize, usize), f32>) -> Vec<Vec3> {
     const REPULSION: f32 = 0.6;
     const ATTRACTION: f32 = 0.012;
-    const GRAVITY: f32 = 0.012;
+    const GRAVITY: f32 = 0.03;
     const FLATTEN: f32 = 0.02;
     let count = radii.len();
     if count == 0 {
@@ -455,6 +456,8 @@ fn arrange(radii: &[f32], seeds: &[Vec3], weights: &HashMap<(usize, usize), f32>
             flat.extend((scatter(i * 7 + 3).z) * room * 0.5)
         })
         .collect();
+    // A few planets gather close; many keep looser, so each still shows.
+    let gravity = GRAVITY * (10.0 / count as f32).sqrt().min(1.0);
     for _ in 0..ARRANGE_STEPS {
         let mut force = vec![Vec3::ZERO; count];
         for a in 0..count {
@@ -476,7 +479,7 @@ fn arrange(radii: &[f32], seeds: &[Vec3], weights: &HashMap<(usize, usize), f32>
             force[b] -= pull;
         }
         for (point, force) in at.iter_mut().zip(&force) {
-            let mut force = *force - *point * GRAVITY;
+            let mut force = *force - *point * gravity;
             force.z -= point.z * FLATTEN;
             *point += force.clamp_length_max(2.0);
         }
@@ -745,7 +748,8 @@ pub(crate) fn place(
 }
 
 /// A soft rim round each planet, in its module's color, so it reads as one object
-/// against the dark; brighter round the planets that take part.
+/// against the dark; brighter round the planets that take part, and none round one
+/// thinned to glass.
 pub(crate) fn draw_rims(
     explorer: Res<Explorer>,
     cameras: Query<&Transform, With<OrbitCamera>>,
@@ -754,7 +758,12 @@ pub(crate) fn draw_rims(
     let (Some(planets), Ok(camera)) = (explorer.planets(), cameras.single()) else {
         return;
     };
+    let in_the_way = planets.in_the_way(camera.translation);
     for (cluster, center, radius, involvement) in planets.worlds() {
+        // Glass has no rim, so it never reads as a ring over what it covers.
+        if in_the_way.get(cluster).copied().unwrap_or(false) {
+            continue;
+        }
         let toward = camera.translation - center;
         let distance = toward.length();
         if distance <= radius {
