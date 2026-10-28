@@ -18,6 +18,7 @@ codeviz journey app.json             # list entries
 codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as text
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
+codeviz view app.json --focus orders::place --z planets   # modules as planets
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -67,6 +68,22 @@ camera orbits where the journey starts and turns only when you start somewhere n
 stepping through the journey at most pulls it back to keep the cursor's node in sight.
 Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
 brings it back.
+
+`Z` (or `--z planets`) turns every module into a planet: a solid, lit ball sized by how
+many functions it holds, with its functions as dots on its surface, like cities on a
+globe, so nothing hides inside a volume. Where the planets float says which modules
+call each other: the more calls between two modules, the closer they sit, starting from
+where the flat map puts them. Only the calls around the focus fly, as arcs that leave
+each dot straight up from its planet: into the focus violet, out of it blue, with dots
+running along them, and one call further out on either side pale and named with the
+neighbor it goes through (`calls quote`, `called by insert_order`). Every planet holding
+something lit turns those dots towards you, the focus's own planet turning the focus to
+face you, and keeps doing so as you orbit; a white ring marks the focus. The planets
+that take part are bright and named; the rest stay solid but dim, only the biggest
+named, and one standing in front of a planet that takes part thins to glass. The camera
+picks the angle that spreads the planets taking part across the view with none hiding
+another; `Shift+Z` swings round to the best view from another side, and `Z` again puts
+the graph back.
 
 ## Diffs
 

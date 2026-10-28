@@ -72,6 +72,9 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
+    /// Open with the third dimension showing this (Z toggles it).
+    #[arg(long, value_enum, value_name = "VIEW")]
+    z: Option<ZArg>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -89,6 +92,12 @@ enum JourneyArg {
     Docked,
     /// Below a strip of graph.
     Full,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ZArg {
+    /// Each module a planet sized by its functions, its functions dots on its surface.
+    Planets,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -230,6 +239,9 @@ pub(crate) fn open(
     }
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some(ZArg::Planets) = args.z {
+        viewer = viewer.with_z("planets");
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

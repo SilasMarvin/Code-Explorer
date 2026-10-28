@@ -24,6 +24,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
+    planets,
     scene::{PALETTE, Tile, lane_color},
 };
 
@@ -54,6 +55,9 @@ pub(crate) enum NodeLook {
     Hidden,
     /// Unrelated to the focus.
     Faded(usize),
+    /// Unrelated to the focus, as a dot on its module's planet: a little lighter than
+    /// the planet, so the planet's functions still show.
+    Dim(usize),
     /// Anything while nothing is focused, in its container's color.
     Plain(usize),
     /// Added, removed or rewritten, when showing a diff.
@@ -173,6 +177,18 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
     for color in 0..PALETTE.len() {
         let base = lane_color(color);
         table.insert(NodeLook::Plain(color), glow(base, 0.6));
+        let linear = LinearRgba::from(base);
+        table.insert(
+            NodeLook::Dim(color),
+            glow(
+                Color::from(LinearRgba::rgb(
+                    linear.red * 0.2,
+                    linear.green * 0.2,
+                    linear.blue * 0.2,
+                )),
+                0.04,
+            ),
+        );
         table.insert(
             NodeLook::Faded(color),
             StandardMaterial {
@@ -220,17 +236,37 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     let Some(reach) = explorer.reach() else {
         return NodeLook::Plain(color);
     };
-    near(explorer, reach, tile).map_or(NodeLook::Faded(color), |hops| NodeLook::Near(color, hops))
+    let unrelated = if explorer.planets().is_some() {
+        NodeLook::Dim(color)
+    } else {
+        NodeLook::Faded(color)
+    };
+    near(explorer, reach, tile).map_or(unrelated, |hops| NodeLook::Near(color, hops))
+}
+
+/// How big a node is drawn: a dot on its planet while the planets show.
+pub(crate) fn drawn_size(explorer: &Explorer, tile: usize) -> f32 {
+    if explorer.planets().is_some() {
+        planets::dot_size(node_look(explorer, tile))
+    } else {
+        node_size(explorer.graph(), tile)
+    }
 }
 
 /// How many calls from the focus a node is, when it is near enough to light: with a
 /// journey open, what the focus calls lights as far as the journey is disclosed, and
 /// only its direct callers light above it. The spotlight lights what it picks out.
+/// With the planets showing, everything two calls out either side lights.
 pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u32> {
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     match relation(reach, tile) {
+        Some(Relation::Upstream(hops) | Relation::Downstream(hops))
+            if explorer.planets().is_some() && hops <= planets::HOPS =>
+        {
+            Some(hops)
+        }
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
@@ -290,7 +326,10 @@ pub(crate) fn style_nodes(
             )]
             (0.35 + 0.65 * shown, level as u8)
         };
-        let size = node_size(explorer.graph(), tile.0) * scale;
+        let size = match explorer.planets() {
+            Some(_) => planets::dot_size(look),
+            None => node_size(explorer.graph(), tile.0),
+        } * scale;
         if (transform.scale.x - size).abs() > 0.001 {
             transform.scale = Vec3::splat(size);
         }
@@ -328,14 +367,20 @@ pub(crate) fn draw_graph(
     clock: Res<Time>,
     mut gizmos: Gizmos,
 ) {
-    draw_regions(&explorer, &mut gizmos);
+    if explorer.planets().is_none() {
+        draw_regions(&explorer, &mut gizmos);
+    }
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
+        None if explorer.planets().is_some() => planets::draw_calls(&explorer, time, &mut gizmos),
         None => draw_calls(&explorer, time, &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
-    draw_attention(&explorer, &mut gizmos);
+    // The planets ring the focus flat, facing the viewer.
+    if explorer.planets().is_none() {
+        draw_attention(&explorer, &mut gizmos);
+    }
 }
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
@@ -481,7 +526,7 @@ fn draw_spotlight(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
         let Some(at) = explorer.tile_point(tile) else {
             continue;
         };
-        let radius = node_size(explorer.graph(), tile) * 0.5 + 0.7 + pulse * 1.2;
+        let radius = drawn_size(explorer, tile) * 0.5 + 0.7 + pulse * 1.2;
         // Two rings, so it reads as a mark rather than a stray line.
         for (grow, alpha) in [(0.0, 0.9), (0.45, 0.45)] {
             gizmos.sphere(
@@ -496,18 +541,17 @@ fn draw_spotlight(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
 /// A white ring round the focus, and a fainter, wider one round the node under the
 /// pointer, in the graph or as a bar in the journey.
 fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
-    let graph = explorer.graph();
     let focus = explorer.graph_focus();
     if let Some(tile) = focus
         && let Some(at) = explorer.tile_point(tile)
     {
-        let radius = node_size(graph, tile) * 0.5 + 0.35;
+        let radius = drawn_size(explorer, tile) * 0.5 + 0.35;
         gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
     }
     if let Some(tile) = explorer.hovered_tile.filter(|&t| Some(t) != focus)
         && let Some(at) = explorer.tile_point(tile)
     {
-        let radius = node_size(graph, tile) * 0.5 + 0.6;
+        let radius = drawn_size(explorer, tile) * 0.5 + 0.6;
         gizmos.sphere(
             Isometry3d::from_translation(at),
             radius,
@@ -517,8 +561,14 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 }
 
 /// Each module's region, as the functions showing place it: its cluster, middle, and
-/// a radius holding most of them.
+/// a radius holding most of them. With the planets showing, each planet.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
+    if let Some(planets) = explorer.planets() {
+        return planets
+            .worlds()
+            .map(|(cluster, center, radius, _)| (cluster, center, radius))
+            .collect();
+    }
     let graph = explorer.graph();
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
     for tile in 0..explorer.map().tiles.len() {
@@ -673,7 +723,7 @@ pub(crate) fn frame_spotlight(
 
 /// How far back a camera turned to `rotation` and looking at `center` must be for
 /// every one of `points` to sit inside the middle of its view, clear of the edges.
-fn fit_distance(
+pub(crate) fn fit_distance(
     points: &[Vec3],
     center: Vec3,
     rotation: Quat,
@@ -713,8 +763,12 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
 
 /// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
 /// follows it as the graph moves.
-/// Not once the viewer has panned or zoomed away.
+/// Not once the viewer has panned or zoomed away, nor while the planets show: they
+/// keep still and the camera holds the planets taking part in view.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
+    if explorer.planets().is_some() {
+        return;
+    }
     let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
         return;
     };

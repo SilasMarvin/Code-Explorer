@@ -19,6 +19,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     history::{History, View},
     lens::{self, Distances, Lens},
+    planets::Planets,
 };
 
 /// What a disclosure was worked out for: the journey's revision, how it discloses,
@@ -279,6 +280,8 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
+    /// Each module as a planet with its functions on it, while that view is on.
+    planets: Option<Planets>,
 }
 
 impl Explorer {
@@ -332,6 +335,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
+            planets: None,
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -617,9 +621,31 @@ impl Explorer {
         &self.graph
     }
 
-    /// Where a graph node sits in the world.
+    /// Where a graph node sits in the world: on its module's planet while they show.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        match &self.planets {
+            Some(planets) => planets.point(tile),
+            None => self.graph.positions.get(tile).map(|&p| Vec3::from(p)),
+        }
+    }
+
+    /// The modules as planets, while they show.
+    pub(crate) fn planets(&self) -> Option<&Planets> {
+        self.planets.as_ref()
+    }
+
+    pub(crate) fn planets_mut(&mut self) -> Option<&mut Planets> {
+        self.planets.as_mut()
+    }
+
+    /// Shows the modules as planets, laid out from the graph as it stands, or puts
+    /// the graph back.
+    pub(crate) fn set_planets(&mut self, on: bool) {
+        if on == self.planets.is_some() {
+            return;
+        }
+        self.planets = on.then(|| Planets::new(&self.graph));
+        self.moved += 1;
     }
 
     pub(crate) fn clustering(&self) -> Clustering {

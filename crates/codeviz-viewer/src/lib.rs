@@ -20,6 +20,7 @@ mod graph_view;
 mod history;
 mod journey_panel;
 mod lens;
+mod planets;
 mod scene;
 mod source_diff;
 mod truth;
@@ -63,7 +64,18 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// What the third dimension shows at first.
+    z: ZView,
     diff: Option<Comparison>,
+}
+
+/// What the third dimension shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZView {
+    /// Whatever the graph's layout puts there.
+    Free,
+    /// Each module a planet, its functions dots on its surface.
+    Planets,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -96,6 +108,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            z: ZView::Free,
             diff: None,
         }
     }
@@ -234,6 +247,18 @@ impl Viewer {
         self
     }
 
+    /// What the third dimension shows: `planets` floats each module as a planet with
+    /// its functions as dots on it. Anything else leaves the graph as it is.
+    #[must_use]
+    pub fn with_z(mut self, name: &str) -> Self {
+        self.z = if name == "planets" {
+            ZView::Planets
+        } else {
+            ZView::Free
+        };
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -287,6 +312,7 @@ impl Viewer {
         }
         explorer.set_clustering(self.clustering);
         explorer.set_lens(self.lens);
+        explorer.set_planets(self.z == ZView::Planets);
         if let Some(tile) = self
             .focus
             .take()

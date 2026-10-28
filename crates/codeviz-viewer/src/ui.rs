@@ -24,6 +24,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
+    planets::Involvement,
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -194,16 +195,11 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
-        draw_graph_labels(
-            &painter,
-            &to_screen,
-            &explorer,
-            diff.as_deref(),
-            transform.up().into(),
-        );
+        draw_graph_labels(&painter, &to_screen, &explorer, diff.as_deref(), transform);
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
-        let mut clear = above(graph_area, panel_area);
+        let legend_area = above(graph_area, panel_area);
+        let mut clear = legend_area;
         if let Some(diff) = diff.as_deref_mut().filter(|_| !chrome.bare) {
             let card = diff_view::diff_card(ctx, graph_area, &mut explorer, diff);
             clear.min.y = clear.min.y.max(card.max.y);
@@ -228,7 +224,7 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            legend(ctx, legend_area, diff.is_some(), &explorer);
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -911,6 +907,24 @@ fn call_steps(explorer: &Explorer, from: usize, to_tile: usize) -> Vec<usize> {
         .collect()
 }
 
+/// The neighbor of the focus that a node two calls away goes through: the caller of
+/// the focus it calls when `upstream`, else the callee of the focus that calls it.
+fn through(explorer: &Explorer, tile: usize, focus: usize, upstream: bool) -> Option<usize> {
+    let graph = explorer.graph();
+    if upstream {
+        graph
+            .callees(tile)
+            .find(|&next| graph.callees(next).any(|t| t == focus))
+    } else {
+        graph
+            .callers(tile)
+            .find(|&before| graph.callers(before).any(|t| t == focus))
+    }
+}
+
+/// Planets taking no part that are still named, biggest first.
+const LANDMARKS: usize = 6;
+
 /// `#2` or `#2, #5`.
 fn numbered(steps: &[usize]) -> String {
     steps
@@ -1256,8 +1270,9 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    up: Vec3,
+    view: &GlobalTransform,
 ) {
+    let (up, eye): (Vec3, Vec3) = (view.up().into(), view.translation());
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
     let diff_tier = |tile: usize| {
@@ -1277,6 +1292,7 @@ fn draw_graph_labels(
     let center = explorer.graph_focus();
     let hovered = explorer.hovered_tile;
     let reach = explorer.reach();
+    let planets = explorer.planets().is_some();
     let related = |tile: usize| reach.and_then(|r| relation(r, tile));
     let spotlit = explorer.spotlit();
     let disclosed = explorer.disclosure();
@@ -1296,8 +1312,16 @@ fn draw_graph_labels(
             let world = explorer
                 .tile_point(tile)
                 .filter(|_| explorer.visibility(tile) >= 0.5)?;
+            // A dot round the far side of its planet is out of sight.
+            let hidden = explorer
+                .planets()
+                .and_then(|p| p.normal(tile))
+                .is_some_and(|normal| normal.dot(eye - world) < 0.0);
+            if hidden {
+                return None;
+            }
             let node = to_screen(world)?;
-            let radius = graph_view::node_size(graph, tile) / 2.0;
+            let radius = graph_view::drawn_size(explorer, tile) / 2.0;
             let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
             Some((node, edge))
         })
@@ -1321,6 +1345,8 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
+            // The planets light two calls out either side, and name what they light.
+            Some(Relation::Upstream(2) | Relation::Downstream(2)) if planets => 3,
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1342,15 +1368,35 @@ fn draw_graph_labels(
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
+    // The planets taking part are named ahead of the rest.
+    let taking_part = |cluster: usize| {
+        explorer.planets().is_some_and(|p| {
+            p.worlds()
+                .any(|(c, _, _, involvement)| c == cluster && involvement >= Involvement::Near)
+        })
+    };
+    // Among the planets taking no part, only the biggest are named, as landmarks.
+    let landmark = {
+        let mut radii: Vec<f32> = regions.iter().map(|r| r.2).collect();
+        radii.sort_by(|a, b| b.total_cmp(a));
+        radii.get(LANDMARKS - 1).copied().unwrap_or(0.0)
+    };
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
+            if planets && center.is_some() && !taking_part(cluster) && radius < landmark {
+                continue;
+            }
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "a rough size for ordering"
             )]
             let size = radius as usize;
-            let tier = if center.is_some() { 4 } else { 1 };
+            let tier = match center {
+                Some(_) if taking_part(cluster) => 2,
+                Some(_) => 4,
+                None => 1,
+            };
             order.push((
                 (tier, std::cmp::Reverse(size), cluster),
                 Named::Group(cluster),
@@ -1389,8 +1435,13 @@ fn draw_graph_labels(
                 let Some(at) = ring_top(group) else {
                     continue;
                 };
-                let color = egui_color(lane_color(group % PALETTE.len()))
-                    .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
+                let color =
+                    egui_color(lane_color(group % PALETTE.len())).gamma_multiply(match center {
+                        Some(_) if taking_part(group) => 1.0,
+                        Some(_) if explorer.planets().is_some() => 0.45,
+                        Some(_) => 0.6,
+                        None => 0.9,
+                    });
                 let label = explorer.cluster_name(group);
                 let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
                 placer.place(named, at, 0.0, job, None, false);
@@ -1446,6 +1497,17 @@ fn draw_graph_labels(
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color, None)), None)
                     }
+                    // Two calls out, the planets say through which neighbor.
+                    (Some(Relation::Upstream(2)), Some(focus)) if planets => (
+                        None,
+                        through(explorer, tile, focus, true)
+                            .map(|next| format!("calls {}", node_name(explorer, next))),
+                    ),
+                    (Some(Relation::Downstream(2)), Some(focus)) if planets => (
+                        None,
+                        through(explorer, tile, focus, false)
+                            .map(|before| format!("called by {}", node_name(explorer, before))),
+                    ),
                     // With the spotlight on, names alone, so more of them fit.
                     (Some(Relation::Upstream(1)), Some(_)) if !spotlit.is_empty() => (None, None),
                     (Some(Relation::Upstream(1)), Some(focus)) => {
@@ -1632,7 +1694,8 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
+    let planets = explorer.planets().is_some();
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1656,6 +1719,14 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             swatch(ui, "●", diff_view::REMOVED, "removed");
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+                        } else if planets {
+                            ui.label(
+                                egui::RichText::new(
+                                    "planet = a module, sized by its functions · \
+                                     dot = a function on it",
+                                )
+                                .size(12.5),
+                            );
                         } else {
                             ui.label(
                                 egui::RichText::new("node color = its module, as its ring")
@@ -1732,6 +1803,8 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            ("Z", "planets: modules as globes, functions as dots on them"),
+            ("Shift Z", "planets: swing the view round them"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),
