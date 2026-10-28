@@ -13,7 +13,9 @@ use codeviz_core::{
     display_name, scenarios,
 };
 use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
-use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
+use codeviz_layout::{
+    CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Packing, Reach, Scene,
+};
 
 use crate::{
     disclosure::{Disclose, Disclosed},
@@ -209,6 +211,26 @@ impl Clustering {
     }
 }
 
+/// Where the graph's nodes sit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Arrangement {
+    /// Floating where calls and modules pull them.
+    #[default]
+    Graph,
+    /// Packed into their modules' balls, modules into their crates', at places that
+    /// never move.
+    Packed,
+}
+
+impl Arrangement {
+    pub(crate) fn other(self) -> Self {
+        match self {
+            Self::Graph => Self::Packed,
+            Self::Packed => Self::Graph,
+        }
+    }
+}
+
 /// How hard crowding containers push apart when clustered by module.
 const SEPARATION: f32 = 0.4;
 
@@ -240,6 +262,13 @@ pub(crate) struct Explorer {
     /// The codebase as a graph of calls.
     graph: ForceGraph,
     clustering: Clustering,
+    /// Every function at a fixed place in its module's ball, for the packed view.
+    packing: Packing,
+    /// Whether nodes sit where the graph simulation puts them or where the packing
+    /// does.
+    arrangement: Arrangement,
+    /// Whether nodes jumped between the two layouts since they were last moved.
+    repacked: bool,
     /// Whether the graph is still moving.
     settling: bool,
     /// Map tiles the journey runs, with the color each is drawn in there.
@@ -303,6 +332,7 @@ impl Explorer {
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
         }
+        let packing = codeviz_layout::pack(placed, &map, &graph);
         let tiles = map.tiles.len();
         let mut explorer = Self {
             system,
@@ -313,6 +343,9 @@ impl Explorer {
             map,
             graph,
             clustering,
+            packing,
+            arrangement: Arrangement::default(),
+            repacked: false,
             settling: true,
             journey_tiles: HashMap::new(),
             reach: None,
@@ -619,7 +652,37 @@ impl Explorer {
 
     /// Where a graph node sits in the world.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        self.graph.positions.get(tile).map(|&p| Vec3::from(p))
+        let positions = if self.packed() {
+            &self.packing.positions
+        } else {
+            &self.graph.positions
+        };
+        positions.get(tile).map(|&p| Vec3::from(p))
+    }
+
+    /// Every function at a fixed place in its module's ball.
+    pub(crate) fn packing(&self) -> &Packing {
+        &self.packing
+    }
+
+    /// Whether nodes sit in their modules' balls rather than where the graph
+    /// simulation puts them.
+    pub(crate) fn packed(&self) -> bool {
+        self.arrangement == Arrangement::Packed
+    }
+
+    pub(crate) fn arrangement(&self) -> Arrangement {
+        self.arrangement
+    }
+
+    /// Moves every node into its module's ball, or back to the simulated graph, and
+    /// turns the camera to it afresh.
+    pub(crate) fn set_arrangement(&mut self, arrangement: Arrangement) {
+        if self.arrangement != arrangement {
+            self.arrangement = arrangement;
+            self.repacked = true;
+            self.aim += 1;
+        }
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -638,9 +701,11 @@ impl Explorer {
     /// Runs the graph simulation a few steps while it is still moving. Returns whether
     /// anything moved.
     pub(crate) fn simulate(&mut self, steps: usize) -> bool {
-        if !self.settling {
-            return false;
+        // Packed nodes never move; the graph waits to settle until it shows again.
+        if self.packed() || !self.settling {
+            return std::mem::take(&mut self.repacked);
         }
+        self.repacked = false;
         let mut speed = 0.0;
         for _ in 0..steps {
             speed = self.graph.step();

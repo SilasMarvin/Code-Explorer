@@ -25,6 +25,7 @@ use crate::{
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
     scene::{PALETTE, Tile, lane_color},
+    sphere_view::{self, Tubes},
 };
 
 /// Calls into the focus.
@@ -290,6 +291,13 @@ pub(crate) fn style_nodes(
             )]
             (0.35 + 0.65 * shown, level as u8)
         };
+        // Packed, what is unrelated to the focus shrinks too, so the modules that
+        // matter read through the rest.
+        let scale = if explorer.packed() && matches!(look, NodeLook::Faded(_)) {
+            scale * 0.4
+        } else {
+            scale
+        };
         let size = node_size(explorer.graph(), tile.0) * scale;
         if (transform.scale.x - size).abs() > 0.001 {
             transform.scale = Vec3::splat(size);
@@ -327,11 +335,16 @@ pub(crate) fn draw_graph(
     diff: Option<Res<DiffView>>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
+    mut tubes: Gizmos<Tubes>,
 ) {
-    draw_regions(&explorer, &mut gizmos);
+    // Packed, modules are balls of their own, drawn with their outlines.
+    if !explorer.packed() {
+        draw_regions(&explorer, &mut gizmos);
+    }
     let time = clock.elapsed_secs();
     match diff {
         Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
+        None if explorer.packed() => draw_bundled_calls(&explorer, time, &mut tubes, &mut gizmos),
         None => draw_calls(&explorer, time, &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
@@ -344,32 +357,8 @@ pub(crate) fn draw_graph(
 fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
-    let reach = explorer.reach();
     let point = |tile: usize| explorer.tile_point(tile);
-    let map = explorer.map();
-    let track = explorer.track();
-    let path: HashSet<(usize, usize)> = track
-        .scene()
-        .edges
-        .iter()
-        .filter(|edge| explorer.disclosed(edge.callee))
-        .filter_map(|edge| {
-            let node_of = |span| track.unit_id(span).and_then(|u| map.tile_of(u));
-            Some((node_of(edge.caller)?, node_of(edge.callee)?))
-        })
-        .collect();
-    let disclosed = explorer.disclosure();
-    let journey = disclosed.tiles();
-    let opened = disclosed.opened();
-    let spotlit = explorer.spotlit();
-    // Calls from the focus, counting the focus itself as zero.
-    let hops = |side: &HashMap<usize, u32>, tile: usize| {
-        if center == Some(tile) {
-            Some(0)
-        } else {
-            side.get(&tile).copied()
-        }
-    };
+    let lights = Lights::new(explorer);
 
     for (index, &(from, to)) in graph.calls.iter().enumerate() {
         let (Some(a), Some(b)) = (point(from), point(to)) else {
@@ -379,6 +368,137 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
         if shown < SPECK {
             continue;
         }
+        let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
+        match lights.light(from, to) {
+            // Stop at the callee's surface so the head stays visible.
+            Light::Touching(color) => {
+                let color = color.with_alpha(fade(1) * shown);
+                gizmos.arrow(a, b - back, color).with_tip_length(1.1);
+                flow(gizmos, a, b - back, color, time, index);
+            }
+            Light::Further(outer) => {
+                gizmos
+                    .arrow(a, b - back, FURTHER.with_alpha(fade(outer) * 0.8 * shown))
+                    .with_tip_length(0.8);
+            }
+            Light::Path => {
+                gizmos
+                    .arrow(a, b - back, FURTHER.with_alpha(0.4 * shown))
+                    .with_tip_length(0.8);
+            }
+            Light::Off => {
+                let alpha = if center.is_some() {
+                    0.04
+                } else if graph.cluster(from) == graph.cluster(to) {
+                    0.18
+                } else {
+                    // Calls between modules step back, so each module's own wiring reads.
+                    0.06
+                };
+                gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, alpha * shown));
+            }
+        }
+    }
+}
+
+/// Calls that touch the focus, or run further along from it, as tubes bent through
+/// the middles of the modules they leave and enter; the rest are not drawn, so the
+/// balls stay clear.
+fn draw_bundled_calls(
+    explorer: &Explorer,
+    time: f32,
+    tubes: &mut Gizmos<Tubes>,
+    gizmos: &mut Gizmos,
+) {
+    let lights = Lights::new(explorer);
+    // Further calls first, so those touching the focus draw over them.
+    let mut lit: Vec<(usize, usize, usize, Light)> = explorer
+        .graph()
+        .calls
+        .iter()
+        .enumerate()
+        .filter(|&(_, &(from, to))| explorer.visibility(from).min(explorer.visibility(to)) >= SPECK)
+        .map(|(index, &(from, to))| (index, from, to, lights.light(from, to)))
+        .filter(|(_, _, _, light)| *light != Light::Off)
+        .collect();
+    lit.sort_by_key(|&(_, _, _, light)| matches!(light, Light::Touching(_)));
+    for (index, from, to, light) in lit {
+        let shown = explorer.visibility(from).min(explorer.visibility(to));
+        let route = sphere_view::route(explorer, from, to);
+        let size = sphere_view::callee_size(explorer, to);
+        let (color, flowing) = match light {
+            Light::Touching(color) => (color.with_alpha(fade(1) * shown), Some((time, index))),
+            Light::Further(outer) => (FURTHER.with_alpha(fade(outer) * 0.8 * shown), None),
+            Light::Path | Light::Off => (FURTHER.with_alpha(0.4 * shown), None),
+        };
+        sphere_view::draw_call(tubes, gizmos, &route, size, color, flowing);
+    }
+}
+
+/// How a call is drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Light {
+    /// Into the focus or out of it, in that side's color.
+    Touching(Color),
+    /// Further along from the focus, this many calls out.
+    Further(u32),
+    /// On the journey's path, though not near the focus.
+    Path,
+    Off,
+}
+
+/// What decides which calls light up: the focus, what reaches it, the open journey
+/// and the spotlight.
+struct Lights<'a> {
+    center: Option<usize>,
+    reach: Option<&'a Reach>,
+    path: HashSet<(usize, usize)>,
+    disclosed: Arc<Disclosed>,
+    spotlit: Vec<usize>,
+}
+
+impl<'a> Lights<'a> {
+    fn new(explorer: &'a Explorer) -> Self {
+        let map = explorer.map();
+        let track = explorer.track();
+        let path: HashSet<(usize, usize)> = track
+            .scene()
+            .edges
+            .iter()
+            .filter(|edge| explorer.disclosed(edge.callee))
+            .filter_map(|edge| {
+                let node_of = |span| track.unit_id(span).and_then(|u| map.tile_of(u));
+                Some((node_of(edge.caller)?, node_of(edge.callee)?))
+            })
+            .collect();
+        let disclosed = explorer.disclosure();
+        Self {
+            center: explorer.graph_focus(),
+            reach: explorer.reach(),
+            path,
+            disclosed,
+            spotlit: explorer.spotlit(),
+        }
+    }
+
+    fn light(&self, from: usize, to: usize) -> Light {
+        let Self {
+            center,
+            reach,
+            path,
+            disclosed,
+            spotlit,
+        } = self;
+        let journey = disclosed.tiles();
+        let opened = disclosed.opened();
+        // Calls from the focus, counting the focus itself as zero.
+        let hops = |side: &HashMap<usize, u32>, tile: usize| {
+            if *center == Some(tile) {
+                Some(0)
+            } else {
+                side.get(&tile).copied()
+            }
+        };
         // A link lights up when it takes one step nearer the focus (violet) or one
         // step further out from it (blue).
         let lit = reach.and_then(|reach| {
@@ -401,35 +521,11 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                 _ => None,
             }
         });
-        let back = (b - a).normalize_or_zero() * node_size(graph, to) * 0.5;
         match lit {
-            // Stop at the callee's surface so the head stays visible.
-            Some((color, 1)) => {
-                let color = color.with_alpha(fade(1) * shown);
-                gizmos.arrow(a, b - back, color).with_tip_length(1.1);
-                flow(gizmos, a, b - back, color, time, index);
-            }
-            Some((_, outer)) => {
-                gizmos
-                    .arrow(a, b - back, FURTHER.with_alpha(fade(outer) * 0.8 * shown))
-                    .with_tip_length(0.8);
-            }
-            None if path.contains(&(from, to)) => {
-                gizmos
-                    .arrow(a, b - back, FURTHER.with_alpha(0.4 * shown))
-                    .with_tip_length(0.8);
-            }
-            None => {
-                let alpha = if center.is_some() {
-                    0.04
-                } else if graph.cluster(from) == graph.cluster(to) {
-                    0.18
-                } else {
-                    // Calls between modules step back, so each module's own wiring reads.
-                    0.06
-                };
-                gizmos.line(a, b, Color::srgba(0.6, 0.66, 0.8, alpha * shown));
-            }
+            Some((color, 1)) => Light::Touching(color),
+            Some((_, outer)) => Light::Further(outer),
+            None if path.contains(&(from, to)) => Light::Path,
+            None => Light::Off,
         }
     }
 }
@@ -519,6 +615,9 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
 /// Each module's region, as the functions showing place it: its cluster, middle, and
 /// a radius holding most of them.
 pub(crate) fn regions(explorer: &Explorer) -> Vec<(usize, Vec3, f32)> {
+    if explorer.packed() {
+        return sphere_view::regions(explorer);
+    }
     let graph = explorer.graph();
     let mut members: Vec<Vec<Vec3>> = vec![Vec::new(); graph.cluster_count()];
     for tile in 0..explorer.map().tiles.len() {
@@ -579,6 +678,9 @@ pub(crate) fn graph_keys(
         }
         if keys.just_pressed(KeyCode::KeyR) {
             frame_all(&explorer, &mut camera);
+        }
+        if keys.just_pressed(KeyCode::KeyY) {
+            camera.quarter_turn();
         }
     }
 }
@@ -735,12 +837,34 @@ pub(crate) fn orbit_anchor(explorer: &Explorer, camera: &mut OrbitCamera) {
     let Some(at) = explorer.tile_point(anchor) else {
         return;
     };
-    let reach = graph
+    let near: Vec<Vec3> = graph
         .callers(anchor)
         .chain(graph.callees(anchor))
         .filter(|&t| explorer.shown(t))
         .chain(explorer.graph_focus())
         .filter_map(|t| explorer.tile_point(t))
+        .collect();
+    if explorer.packed() {
+        // Packed, nothing moves, so the view fits what it must show exactly, as
+        // seen from where the camera is turning to, with the journey besides.
+        let journey = explorer
+            .disclosure()
+            .tiles()
+            .keys()
+            .filter_map(|&t| explorer.tile_point(t))
+            .collect::<Vec<_>>();
+        let points: Vec<Vec3> = near.into_iter().chain(journey).collect();
+        let view = PerspectiveProjection {
+            aspect_ratio: 1.6,
+            ..default()
+        };
+        let fit = fit_distance(&points, at, camera.heading(), &view);
+        // A little further, so names at the edges clear the cards in the corners.
+        camera.glide_to(at, fit * 1.2);
+        return;
+    }
+    let reach = near
+        .iter()
         .map(|p| p.distance(at))
         .fold(journey_reach(explorer, at), f32::max);
     camera.glide_to(at, orbit_distance(reach));

@@ -22,6 +22,7 @@ mod journey_panel;
 mod lens;
 mod scene;
 mod source_diff;
+mod sphere_view;
 mod truth;
 mod ui;
 
@@ -34,7 +35,7 @@ use codeviz_ir::{Document, UnitId};
 
 use crate::{
     diff_view::{DiffStyle, DiffView},
-    explorer::{Autoplay, Clustering, Explorer},
+    explorer::{Arrangement, Autoplay, Clustering, Explorer},
     journey_panel::{JourneyPanel, PanelMode},
     lens::{Lens, Measure, Source},
 };
@@ -63,6 +64,8 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
+    /// Whether the graph opens floating or packed into balls.
+    arrangement: Arrangement,
     diff: Option<Comparison>,
 }
 
@@ -96,6 +99,7 @@ impl Viewer {
             focus: None,
             depth: None,
             bare: false,
+            arrangement: Arrangement::default(),
             diff: None,
         }
     }
@@ -234,6 +238,14 @@ impl Viewer {
         self
     }
 
+    /// Opens with every function packed into its module's ball, modules packed into
+    /// their crate's, instead of floating in the graph.
+    #[must_use]
+    pub fn packed(mut self) -> Self {
+        self.arrangement = Arrangement::Packed;
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -286,6 +298,7 @@ impl Viewer {
             }
         }
         explorer.set_clustering(self.clustering);
+        explorer.set_arrangement(self.arrangement);
         explorer.set_lens(self.lens);
         if let Some(tile) = self
             .focus
@@ -349,6 +362,7 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
             diff_view::DiffPlugin,
+            sphere_view::SpherePlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)

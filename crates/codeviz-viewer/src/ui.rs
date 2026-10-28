@@ -26,6 +26,7 @@ use crate::{
     lens::{Measure, Source},
     scene::{PALETTE, lane_color},
     source_diff,
+    sphere_view::{self, Weight},
 };
 
 pub(crate) struct UiPlugin;
@@ -228,7 +229,8 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, above(graph_area, panel_area), diff.is_some());
+            // Its bottom edge is the graph's, whatever the diff card took off the top.
+            legend(ctx, clear, diff.is_some(), explorer.packed());
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -940,11 +942,19 @@ pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
         )
 }
 
+/// The last part of a dotted or `::` path.
+fn last_segment(path: &str) -> &str {
+    path.rsplit(['.', ':']).next().unwrap_or(path)
+}
+
 /// What a graph label names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Named {
     Node(usize),
     Group(usize),
+    /// A crate holding modules, in the packed view, by index into the packing's
+    /// holders.
+    Holder(usize),
 }
 
 /// Tier, then bigger first, then a stable tiebreak.
@@ -1342,6 +1352,15 @@ fn draw_graph_labels(
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
+    // Packed, only the modules that hold something near the focus are named, those
+    // holding its callers and callees first; the crates holding them after.
+    let weights = explorer
+        .packed()
+        .then(|| sphere_view::module_weights(explorer));
+    let holder_top = |holder: usize| {
+        let ball = explorer.packing().holders.get(holder)?.ball;
+        to_screen(Vec3::from(ball.center) + up * ball.radius)
+    };
     if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
             #[expect(
@@ -1350,11 +1369,23 @@ fn draw_graph_labels(
                 reason = "a rough size for ordering"
             )]
             let size = radius as usize;
-            let tier = if center.is_some() { 4 } else { 1 };
+            let tier = match weights.as_ref().and_then(|w| w.get(cluster)) {
+                Some(Weight::Idle) => continue,
+                Some(Weight::Touching) => 2,
+                _ if center.is_some() => 4,
+                _ => 1,
+            };
             order.push((
                 (tier, std::cmp::Reverse(size), cluster),
                 Named::Group(cluster),
             ));
+        }
+        if let Some(weights) = &weights {
+            for (index, holder) in explorer.packing().holders.iter().enumerate() {
+                if sphere_view::shows_holder(holder, weights) {
+                    order.push(((6, std::cmp::Reverse(0), index), Named::Holder(index)));
+                }
+            }
         }
     }
     order.sort_by_key(|&(key, _)| key);
@@ -1375,7 +1406,7 @@ fn draw_graph_labels(
                     .filter(|((tier, _, _), _)| *tier <= 3)
                     .filter_map(|&(_, named)| match named {
                         Named::Node(tile) => discs[tile],
-                        Named::Group(_) => None,
+                        Named::Group(_) | Named::Holder(_) => None,
                     })
                     .map(|(node, edge)| {
                         egui::Rect::from_center_size(node, egui::Vec2::splat(edge * 2.0))
@@ -1389,10 +1420,35 @@ fn draw_graph_labels(
                 let Some(at) = ring_top(group) else {
                     continue;
                 };
-                let color = egui_color(lane_color(group % PALETTE.len()))
-                    .gamma_multiply(if center.is_some() { 0.6 } else { 0.9 });
+                let color = egui_color(lane_color(group % PALETTE.len())).gamma_multiply(
+                    if center.is_none() || tier <= 2 {
+                        0.9
+                    } else {
+                        0.6
+                    },
+                );
                 let label = explorer.cluster_name(group);
+                // Packed, a module sits inside its crate or package, named there, so
+                // its own name is enough.
+                let label = if explorer.packed() {
+                    last_segment(&label).to_owned()
+                } else {
+                    label
+                };
                 let job = label_job(None, &label.to_uppercase(), None, color, 12.0, false);
+                placer.place(named, at, 0.0, job, None, false);
+            }
+            Named::Holder(holder) => {
+                let Some(at) = holder_top(holder) else {
+                    continue;
+                };
+                let label = explorer
+                    .packing()
+                    .holders
+                    .get(holder)
+                    .and_then(|h| explorer.any_unit(h.unit.as_ref()?))
+                    .map_or_else(String::new, |unit| unit.name.clone());
+                let job = label_job(None, &label, None, MUTED, 13.0, false);
                 placer.place(named, at, 0.0, job, None, false);
             }
             Named::Node(tile) => {
@@ -1522,6 +1578,7 @@ fn draw_graph_labels(
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
+        Named::Holder(holder) => holder_top(holder),
     });
 }
 
@@ -1632,7 +1689,7 @@ fn camera_free(
 
 /// What the colors mean, in two lines: what a node's fill says, then which way a
 /// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, packed: bool) {
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1656,6 +1713,14 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
                             swatch(ui, "●", diff_view::REMOVED, "removed");
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+                        } else if packed {
+                            ui.label(
+                                egui::RichText::new(
+                                    "ball = a module, sized by its functions, on its surface \
+                                     · outline = its crate",
+                                )
+                                .size(12.5),
+                            );
                         } else {
                             ui.label(
                                 egui::RichText::new("node color = its module, as its ring")
@@ -1732,6 +1797,8 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
+            ("Z", "modules as balls, packed in their crates / the graph"),
+            ("Y", "turn the view a quarter round"),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

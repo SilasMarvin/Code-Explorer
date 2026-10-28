@@ -255,6 +255,11 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
     }
+    // Z packs every function into its module's ball, or lets the graph float again.
+    if keys.just_pressed(KeyCode::KeyZ) {
+        let other = explorer.arrangement().other();
+        explorer.set_arrangement(other);
+    }
     if keys.just_pressed(KeyCode::KeyK) {
         let next = match explorer.clustering() {
             Clustering::Modules => Clustering::Calls,

@@ -17,9 +17,11 @@ use codeviz_ir::{Unit, UnitId};
 
 mod graph;
 mod map;
+mod packing;
 
 pub use graph::{ForceConfig, ForceGraph, GroupStats, Reach};
 pub use map::{CodebaseMap, MapConfig, MapGroup, MapTile, map};
+pub use packing::{Ball, Holder, Packing, pack};
 
 /// What groups spans into lanes along the Z axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

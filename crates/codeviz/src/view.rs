@@ -72,6 +72,10 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
+    /// How to use the third dimension: `packed` puts every function in its module's
+    /// ball, modules in their crate's, at places that never move.
+    #[arg(long, value_enum, value_name = "VIEW")]
+    z: Option<ZArg>,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -119,6 +123,12 @@ enum NearArg {
     Space,
     /// Distance in the graph, with each call between counting against it.
     Blend,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum ZArg {
+    /// Modules as balls sized by what they hold, packed inside their crates.
+    Packed,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -230,6 +240,9 @@ pub(crate) fn open(
     }
     if args.bare {
         viewer = viewer.bare();
+    }
+    if let Some(ZArg::Packed) = args.z {
+        viewer = viewer.packed();
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

@@ -109,6 +109,22 @@ impl OrbitCamera {
         self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
+    /// Which way the camera faces once it has turned to where it is turning.
+    pub(crate) fn heading(&self) -> Quat {
+        let (yaw, pitch) = self.goal_angles.unwrap_or((self.yaw, self.pitch));
+        Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)
+    }
+
+    /// Eases round by a quarter turn about the vertical, and a little more from
+    /// above, so what sat behind something comes out beside it.
+    pub(crate) fn quarter_turn(&mut self) {
+        let (yaw, pitch) = self.goal_angles.unwrap_or((self.yaw, self.pitch));
+        self.goal_angles = Some((
+            yaw + std::f32::consts::FRAC_PI_2,
+            (pitch - 0.35).max(-PITCH_LIMIT),
+        ));
+    }
+
     /// Eases round to `(yaw, pitch)`.
     pub(crate) fn turn_to(&mut self, (yaw, pitch): (f32, f32)) {
         // The short way round.

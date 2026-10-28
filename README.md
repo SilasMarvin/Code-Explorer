@@ -68,6 +68,17 @@ stepping through the journey at most pulls it back to keep the cursor's node in 
 Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
 brings it back.
 
+`Z` (or `--z packed` to open in it) packs the codebase into balls instead: each module is
+a ball sized by how many functions it holds, its functions spread over its surface, a
+type's methods side by side, and modules packed inside an outline of the crate (or
+top-level package) that holds them, those that call each other most placed nearest.
+The places never change with the focus, so where a function sits can be learned. Calls
+into and out of the focus run as tubes that bend through the middles of the modules
+they leave and enter, so calls between the same two modules run together; no other
+call is drawn. The balls holding the focus, its callers and its callees are bright and
+named, along with the crates holding them; the rest stay faint and unnamed. `Y` turns
+the view a quarter round, to see what sat behind.
+
 ## Diffs
 
 `codeviz diff` checks out each revision with `git archive`, analyzes both, and draws
