@@ -1376,13 +1376,11 @@ fn draw_graph_labels(
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .collect();
-    let layer_names = layer_names(painter, to_screen, explorer);
     // And off the nodes that matter, so they never hide a neighbor.
     let mut placer = Placer::new(
         painter,
         cards
             .into_iter()
-            .chain(layer_names.iter().map(|(rect, _)| *rect))
             .chain(
                 order
                     .iter()
@@ -1556,18 +1554,21 @@ fn draw_graph_labels(
             }
         }
     }
+    // Layers are named only where no function's name is.
+    let taken = placer.taken.clone();
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
     });
-    for (rect, galley) in layer_names {
-        painter.galley(rect.min, galley, MUTED);
+    for (rect, galley) in layer_names(painter, to_screen, explorer) {
+        if !taken.iter().any(|t| t.intersects(rect)) {
+            painter.galley(rect.min, galley, MUTED);
+        }
     }
 }
 
 /// Each layer's number beside its tick on the plumb line through the focus; the top
 /// one says it holds the entry points.
-/// Laid out where they go, so function names keep off them.
 fn layer_names(
     painter: &egui::Painter,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,

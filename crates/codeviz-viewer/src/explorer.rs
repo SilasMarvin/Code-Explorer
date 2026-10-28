@@ -643,6 +643,7 @@ impl Explorer {
     /// from the entry points, or back as the simulation places it.
     pub(crate) fn set_strata(&mut self, on: bool) {
         self.strata = on.then(|| self.layer());
+        self.reach = None;
     }
 
     fn layer(&self) -> Strata {
@@ -1090,6 +1091,12 @@ impl Explorer {
             return false;
         }
         self.reach = focus.map(|tile| (tile, self.graph.reach(tile)));
+        // Strata center their layers on the focus.
+        if let (Some(strata), Some(tile)) = (&mut self.strata, focus)
+            && strata.focus_on(strata.rank(tile))
+        {
+            self.moved += 1;
+        }
         true
     }
 

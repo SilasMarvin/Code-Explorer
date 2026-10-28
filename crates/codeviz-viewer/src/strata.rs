@@ -21,6 +21,10 @@ use crate::{
 const LAYER: f32 = 9.0;
 /// How the camera looks at the layers: turned a little, and down on them.
 pub(crate) const POSE: (f32, f32) = (-0.3, -0.3);
+/// Layers either side of the focus a full step apart.
+const NEAR: f32 = 3.0;
+/// The share of a step the layers further out take.
+const SQUEEZE: f32 = 0.35;
 /// Room round the map on every layer.
 const MARGIN: f32 = 6.0;
 
@@ -29,8 +33,10 @@ const MARGIN: f32 = 6.0;
 pub(crate) struct Strata {
     ranks: Vec<u32>,
     depth: u32,
-    /// Height from one layer to the next.
+    /// Height from one layer to the next, near the focus.
     spacing: f32,
+    /// The focus's layer: layers further than [`NEAR`] from it are squeezed.
+    focus: u32,
 }
 
 impl Strata {
@@ -51,6 +57,7 @@ impl Strata {
             ranks,
             depth,
             spacing,
+            focus: 0,
         }
     }
 
@@ -60,10 +67,20 @@ impl Strata {
         Vec3::new(at[0], -self.height(self.rank(tile)), -at[1])
     }
 
-    /// How far below the top layer `rank` is.
-    #[expect(clippy::cast_precision_loss, reason = "a layer count")]
+    /// Centers the layers on `rank`, the focus's. Returns whether that moved them.
+    pub(crate) fn focus_on(&mut self, rank: u32) -> bool {
+        let moved = self.focus != rank;
+        self.focus = rank;
+        moved
+    }
+
+    /// How far below the top layer `rank` is: a full step apart near the focus, and
+    /// squeezed together beyond, so a deep stack still fits on screen around it.
+    #[expect(clippy::cast_precision_loss, reason = "layer counts")]
     fn height(&self, rank: u32) -> f32 {
-        rank as f32 * self.spacing
+        let from = rank as f32 - self.focus as f32;
+        let near = from.clamp(-NEAR, NEAR);
+        (self.focus as f32 + near + (from - near) * SQUEEZE) * self.spacing
     }
 
     /// The layer `tile` sits on, 0 being the top.
@@ -524,17 +541,18 @@ pub(crate) fn toggle(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer) {
     }
 }
 
-/// Moves every node to its place when the strata come on or off.
+/// Moves every node to its place when the strata come on or off, or center on
+/// another layer.
 pub(crate) fn place_nodes(
     explorer: Res<Explorer>,
-    mut last: Local<Option<bool>>,
+    mut last: Local<Option<(bool, u64)>>,
     mut nodes: Query<(&Tile, &mut Transform)>,
 ) {
-    let on = explorer.strata().is_some();
-    if *last == Some(on) {
+    let now = (explorer.strata().is_some(), explorer.moved());
+    if *last == Some(now) {
         return;
     }
-    *last = Some(on);
+    *last = Some(now);
     for (tile, mut transform) in &mut nodes {
         if let Some(at) = explorer.tile_point(tile.0) {
             transform.translation = at;
@@ -588,6 +606,26 @@ mod tests {
         let calls = [(0, 1), (1, 2), (2, 3), (4, 3), (5, 3)];
         let entries = HashSet::from([0, 5]);
         assert_eq!(ranks(7, &calls, &entries), [0, 1, 2, 3, 2, 0, 3]);
+    }
+
+    #[test]
+    fn layers_far_from_the_focus_squeeze_together() {
+        let calls: Vec<(usize, usize)> = (0..10).map(|t| (t, t + 1)).collect();
+        let mut strata = Strata::new(11, &calls, &HashSet::new(), 0.0);
+        strata.focus_on(5);
+        let y = |tile| strata.place(tile, [0.0; 3]).y;
+        assert!(
+            (y(5) - y(6) - LAYER).abs() < 1e-4,
+            "next to it, a full step"
+        );
+        assert!(
+            (y(8) - y(9) - LAYER * SQUEEZE).abs() < 1e-4,
+            "far below, squeezed"
+        );
+        assert!(
+            (y(0) - y(1) - LAYER * SQUEEZE).abs() < 1e-4,
+            "far above, squeezed"
+        );
     }
 
     #[test]

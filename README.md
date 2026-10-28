@@ -83,6 +83,8 @@ cannot step down: they share a layer and bow up over it, which makes them stand 
 
 The camera looks down on the stack from a little above. A plumb line runs through the
 focus with each layer's number on it; the focus's layer is glazed and edged brightest.
+Layers more than three from the focus's squeeze together, so a deep stack still fits
+around it, and move apart again as the focus moves to them.
 Two calls either way of the focus light up, whatever the journey shows: violet into it,
 blue out of it, pale beyond, and each is named with the module it lives in and, two
 calls out, the neighbor it goes through (`calls place`, `called by quote`). Only the
