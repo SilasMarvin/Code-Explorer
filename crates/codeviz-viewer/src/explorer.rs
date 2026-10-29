@@ -656,6 +656,18 @@ impl Explorer {
         self.moved += 1;
     }
 
+    /// Expands the nucleus to show how calls run inside the focus's module, or shrinks
+    /// it back; gathers the graph round that module first when it lies flat.
+    pub(crate) fn expand_nucleus(&mut self, on: bool) {
+        if on {
+            self.set_nucleus(true);
+        }
+        if let Some(nucleus) = &mut self.nucleus {
+            nucleus.expand(&self.graph, on);
+            self.moved += 1;
+        }
+    }
+
     /// Re-centers the nucleus when the focus moved to another function, and eases it
     /// along by `dt` seconds. Returns whether what it shows changed, rather than only
     /// moved.

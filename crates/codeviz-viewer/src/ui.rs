@@ -1301,11 +1301,7 @@ fn draw_graph_labels(
                 .filter(|_| explorer.visibility(tile) >= 0.5)
                 .filter(|_| nucleus.is_none_or(|n| n.shows(tile)))?;
             let node = to_screen(world)?;
-            let scale = if nucleus.is_some() {
-                nucleus::NODE_SCALE
-            } else {
-                1.0
-            };
+            let scale = nucleus.map_or(1.0, |n| n.node_scale(false));
             let radius = graph_view::node_size(graph, tile) * scale / 2.0;
             let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
             Some((node, edge))
@@ -1390,8 +1386,10 @@ fn draw_graph_labels(
                 .and_then(|ball| to_screen(ball.center))
                 .is_none_or(|at| discs.iter().any(|&(m, r)| at.distance(m) < r + 110.0))
         };
+        // Expanded, the rest of the codebase goes unnamed: the ring says where calls go.
         let named: HashSet<usize> = closed
             .iter()
+            .filter(|_| !nucleus.expanded())
             .filter(|&&(_, cluster)| !hidden(cluster))
             .take(CLOSED_NAMED)
             .map(|&(_, cluster)| cluster)
@@ -1466,7 +1464,7 @@ fn draw_graph_labels(
                 let label = explorer.cluster_name(group);
                 // An open module says how much of it is named.
                 let note = nucleus
-                    .filter(|_| body == Some(Body::Open))
+                    .filter(|n| body == Some(Body::Open) && n.opened(group) > 0)
                     .map(|n| format!("{} of {}", n.opened(group), n.count(group)));
                 let size = match body {
                     Some(Body::Nucleus) => 15.0,
@@ -1716,6 +1714,7 @@ fn camera_free(
 /// link runs. A hint at the keys below.
 fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
     let gathered = explorer.nucleus().is_some();
+    let expanded = explorer.nucleus().is_some_and(nucleus::Nucleus::expanded);
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1739,6 +1738,15 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explo
                             swatch(ui, "●", diff_view::REMOVED, "removed");
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+                        } else if expanded {
+                            ui.label(
+                                egui::RichText::new(
+                                    "inside the focus's module, grown · named: what is \
+                                     two calls or fewer from the focus within it · \
+                                     specks: the rest",
+                                )
+                                .size(12.5),
+                            );
                         } else if gathered {
                             ui.label(
                                 egui::RichText::new(
@@ -1755,11 +1763,19 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explo
                             );
                         }
                     });
-                    if gathered && !diffing {
+                    if expanded && !diffing {
                         ui.label(
                             egui::RichText::new(
-                                "thick arrow = every call from one module to the other; \
-                                 the named calls run inside it",
+                                "thin arrow = a call inside the module; a call out of it \
+                                 runs through the wall to its module, on the ring outside",
+                            )
+                            .size(12.5),
+                        );
+                    } else if gathered && !diffing {
+                        ui.label(
+                            egui::RichText::new(
+                                "arrow = every call from one module to the other, \
+                                 thicker the more; the named calls run along it",
                             )
                             .size(12.5),
                         );
@@ -1837,6 +1853,10 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
             ("Z", "gather round the focus's module / lay flat"),
+            (
+                "X, double click",
+                "expand the focus's module to see its calls inside / shrink it",
+            ),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

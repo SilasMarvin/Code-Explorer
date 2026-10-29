@@ -72,9 +72,8 @@ pub(crate) struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
-    /// Open with the third dimension showing this (Z toggles it).
-    #[arg(long, value_enum, value_name = "VIEW")]
-    z: Option<ZArg>,
+    #[command(flatten)]
+    third: Third,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -82,6 +81,18 @@ pub(crate) struct Display {
     /// `shift+]`.
     #[arg(long, value_name = "KEYS", requires = "screenshot")]
     keys: Option<String>,
+}
+
+/// What the third dimension shows at first.
+#[derive(Debug, clap::Args)]
+struct Third {
+    /// Open with the third dimension showing this (Z toggles it).
+    #[arg(long, value_enum, value_name = "VIEW")]
+    z: Option<ZArg>,
+    /// With `--z nucleus`, open with the nucleus expanded to show how calls run inside
+    /// the focus's module (X toggles it).
+    #[arg(long, requires = "z")]
+    expand: bool,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -241,8 +252,11 @@ pub(crate) fn open(
     if args.bare {
         viewer = viewer.bare();
     }
-    if let Some(ZArg::Nucleus) = args.z {
+    if let Some(ZArg::Nucleus) = args.third.z {
         viewer = viewer.with_nucleus();
+    }
+    if args.third.expand {
+        viewer = viewer.expanded();
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);

@@ -24,7 +24,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     lens::{Lens, SPECK, Source},
-    nucleus::{self, NODE_SCALE, QUIET_SCALE},
+    nucleus,
     scene::{PALETTE, Tile, lane_color},
 };
 
@@ -295,11 +295,13 @@ pub(crate) fn style_nodes(
             Some(diff) => diff_look(&explorer, diff, tile.0),
             None => node_look(&explorer, tile.0),
         };
-        // Inside the nucleus, what relates to nothing named is small, and solid
-        // enough to read through the glass.
-        let quiet = nucleus.is_some() && matches!(look, NodeLook::Faded(_));
+        // Gathered round the focus's module, what it names but the focus does not
+        // reach still shows plainly; what relates to nothing named is a small, faint
+        // speck.
+        let named = nucleus.is_some_and(|n| n.names(tile.0));
+        let quiet = nucleus.is_some() && !named && matches!(look, NodeLook::Faded(_));
         let look = match look {
-            NodeLook::Faded(color) if quiet => NodeLook::Plain(color),
+            NodeLook::Faded(color) if named => NodeLook::Plain(color),
             look => look,
         };
         // What the lens leaves out shrinks as well as fades, down to a speck.
@@ -318,8 +320,8 @@ pub(crate) fn style_nodes(
             (0.35 + 0.65 * shown, level as u8)
         };
         let (scale, level) = match nucleus {
-            Some(_) if quiet => (QUIET_SCALE, LEVELS / 3),
-            Some(_) => (scale * NODE_SCALE, level),
+            Some(n) if quiet => (n.node_scale(true), LEVELS),
+            Some(n) => (scale * n.node_scale(false), level),
             None => (scale, level),
         };
         let size = node_size(explorer.graph(), tile.0) * scale;
