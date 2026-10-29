@@ -938,8 +938,8 @@ fn inside_links(
     (links, rest)
 }
 
-/// The calls leaving the module from what it names, or coming into it, one for each
-/// function, other module and direction: into the focus and its callers, and out of
+/// The calls leaving the module from what it names, or coming into it: every one of
+/// the focus's, and for the rest one for each function, other module and direction: into the focus and its callers, and out of
 /// the focus and its callees, as flow runs.
 fn exits(
     graph: &ForceGraph,
@@ -960,7 +960,13 @@ fn exits(
             continue;
         };
         let along = hops == 0 || (hops > 0) == outward;
-        if !along || !seen.insert((inside, other, outward)) {
+        // Every call of the focus's own; of the rest, one for each other module.
+        let outer = match (hops, outward) {
+            (0, true) => to,
+            (0, false) => from,
+            _ => other,
+        };
+        if !along || !seen.insert((inside, outer, outward)) {
             continue;
         }
         let flow = match hops {
