@@ -2,7 +2,7 @@
 //! the keys that move the cursor and switch what is shown.
 
 use bevy::prelude::*;
-use bevy_egui::input::egui_wants_any_keyboard_input;
+use bevy_egui::input::{egui_wants_any_keyboard_input, egui_wants_any_pointer_input};
 
 use crate::{
     disclosure::Disclose,
@@ -34,6 +34,7 @@ impl Plugin for ScenePlugin {
                 keyboard.run_if(not(egui_wants_any_keyboard_input)),
                 autoplay,
                 graph_view::track_attention,
+                nucleus::double_click.run_if(not(egui_wants_any_pointer_input)),
                 nucleus::follow,
                 simulate,
                 reveal,

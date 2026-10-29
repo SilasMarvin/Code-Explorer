@@ -238,6 +238,8 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
         Some(Relation::Upstream(hops) | Relation::Downstream(hops)) if named => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
+        // Expanded, what is one more call from the focus inside its module, beside it.
+        _ if named => Some(2),
         _ if explorer.spotlit().contains(&tile) => Some(1),
         _ => None,
     }
@@ -295,11 +297,13 @@ pub(crate) fn style_nodes(
             Some(diff) => diff_look(&explorer, diff, tile.0),
             None => node_look(&explorer, tile.0),
         };
-        // Inside the nucleus, what relates to nothing named is small, and solid
-        // enough to read through the glass.
-        let quiet = nucleus.is_some() && matches!(look, NodeLook::Faded(_));
+        // Gathered round the focus's module, what relates to nothing named is a small,
+        // dim speck of its module's color: there, but out of the way.
+        let quiet = nucleus.is_some_and(|n| n.quiet(tile.0)) && diff.is_none();
         let look = match look {
-            NodeLook::Faded(color) if quiet => NodeLook::Plain(color),
+            NodeLook::Faded(color) | NodeLook::Near(color, _) | NodeLook::Plain(color) if quiet => {
+                NodeLook::Plain(color)
+            }
             look => look,
         };
         // What the lens leaves out shrinks as well as fades, down to a speck.
@@ -318,7 +322,7 @@ pub(crate) fn style_nodes(
             (0.35 + 0.65 * shown, level as u8)
         };
         let (scale, level) = match nucleus {
-            Some(_) if quiet => (QUIET_SCALE, LEVELS / 3),
+            Some(_) if quiet => (QUIET_SCALE, 1),
             Some(_) => (scale * NODE_SCALE, level),
             None => (scale, level),
         };

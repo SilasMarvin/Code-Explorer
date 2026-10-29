@@ -19,6 +19,7 @@ codeviz journey app.json -e 'POST /users/{id}/orders' -s 2   # one scenario as t
 codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
 codeviz view app.json --z nucleus    # the focus's module in the middle, the rest round it
+codeviz view app.json --expand       # the focus's module expanded to the whole scene
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -83,13 +84,31 @@ direction a fixed 3D layout of the modules (modules that call each other more si
 closer) has it from the focus's module, so a module keeps its bearing as the focus
 moves.
 
-A thick arrow joins two modules whenever a call this view names runs between them, as
-thick as all the calls from one to the other: violet into the focus's module, blue out
+A thin arrow joins two modules whenever a call this view names runs between them,
+thickening slowly with all the calls from one to the other: violet into the focus's module, blue out
 of it, pale one call further out. The named calls run inside it, function to function,
 violet and blue ones with dots flowing along them. A new focus in another module eases
 every sphere to its new place, the new module coming in to the middle. `Q` and `E` turn
 the view an eighth of the way round, refitting it, so the depth shows; `F` comes back to
-the usual three-quarter view, and `Z` again lays the graph flat.
+the usual three-quarter view, and `Z` again lays the graph flat. Functions inside the
+nucleus that nothing named touches are small dim specks.
+
+`X`, or a double-click on the nucleus (`--expand` opens on it), expands the focus's
+module to the whole scene, easing every function out to its place, and lays it out the
+same way one level down. The focus is in the middle. The functions in its module that
+call it or that it calls stand in a near ring round it, named; those one more call away
+inside the module stand just beyond, named, each towards the one it reaches the focus
+through; the rest of the module's functions are small and faint further out, inside a
+faint outline of the module. A type, impl or other container inside the module is a
+faint shell round its functions, named at its top (not one holding most of the module,
+whose shell would be the module again). Every other module shrinks to a small sphere on
+a far shell, in the direction the module view has it; those the named functions call or
+are called from are named. Calls are thin arrows: between named functions inside the
+module, violet into the focus, blue out of it and pale otherwise; and from a named
+function out to each module it calls, or in from each module that calls it, the focus's
+all of them and every other function's busiest three. Clicking a function focuses it
+and the rings re-form round it; `X` or a double-click gathers the module back into the
+nucleus.
 
 ## Diffs
 

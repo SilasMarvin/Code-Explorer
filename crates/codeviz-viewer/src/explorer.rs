@@ -649,10 +649,32 @@ impl Explorer {
         }
         self.nucleus = if on {
             self.settle_now();
-            Some(Nucleus::new(&self.graph, self.graph_focus()))
+            Some(Nucleus::new(
+                &self.graph,
+                &self.map,
+                self.graph_focus(),
+                false,
+            ))
         } else {
             None
         };
+        self.moved += 1;
+    }
+
+    /// Makes the focus's module the whole scene, easing there, or gathers it back
+    /// into the middle of the modules. Expanding from the flat graph gathers it first,
+    /// at once.
+    pub(crate) fn set_expanded(&mut self, on: bool) {
+        match &mut self.nucleus {
+            Some(nucleus) if nucleus.expanded() != on => nucleus.set_expanded(&self.graph, on),
+            None if on => {
+                self.settle_now();
+                let mut nucleus = Nucleus::new(&self.graph, &self.map, self.graph_focus(), true);
+                nucleus.settle();
+                self.nucleus = Some(nucleus);
+            }
+            _ => return,
+        }
         self.moved += 1;
     }
 

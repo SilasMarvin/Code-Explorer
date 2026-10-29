@@ -10,6 +10,11 @@
 //! them, function to function. Space says only where things are: no axis stands for
 //! order, rank or distance in calls. A new focus in another module re-centers on it,
 //! easing every sphere to its new place.
+//!
+//! Expanded (`X`, a double-click on the nucleus, or `--expand`), the focus's module
+//! becomes the whole scene, laid out the same way one level down: see [`inside`].
+
+mod inside;
 
 use std::{
     cmp::Reverse,
@@ -17,7 +22,7 @@ use std::{
 };
 
 use bevy::prelude::*;
-use codeviz_layout::ForceGraph;
+use codeviz_layout::{CodebaseMap, ForceGraph};
 
 use crate::{
     camera::{ANGLED, OrbitCamera},
@@ -106,7 +111,7 @@ const RECENTER_SECONDS: f32 = 0.9;
 /// How big a function is drawn, against its size in the flat graph.
 pub(crate) const NODE_SCALE: f32 = 0.8;
 /// How big a function in the nucleus that relates to nothing named is drawn.
-pub(crate) const QUIET_SCALE: f32 = 0.4;
+pub(crate) const QUIET_SCALE: f32 = 0.3;
 /// The angle the camera turns to when the nucleus opens.
 pub(crate) const VIEW: (f32, f32) = (-0.45, -0.38);
 
@@ -114,6 +119,8 @@ pub(crate) const VIEW: (f32, f32) = (-0.45, -0.38);
 #[derive(Debug, Clone, Default)]
 struct Arrangement {
     focus: Option<usize>,
+    /// The focus's module, in the middle.
+    center: usize,
     /// By cluster.
     balls: Vec<Ball>,
     /// By tile.
@@ -126,6 +133,32 @@ struct Arrangement {
     opened: Vec<usize>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
+    /// Expanded: the containers inside the module, round their functions.
+    shells: Vec<Shell>,
+    /// Expanded: calls leaving the module, or coming into it.
+    exits: Vec<Exit>,
+}
+
+/// Expanded: a faint shell round the functions of a type, impl or other container
+/// inside the module.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Shell {
+    /// The container, by index into the codebase map's groups.
+    pub(crate) group: usize,
+    pub(crate) center: Vec3,
+    pub(crate) radius: f32,
+}
+
+/// Expanded: the calls between a function in the module and another module, drawn as
+/// one arrow out to that module's sphere, or in from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Exit {
+    pub(crate) tile: usize,
+    pub(crate) cluster: usize,
+    /// Whether the function calls the module, rather than the module calling it.
+    pub(crate) outward: bool,
+    pub(crate) calls: usize,
+    pub(crate) flow: Flow,
 }
 
 /// The graph gathered round the focus's module.
@@ -139,6 +172,11 @@ pub(crate) struct Nucleus {
     degrees: Vec<usize>,
     /// Calls from one module to another, by `(from, to)` cluster.
     flows: HashMap<(usize, usize), usize>,
+    /// By tile: the container inside its module a function belongs to, a type or an
+    /// impl, by group; none for one that sits in the module itself.
+    inner: Vec<Option<usize>>,
+    /// Whether the focus's module is the whole scene.
+    expanded: bool,
     now: Arrangement,
     /// Where the spheres and functions were when the last re-centering began.
     from: Option<(Vec<Ball>, Vec<Vec3>)>,
@@ -147,7 +185,12 @@ pub(crate) struct Nucleus {
 }
 
 impl Nucleus {
-    pub(crate) fn new(graph: &ForceGraph, focus: Option<usize>) -> Self {
+    pub(crate) fn new(
+        graph: &ForceGraph,
+        map: &CodebaseMap,
+        focus: Option<usize>,
+        expanded: bool,
+    ) -> Self {
         let clusters = graph.cluster_count();
         let tiles = graph.positions.len();
         let mut counts = vec![0; clusters];
@@ -170,11 +213,21 @@ impl Nucleus {
             }
         }
         let homes = module_homes(clusters, &flows);
+        let inner = (0..tiles)
+            .map(|tile| {
+                let group = map.tiles.get(tile)?.group;
+                let unit = map.groups.get(group)?.unit.as_ref()?;
+                let module = graph.cluster_unit(graph.cluster(tile)?);
+                (module != Some(unit)).then_some(group)
+            })
+            .collect();
         let mut nucleus = Self {
             homes,
             counts,
             degrees,
             flows,
+            inner,
+            expanded,
             now: Arrangement::default(),
             from: None,
             progress: 1.0,
@@ -186,6 +239,26 @@ impl Nucleus {
     /// The function the nucleus is arranged around.
     pub(crate) fn focus(&self) -> Option<usize> {
         self.now.focus
+    }
+
+    /// Whether the focus's module is the whole scene.
+    pub(crate) fn expanded(&self) -> bool {
+        self.expanded
+    }
+
+    /// Makes the focus's module the whole scene, or gathers it back into the middle
+    /// of the modules, easing there.
+    pub(crate) fn set_expanded(&mut self, graph: &ForceGraph, on: bool) {
+        if on != self.expanded {
+            self.expanded = on;
+            self.recenter(graph, self.now.focus);
+        }
+    }
+
+    /// Ends any easing at once, everything where it is going.
+    pub(crate) fn settle(&mut self) {
+        self.progress = 1.0;
+        self.from = None;
     }
 
     /// Arranges everything around `focus` instead, easing there from wherever things
@@ -277,6 +350,34 @@ impl Nucleus {
         &self.now.links
     }
 
+    pub(crate) fn shells(&self) -> &[Shell] {
+        &self.now.shells
+    }
+
+    pub(crate) fn exits(&self) -> &[Exit] {
+        &self.now.exits
+    }
+
+    /// The focus's module's sphere: the nucleus, or expanded, the bounds of the scene.
+    pub(crate) fn middle(&self) -> Option<Ball> {
+        self.ball(self.now.center)
+    }
+
+    /// Whether a function is drawn but relates to nothing named: small and faint.
+    pub(crate) fn quiet(&self, tile: usize) -> bool {
+        self.shows(tile) && !self.names(tile) && self.now.focus != Some(tile)
+    }
+
+    /// How far a re-centering is along, eased: what is drawn only where it ends, such
+    /// as the shells, fades in by it.
+    pub(crate) fn arrived(&self) -> f32 {
+        if self.from.is_some() {
+            self.eased()
+        } else {
+            1.0
+        }
+    }
+
     /// Where the arrow from one module to another starts and ends, on their spheres
     /// as drawn now, and how thick it is. An arrow running each way between the same
     /// two modules keeps to its own side.
@@ -345,8 +446,18 @@ impl Nucleus {
             .collect()
     }
 
-    /// Everything placed around `focus`.
+    /// Everything placed around `focus`: the modules round its module, or expanded,
+    /// its module's functions round it.
     fn arrange(&self, graph: &ForceGraph, focus: Option<usize>) -> Arrangement {
+        if self.expanded {
+            self.arrange_inside(graph, focus)
+        } else {
+            self.arrange_modules(graph, focus)
+        }
+    }
+
+    /// The modules placed around `focus`'s.
+    fn arrange_modules(&self, graph: &ForceGraph, focus: Option<usize>) -> Arrangement {
         let clusters = self.homes.len();
         let center = focus
             .and_then(|f| graph.cluster(f))
@@ -379,6 +490,7 @@ impl Nucleus {
         let tubes = self.join(&links, &cluster_of);
         Arrangement {
             focus,
+            center,
             balls,
             points,
             shown,
@@ -386,6 +498,8 @@ impl Nucleus {
             opened: opened.iter().map(Vec::len).collect(),
             tubes,
             links,
+            shells: Vec::new(),
+            exits: Vec::new(),
         }
     }
 
@@ -685,10 +799,11 @@ fn closed_radius(count: usize) -> f32 {
     (0.5 + 0.3 * (count as f32).cbrt())
 }
 
-/// An arrow's thickness, for this many calls.
+/// An arrow's thickness, for this many calls: thin, growing slowly, and capped low so
+/// the calls inside it stay in sight.
 pub(crate) fn tube_radius(calls: usize) -> f32 {
     #[expect(clippy::cast_precision_loss, reason = "a call count")]
-    (0.3 + 0.28 * (calls as f32).ln_1p())
+    (0.05 + 0.04 * (calls as f32).ln_1p()).min(0.22)
 }
 
 /// A direction square to `along`, the same every time for the same direction.
@@ -839,12 +954,68 @@ fn interior(graph: &ForceGraph, members: &[usize], radius: f32) -> Vec<(usize, V
         .collect()
 }
 
-/// Z gathers the graph round the focus's module, or lays it flat again.
+/// Z gathers the graph round the focus's module, or lays it flat again; X makes the
+/// focus's module the whole scene, or gathers it back.
 pub(crate) fn toggle(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer) {
     if keys.just_pressed(KeyCode::KeyZ) {
         let on = explorer.nucleus().is_none();
         explorer.set_nucleus(on);
     }
+    if keys.just_pressed(KeyCode::KeyX) {
+        let on = !explorer.nucleus().is_some_and(Nucleus::expanded);
+        explorer.set_expanded(on);
+    }
+}
+
+/// Longest between the two clicks of a double-click, in seconds.
+const DOUBLE_CLICK: f32 = 0.4;
+
+/// A double-click on the nucleus makes its module the whole scene; a double-click
+/// inside the expanded module gathers it back. The first click of the two still
+/// focuses whatever function it lands on.
+pub(crate) fn double_click(
+    buttons: Res<ButtonInput<MouseButton>>,
+    time: Res<Time>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    mut last: Local<Option<(f32, Vec2)>>,
+    mut explorer: ResMut<Explorer>,
+) {
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    let now = time.elapsed_secs();
+    let double =
+        last.is_some_and(|(at, from)| now - at < DOUBLE_CLICK && from.distance(cursor) < 8.0);
+    *last = (!double).then_some((now, cursor));
+    let Some(middle) = explorer
+        .nucleus()
+        .filter(|_| double)
+        .and_then(Nucleus::middle)
+    else {
+        return;
+    };
+    let Ok((camera, global)) = cameras.single() else {
+        return;
+    };
+    let corner = camera.logical_viewport_rect().map_or(Vec2::ZERO, |r| r.min);
+    let Ok(ray) = camera.viewport_to_world(global, cursor - corner) else {
+        return;
+    };
+    if hits(ray.origin, *ray.direction, middle) {
+        let on = !explorer.nucleus().is_some_and(Nucleus::expanded);
+        explorer.set_expanded(on);
+    }
+}
+
+/// Whether a ray from `origin` along `direction` passes through a sphere.
+fn hits(origin: Vec3, direction: Vec3, ball: Ball) -> bool {
+    let to = ball.center - origin;
+    let along = to.dot(direction);
+    along > 0.0 && (to - direction * along).length() <= ball.radius
 }
 
 /// Re-centers on the focus's module when the focus moves, and eases the spheres
@@ -863,7 +1034,7 @@ pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>) {
 /// pointed somewhere new. Turns back to the usual view when the graph lies flat again.
 pub(crate) fn frame(
     explorer: Res<Explorer>,
-    mut last: Local<Option<(Option<usize>, u64)>>,
+    mut last: Local<Option<(Option<usize>, u64, bool)>>,
     mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
 ) {
     let Some(nucleus) = explorer.nucleus() else {
@@ -876,7 +1047,7 @@ pub(crate) fn frame(
         }
         return;
     };
-    let key = (nucleus.focus(), explorer.aim());
+    let key = (nucleus.focus(), explorer.aim(), nucleus.expanded());
     let opening = last.is_none();
     if *last == Some(key) {
         return;
@@ -933,6 +1104,8 @@ pub(crate) struct Looks {
     /// solid for a closed one.
     nucleus: Vec<Handle<StandardMaterial>>,
     open: Vec<Handle<StandardMaterial>>,
+    /// Expanded, the focus's module's bounds.
+    bounds: Handle<StandardMaterial>,
     closed: Vec<Handle<StandardMaterial>>,
     /// By [`Flow`]: an arrow's shaft and its head.
     shafts: HashMap<Flow, Handle<StandardMaterial>>,
@@ -988,17 +1161,18 @@ pub(crate) fn create_looks(
             .map(|&c| materials.add(glass(c, 0.08)))
             .collect(),
         closed: colors.iter().map(|&c| materials.add(solid(c))).collect(),
+        bounds: materials.add(glass(Color::WHITE, 0.012)),
         shafts: flows
             .iter()
             .map(|&f| {
-                let alpha = if f == Flow::Further { 0.12 } else { 0.2 };
+                let alpha = if f == Flow::Further { 0.22 } else { 0.4 };
                 (f, materials.add(see_through(f.color(), alpha)))
             })
             .collect(),
         heads: flows
             .iter()
             .map(|&f| {
-                let alpha = if f == Flow::Further { 0.3 } else { 0.55 };
+                let alpha = if f == Flow::Further { 0.5 } else { 0.85 };
                 (f, materials.add(see_through(f.color(), alpha)))
             })
             .collect(),
@@ -1060,6 +1234,8 @@ pub(crate) fn place_bodies(
         };
         let color = sphere.0 % PALETTE.len();
         let wanted = match ball.body {
+            // Expanded, the module's sphere is only its bounds, barely there.
+            Body::Nucleus if nucleus.expanded() => &looks.bounds,
             Body::Nucleus => &looks.nucleus[color],
             Body::Open => &looks.open[color],
             Body::Closed => &looks.closed[color],
@@ -1105,13 +1281,14 @@ pub(crate) fn place_bodies(
             continue;
         }
         let direction = along / length;
-        let head = (radius * 2.6).clamp(1.2, length * 0.4);
+        // A small head, but never too small to say which way the arrow runs.
+        let head = (radius * 6.0).clamp(0.7, length * 0.3);
         let rotation = Quat::from_rotation_arc(Vec3::Y, direction);
         let placed = if arrow.head {
             Transform {
                 translation: end - direction * head / 2.0,
                 rotation,
-                scale: Vec3::new(radius * 2.2, head, radius * 2.2),
+                scale: Vec3::new(head * 0.38, head, head * 0.38),
             }
         } else {
             Transform {
@@ -1152,6 +1329,7 @@ pub(crate) fn draw(
         let color = lane_color(cluster % PALETTE.len());
         // Brighter towards the edge, as glass is, with a faint halo outside it.
         let rims: &[(f32, f32)] = match ball.body {
+            Body::Nucleus if nucleus.expanded() => &[(0.985, 0.08), (1.0, 0.4)],
             Body::Nucleus => &[
                 (0.9, 0.05),
                 (0.94, 0.09),
@@ -1175,6 +1353,21 @@ pub(crate) fn draw(
     }
     let graph = explorer.graph();
     let time = clock.elapsed_secs();
+    draw_shells(nucleus, camera.rotation, &mut gizmos);
+    if nucleus.expanded() {
+        // The rings the named functions stand on, faint round the focus.
+        let strength = nucleus.arrived();
+        for radius in inside::GUIDES {
+            gizmos
+                .circle(
+                    Isometry3d::new(Vec3::ZERO, camera.rotation),
+                    radius,
+                    FURTHER.with_alpha(0.07 * strength),
+                )
+                .resolution(96);
+        }
+    }
+    draw_exits(nucleus, graph, time, &mut gizmos);
     for (index, link) in nucleus.links().iter().enumerate() {
         let route = nucleus.route(graph, link, index);
         let [.., last_but_one, last] = route.as_slice() else {
@@ -1194,11 +1387,60 @@ pub(crate) fn draw(
             * 0.5;
         gizmos
             .arrow(*last_but_one, *last - short, color)
-            .with_tip_length(0.9);
+            .with_tip_length(0.5);
         if link.flow != Flow::Further {
             for pair in route.windows(2) {
                 flow(&mut gizmos, pair[0], pair[1], color, time, index);
             }
+        }
+    }
+}
+
+/// Expanded: a faint outline round each container inside the module, once the
+/// functions have arrived.
+fn draw_shells(nucleus: &Nucleus, facing: Quat, gizmos: &mut Gizmos) {
+    let strength = nucleus.arrived();
+    for shell in nucleus.shells() {
+        for (grow, alpha) in [(0.97, 0.05), (1.0, 0.22)] {
+            gizmos
+                .circle(
+                    Isometry3d::new(shell.center, facing),
+                    shell.radius * grow,
+                    FURTHER.with_alpha(alpha * strength),
+                )
+                .resolution(72);
+        }
+    }
+}
+
+/// Expanded: an arrow from a function out to each module it calls, or in from each
+/// module that calls it, ending on that module's sphere; violet and blue ones, those
+/// touching the focus, with dots flowing along them.
+fn draw_exits(nucleus: &Nucleus, graph: &ForceGraph, time: f32, gizmos: &mut Gizmos) {
+    for (index, exit) in nucleus.exits().iter().enumerate() {
+        let (Some(at), Some(ball)) = (nucleus.point(exit.tile), nucleus.ball(exit.cluster)) else {
+            continue;
+        };
+        let way = (ball.center - at).normalize_or_zero();
+        if way == Vec3::ZERO {
+            continue;
+        }
+        let surface = ball.center - way * ball.radius;
+        let clear = way * node_size(graph, exit.tile) * NODE_SCALE * 0.6;
+        let strength = if exit.flow == Flow::Further {
+            0.45
+        } else {
+            0.9
+        };
+        let color = exit.flow.color().with_alpha(strength);
+        let (from, to) = if exit.outward {
+            (at + clear, surface)
+        } else {
+            (surface, at + clear)
+        };
+        gizmos.arrow(from, to, color).with_tip_length(0.6);
+        if exit.flow != Flow::Further {
+            flow(gizmos, from, to, color, time, index);
         }
     }
 }
@@ -1274,7 +1516,7 @@ mod tests {
     #[test]
     fn the_focus_module_sits_in_the_middle_holding_all_its_functions() {
         let (graph, map) = codebase();
-        let nucleus = Nucleus::new(&graph, Some(tile(&map, "core::run")));
+        let nucleus = Nucleus::new(&graph, &map, Some(tile(&map, "core::run")), false);
         let core = module(&graph, &map, "core::run");
         let ball = nucleus.ball(core).expect("a sphere");
         assert_eq!(ball.body, Body::Nucleus);
@@ -1289,7 +1531,7 @@ mod tests {
     #[test]
     fn modules_near_the_focus_open_and_the_rest_stay_closed_further_out() {
         let (graph, map) = codebase();
-        let nucleus = Nucleus::new(&graph, Some(tile(&map, "core::run")));
+        let nucleus = Nucleus::new(&graph, &map, Some(tile(&map, "core::run")), false);
         for id in ["web::route", "db::put", "log::say", "disk::write"] {
             assert!(nucleus.names(tile(&map, id)), "{id} is named");
             let ball = nucleus.ball(module(&graph, &map, id));
@@ -1332,7 +1574,7 @@ mod tests {
     #[test]
     fn arrows_run_into_and_out_of_the_nucleus() {
         let (graph, map) = codebase();
-        let nucleus = Nucleus::new(&graph, Some(tile(&map, "core::run")));
+        let nucleus = Nucleus::new(&graph, &map, Some(tile(&map, "core::run")), false);
         let [web, core, db, disk] = ["web::route", "core::run", "db::put", "disk::write"]
             .map(|id| module(&graph, &map, id));
         let has = |from, to, flow| {
@@ -1359,7 +1601,7 @@ mod tests {
     #[test]
     fn a_new_focus_recenters_easing_there() {
         let (graph, map) = codebase();
-        let mut nucleus = Nucleus::new(&graph, Some(tile(&map, "core::run")));
+        let mut nucleus = Nucleus::new(&graph, &map, Some(tile(&map, "core::run")), false);
         let db = module(&graph, &map, "db::put");
         let before = nucleus.ball(db).expect("a sphere").center;
         nucleus.recenter(&graph, Some(tile(&map, "db::put")));
@@ -1376,11 +1618,104 @@ mod tests {
     }
 
     #[test]
+    fn expanded_the_module_rings_the_focus_by_calls_inside_it() {
+        let (graph, map) = codebase();
+        let focus = tile(&map, "core::run");
+        let nucleus = Nucleus::new(&graph, &map, Some(focus), true);
+        let at = |id: &str| nucleus.point(tile(&map, id)).expect("a point");
+        assert!(at("core::run").length() < 1e-3, "the focus is the middle");
+        let help = at("core::help").length();
+        let idle = at("core::idle").length();
+        assert!(
+            help > 5.0 && help < idle,
+            "what it calls is nearer than the rest"
+        );
+        assert!(nucleus.names(tile(&map, "core::help")));
+        assert!(nucleus.quiet(tile(&map, "core::idle")), "the rest is faint");
+        assert!(
+            !nucleus.shows(tile(&map, "db::put")),
+            "other modules' functions fold away"
+        );
+        let middle = nucleus.middle().expect("the module's bounds");
+        assert!(idle < middle.radius, "the module holds all its functions");
+        let db = nucleus
+            .ball(module(&graph, &map, "db::put"))
+            .expect("a sphere");
+        assert!(
+            db.center.length() > middle.radius + db.radius,
+            "other modules lie beyond"
+        );
+    }
+
+    #[test]
+    fn expanded_calls_leave_the_module_towards_the_modules_they_reach() {
+        let (graph, map) = codebase();
+        let focus = tile(&map, "core::run");
+        let nucleus = Nucleus::new(&graph, &map, Some(focus), true);
+        let [web, db] = ["web::route", "db::put"].map(|id| module(&graph, &map, id));
+        let exit = |cluster| {
+            nucleus
+                .exits()
+                .iter()
+                .find(|e| e.cluster == cluster)
+                .copied()
+        };
+        let out = exit(db).expect("a call out to db");
+        assert!(out.outward && out.flow == Flow::OutOf && out.tile == focus);
+        let into = exit(web).expect("a call in from web");
+        assert!(!into.outward && into.flow == Flow::Into);
+        assert!(nucleus.tubes().is_empty(), "no arrows between modules");
+        assert!(
+            nucleus
+                .links()
+                .iter()
+                .any(|l| l.from == focus && l.to == tile(&map, "core::help")),
+            "calls inside the module are drawn"
+        );
+    }
+
+    #[test]
+    fn expanding_eases_out_of_the_module_view_and_back() {
+        let (graph, map) = codebase();
+        let help = tile(&map, "core::help");
+        let mut nucleus = Nucleus::new(&graph, &map, Some(tile(&map, "core::run")), false);
+        let before = nucleus.point(help).expect("a point");
+        nucleus.set_expanded(&graph, true);
+        assert!(nucleus.point(help).expect("a point").distance(before) < 1e-3);
+        while nucleus.advance(0.1) {}
+        assert!(nucleus.expanded());
+        nucleus.set_expanded(&graph, false);
+        while nucleus.advance(0.1) {}
+        assert!(nucleus.point(help).expect("a point").distance(before) < 1e-3);
+    }
+
+    #[test]
+    fn arrows_stay_thin() {
+        assert!(tube_radius(1) < tube_radius(50));
+        assert!(tube_radius(100_000) <= 0.22);
+    }
+
+    #[test]
+    fn a_ray_hits_a_sphere_ahead_of_it() {
+        let ball = Ball {
+            center: Vec3::new(0.0, 0.0, -10.0),
+            radius: 2.0,
+            body: Body::Nucleus,
+        };
+        assert!(hits(Vec3::ZERO, Vec3::NEG_Z, ball));
+        assert!(!hits(Vec3::ZERO, Vec3::Z, ball), "not behind");
+        assert!(
+            !hits(Vec3::new(3.0, 0.0, 0.0), Vec3::NEG_Z, ball),
+            "not beside"
+        );
+    }
+
+    #[test]
     fn modules_keep_their_homes() {
-        let (graph, _) = codebase();
+        let (graph, map) = codebase();
         assert_eq!(
-            Nucleus::new(&graph, None).homes,
-            Nucleus::new(&graph, None).homes
+            Nucleus::new(&graph, &map, None, false).homes,
+            Nucleus::new(&graph, &map, None, false).homes
         );
     }
 }

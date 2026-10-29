@@ -24,7 +24,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    nucleus::{self, Body},
+    nucleus::{self, Body, Nucleus},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -946,6 +946,8 @@ pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
 enum Named {
     Node(usize),
     Group(usize),
+    /// Expanded, a container inside the module, by index into the nucleus's shells.
+    Shell(usize),
 }
 
 /// Tier, then bigger first, then a stable tiebreak.
@@ -1364,6 +1366,10 @@ fn draw_graph_labels(
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
     };
+    let shell_top = |index: usize| {
+        let shell = nucleus?.shells().get(index)?;
+        to_screen(shell.center + up * shell.radius)
+    };
     if let Some(nucleus) = nucleus {
         // The nucleus and the open modules are named first, and of the rest only the
         // biggest, where there is room.
@@ -1408,6 +1414,11 @@ fn draw_graph_labels(
                 Named::Group(cluster),
             ));
         }
+        // Expanded, each container inside the module is named at the top of its
+        // shell, after the functions.
+        for index in 0..nucleus.shells().len() {
+            order.push(((4, std::cmp::Reverse(0), index), Named::Shell(index)));
+        }
     } else if explorer.lens().reach.is_none() {
         for &(cluster, _, radius) in &regions {
             #[expect(
@@ -1441,7 +1452,7 @@ fn draw_graph_labels(
                     .filter(|((tier, _, _), _)| *tier <= 3)
                     .filter_map(|&(_, named)| match named {
                         Named::Node(tile) => discs[tile],
-                        Named::Group(_) => None,
+                        Named::Group(_) | Named::Shell(_) => None,
                     })
                     .map(|(node, edge)| {
                         egui::Rect::from_center_size(node, egui::Vec2::splat(edge * 2.0))
@@ -1466,7 +1477,7 @@ fn draw_graph_labels(
                 let label = explorer.cluster_name(group);
                 // An open module says how much of it is named.
                 let note = nucleus
-                    .filter(|_| body == Some(Body::Open))
+                    .filter(|n| body == Some(Body::Open) && n.opened(group) > 0)
                     .map(|n| format!("{} of {}", n.opened(group), n.count(group)));
                 let size = match body {
                     Some(Body::Nucleus) => 15.0,
@@ -1476,6 +1487,19 @@ fn draw_graph_labels(
                 let job = label_job(None, &label.to_uppercase(), note, color, size, false);
                 let force = body == Some(Body::Nucleus);
                 placer.place(named, at, 0.0, job, None, force);
+            }
+            Named::Shell(index) => {
+                let (Some(at), Some(shell)) = (
+                    shell_top(index),
+                    nucleus.and_then(|n| n.shells().get(index)),
+                ) else {
+                    continue;
+                };
+                let Some(container) = map.groups.get(shell.group) else {
+                    continue;
+                };
+                let job = label_job(None, &container.label, None, MUTED, 11.0, false);
+                placer.place(named, at, 0.0, job, None, false);
             }
             Named::Node(tile) => {
                 let Some((node, edge)) = discs[tile] else {
@@ -1604,6 +1628,7 @@ fn draw_graph_labels(
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
+        Named::Shell(index) => shell_top(index),
     });
 }
 
@@ -1716,6 +1741,7 @@ fn camera_free(
 /// link runs. A hint at the keys below.
 fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
     let gathered = explorer.nucleus().is_some();
+    let expanded = explorer.nucleus().is_some_and(Nucleus::expanded);
     egui::Area::new("legend".into())
         .pivot(egui::Align2::LEFT_BOTTOM)
         .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -1739,6 +1765,15 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explo
                             swatch(ui, "●", diff_view::REMOVED, "removed");
                             swatch(ui, "●", diff_view::MOVED, "moved");
                             swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
+                        } else if expanded {
+                            ui.label(
+                                egui::RichText::new(
+                                    "the focus's module, expanded · near ring: what calls \
+                                     the focus or what it calls inside it · next: one more \
+                                     call away · faint: the rest",
+                                )
+                                .size(12.5),
+                            );
                         } else if gathered {
                             ui.label(
                                 egui::RichText::new(
@@ -1755,11 +1790,20 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explo
                             );
                         }
                     });
-                    if gathered && !diffing {
+                    if expanded && !diffing {
                         ui.label(
                             egui::RichText::new(
-                                "thick arrow = every call from one module to the other; \
-                                 the named calls run inside it",
+                                "small spheres far out = the other modules, where the \
+                                 module view has them; arrows run out to them · \
+                                 X or double-click: back",
+                            )
+                            .size(12.5),
+                        );
+                    } else if gathered && !diffing {
+                        ui.label(
+                            egui::RichText::new(
+                                "arrow = every call from one module to the other; the \
+                                 named calls run along it · X or double-click: expand",
                             )
                             .size(12.5),
                         );
@@ -1837,6 +1881,10 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
             ("Z", "gather round the focus's module / lay flat"),
+            (
+                "X, double-click",
+                "expand the focus's module to the whole scene / gather it back",
+            ),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),
             ("D", "diff: status → impact → morph"),

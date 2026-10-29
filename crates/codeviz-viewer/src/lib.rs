@@ -76,6 +76,8 @@ enum ZView {
     Free,
     /// The focus's module a sphere in the middle, the others around it.
     Nucleus,
+    /// The focus's module the whole scene, its functions round the focus.
+    Expanded,
 }
 
 /// The older version a diff compares against, and both versions together for layout.
@@ -255,6 +257,15 @@ impl Viewer {
         self
     }
 
+    /// Opens with the focus's module the whole scene: the focus in the middle, its
+    /// module's functions round it, the other modules small on a far shell; X gathers
+    /// it back into the nucleus.
+    #[must_use]
+    pub fn with_expanded(mut self) -> Self {
+        self.z = ZView::Expanded;
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -316,6 +327,7 @@ impl Viewer {
             explorer.open_at(tile);
         }
         explorer.set_nucleus(self.z == ZView::Nucleus);
+        explorer.set_expanded(self.z == ZView::Expanded);
         explorer
     }
 
