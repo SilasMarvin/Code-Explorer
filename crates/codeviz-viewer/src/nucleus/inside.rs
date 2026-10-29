@@ -166,12 +166,17 @@ impl Nucleus {
                 .and_then(|p| p.try_normalize())
                 .unwrap_or_else(|| fibonacci(tile, graph.positions.len()))
         };
-        let mut containers: HashMap<usize, Vec3> = HashMap::new();
+        // A container holding most of the module would pull everything one way.
+        let mut containers: HashMap<usize, (Vec3, usize)> = HashMap::new();
         for &tile in members {
             if let Some(group) = self.inner[tile] {
-                *containers.entry(group).or_default() += own(tile);
+                let (way, count) = containers.entry(group).or_default();
+                *way += own(tile);
+                *count += 1;
             }
         }
+        #[expect(clippy::cast_precision_loss, reason = "function counts")]
+        containers.retain(|_, &mut (_, count)| count as f32 <= members.len() as f32 * MOST);
         let pull = |tile: usize| {
             let calls = exits
                 .iter()
@@ -185,7 +190,7 @@ impl Nucleus {
                 .normalize_or_zero();
             let container = self.inner[tile]
                 .and_then(|g| containers.get(&g))
-                .map_or(Vec3::ZERO, |v| v.normalize_or_zero());
+                .map_or(Vec3::ZERO, |(way, _)| way.normalize_or_zero());
             own(tile) + container * 1.6 + calls * 1.2
         };
         let mut ways: HashMap<usize, Vec3> = HashMap::new();
