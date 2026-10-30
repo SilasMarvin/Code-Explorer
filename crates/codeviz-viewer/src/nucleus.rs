@@ -1310,20 +1310,20 @@ impl Nucleus {
     }
 
     /// Browsing with nothing selected, how modules depend on each other: an arrow
-    /// from each module to the one it calls most, as thick as all the calls it
-    /// carries. Every other dependency is left out, so the whole map stays readable.
+    /// from each module to the module it calls most, or to each tied for that, as
+    /// thick as all the calls it carries. Every weaker dependency is left out, so the
+    /// whole map stays readable.
     fn map_tubes(&self) -> Vec<Tube> {
-        let mut strongest: HashMap<usize, (usize, usize)> = HashMap::new();
-        for (&(from, to), &calls) in &self.flows {
-            let best = strongest.entry(from).or_insert((calls, to));
-            // Most calls, then a stable choice.
-            if (calls, Reverse(to)) > (best.0, Reverse(best.1)) {
-                *best = (calls, to);
-            }
+        let mut most: HashMap<usize, usize> = HashMap::new();
+        for (&(from, _), &calls) in &self.flows {
+            let best = most.entry(from).or_insert(0);
+            *best = (*best).max(calls);
         }
-        let mut tubes: Vec<Tube> = strongest
-            .into_iter()
-            .map(|(from, (calls, to))| Tube {
+        let mut tubes: Vec<Tube> = self
+            .flows
+            .iter()
+            .filter(|&(&(from, _), &calls)| most.get(&from) == Some(&calls))
+            .map(|(&(from, to), &calls)| Tube {
                 from,
                 to,
                 calls,
@@ -4365,8 +4365,14 @@ mod tests {
         let core = module(&graph, &map, "core::run");
         assert_eq!(
             tubes.iter().filter(|t| t.from == core).count(),
+            3,
+            "core calls three modules once each, all tied for its strongest"
+        );
+        let db = module(&graph, &map, "db::put");
+        assert_eq!(
+            tubes.iter().filter(|t| t.from == db).count(),
             1,
-            "core calls three modules; one arrow, its strongest"
+            "db calls disk alone"
         );
         let selected = Nucleus::gather(
             &graph,

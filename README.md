@@ -139,7 +139,7 @@ stays where it was); the rest are faint. A module's name is as big as the module
 shows once its sphere is big enough on screen to be read as its own, else under the
 pointer, with `3 of 9` saying how much of it is lit; zooming in names more, a click
 never changes which. With nothing selected, a faint arrow runs from each module to the
-module it calls most, as thick as the calls it carries, so how modules depend on each
+module it calls most (to each, when several tie), as thick as the calls it carries, so how modules depend on each
 other reads at a glance; every weaker dependency is left out, and a selection's own
 calls take over. `F` frames what the selection touches, `R` the whole codebase.
 
