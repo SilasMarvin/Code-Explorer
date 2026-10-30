@@ -20,7 +20,7 @@ codeviz view app.json other.json     # merged 3D view
 codeviz view new.json --before old.json   # what changed, over the graph
 codeviz view app.json --z nucleus    # the focus's journey, gathered round its module
 codeviz view app.json --z nucleus --expand   # inside the journey's start's module
-codeviz view app.json --z nucleus --browse   # every module, nothing moving, the focus selected
+codeviz view app.json --z nucleus --browse   # every module, nothing moving, nothing selected
 codeviz diff main...HEAD             # a branch as its pull request shows it
 codeviz diff HEAD -C crates/foo      # uncommitted changes in one crate
 codeviz diff v1..v2 --summary        # print the changes instead
@@ -107,7 +107,8 @@ everything else steps back. Nothing moves, not a function, not a module, not the
 camera; another click moves the selection and the picture stays put. `Backspace` and
 `Shift+Backspace` walk back and forward through what you selected. The journey panel is
 not shown, and nothing carries a journey number. `Enter`, or a `Shift`-click, opens the
-selection's journey. `--browse` opens browsing, with `--focus` selected.
+selection's journey. `--browse` opens browsing, with `--focus` selected, or without
+it, nothing.
 
 In a journey, you follow one call tree. Entering it is the one time the view moves for
 you: it gathers round the journey and frames it. Only the journey shows: where it
@@ -128,10 +129,19 @@ space says only where things are.
 Browsing, every module is a sphere where one layout of the whole codebase puts it,
 worked out once per document from how much modules call each other, laid out wider
 than high as a window is, and every function is inside its module, where its corner of
-the flat map has it. That layout never changes: a click lights what it touches in
-place. A module holding something named is lit glass, `3 of 9` saying how much of it is
-named; the rest are faint. `F` frames what the selection touches, `R` the whole
-codebase.
+the flat map has it. The layout is shallow along the usual view and keeps every two
+spheres apart as that view sees them in perspective, however near the camera comes, so
+which module a function belongs to is never in doubt. Module centres never move: a
+click lights what it touches in place. A module holding something lit is lit glass, its
+lit functions spread apart inside it so each can be told from the next and clicked (the
+module grows a little into the room its neighbours leave, and the function clicked
+stays where it was); the rest are faint. A module's name is as big as the module and
+shows once its sphere is big enough on screen to be read as its own, else under the
+pointer, with `3 of 9` saying how much of it is lit; zooming in names more, a click
+never changes which. With nothing selected, a faint arrow runs from each module to the
+module it calls most, as thick as the calls it carries, so how modules depend on each
+other reads at a glance; every weaker dependency is left out, and a selection's own
+calls take over. `F` frames what the selection touches, `R` the whole codebase.
 
 In a journey, the start's module is a large glass sphere in the middle with the start
 inside, and every module the journey enters stands round it on a ring, clockwise from
@@ -162,6 +172,10 @@ within two calls of the start keep their names; the rest are named under the poi
 
 A thin arrow joins two modules whenever a named call runs between them, colored as its
 call nearest the start, and the calls run beside it side by side, function to function.
+An arrow bends round every sphere drawn in its way, and a call round the functions
+drawn near it, so none passes through another module or reads as another function's
+call. With `I` on, resting the pointer on an outside caller draws its call into the
+journey bright, as a click on it does.
 A new depth brings modules onto the ring or lets them go, easing every sphere to its new
 place. The pointer has to rest on a function for a moment (0.15 s) before the view
 takes it as pointed at, so passing over a speck does not flash its calls, and after a
@@ -196,7 +210,8 @@ its module and on into it. Point at another function inside to draw its own call
 and out as pale arrows, each end named: a function, or where the call leaves through
 the wall, under its module's name. They go when the pointer leaves. Here, and only
 here, a click on a function inside makes it the middle, the expanded module laid out
-round it; `X` again shrinks the nucleus back round the journey's start.
+round it; the view pans to the cursor only when it would otherwise show off screen or
+near its edge. `X` again shrinks the nucleus back round the journey's start.
 
 ## Diffs
 
@@ -228,8 +243,9 @@ nesting, folding, failures, conditions, callers, which module a call lives in, c
 and grades what readers answer, by aspect, against the previous run.
 
 `--script FILE --screenshot DIR` runs a whole session in one window instead: a step a
-line (`key shift+i`, `click UNIT`, `hover UNIT`, `doubleclick UNIT`, `bar 1.2`, `button
-TEXT`, `drag DX DY`, `scroll N`, `wait MS`, `snap LABEL`), each sent as a person's mouse
+line (`key shift+i`, `click UNIT`, `click-label UNIT` on the function's drawn name,
+`hover UNIT`, `doubleclick UNIT`, `bar 1.2`, `button TEXT`, `drag DX DY`, `scroll N`,
+`wait MS`, `snap LABEL`), each sent as a person's mouse
 and keyboard would send it, the view let settle after each. Every `snap` writes
 `NN-label.png` and `NN-label.json`, which says what is drawn where on screen by name:
 functions with their roles and labels, module spheres, arrows, label overlaps, journey
