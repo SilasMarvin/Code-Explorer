@@ -789,7 +789,8 @@ impl Explorer {
 
     /// The open journey from `centre`, as the nucleus names it: from the journey's
     /// start when that is the centre, else from the first run of it the journey shows,
-    /// or runs at all; nothing when the journey never runs it.
+    /// or runs at all; when the journey never runs it, its own calls, and the open
+    /// journey's functions so they stay in view.
     fn trail_from(&self, centre: Option<usize>) -> Trail {
         let (Some(centre), Some(journey)) = (centre, self.journey()) else {
             return Trail::default();
@@ -810,9 +811,35 @@ impl Explorer {
                 .find(|&span| disclosed.shows(span))
                 .or_else(|| runs.first().copied())
         };
-        start.map_or_else(Trail::default, |start| {
-            disclosure::trail(&self.track, &self.map, start, self.disclose, &disclosed)
-        })
+        match start {
+            Some(start) => {
+                disclosure::trail(&self.track, &self.map, start, self.disclose, &disclosed)
+            }
+            None => self.trail_aside(centre, &disclosed),
+        }
+    }
+
+    /// For a centre off the journey: the calls it makes, in the order written, each
+    /// numbered as the panel numbers it where the open journey runs it too, and the
+    /// open journey's functions.
+    fn trail_aside(&self, centre: usize, disclosed: &Disclosed) -> Trail {
+        let shown = disclosed.tiles();
+        let mut trail = Trail {
+            aside: true,
+            journey: shown.keys().copied().collect(),
+            ..Trail::default()
+        };
+        let written = self.graph.sequence(centre);
+        let callees: Vec<usize> = if written.is_empty() {
+            self.graph.callees(centre).collect()
+        } else {
+            written.to_vec()
+        };
+        for callee in callees.into_iter().filter(|&t| t != centre) {
+            let numbers = shown.get(&callee).map_or(&[][..], Vec::as_slice);
+            trail.add_own(centre, callee, numbers);
+        }
+        trail
     }
 
     /// Which sides of the focus are hidden.

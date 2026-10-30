@@ -21,7 +21,10 @@
 //! pointer over another function inside, that function's own calls in and out are
 //! drawn too, pale, and every end of them named.
 
-use std::{cmp::Reverse, collections::HashMap};
+use std::{
+    cmp::Reverse,
+    collections::{HashMap, HashSet},
+};
 
 use bevy::prelude::*;
 use codeviz_layout::ForceGraph;
@@ -106,10 +109,20 @@ pub(crate) struct Call {
 
 /// The open journey from the middle down to the disclosed depth: each call once, in
 /// the journey's order, and each function's numbers in it, as the panel numbers them.
+/// Off the journey, the middle's own calls instead, numbered where the open journey
+/// runs them too, and the open journey's functions besides, so they stay in view.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Trail {
     pub(crate) calls: Vec<Call>,
     pub(crate) numbers: HashMap<usize, Vec<String>>,
+    /// Every function below the middle at any depth, with the fewest calls it is
+    /// from it: what the expanded nucleus is laid out for, so a new depth moves
+    /// nothing.
+    pub(crate) whole: HashMap<usize, u32>,
+    /// Whether the middle is off the journey, so `calls` are its own.
+    pub(crate) aside: bool,
+    /// Off the journey, the open journey's functions, by tile.
+    pub(crate) journey: HashSet<usize>,
 }
 
 impl Trail {
@@ -126,21 +139,50 @@ impl Trail {
             numbers.sort_by_key(|n| order(n));
         }
     }
-}
 
-/// A journey number as its parts, so `1.10` sorts after `1.9`.
-fn order(number: &str) -> Vec<u32> {
-    number.split('.').filter_map(|p| p.parse().ok()).collect()
-}
-
-/// A function's numbers on its badge: the first, and how many more times the journey
-/// runs it.
-pub(crate) fn badge(numbers: &[String]) -> Option<String> {
-    match numbers {
-        [] => None,
-        [one] => Some(one.clone()),
-        [first, rest @ ..] => Some(format!("{first} +{}", rest.len())),
+    /// Off the journey, a call the middle makes, level 1, with the numbers the panel
+    /// gives the callee where the open journey runs it too.
+    pub(crate) fn add_own(&mut self, from: usize, to: usize, numbers: &[String]) {
+        if !self.calls.iter().any(|c| c.from == from && c.to == to) {
+            self.calls.push(Call { from, to, level: 1 });
+        }
+        self.whole.entry(to).or_insert(1);
+        for number in numbers {
+            let known = self.numbers.entry(to).or_default();
+            if !known.contains(number) {
+                known.push(number.clone());
+                known.sort_by_key(|n| order(n));
+            }
+        }
     }
+}
+
+/// A journey number as its parts, nearest the root first, so `2` sorts before `1.1`
+/// and `1.10` after `1.9`.
+fn order(number: &str) -> (usize, Vec<u32>) {
+    let parts: Vec<u32> = number.split('.').filter_map(|p| p.parse().ok()).collect();
+    (parts.len(), parts)
+}
+
+/// A function's numbers on its badge: the call nearest the root, as the panel numbers
+/// it, and how many more times the journey runs it; with the cursor on it, the
+/// cursor's own number first.
+pub(crate) fn badge<'a>(
+    numbers: impl IntoIterator<Item = &'a String>,
+    cursor: Option<&str>,
+) -> Option<String> {
+    let mut numbers: Vec<&str> = numbers.into_iter().map(String::as_str).collect();
+    numbers.sort_by_key(|n| order(n));
+    numbers.dedup();
+    let first = cursor
+        .filter(|c| !c.is_empty())
+        .or_else(|| numbers.first().copied())?;
+    let more = numbers.iter().filter(|n| **n != first).count();
+    Some(if more == 0 {
+        first.to_owned()
+    } else {
+        format!("{first} +{more}")
+    })
 }
 
 /// Every call from one module to another, drawn as one arrow as thick as there are
@@ -221,8 +263,22 @@ struct Arrangement {
     named: HashMap<usize, i32>,
     /// By cluster: the functions an open module names, in the order it lists them.
     columns: Vec<Vec<usize>>,
+    /// With the middle off the journey, the open journey's functions inside the
+    /// nucleus, drawn plainly so they stay in view and can be clicked.
+    context: HashSet<usize>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
+}
+
+/// The expanded nucleus's layout for one middle: where its functions sit in a sphere
+/// of radius one, and the angle round it of each module that could be named there.
+#[derive(Debug, Clone)]
+struct Laid {
+    /// The middle, everything below it at any depth, and whether it is off the
+    /// journey.
+    key: (Option<usize>, HashMap<usize, u32>, bool),
+    inside: Vec<(usize, Vec3)>,
+    angles: HashMap<usize, f32>,
 }
 
 /// One end of a call the function under the pointer makes or takes, expanded.
@@ -268,6 +324,8 @@ pub(crate) struct Nucleus {
     /// Whether the functions named by nothing are left out altogether, rather than
     /// drawn as faint specks: in the module view, and expanded.
     specks_hidden: [bool; 2],
+    /// The expanded layout, kept while the middle stays.
+    laid: Option<Laid>,
     /// Where the spheres and functions were when the last re-centering began.
     from: Option<(Vec<Ball>, Vec<Vec3>)>,
     /// How far along that re-centering is, 0 to 1.
@@ -319,6 +377,7 @@ impl Nucleus {
             marked: None,
             // Expanded, the specks crowd round what the reader points at.
             specks_hidden: [false, true],
+            laid: None,
             from: None,
             progress: 1.0,
         };
@@ -473,10 +532,27 @@ impl Nucleus {
         touches
     }
 
-    /// Whether a function is drawn full size: named, the journey's cursor, or an end
-    /// of a call the function under the pointer makes or takes.
+    /// Whether a function is drawn full size: named, the journey's cursor, the open
+    /// journey's with the middle off it, or an end of a call the function under the
+    /// pointer makes or takes.
     pub(crate) fn lit(&self, tile: usize) -> bool {
-        self.names(tile) || self.marks(tile) || self.touched(tile)
+        self.names(tile) || self.marks(tile) || self.context(tile) || self.touched(tile)
+    }
+
+    /// With the middle off the journey, whether a function is one of the open
+    /// journey's, drawn so it stays in view.
+    pub(crate) fn context(&self, tile: usize) -> bool {
+        self.now.context.contains(&tile)
+    }
+
+    /// Whether the middle is off the journey, so the calls named below it are its own.
+    pub(crate) fn aside(&self) -> bool {
+        self.trail.aside
+    }
+
+    /// With the middle off the journey, whether the journey runs one of its calls.
+    pub(crate) fn on_journey(&self, tile: usize) -> bool {
+        self.trail.aside && self.trail.journey.contains(&tile)
     }
 
     /// Expanded, the calls the function under the pointer makes or takes.
@@ -749,13 +825,95 @@ impl Nucleus {
     }
 
     /// Everything placed around `focus`, the nucleus expanded or not.
-    fn arrange(&self, graph: &ForceGraph, focus: Option<usize>) -> Arrangement {
+    fn arrange(&mut self, graph: &ForceGraph, focus: Option<usize>) -> Arrangement {
         let modules = self.arrange_modules(graph, focus);
         if self.expanded {
-            self.arrange_inside(graph, modules)
+            let laid = self.laid_out(graph, &modules);
+            self.arrange_inside(graph, modules, &laid)
         } else {
             modules
         }
+    }
+
+    /// Where the expanded nucleus puts its functions and the modules round it, worked
+    /// out once for each middle from everything it could name at any depth, with
+    /// every side shown: a new depth, a side hidden or the pointer moving then only
+    /// names and draws, and moves nothing.
+    fn laid_out(&mut self, graph: &ForceGraph, modules: &Arrangement) -> Laid {
+        let key = (modules.focus, self.trail.whole.clone(), self.trail.aside);
+        if let Some(laid) = self.laid.as_ref().filter(|l| l.key == key) {
+            return laid.clone();
+        }
+        let center = modules.center;
+        let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(center);
+        let before = modules.balls[center].radius;
+        // Everything below the middle at any depth, and every caller.
+        let mut reach: HashMap<usize, i32> = HashMap::new();
+        if let Some(focus) = modules.focus {
+            reach.extend(
+                self.trail
+                    .whole
+                    .iter()
+                    .map(|(&t, &l)| (t, i32::try_from(l).unwrap_or(i32::MAX))),
+            );
+            for caller in graph.callers(focus).filter(|&t| t != focus) {
+                reach.entry(caller).or_insert(-1);
+            }
+            reach.insert(focus, 0);
+        }
+        let members: Vec<usize> = (0..graph.positions.len())
+            .filter(|&t| cluster_of(t) == center)
+            .collect();
+        let calls: Vec<(usize, usize)> = graph
+            .calls
+            .iter()
+            .copied()
+            .filter(|&(a, b)| a != b && cluster_of(a) == center && cluster_of(b) == center)
+            .collect();
+        // From where the flat graph has them, in a sphere of radius one.
+        let start: Vec<Vec3> = interior(graph, &members, 1.0)
+            .into_iter()
+            .map(|(_, at)| at)
+            .collect();
+        let inside = lay_members(&members, &start, &calls, &reach);
+        // Each module that could ever be named round it, at its bearing, kept apart
+        // as if each named as much as one column holds.
+        let mut counts: HashMap<usize, usize> = HashMap::new();
+        for &tile in reach.keys() {
+            let cluster = cluster_of(tile);
+            if cluster != center {
+                *counts.entry(cluster).or_insert(0) += 1;
+            }
+        }
+        let mut rim: Vec<usize> = counts.keys().copied().collect();
+        rim.sort_unstable();
+        let radii: Vec<f32> = rim
+            .iter()
+            .map(|c| self.rim_radius(*c, counts[c].min(ROWS)))
+            .collect();
+        let bearings = Bearings {
+            homes: &self.homes,
+            center,
+            back: view_rotation() * Vec3::Z,
+        };
+        let angles = rim_angles(&rim, &radii, before * GROWTH, &bearings);
+        let laid = Laid {
+            key,
+            inside: members.into_iter().zip(inside).collect(),
+            angles: rim.into_iter().zip(angles).collect(),
+        };
+        self.laid = Some(laid.clone());
+        laid
+    }
+
+    /// How big a module on the ring round the expanded nucleus is, naming `named`.
+    fn rim_radius(&self, cluster: usize, named: usize) -> f32 {
+        (closed_radius(self.counts[cluster]) * 2.0).max(grid_radius(
+            named,
+            RIM_SPACING,
+            RIM_COLUMN_GAP,
+            2.6,
+        ))
     }
 
     /// Everything placed around `focus`, as the module view has it.
@@ -769,6 +927,16 @@ impl Nucleus {
         let links = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f));
         let named = distances(&links, focus);
         let columns = open_up(&links, focus, clusters, center, &cluster_of);
+        let context = if self.trail.aside && !self.hidden.hides(Side::Callees) {
+            self.trail
+                .journey
+                .iter()
+                .copied()
+                .filter(|&t| cluster_of(t) == center && Some(t) != focus && !named.contains_key(&t))
+                .collect()
+        } else {
+            HashSet::new()
+        };
 
         let mut balls: Vec<Ball> = (0..clusters)
             .map(|c| Ball {
@@ -800,6 +968,7 @@ impl Nucleus {
             shown,
             named,
             columns,
+            context,
             tubes,
             links,
         }
@@ -809,24 +978,11 @@ impl Nucleus {
     /// its functions laid out by the calls among them; the modules naming anything on
     /// a ring just outside its wall, at the bearings they had, shrunk; and every other
     /// module pushed out by as much as it grew. It names what the module view names.
-    fn arrange_inside(&self, graph: &ForceGraph, modules: Arrangement) -> Arrangement {
+    fn arrange_inside(&self, graph: &ForceGraph, modules: Arrangement, laid: &Laid) -> Arrangement {
         let center = modules.center;
         let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(center);
         let before = modules.balls[center].radius;
         let core = before * GROWTH;
-        let members: Vec<usize> = (0..graph.positions.len())
-            .filter(|&t| cluster_of(t) == center)
-            .collect();
-        let calls: Vec<(usize, usize)> = graph
-            .calls
-            .iter()
-            .copied()
-            .filter(|&(a, b)| a != b && cluster_of(a) == center && cluster_of(b) == center)
-            .collect();
-        let mut reach = modules.named.clone();
-        if let Some(focus) = modules.focus {
-            reach.insert(focus, 0);
-        }
         let rim: Vec<usize> = (0..self.homes.len())
             .filter(|&c| c != center && !modules.columns[c].is_empty())
             .collect();
@@ -845,29 +1001,14 @@ impl Nucleus {
         }
         let radii: Vec<f32> = rim
             .iter()
-            .map(|&c| {
-                let named = modules.columns[c].len();
-                (closed_radius(self.counts[c]) * 2.0).max(grid_radius(
-                    named,
-                    RIM_SPACING,
-                    RIM_COLUMN_GAP,
-                    2.6,
-                ))
-            })
+            .map(|&c| self.rim_radius(c, modules.columns[c].len()))
             .collect();
-        place_rim(&mut balls, &rim, &radii, core);
-
-        // Laid out in a sphere of radius one, from where the module view had them.
-        let start: Vec<Vec3> = members
-            .iter()
-            .map(|&t| modules.points[t] / before)
-            .collect();
-        let inside = lay_members(&members, &start, &calls, &reach);
+        place_rim(&mut balls, &rim, &radii, &laid.angles, core);
 
         let tiles = graph.positions.len();
         let mut points: Vec<Vec3> = (0..tiles).map(|t| balls[cluster_of(t)].center).collect();
         let mut shown = vec![false; tiles];
-        for (&tile, at) in members.iter().zip(inside) {
+        for &(tile, at) in &laid.inside {
             points[tile] = at * core;
             shown[tile] = true;
         }
@@ -1168,9 +1309,34 @@ fn lay_members(
 }
 
 /// Puts the modules in `rim` on a ring just outside the expanded nucleus's wall, as
-/// the usual view sees it, each at the bearing it had and shrunk, then spreads them
-/// round it until none crowds another.
-fn place_rim(balls: &mut [Ball], rim: &[usize], radii: &[f32], core: f32) {
+/// the usual view sees it, each at its angle round it from `angles`, shrunk; one
+/// without an angle at its bearing.
+fn place_rim(
+    balls: &mut [Ball],
+    rim: &[usize],
+    radii: &[f32],
+    angles: &HashMap<usize, f32>,
+    core: f32,
+) {
+    let rotation = view_rotation();
+    let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+    for (&cluster, &radius) in rim.iter().zip(radii) {
+        let angle = angles.get(&cluster).copied().unwrap_or_else(|| {
+            let at = balls[cluster].center;
+            at.dot(up).atan2(at.dot(right))
+        });
+        balls[cluster] = Ball {
+            center: (right * angle.cos() + up * angle.sin()) * (core * (1.0 + RIM_GAP) + radius),
+            radius,
+            body: Body::Open,
+        };
+    }
+}
+
+/// The angle round the expanded nucleus, as the usual view sees it, of each module in
+/// `rim`: its bearing from the middle, then spread round until none of them, as big as
+/// `radii`, crowds another.
+fn rim_angles(rim: &[usize], radii: &[f32], core: f32, bearings: &Bearings) -> Vec<f32> {
     let rotation = view_rotation();
     let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
     let widest = radii.iter().copied().fold(0.0, f32::max);
@@ -1178,7 +1344,7 @@ fn place_rim(balls: &mut [Ball], rim: &[usize], radii: &[f32], core: f32) {
     let mut angles: Vec<f32> = rim
         .iter()
         .map(|&c| {
-            let at = balls[c].center;
+            let at = bearings.near(c);
             at.dot(up).atan2(at.dot(right))
         })
         .collect();
@@ -1202,13 +1368,7 @@ fn place_rim(balls: &mut [Ball], rim: &[usize], radii: &[f32], core: f32) {
             }
         }
     }
-    for ((&cluster, &radius), angle) in rim.iter().zip(radii).zip(angles) {
-        balls[cluster] = Ball {
-            center: (right * angle.cos() + up * angle.sin()) * (core * (1.0 + RIM_GAP) + radius),
-            radius,
-            body: Body::Open,
-        };
-    }
+    angles
 }
 
 /// Lays a module's functions out in a sphere of radius one by the calls among them,
@@ -1596,34 +1756,59 @@ impl Settle {
     }
 }
 
+/// What [`hover`] keeps between frames.
+#[derive(Debug, Default)]
+pub(crate) struct Pointing {
+    held: Settle,
+    /// Seconds left while the names round what is pointed at settle.
+    settling: f32,
+    /// Where the pointer was at the last click or key, while it has not moved since.
+    resting: Option<Vec2>,
+}
+
 /// Expanded, draws the calls of the function the pointer has rested on, and keeps
 /// drawing while the names at their ends fade in or out. A speck left out is never
-/// pointed at, though the pointer was on it when it went.
+/// pointed at, though the pointer was on it when it went. After a click or a key the
+/// view moves under a resting pointer, so nothing counts as pointed at until the
+/// pointer itself moves.
 pub(crate) fn hover(
     time: Res<Time>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut explorer: ResMut<Explorer>,
     mut awake: ResMut<Awake>,
-    mut held: Local<Settle>,
-    mut settling: Local<f32>,
+    mut pointing: Local<Pointing>,
 ) {
+    let pointer = windows.single().ok().and_then(Window::cursor_position);
+    if buttons.get_just_pressed().next().is_some() || keys.get_just_pressed().next().is_some() {
+        pointing.resting = pointer;
+    }
+    if pointing
+        .resting
+        .zip(pointer)
+        .is_none_or(|(at, now)| at.distance(now) > 3.0)
+    {
+        pointing.resting = None;
+    }
     let Some(taken) = explorer.nucleus().map(Nucleus::hovered) else {
-        *held = Settle::default();
+        pointing.held = Settle::default();
         return;
     };
     let over = explorer
         .hovered_tile
-        .filter(|&t| !hidden_speck(&explorer, t));
-    if held.settle(over, taken, time.elapsed_secs())
+        .filter(|&t| pointing.resting.is_none() && !hidden_speck(&explorer, t));
+    if pointing.held.settle(over, taken, time.elapsed_secs())
         && explorer.bypass_change_detection().hover_nucleus(over)
     {
         explorer.set_changed();
-        *settling = HOVER_SETTLE;
+        pointing.settling = HOVER_SETTLE;
     }
-    if held.waiting() {
+    if pointing.held.waiting() {
         awake.0 = true;
     }
-    if *settling > 0.0 {
-        *settling -= time.delta_secs();
+    if pointing.settling > 0.0 {
+        pointing.settling -= time.delta_secs();
         awake.0 = true;
     }
 }
@@ -2142,6 +2327,20 @@ mod tests {
                 stack.push((callee, level + 1, number));
             }
         }
+        // Everything below at any depth, as the journey would give it.
+        let mut wave = vec![from];
+        for level in 1..10 {
+            let mut next = Vec::new();
+            for tile in wave {
+                for callee in graph.callees(tile) {
+                    if callee != from && !trail.whole.contains_key(&callee) {
+                        trail.whole.insert(callee, level);
+                        next.push(callee);
+                    }
+                }
+            }
+            wave = next;
+        }
         trail
     }
 
@@ -2574,6 +2773,79 @@ mod tests {
     }
 
     #[test]
+    fn expanded_nothing_moves_as_the_depth_or_a_side_or_the_pointer_changes() {
+        let (graph, map) = codebase();
+        let run = tile(&map, "core::run");
+        let mut nucleus = around(&graph, &map, "core::run", 1);
+        nucleus.expand(&graph, true);
+        while nucleus.advance(0.1) {}
+        let at = |nucleus: &Nucleus| {
+            let inside: Vec<Option<Vec3>> = ["core::run", "core::help", "core::idle"]
+                .iter()
+                .map(|id| nucleus.point(tile(&map, id)))
+                .collect();
+            let db = nucleus
+                .ball(module(&graph, &map, "db::put"))
+                .map(|b| b.center);
+            (inside, db)
+        };
+        let before = at(&nucleus);
+        let settle = |nucleus: &mut Nucleus| while nucleus.advance(0.1) {};
+
+        assert!(nucleus.retrace(&graph, trail(&graph, run, 2)));
+        settle(&mut nucleus);
+        assert_eq!(at(&nucleus), before, "a new depth");
+        nucleus.set_hidden(
+            &graph,
+            Hidden {
+                callers: true,
+                callees: false,
+            },
+        );
+        settle(&mut nucleus);
+        assert_eq!(at(&nucleus), before, "the callers hidden");
+        nucleus.hover(&graph, Some(tile(&map, "core::idle")));
+        settle(&mut nucleus);
+        assert_eq!(at(&nucleus), before, "the pointer on a function");
+    }
+
+    #[test]
+    fn off_the_journey_the_middle_names_its_own_calls_and_keeps_the_journey() {
+        let (graph, map) = codebase();
+        let (help, idle, lib, run) = (
+            tile(&map, "core::help"),
+            tile(&map, "core::idle"),
+            tile(&map, "ext::lib"),
+            tile(&map, "core::run"),
+        );
+        let mut trail = Trail {
+            aside: true,
+            journey: [run, idle].into_iter().collect(),
+            ..Trail::default()
+        };
+        trail.add_own(help, idle, &["2".to_owned()]);
+        trail.add_own(help, lib, &[]);
+        // Its caller left out, so the journey's function there is named by nothing else.
+        let hidden = Hidden {
+            callers: true,
+            callees: false,
+        };
+        let nucleus = Nucleus::gather(&graph, Some(help), hidden, trail);
+        assert_eq!(nucleus.level(idle), Some(1), "its own call, blue");
+        assert!(nucleus.names(lib), "out of the module too");
+        assert!(nucleus.on_journey(idle) && !nucleus.on_journey(lib));
+        assert_eq!(
+            nucleus.numbers(idle),
+            ["2"],
+            "numbered as the panel numbers it"
+        );
+        assert!(
+            nucleus.context(run) && nucleus.lit(run),
+            "the journey's own stays drawn, to click"
+        );
+    }
+
+    #[test]
     fn hiding_the_journey_leaves_the_callers() {
         let (graph, map) = codebase();
         let run = tile(&map, "core::run");
@@ -2598,9 +2870,30 @@ mod tests {
         assert_eq!(trail.calls.len(), 4);
         assert_eq!(trail.numbers[&1], ["1", "2.1"]);
         assert_eq!(trail.numbers[&3], ["1.9", "1.10"], "in the journey's order");
-        assert_eq!(badge(&trail.numbers[&1]).as_deref(), Some("1 +1"));
-        assert_eq!(badge(&trail.numbers[&2]).as_deref(), Some("2"));
-        assert_eq!(badge(&[]), None);
+        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("1 +1"));
+        assert_eq!(badge(&trail.numbers[&2], None).as_deref(), Some("2"));
+        assert_eq!(badge(&[], None), None);
+        let both = ["1.1".to_owned(), "2".to_owned(), "2".to_owned()];
+        assert_eq!(
+            badge(&both, None).as_deref(),
+            Some("2 +1"),
+            "sorted, once each"
+        );
+    }
+
+    #[test]
+    fn a_badge_leads_with_the_call_nearest_the_root_or_the_cursor() {
+        let mut trail = Trail::default();
+        trail.add(0, 1, 2, "1.1");
+        trail.add(0, 1, 1, "2");
+        assert_eq!(trail.numbers[&1], ["2", "1.1"], "the shallower first");
+        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("2 +1"));
+        assert_eq!(
+            badge(&trail.numbers[&1], Some("1.1")).as_deref(),
+            Some("1.1 +1"),
+            "the cursor's own number, and the other run"
+        );
+        assert_eq!(badge(&[], Some("3")).as_deref(), Some("3"));
     }
 
     #[test]

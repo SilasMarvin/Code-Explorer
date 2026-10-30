@@ -294,6 +294,27 @@ pub(crate) fn trail(
         }
         calls.insert(span, children);
     }
+    // Everything below the start at any depth, each at the fewest calls from it, so
+    // the expanded nucleus is laid out once for every depth.
+    let mut wave = vec![start];
+    let mut seen = HashSet::from([start]);
+    for level in 1.. {
+        let mut next = Vec::new();
+        for span in wave {
+            for &child in calls.get(&span).map_or(&[][..], Vec::as_slice) {
+                if seen.insert(child) {
+                    if let Some(to) = tile(child) {
+                        trail.whole.entry(to).or_insert(level);
+                    }
+                    next.push(child);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        wave = next;
+    }
     // Down from the start, in the journey's order.
     let mut stack = vec![(start, 0)];
     while let Some((span, level)) = stack.pop() {

@@ -1003,13 +1003,65 @@ const FADE: f32 = 0.18;
 /// is taken, nearest first.
 const NUDGES: [i8; 12] = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6];
 
-/// A label as last drawn, so the next frame eases it instead of jumping it.
-#[derive(Clone)]
-struct Shown {
+/// Where a label sits against its node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Spot {
     /// Index into [`SIDES`].
     side: usize,
     /// How far along that side it was nudged, in steps.
     shift: i8,
+    /// Whether it lies over its node's middle, its last resort in a crowd.
+    over: bool,
+}
+
+impl Spot {
+    fn beside(side: usize, shift: i8) -> Self {
+        Self {
+            side,
+            shift,
+            over: false,
+        }
+    }
+
+    fn over(side: usize) -> Self {
+        Self {
+            side,
+            shift: 0,
+            over: true,
+        }
+    }
+
+    /// Where a label of `extent` sits here, by a node at `node` of radius `edge`.
+    fn rect(self, node: egui::Pos2, edge: f32, extent: egui::Vec2) -> egui::Rect {
+        let gap = if self.over { 0.0 } else { edge + 6.0 };
+        let (anchor, step) = match SIDES[self.side] {
+            egui::Align2::LEFT_CENTER => (
+                node + egui::vec2(gap, 0.0),
+                egui::vec2(0.0, extent.y + PILL_PAD.y * 3.0),
+            ),
+            egui::Align2::RIGHT_CENTER => (
+                node - egui::vec2(gap, 0.0),
+                egui::vec2(0.0, extent.y + PILL_PAD.y * 3.0),
+            ),
+            egui::Align2::CENTER_BOTTOM => (
+                node - egui::vec2(0.0, gap),
+                egui::vec2(extent.x / 2.0 + PILL_PAD.x, 0.0),
+            ),
+            _ => (
+                node + egui::vec2(0.0, gap),
+                egui::vec2(extent.x / 2.0 + PILL_PAD.x, 0.0),
+            ),
+        };
+        SIDES[self.side]
+            .anchor_size(anchor, extent)
+            .translate(step * f32::from(self.shift))
+    }
+}
+
+/// A label as last drawn, so the next frame eases it instead of jumping it.
+#[derive(Clone)]
+struct Shown {
+    at: Spot,
     /// Where its text sits, from its node.
     offset: egui::Vec2,
     opacity: f32,
@@ -1026,6 +1078,9 @@ type ShownLabels = HashMap<Named, Shown>;
 struct Placer<'a> {
     painter: &'a egui::Painter,
     taken: Vec<egui::Rect>,
+    /// Every named node's disc, by tile: no function's label sits nearer another of
+    /// them than its own.
+    nodes: Vec<(usize, egui::Pos2, f32)>,
     last: ShownLabels,
     next: ShownLabels,
     /// Where each label placed this frame sits.
@@ -1039,11 +1094,16 @@ struct Placer<'a> {
 }
 
 impl<'a> Placer<'a> {
-    fn new(painter: &'a egui::Painter, taken: Vec<egui::Rect>) -> Self {
+    fn new(
+        painter: &'a egui::Painter,
+        taken: Vec<egui::Rect>,
+        nodes: Vec<(usize, egui::Pos2, f32)>,
+    ) -> Self {
         let dt = painter.ctx().input(|i| i.stable_dt).min(0.1);
         Self {
             painter,
             taken,
+            nodes,
             last: painter
                 .ctx()
                 .data_mut(|d| d.get_temp::<ShownLabels>(Self::id()))
@@ -1063,8 +1123,9 @@ impl<'a> Placer<'a> {
     /// Places `job` on a side of `node` (a disc of `edge` points) where it overlaps
     /// nothing already placed: the side it had last frame if that is still free,
     /// else the first free one. When `force` is set and none is, it is nudged along a
-    /// side to the nearest free place, else put on the first side anyway. Returns
-    /// whether it was placed.
+    /// side to the nearest free place, else put where it misleads least. A
+    /// function's label goes nowhere it would lie nearer another node than its own,
+    /// so it never reads as the other's. Returns whether it was placed.
     fn place(
         &mut self,
         key: Named,
@@ -1076,61 +1137,38 @@ impl<'a> Placer<'a> {
     ) -> bool {
         let galley = self.painter.layout_job(job);
         let extent = galley.size();
-        let gap = edge + 6.0;
-        let spot = |(side, shift): (usize, i8)| {
-            let (anchor, step) = match SIDES[side] {
-                egui::Align2::LEFT_CENTER => (
-                    node + egui::vec2(gap, 0.0),
-                    egui::vec2(0.0, extent.y + PILL_PAD.y * 3.0),
-                ),
-                egui::Align2::RIGHT_CENTER => (
-                    node - egui::vec2(gap, 0.0),
-                    egui::vec2(0.0, extent.y + PILL_PAD.y * 3.0),
-                ),
-                egui::Align2::CENTER_BOTTOM => (
-                    node - egui::vec2(0.0, gap),
-                    egui::vec2(extent.x / 2.0 + PILL_PAD.x, 0.0),
-                ),
-                _ => (
-                    node + egui::vec2(0.0, gap),
-                    egui::vec2(extent.x / 2.0 + PILL_PAD.x, 0.0),
-                ),
-            };
-            SIDES[side]
-                .anchor_size(anchor, extent)
-                .translate(step * f32::from(shift))
-        };
+        let spot = |at: Spot| at.rect(node, edge, extent);
         // Inside the graph, so no label is cut off at its edge.
         let bounds = self.painter.clip_rect();
         let fits = |rect: egui::Rect, pad: egui::Vec2| {
             bounds.contains_rect(rect.expand2(pad))
                 && !self.taken.iter().any(|r| r.intersects(rect.expand2(pad)))
+                && self.misread(key, rect, node, edge) == 0
         };
         let previous = self.last.get(&key);
         // A label holds its side until something actually covers it; a new side must
         // be clear with room to spare. That margin keeps a label from flipping back
         // and forth as the view moves.
         let kept = previous
-            .map(|p| (p.side, p.shift))
-            .filter(|&at| fits(spot(at), egui::Vec2::ZERO));
-        let nudged = || {
-            NUDGES
+            .map(|p| p.at)
+            .filter(|&at| !at.over && fits(spot(at), egui::Vec2::ZERO));
+        let free = |shifts: &[i8]| {
+            shifts
                 .iter()
-                .flat_map(|&shift| (0..SIDES.len()).map(move |side| (side, shift)))
+                .flat_map(|&shift| (0..SIDES.len()).map(move |side| Spot::beside(side, shift)))
                 .find(|&at| fits(spot(at), PILL_PAD))
         };
+        // A label nudged off its node goes back beside it as soon as there is room.
         let at = kept
-            .or_else(|| {
-                (0..SIDES.len())
-                    .map(|side| (side, 0))
-                    .find(|&at| fits(spot(at), PILL_PAD))
-            })
-            .or_else(|| force.then(nudged).flatten())
-            .or_else(|| force.then(|| previous.map_or((0, 0), |p| (p.side, p.shift))));
-        let Some((side, shift)) = at else {
+            .filter(|at| at.shift == 0)
+            .or_else(|| free(&[0]))
+            .or(kept)
+            .or_else(|| force.then(|| free(&NUDGES)).flatten())
+            .or_else(|| force.then(|| self.least_misleading(key, node, edge, extent)));
+        let Some(at) = at else {
             return false;
         };
-        let rect = spot((side, shift));
+        let rect = spot(at);
         self.taken.push(rect.expand2(PILL_PAD));
         let target = rect.min - node;
         let (offset, opacity) = match previous {
@@ -1145,8 +1183,7 @@ impl<'a> Placer<'a> {
         self.next.insert(
             key,
             Shown {
-                side,
-                shift,
+                at,
                 offset,
                 opacity,
                 galley,
@@ -1154,6 +1191,47 @@ impl<'a> Placer<'a> {
             },
         );
         true
+    }
+
+    /// How much nearer, in whole points, another node lies to a label of `key` at
+    /// `rect` than its own at `node`; 0 when its own is nearest, or it names no node.
+    fn misread(&self, key: Named, rect: egui::Rect, node: egui::Pos2, edge: f32) -> u32 {
+        match key {
+            Named::Node(tile) => misread_by(rect, tile, node, edge, &self.nodes),
+            Named::Group(_) | Named::Wall(_) => 0,
+        }
+    }
+
+    /// Where a name that must show goes when no place is free: wherever it misleads
+    /// least, over its own node if need be, then where it lies over least, nearest.
+    fn least_misleading(
+        &self,
+        key: Named,
+        node: egui::Pos2,
+        edge: f32,
+        extent: egui::Vec2,
+    ) -> Spot {
+        let bounds = self.painter.clip_rect();
+        std::iter::once(0)
+            .chain(NUDGES)
+            .flat_map(|shift| (0..SIDES.len()).map(move |side| Spot::beside(side, shift)))
+            .chain((0..SIDES.len()).map(Spot::over))
+            .min_by_key(|&at| {
+                let rect = at.rect(node, edge, extent);
+                let under = self
+                    .taken
+                    .iter()
+                    .filter(|r| r.intersects(rect.expand2(PILL_PAD)))
+                    .count();
+                (
+                    self.misread(key, rect, node, edge),
+                    !bounds.contains_rect(rect),
+                    under,
+                    at.over,
+                    at.shift.unsigned_abs(),
+                )
+            })
+            .unwrap_or(Spot::beside(0, 0))
     }
 
     /// Draws what was placed, and fades out what was not where its node, found by
@@ -1201,10 +1279,10 @@ impl<'a> Placer<'a> {
         );
         let pill = egui::Rect::from_min_size(min, shown.galley.size()).expand2(PILL_PAD);
         // A name nudged away from its node keeps a thread to it.
-        if shown.shift != 0 {
+        if shown.at.shift != 0 {
             painter.line_segment(
                 [node, pill.clamp(node)],
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)),
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(150)),
             );
         }
         painter.rect_filled(pill, 4.0, PILL);
@@ -1218,6 +1296,33 @@ impl<'a> Placer<'a> {
         }
         painter.galley(min, shown.galley.clone(), egui::Color32::WHITE);
     }
+}
+
+/// How much nearer, in whole points edge to edge, the nearest other of `nodes` lies
+/// to `rect`, a label of `tile` (a disc of `edge` at `node`), than its own; 0 when
+/// its own is nearest.
+fn misread_by(
+    rect: egui::Rect,
+    tile: usize,
+    node: egui::Pos2,
+    edge: f32,
+    nodes: &[(usize, egui::Pos2, f32)],
+) -> u32 {
+    let mine = rect.distance_to_pos(node) - edge;
+    // Only nodes near enough to matter, cheaply.
+    let reach = rect.expand(mine.max(0.0) + 40.0);
+    let theirs = nodes
+        .iter()
+        .filter(|&&(other, at, radius)| other != tile && reach.expand(radius).contains(at))
+        .map(|&(_, at, radius)| rect.distance_to_pos(at) - radius)
+        .fold(f32::INFINITY, f32::min);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small distance, at least 0"
+    )]
+    let by = (mine - theirs - 0.5).max(0.0).ceil() as u32;
+    by
 }
 
 /// What leads a label: text in a color, on a fill when it is a badge.
@@ -1363,6 +1468,10 @@ fn draw_graph_labels(
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
+    let cursor_number: Option<String> = explorer
+        .selected()
+        .and_then(|span| disclosed.number(span))
+        .map(str::to_owned);
     let nucleus = explorer.nucleus();
     let stack: Vec<usize> = explorer
         .selected()
@@ -1399,12 +1508,15 @@ fn draw_graph_labels(
             continue;
         }
         // Gathered round the focus's module, one rule: the middle and the cursor,
-        // what the pointer is on and its calls' ends, then what the nucleus names.
+        // then what the nucleus names, then the open journey round a middle off it;
+        // what the pointer is on and its calls' ends come last, so pointing never
+        // moves another name.
         let gathered = nucleus.map(|n| match () {
             () if center == Some(tile) || cursor == Some(tile) => Some(0),
-            () if hovered == Some(tile) || n.touched(tile) => Some(1),
             () if n.labelled(tile) && n.level(tile).is_some_and(|l| l.abs() <= 1) => Some(1),
             () if n.labelled(tile) => Some(2),
+            () if n.context(tile) => Some(3),
+            () if hovered == Some(tile) || n.touched(tile) => Some(POINTED),
             () => None,
         });
         let tier = match related(tile) {
@@ -1538,7 +1650,8 @@ fn draw_graph_labels(
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .collect();
-    // And off the nodes that matter, so they never hide a neighbor.
+    // And off the nodes that matter, so they never hide a neighbor; what only the
+    // pointer names is no reason for another name to move.
     let mut placer = Placer::new(
         painter,
         cards
@@ -1555,6 +1668,13 @@ fn draw_graph_labels(
                         egui::Rect::from_center_size(node, egui::Vec2::splat(edge * 2.0))
                     }),
             )
+            .collect(),
+        order
+            .iter()
+            .filter_map(|&(_, named)| match named {
+                Named::Node(tile) => discs[tile].map(|(node, edge)| (tile, node, edge)),
+                Named::Group(_) | Named::Wall(_) => None,
+            })
             .collect(),
     );
     // The cursor's name, and the one the pointer is on, read over the rest.
@@ -1613,11 +1733,16 @@ fn draw_graph_labels(
                     _ => node_name(explorer, tile),
                 };
                 let relation = related(tile);
-                // Gathered round the focus's module, colored as its call is drawn.
+                // Gathered round the focus's module, colored as its call is drawn; a
+                // faint speck named only under the pointer, and the open journey round
+                // a middle off it, quietly.
                 let level = nucleus.and_then(|n| n.level(tile));
+                let speck = nucleus.is_some() && graph_view::speck(explorer, tile);
+                let quiet = speck || nucleus.is_some_and(|n| n.context(tile));
                 let color = match (tier, relation) {
                     _ if cursor == Some(tile) => CURSOR_TEXT,
                     (0, _) => egui::Color32::WHITE,
+                    _ if quiet => MUTED,
                     _ if nucleus.is_some() => match level {
                         Some(-1) => CALLER_TEXT,
                         Some(1) => CALLEE_TEXT,
@@ -1659,7 +1784,12 @@ fn draw_graph_labels(
                             .map(|was| format!("was {}", tail(was))),
                     ),
                     _ if impact_note.is_some() => (None, impact_note),
-                    // Gathered round the focus's module, the journey's number says it.
+                    // Gathered round the focus's module, the journey's number says it;
+                    // round a middle off the journey, which of its calls the journey
+                    // runs too.
+                    _ if nucleus.is_some_and(|n| n.on_journey(tile) && n.names(tile)) => {
+                        (None, Some("on the journey".to_owned()))
+                    }
                     _ if nucleus.is_some() => (None, None),
                     (Some(Relation::Downstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, focus, tile);
@@ -1691,8 +1821,18 @@ fn draw_graph_labels(
                     .reduce(|a, b| format!("{a} · {b}"));
                 // A node the journey runs leads with its place in it, as its bar does.
                 // Gathered round the focus's module, its numbers below the middle.
+                // Gathered round the focus's module, the call nearest the root as the
+                // panel numbers it, or the cursor's own, and how many more it runs.
                 let order = match nucleus {
-                    Some(n) => nucleus::badge(n.numbers(tile)),
+                    Some(n) => {
+                        let panel = journey.get(&tile).map_or(&[][..], Vec::as_slice);
+                        let cursor_on =
+                            explorer.aside().is_none() && explorer.graph_focus() == Some(tile);
+                        nucleus::badge(
+                            n.numbers(tile).iter().chain(panel),
+                            cursor_number.as_deref().filter(|_| cursor_on),
+                        )
+                    }
                     None => journey
                         .get(&tile)
                         .filter(|numbers| !numbers.is_empty())
@@ -1718,6 +1858,7 @@ fn draw_graph_labels(
                 let size = match tier {
                     _ if cursor == Some(tile) => 15.0,
                     0 => 14.0,
+                    _ if quiet => 10.0,
                     1 => 12.0,
                     _ => 11.0,
                 };
@@ -1726,6 +1867,7 @@ fn draw_graph_labels(
                 let stroke = match relation {
                     _ if cursor == Some(tile) => Some(egui_color(CURSOR)),
                     _ if tier == 0 => Some(egui::Color32::from_white_alpha(140)),
+                    _ if quiet => None,
                     _ if nucleus.is_some() => match level {
                         Some(-1) => Some(egui_color(CALLER)),
                         Some(1) => Some(egui_color(CALLEE)),
@@ -1911,6 +2053,10 @@ fn legend(ctx: &egui::Context, area: egui::Rect, foot: egui::Rect, diffing: bool
 
 /// Gathered round the focus's module, how many of the other modules are named.
 const CLOSED_NAMED: usize = 16;
+
+/// Gathered round the focus's module, the tier of a name only the pointer asks for:
+/// placed after every other, so it never moves one.
+const POINTED: u8 = 7;
 
 /// Which view a key does something in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2272,7 +2418,7 @@ mod tests {
     /// and returns the side it took and where its text was drawn from the node.
     fn frame(ctx: &egui::Context, node: egui::Pos2, blocked: &[egui::Rect]) -> (usize, egui::Vec2) {
         let shown = placed(ctx, node, blocked, false);
-        (shown.side, shown.offset)
+        (shown.at.side, shown.offset)
     }
 
     /// Runs one frame that places a label for `key` at `node` with `blocked` taken,
@@ -2288,7 +2434,7 @@ mod tests {
         let mut output = ctx.run_ui(input, |ui| {
             let ctx = ui.ctx();
             let painter = ctx.layer_painter(egui::LayerId::background());
-            let mut placer = Placer::new(&painter, blocked.to_vec());
+            let mut placer = Placer::new(&painter, blocked.to_vec(), Vec::new());
             let job = label_job(None, "draw_graph", None, egui::Color32::WHITE, 12.5, false);
             assert!(placer.place(Named::Node(0), node, 5.0, job, None, force));
             placer.finish(|_| Some(node));
@@ -2306,13 +2452,26 @@ mod tests {
         // Every side of the node taken, but free further up and down.
         let crowd = egui::Rect::from_center_size(node, egui::vec2(500.0, 44.0));
         let shown = placed(&ctx, node, &[crowd], true);
-        assert_ne!(shown.shift, 0, "nudged along a side");
+        assert_ne!(shown.at.shift, 0, "nudged along a side");
         let text = egui::Rect::from_min_size(node + shown.offset, shown.galley.size());
         assert!(!text.intersects(crowd), "clear of what was there: {text:?}");
         assert!(
             text.center().distance(node) < 80.0,
             "and still near its node: {text:?}"
         );
+    }
+
+    #[test]
+    fn a_name_never_sits_nearer_another_node_than_its_own() {
+        let node = egui::pos2(400.0, 300.0);
+        let nodes = [(0, node, 5.0), (1, egui::pos2(520.0, 300.0), 5.0)];
+        // To the right of its node, touching it: its own is nearest.
+        let beside = egui::Rect::from_min_size(egui::pos2(411.0, 292.0), egui::vec2(50.0, 16.0));
+        assert_eq!(misread_by(beside, 0, node, 5.0, &nodes), 0);
+        // Nudged down and across, it lies nearer the other.
+        let nudged = egui::Rect::from_min_size(egui::pos2(440.0, 310.0), egui::vec2(50.0, 16.0));
+        assert!(misread_by(nudged, 0, node, 5.0, &nodes) > 0);
+        assert_eq!(misread_by(nudged, 1, nodes[1].1, 5.0, &nodes), 0);
     }
 
     #[test]

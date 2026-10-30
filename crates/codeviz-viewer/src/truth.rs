@@ -225,6 +225,7 @@ pub(crate) fn scene(view: &View) -> Value {
         .map(|(name, r)| json!({ "name": name, "rect": rect(*r), "clipped": !window.contains_rect(*r) }))
         .collect();
     let label_list = label_entries(explorer, screen, &labels, &named);
+    let mislabelled = mislabelled(explorer, &labels, &named, &drawn);
     let help = view.help.0.then(|| {
         screen
             .overlays
@@ -241,6 +242,7 @@ pub(crate) fn scene(view: &View) -> Value {
         "arrows": arrows(view, &drawn),
         "module_arrows": nucleus.map_or_else(Vec::new, |n| module_arrows(explorer, n)),
         "labels": label_list,
+        "mislabelled": mislabelled,
         "bars": bars(view),
         "buttons": screen.widgets.iter().map(|w| json!({
             "text": w.text, "rect": rect(w.rect), "enabled": w.enabled, "cut_off": w.cut_off(),
@@ -297,6 +299,61 @@ fn label_entries(
             })
         })
         .collect()
+}
+
+/// Every function's label that lies nearer another named node than its own, edge to
+/// edge, so a reader would tie it to the other: what it says, whose it is, which node
+/// it sits nearer, and both gaps in points.
+fn mislabelled(
+    explorer: &Explorer,
+    labels: &[&Painted],
+    named: &[Option<Named>],
+    drawn: &[Drawn],
+) -> Vec<Value> {
+    let gap = |rect: egui::Rect, d: &Drawn| {
+        (rect.distance_to_pos(egui::pos2(d.at.x, d.at.y)) - d.radius).max(0.0)
+    };
+    let nodes: Vec<&Drawn> = drawn
+        .iter()
+        .filter(|d| d.on_screen && !speck(explorer, d.tile))
+        .filter(|d| {
+            explorer.nucleus().is_some()
+                || !roles(explorer, d.tile).is_empty()
+                || named.contains(&Some(Named::Node(d.tile)))
+        })
+        .collect();
+    labels
+        .iter()
+        .zip(named)
+        .filter_map(|(label, what)| {
+            let Some(Named::Node(tile)) = *what else {
+                return None;
+            };
+            let own = drawn.iter().find(|d| d.tile == tile)?;
+            let mine = gap(label.rect, own);
+            let (other, theirs) = nodes
+                .iter()
+                .filter(|d| d.tile != tile)
+                .map(|d| (d, gap(label.rect, d)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))?;
+            (theirs + 1.0 < mine).then(|| {
+                json!({
+                    "text": label.text,
+                    "of": node_name(explorer, tile),
+                    "nearer": node_name(explorer, other.tile),
+                    "own_gap": round(mine),
+                    "nearer_gap": round(theirs),
+                })
+            })
+        })
+        .collect()
+}
+
+/// Gathered round a module, whether a function is drawn only as a faint speck.
+fn speck(explorer: &Explorer, tile: usize) -> bool {
+    explorer
+        .nucleus()
+        .is_some_and(|n| !n.lit(tile) && n.focus() != Some(tile) && n.hovered() != Some(tile))
 }
 
 /// What a label on the graph names.
@@ -367,17 +424,12 @@ fn carries(text: &str, name: &str) -> bool {
 /// The other functions drawn so near one that they cover half of it or more, but for
 /// specks: two calls can land on one spot and read as one node.
 fn crowding(explorer: &Explorer, drawn: &[Drawn], node: &Drawn) -> Vec<String> {
-    let speck = |tile: usize| {
-        explorer
-            .nucleus()
-            .is_some_and(|n| !n.lit(tile) && n.focus() != Some(tile))
-    };
-    if speck(node.tile) {
+    if speck(explorer, node.tile) {
         return Vec::new();
     }
     drawn
         .iter()
-        .filter(|other| other.tile != node.tile && !speck(other.tile))
+        .filter(|other| other.tile != node.tile && !speck(explorer, other.tile))
         .filter(|other| other.at.distance(node.at) < node.radius.max(other.radius) * 0.5)
         .map(|other| node_name(explorer, other.tile))
         .collect()
@@ -404,8 +456,12 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
         }
         match n.level(tile) {
             Some(-1) => roles.push("caller".to_owned()),
+            Some(_) if n.aside() => roles.push("callee".to_owned()),
             Some(level) if level > 0 => roles.push(format!("journey level {level}")),
             _ => {}
+        }
+        if n.on_journey(tile) {
+            roles.push("on the open journey".to_owned());
         }
         if n.hovered() == Some(tile) {
             roles.push("hovered".to_owned());
