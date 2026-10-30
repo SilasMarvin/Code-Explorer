@@ -1015,7 +1015,7 @@ impl Nucleus {
         let core = before * GROWTH;
         let sizes: Vec<f32> = members
             .iter()
-            .map(|&t| (node_size(graph, t) * NODE_SCALE * INSIDE_GROWTH / 2.0 + 0.6) / core)
+            .map(|&t| (node_size(graph, t) * NODE_SCALE * INSIDE_GROWTH / 2.0 + 1.0) / core)
             .collect();
         let inside = lay_members(&members, &start, &calls, &reach, &sizes);
         // Each module that could ever be named round it, at its bearing, kept apart
@@ -1717,10 +1717,15 @@ fn lay_members(
 
 /// Pushes apart the functions near the focus, by `hops`, that touch as seen from
 /// `back`, each as big as `sizes`, until a gap shows between every two; the focus
-/// stays in the middle.
+/// stays in the middle. They come most of the way towards the plane the view looks
+/// across first, so the camera's perspective, which spreads what is nearer it, does
+/// not bring two together again.
 fn keep_apart(at: &mut [Vec3], hops: &[Option<i32>], sizes: &[f32], back: Vec3) {
     let near: Vec<usize> = (0..at.len()).filter(|&i| hops[i].is_some()).collect();
-    for _ in 0..80 {
+    for &i in &near {
+        at[i] -= back * at[i].dot(back) * 0.7;
+    }
+    for _ in 0..200 {
         let mut moved = false;
         for (k, &i) in near.iter().enumerate() {
             for &j in &near[k + 1..] {
@@ -2819,7 +2824,7 @@ fn link_color(nucleus: &Nucleus, link: &Link, bright: bool) -> Color {
     match link.flow {
         Flow::Outside if bright => Color::WHITE.with_alpha(0.85),
         // Secondary: there to be found, not read first.
-        Flow::Outside => link.flow.color().with_alpha(0.16),
+        Flow::Outside => link.flow.color().with_alpha(0.08),
         _ if bright && nucleus.marks(link.to) => CURSOR,
         _ if bright => link.flow.color().mix(&Color::WHITE, 0.45),
         _ => link.flow.color().with_alpha(0.9),

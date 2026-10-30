@@ -1635,7 +1635,9 @@ fn draw_graph_labels(
             () if center == Some(tile) || cursor == Some(tile) || aside == Some(tile) => Some(0),
             () if n.labelled(tile) && n.level(tile).is_some_and(|l| l.abs() <= 1) => Some(1),
             () if n.labelled(tile) => Some(2),
-            () if n.context(tile) || n.outside(tile) => Some(3),
+            () if n.context(tile) => Some(3),
+            // A call in from outside the journey is named under the pointer, so a
+            // hundred of them do not bury the journey's own names.
             () if hovered == Some(tile) || n.touched(tile) => Some(POINTED),
             () => None,
         });
