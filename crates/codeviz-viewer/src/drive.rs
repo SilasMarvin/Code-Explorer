@@ -1066,6 +1066,9 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
                     acts.push(Act::Shift(ButtonState::Pressed));
                     acts.push(Act::Frames(1));
                     acts.extend(press);
+                    // Held a little past the release, as a hand would: picking reads
+                    // the mouse a frame after the keys.
+                    acts.push(Act::Frames(2));
                     acts.push(Act::Shift(ButtonState::Released));
                 }
                 Gesture::DoubleClick => {
