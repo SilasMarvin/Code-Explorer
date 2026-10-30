@@ -229,14 +229,7 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            // The key hint runs along the window's foot, left of a docked journey.
-            let foot = panel_area.map_or(graph_area, |p| {
-                egui::Rect::from_min_max(
-                    graph_area.min,
-                    egui::pos2(p.min.x - 8.0, graph_area.max.y),
-                )
-            });
-            legend(ctx, clear, foot, diff.is_some());
+            legend(ctx, clear, beside(graph_area, panel_area), diff.is_some());
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -364,6 +357,13 @@ fn cursor_node(
         .and_then(|unit| explorer.map().tile_of(unit))
         .and_then(|tile| explorer.tile_point(tile))
         .and_then(to_screen)
+}
+
+/// The graph left of a docked journey, down to the window's foot.
+fn beside(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
+    panel.map_or(graph, |p| {
+        egui::Rect::from_min_max(graph.min, egui::pos2(p.min.x - 8.0, graph.max.y))
+    })
 }
 
 /// The part of the graph above a docked journey, for what sits at its bottom.
