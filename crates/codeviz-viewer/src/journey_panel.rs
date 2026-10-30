@@ -649,6 +649,15 @@ fn canvas(
         response.clone().on_hover_text(tip);
     }
 
+    // Where each bar is, for a scripted session to click.
+    crate::drive::note_bars(
+        ui.ctx(),
+        content,
+        bars.iter()
+            .filter(|bar| bar.shown)
+            .map(|bar| (bar.span, bar.rect))
+            .collect(),
+    );
     let hovered_rect = hovered
         .and_then(rect_of)
         .filter(|rect| content.intersects(*rect));

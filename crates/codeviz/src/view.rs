@@ -2,10 +2,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::Document;
-use codeviz_viewer::Viewer;
+use codeviz_viewer::{Script, Viewer};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ViewArgs {
@@ -85,6 +85,17 @@ pub(crate) struct Display {
     /// `shift+]`.
     #[arg(long, value_name = "KEYS", requires = "screenshot")]
     keys: Option<String>,
+    /// Run a session from this file in one window, a step per line (`key x`, `click
+    /// UNIT`, `hover UNIT`, `doubleclick UNIT`, `bar 1.2`, `button TEXT`, `drag DX DY`,
+    /// `scroll N`, `wait MS`, `snap LABEL`); --screenshot names the directory each
+    /// snap's PNG and JSON go in.
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "screenshot",
+        conflicts_with = "keys"
+    )]
+    script: Option<PathBuf>,
 }
 
 /// What the third dimension shows at first.
@@ -198,6 +209,7 @@ pub(crate) fn open(
         .as_ref()
         .map(|query| crate::journey::find_one(&system, query))
         .transpose()?;
+    let script = read_script(args, &system)?;
     let title = format!("codeviz — {title}");
 
     let viewer = if before.is_empty() {
@@ -276,8 +288,25 @@ pub(crate) fn open(
     if let Some(keys) = &args.keys {
         viewer = viewer.with_keys(keys).map_err(anyhow::Error::msg)?;
     }
+    if let Some(script) = script {
+        viewer = viewer.with_script(script);
+    }
     if viewer.run().is_error() {
         bail!("viewer exited with an error");
     }
     Ok(())
+}
+
+/// The session `--script` names, its functions looked up in `system`.
+fn read_script(args: &Display, system: &System) -> anyhow::Result<Option<Script>> {
+    let Some(path) = &args.script else {
+        return Ok(None);
+    };
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let find =
+        |query: &str| crate::journey::find_one(system, query).map_err(|error| format!("{error:#}"));
+    Script::parse(&text, &find)
+        .map(Some)
+        .map_err(anyhow::Error::msg)
 }

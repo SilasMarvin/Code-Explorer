@@ -17,17 +17,17 @@ use bevy::{
 use crate::{diff_view::DiffView, explorer::Explorer};
 
 /// Frames to let the scene settle (assets load, camera eases) before capturing.
-const SETTLE_FRAMES: u32 = 90;
+pub(crate) const SETTLE_FRAMES: u32 = 90;
 /// Time to let it settle as well: on a first run shaders compile in the background,
 /// and until they do the frames come quickly and draw nothing.
-const SETTLE_TIME: Duration = Duration::from_secs(2);
+pub(crate) const SETTLE_TIME: Duration = Duration::from_secs(2);
 /// Frames between one key and the next.
 const KEY_GAP: u32 = 15;
 /// Frames and time to let the view settle after the last key, as the camera glides.
 const AFTER_KEYS_FRAMES: u32 = 60;
 const AFTER_KEYS_TIME: Duration = Duration::from_millis(1500);
 /// Frames to wait after capture so the file write completes.
-const DRAIN_FRAMES: u32 = 30;
+pub(crate) const DRAIN_FRAMES: u32 = 30;
 
 /// A key to press, with shift held or not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +126,34 @@ impl Press {
         [(self.shift, KeyCode::ShiftLeft, Key::Shift)]
     }
 
+    /// What the window sends for the key going down or up: Shift first going down,
+    /// last coming up.
+    pub(crate) fn messages(self, state: ButtonState, window: Entity) -> Vec<KeyboardInput> {
+        let message = |key_code, logical_key, text: Option<String>| KeyboardInput {
+            key_code,
+            logical_key,
+            state,
+            text: text.map(|t| t.as_str().into()),
+            repeat: false,
+            window,
+        };
+        let (logical, text) = self.logical();
+        let key = message(
+            self.key,
+            logical,
+            text.filter(|_| state == ButtonState::Pressed),
+        );
+        let modifiers = self
+            .modifiers()
+            .into_iter()
+            .filter(|&(on, ..)| on)
+            .map(|(_, code, logical)| message(code, logical, None));
+        match state {
+            ButtonState::Pressed => modifiers.chain([key]).collect(),
+            ButtonState::Released => [key].into_iter().chain(modifiers).collect(),
+        }
+    }
+
     /// The key as the keyboard layout reads it, and the text it types.
     fn logical(self) -> (Key, Option<String>) {
         if let Some(&(c, _)) = TYPED.iter().find(|(_, key)| *key == self.key) {
@@ -212,24 +240,8 @@ fn press_keys(
     window: Single<Entity, With<PrimaryWindow>>,
     time: Res<Time<Real>>,
 ) {
-    let mut send = |key: KeyCode, logical: Key, text: Option<String>, button: ButtonState| {
-        input.write(KeyboardInput {
-            key_code: key,
-            logical_key: logical,
-            state: button,
-            text: text.map(|t| t.as_str().into()),
-            repeat: false,
-            window: *window,
-        });
-    };
     if let Some(held) = state.held.take() {
-        let (logical, _) = held.logical();
-        send(held.key, logical, None, ButtonState::Released);
-        for (on, key, logical) in held.modifiers() {
-            if on {
-                send(key, logical, None, ButtonState::Released);
-            }
-        }
+        input.write_batch(held.messages(ButtonState::Released, *window));
         return;
     }
     let now = time.elapsed();
@@ -242,13 +254,7 @@ fn press_keys(
     let Some(&press) = state.keys.get(state.pressed) else {
         return;
     };
-    for (on, key, logical) in press.modifiers() {
-        if on {
-            send(key, logical, None, ButtonState::Pressed);
-        }
-    }
-    let (logical, text) = press.logical();
-    send(press.key, logical, text, ButtonState::Pressed);
+    input.write_batch(press.messages(ButtonState::Pressed, *window));
     state.held = Some(press);
     state.pressed += 1;
     state.last_press = Some((state.frame, now));

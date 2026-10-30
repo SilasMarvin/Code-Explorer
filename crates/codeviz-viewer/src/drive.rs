@@ -1,0 +1,1228 @@
+//! A scripted session (`--script FILE --screenshot DIR`): runs a script's steps in
+//! one window, through the input a person's hands would send. Keys go in as the
+//! keyboard sends them; the pointer moves, presses and scrolls as the window reports a
+//! mouse doing so, so picking, egui and the viewer's own handlers all see it, and a
+//! click that lands on the wrong thing lands there. After each step the view settles
+//! before the next. Each `snap` saves `NN-label.png` and `NN-label.json`, what the
+//! picture shows by name and place (see [`crate::truth::scene`]); `session.json` logs
+//! how each step went.
+
+use std::{collections::VecDeque, path::PathBuf, time::Duration};
+
+use bevy::{
+    camera::{ImageRenderTarget, RenderTarget},
+    ecs::system::SystemParam,
+    input::{
+        ButtonState, InputSystems,
+        keyboard::{Key, KeyboardInput},
+        mouse::{MouseButtonInput, MouseMotion, MouseScrollUnit, MouseWheel},
+        touch::TouchPhase,
+    },
+    prelude::*,
+    render::{
+        render_resource::TextureFormat,
+        view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk},
+    },
+    window::{CursorMoved, PrimaryWindow, WindowEvent, WindowLevel, WindowOccluded},
+};
+use bevy_egui::{EguiContext, EguiFullOutput, EguiPostUpdateSet, PrimaryEguiContext, egui};
+use codeviz_core::SpanId;
+use serde_json::{Value, json};
+
+use crate::{
+    camera::OrbitCamera,
+    capture::{DRAIN_FRAMES, Press, SETTLE_FRAMES, SETTLE_TIME},
+    diff_view::DiffView,
+    explorer::Explorer,
+    idle::Awake,
+    journey_panel::JourneyPanel,
+    scene::Tile,
+    script::{Gesture, Step, snap_name},
+    ui::{Chrome, KeyHelp, node_name},
+};
+
+/// Times a snapshot that comes out black is taken again.
+const RETAKES: u32 = 3;
+/// Frames in a row with nothing moving before a step counts as settled.
+const CALM_FRAMES: u32 = 6;
+/// Least time a step is given to show, so labels finish fading and sliding.
+const LEAST_SETTLE: Duration = Duration::from_millis(500);
+/// Longest a step waits to settle before the session moves on, saying so.
+const MOST_SETTLE: Duration = Duration::from_secs(8);
+/// How long the pointer rests on a function for `hover`: past the nucleus's delay.
+const HOVER_REST: Duration = Duration::from_millis(400);
+/// Notches of a `scroll`, one a frame.
+const NOTCH: f32 = 1.0;
+/// Pieces a drag is sent in.
+const DRAG_PIECES: u16 = 12;
+
+pub(crate) struct DrivePlugin {
+    pub(crate) dir: PathBuf,
+    pub(crate) steps: Vec<(String, Step)>,
+}
+
+impl Plugin for DrivePlugin {
+    fn build(&self, app: &mut App) {
+        if let Err(error) = std::fs::create_dir_all(&self.dir) {
+            error!("could not make {}: {error}", self.dir.display());
+        }
+        app.insert_resource(Drive {
+            dir: self.dir.clone(),
+            steps: self.steps.clone(),
+            ..Drive::default()
+        })
+        .init_resource::<Screen>()
+        .add_systems(Startup, stay_on_top)
+        // Input goes in with the window's own, so the frame's systems see it.
+        .add_systems(PreUpdate, act.before(InputSystems))
+        .add_systems(
+            PostUpdate,
+            (record, advance, let_go_of_cursor)
+                .chain()
+                .after(EguiPostUpdateSet::EndPass)
+                .before(EguiPostUpdateSet::ProcessOutput)
+                .after(TransformSystems::Propagate),
+        );
+    }
+}
+
+/// Keeps the window over the others: once covered, macOS stops drawing it, and
+/// snapshots come out black.
+fn stay_on_top(mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    window.window_level = WindowLevel::AlwaysOnTop;
+}
+
+/// What the hands do next, a frame at a time.
+#[derive(Debug, Clone)]
+enum Act {
+    /// The pointer moves here, in window points.
+    Pointer(Vec2),
+    /// The pointer moves by this much with the button held: a piece of a drag.
+    Nudge(Vec2),
+    Mouse(MouseButton, ButtonState),
+    /// A wheel notch, up (nearer) when positive.
+    Wheel(f32),
+    Key(Press, ButtonState),
+    Shift(ButtonState),
+    /// Lets this many frames pass.
+    Frames(u32),
+    /// Lets this much time pass, then from when it is first reached.
+    Pause(Duration),
+    Until(Duration),
+    /// Notes whether the pointer is over this function, by tile, as it should be.
+    Expect(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Phase {
+    /// Letting the scene settle before the first step.
+    #[default]
+    Opening,
+    /// Sending the step's input.
+    Acting,
+    /// Waiting for the view to come to rest, since this frame and time.
+    Settling(u32, Duration),
+    /// Waiting for a snapshot of the window to be taken, asked for on this frame.
+    Capturing(u32),
+    /// About to draw into an image instead of the window.
+    Offscreen,
+    /// Drawing into an image instead of the window, since this frame, for a snapshot
+    /// the window could not give: macOS stops drawing a window it counts as covered.
+    Retargeted(u32),
+    /// Waiting for that snapshot, asked for on this frame.
+    CapturingOffscreen(u32),
+    /// Waiting for the last snapshot to reach the disk, since this frame.
+    Closing(u32),
+    Done,
+}
+
+#[derive(Resource, Default)]
+struct Drive {
+    dir: PathBuf,
+    steps: Vec<(String, Step)>,
+    /// The step under way, by index.
+    step: Option<usize>,
+    phase: Phase,
+    acts: VecDeque<Act>,
+    /// Where the pointer is, in window points, once a step has moved it.
+    pointer: Option<Vec2>,
+    /// Where the window had its cursor before the step's pointer stood in for it.
+    real: Option<Vec2>,
+    /// What went wrong with the step under way.
+    trouble: Vec<String>,
+    log: Vec<Value>,
+    snaps: Vec<String>,
+    frame: u32,
+    started: Option<Duration>,
+    /// Frames in a row with nothing moving.
+    calm: u32,
+    /// What the view showed last frame, to tell whether anything changed.
+    last_seen: String,
+    /// Whether the snapshot just taken came out black, and how often it has.
+    black: bool,
+    retakes: u32,
+    /// Whether macOS counts the window as covered, so it draws nothing into it.
+    covered: bool,
+    /// The image snapshots are drawn into when the window will not show them, and
+    /// where each camera drew before.
+    offscreen: Option<Handle<Image>>,
+    targets: Vec<(Entity, RenderTarget)>,
+}
+
+/// The messages a window sends for a mouse and a keyboard.
+#[derive(SystemParam)]
+struct Hands<'w> {
+    keys: MessageWriter<'w, KeyboardInput>,
+    moves: MessageWriter<'w, CursorMoved>,
+    buttons: MessageWriter<'w, MouseButtonInput>,
+    wheels: MessageWriter<'w, MouseWheel>,
+    motions: MessageWriter<'w, MouseMotion>,
+    events: MessageWriter<'w, WindowEvent>,
+}
+
+impl Hands<'_> {
+    fn move_to(&mut self, window: Entity, from: Option<Vec2>, to: Vec2) {
+        let message = CursorMoved {
+            window,
+            position: to,
+            delta: from.map(|from| to - from),
+        };
+        self.moves.write(message.clone());
+        self.events.write(message.into());
+    }
+
+    fn mouse(&mut self, window: Entity, button: MouseButton, state: ButtonState) {
+        let message = MouseButtonInput {
+            button,
+            state,
+            window,
+        };
+        self.buttons.write(message);
+        self.events.write(message.into());
+    }
+
+    fn wheel(&mut self, window: Entity, notch: f32) {
+        let message = MouseWheel {
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: notch,
+            window,
+            phase: TouchPhase::Moved,
+        };
+        self.wheels.write(message);
+        self.events.write(message.into());
+    }
+
+    fn motion(&mut self, delta: Vec2) {
+        self.motions.write(MouseMotion { delta });
+        self.events.write(MouseMotion { delta }.into());
+    }
+
+    fn shift(&mut self, window: Entity, state: ButtonState) {
+        self.keys.write(KeyboardInput {
+            key_code: KeyCode::ShiftLeft,
+            logical_key: Key::Shift,
+            state,
+            text: None,
+            repeat: false,
+            window,
+        });
+    }
+}
+
+/// The pointer goes where the step's hands have it; keys, buttons and the wheel go in
+/// as the window would send them.
+fn act(
+    mut drive: ResMut<Drive>,
+    mut window: Single<(Entity, &mut Window), With<PrimaryWindow>>,
+    mut hands: Hands,
+    explorer: Res<Explorer>,
+    screen: Res<Screen>,
+    time: Res<Time<Real>>,
+) {
+    let (entity, window) = &mut *window;
+    let entity = *entity;
+    // Systems that read the cursor from the window see the step's pointer; it is put
+    // back after the frame, so the window never moves the real one.
+    drive.real = window.cursor_position();
+    if let Some(at) = drive.pointer {
+        window
+            .bypass_change_detection()
+            .set_cursor_position(Some(at));
+    }
+    while let Some(next) = drive.acts.pop_front() {
+        match next {
+            Act::Pointer(to) => {
+                hands.move_to(entity, drive.pointer, to);
+                drive.pointer = Some(to);
+                window
+                    .bypass_change_detection()
+                    .set_cursor_position(Some(to));
+            }
+            Act::Nudge(by) => {
+                let from = drive.pointer.unwrap_or_default();
+                hands.motion(by);
+                hands.move_to(entity, Some(from), from + by);
+                drive.pointer = Some(from + by);
+                window
+                    .bypass_change_detection()
+                    .set_cursor_position(Some(from + by));
+                drive.acts.push_front(Act::Frames(1));
+            }
+            Act::Mouse(button, state) => hands.mouse(entity, button, state),
+            Act::Wheel(notch) => hands.wheel(entity, notch),
+            Act::Key(press, state) => {
+                hands.keys.write_batch(press.messages(state, entity));
+            }
+            Act::Shift(state) => hands.shift(entity, state),
+            Act::Frames(0) => {}
+            Act::Frames(n) => {
+                drive.acts.push_front(Act::Frames(n - 1));
+                return;
+            }
+            Act::Pause(span) => {
+                drive.acts.push_front(Act::Until(time.elapsed() + span));
+                return;
+            }
+            Act::Until(at) => {
+                if time.elapsed() < at {
+                    drive.acts.push_front(Act::Until(at));
+                    return;
+                }
+            }
+            Act::Expect(wanted) => {
+                if explorer.hovered_tile != Some(wanted) {
+                    let at = drive.pointer.unwrap_or_default();
+                    let over = match (explorer.hovered_tile, screen.overlay_at(at)) {
+                        (Some(other), _) => node_name(&explorer, other),
+                        (None, Some(overlay)) => format!("the {overlay}"),
+                        (None, None) => "nothing".to_owned(),
+                    };
+                    let trouble = format!(
+                        "the pointer at ({:.0}, {:.0}) is over {over}, not {}",
+                        at.x,
+                        at.y,
+                        node_name(&explorer, wanted)
+                    );
+                    drive.trouble.push(trouble);
+                }
+            }
+        }
+    }
+}
+
+/// Puts the window's cursor back where the real one is, before the window would act
+/// on the change and move it.
+fn let_go_of_cursor(drive: Res<Drive>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
+    if drive.pointer.is_some() {
+        window
+            .bypass_change_detection()
+            .set_cursor_position(drive.real);
+    }
+}
+
+/// A piece of text egui drew, where, and how faintly.
+#[derive(Debug, Clone)]
+pub(crate) struct Painted {
+    pub(crate) text: String,
+    pub(crate) rect: egui::Rect,
+    /// What it is clipped to.
+    pub(crate) clip: egui::Rect,
+    pub(crate) opacity: f32,
+}
+
+/// Something that takes a click, and what it says.
+#[derive(Debug, Clone)]
+pub(crate) struct Widget {
+    pub(crate) text: String,
+    /// Where it takes a click: the part of it not clipped away.
+    pub(crate) rect: egui::Rect,
+    /// All of it, as laid out.
+    pub(crate) full: egui::Rect,
+    pub(crate) enabled: bool,
+}
+
+impl Widget {
+    /// Whether some of it is clipped away, as by the window's edge.
+    pub(crate) fn cut_off(&self) -> bool {
+        self.rect.area() + 1.0 < self.full.area()
+    }
+}
+
+/// The buttons among clickable widgets, each laid out at `.0`, clickable over `.1`,
+/// enabled or not, with the text drawn on it. An area takes clicks over all of
+/// itself, so one holding another is no button.
+pub(crate) fn buttons(
+    found: Vec<(egui::Rect, egui::Rect, bool)>,
+    texts: &[Painted],
+) -> Vec<Widget> {
+    let holds = |i: usize| {
+        found
+            .iter()
+            .enumerate()
+            .any(|(j, other)| j != i && found[i].0.contains_rect(other.0))
+    };
+    found
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| !holds(i))
+        .filter_map(|(_, &(full, rect, enabled))| {
+            let text = texts
+                .iter()
+                .filter(|t| full.contains(t.rect.center()))
+                .map(|t| t.text.trim())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!text.is_empty()).then_some(Widget {
+                text,
+                rect,
+                full,
+                enabled,
+            })
+        })
+        .collect()
+}
+
+/// Words past which a button's text is no label to find it by part of.
+const BUTTON_WORDS: usize = 8;
+
+/// The button that says `text`: the one that says exactly that, else the first short
+/// one that says it among other words, ignoring case.
+fn pick<'a>(widgets: &'a [Widget], text: &str) -> Result<&'a Widget, String> {
+    let words = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let wanted = words(text);
+    widgets
+        .iter()
+        .find(|w| words(&w.text) == wanted)
+        .or_else(|| {
+            widgets.iter().find(|w| {
+                w.text.split_whitespace().count() <= BUTTON_WORDS
+                    && words(&w.text).contains(&wanted)
+            })
+        })
+        .ok_or_else(|| {
+            let all: Vec<&str> = widgets.iter().map(|w| w.text.as_str()).collect();
+            format!("no button says `{text}`; showing: {}", all.join(" | "))
+        })
+}
+
+/// What egui drew this frame, read once its pass ends: every piece of text, every
+/// clickable widget with what it says, the journey's bars and the overlays on top.
+#[derive(Resource, Debug)]
+pub(crate) struct Screen {
+    pub(crate) window: egui::Vec2,
+    /// Where the graph is drawn: the 3D camera's viewport.
+    pub(crate) graph: egui::Rect,
+    pub(crate) texts: Vec<Painted>,
+    pub(crate) widgets: Vec<Widget>,
+    pub(crate) bars: Option<DrawnBars>,
+    /// Areas over the graph and panels, by name, with where they are.
+    pub(crate) overlays: Vec<(String, egui::Rect)>,
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Self {
+            window: egui::Vec2::ZERO,
+            graph: egui::Rect::NOTHING,
+            texts: Vec::new(),
+            widgets: Vec::new(),
+            bars: None,
+            overlays: Vec::new(),
+        }
+    }
+}
+
+impl Screen {
+    /// The overlay a point falls on, top first.
+    pub(crate) fn overlay_at(&self, at: Vec2) -> Option<&str> {
+        let at = egui::pos2(at.x, at.y);
+        self.overlays
+            .iter()
+            .rev()
+            .find(|(_, rect)| rect.contains(at))
+            .map(|(name, _)| name.as_str())
+    }
+}
+
+/// The journey's bars as last drawn, kept in egui's memory for a session to find.
+#[derive(Debug, Clone)]
+pub(crate) struct DrawnBars {
+    /// The egui pass they were drawn in, so bars no longer drawn are not taken.
+    pass: u64,
+    /// Where the bars show; one outside it is scrolled out of view.
+    pub(crate) content: egui::Rect,
+    pub(crate) bars: Vec<(SpanId, egui::Rect)>,
+}
+
+fn bars_id() -> egui::Id {
+    egui::Id::new("drawn_journey_bars")
+}
+
+/// Notes where the journey panel drew its bars this pass.
+pub(crate) fn note_bars(ctx: &egui::Context, content: egui::Rect, bars: Vec<(SpanId, egui::Rect)>) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            bars_id(),
+            DrawnBars {
+                pass,
+                content,
+                bars,
+            },
+        );
+    });
+}
+
+/// egui areas that sit over the graph, by id.
+const OVERLAYS: [(&str, &str); 8] = [
+    ("journey_panel", "journey panel"),
+    ("key_help", "key help (H)"),
+    ("search", "search box"),
+    ("camera_free", "camera-free chip"),
+    ("legend", "legend"),
+    ("diff_card", "diff card"),
+    ("depth_meter", "depth meter"),
+    ("source", "side panel"),
+];
+
+fn record(
+    mut contexts: Query<(&mut EguiContext, &EguiFullOutput), With<PrimaryEguiContext>>,
+    cameras: Query<&Camera, With<OrbitCamera>>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut screen: ResMut<Screen>,
+) {
+    let Ok((mut context, output)) = contexts.single_mut() else {
+        return;
+    };
+    let Some(output) = &output.0 else {
+        return;
+    };
+    let ctx = context.get_mut().clone();
+    let mut texts = Vec::new();
+    for clipped in &output.shapes {
+        collect_texts(&clipped.shape, clipped.clip_rect, &mut texts);
+    }
+    let widgets = ctx.viewport(|v| v.prev_pass.widgets.clone());
+    let found = widgets
+        .layers()
+        .flat_map(|(_, rects)| rects)
+        .filter(|w| w.sense.senses_click() && !w.sense.senses_drag())
+        .map(|w| (w.rect, w.interact_rect, w.enabled))
+        .collect();
+    let clickable = buttons(found, &texts);
+    let pass = ctx.cumulative_pass_nr();
+    let bars = ctx
+        .data_mut(|d| d.get_temp::<DrawnBars>(bars_id()))
+        .filter(|bars| bars.pass + 1 == pass);
+    let overlays = ctx.memory(|m| {
+        let visible = m.areas().visible_layer_ids();
+        OVERLAYS
+            .iter()
+            .filter(|(id, _)| visible.iter().any(|l| l.id == egui::Id::new(*id)))
+            .filter_map(|&(id, name)| Some((name.to_owned(), m.area_rect(egui::Id::new(id))?)))
+            .collect()
+    });
+    let graph = cameras
+        .single()
+        .ok()
+        .and_then(Camera::logical_viewport_rect)
+        .map_or(egui::Rect::NOTHING, |r| {
+            egui::Rect::from_min_max(egui::pos2(r.min.x, r.min.y), egui::pos2(r.max.x, r.max.y))
+        });
+    *screen = Screen {
+        window: egui::vec2(window.width(), window.height()),
+        graph,
+        texts,
+        widgets: clickable,
+        bars,
+        overlays,
+    };
+}
+
+fn collect_texts(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<Painted>) {
+    match shape {
+        egui::Shape::Text(text) if !text.galley.text().trim().is_empty() => out.push(Painted {
+            text: words_of(&text.galley.job),
+            rect: text.galley.rect.translate(text.pos.to_vec2()),
+            clip,
+            opacity: text.opacity_factor,
+        }),
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_texts(shape, clip, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A layout's text as it reads, with a space where a section is set apart from the
+/// one before by a gap rather than a character.
+fn words_of(job: &egui::text::LayoutJob) -> String {
+    let mut text = String::new();
+    for section in &job.sections {
+        if section.leading_space > 0.0 && !text.is_empty() && !text.ends_with(' ') {
+            text.push(' ');
+        }
+        let range = &section.byte_range;
+        text.push_str(&job.text[range.start.0..range.end.0]);
+    }
+    text
+}
+
+/// A function as drawn: by tile, where it sits on screen and how big it shows.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Drawn {
+    pub(crate) tile: usize,
+    pub(crate) at: Vec2,
+    pub(crate) radius: f32,
+    /// Whether it is inside the graph's part of the window, in front of the camera.
+    pub(crate) on_screen: bool,
+}
+
+/// Everything a snapshot reads.
+#[derive(SystemParam)]
+pub(crate) struct View<'w, 's> {
+    pub(crate) explorer: Res<'w, Explorer>,
+    pub(crate) diff: Option<Res<'w, DiffView>>,
+    pub(crate) help: Res<'w, KeyHelp>,
+    pub(crate) panel: Res<'w, JourneyPanel>,
+    pub(crate) chrome: Res<'w, Chrome>,
+    pub(crate) screen: Res<'w, Screen>,
+    tiles: Query<
+        'w,
+        's,
+        (
+            &'static Tile,
+            &'static GlobalTransform,
+            &'static InheritedVisibility,
+        ),
+    >,
+    cameras: Query<
+        'w,
+        's,
+        (
+            &'static Camera,
+            &'static GlobalTransform,
+            &'static OrbitCamera,
+        ),
+    >,
+}
+
+impl View<'_, '_> {
+    /// Where a point in the world shows in the window, when in front of the camera.
+    pub(crate) fn to_screen(&self, world: Vec3) -> Option<Vec2> {
+        let (camera, transform, _) = self.cameras.single().ok()?;
+        camera.world_to_viewport(transform, world).ok()
+    }
+
+    /// How big a sphere of `radius` at `world` shows, in points.
+    pub(crate) fn screen_radius(&self, world: Vec3, radius: f32) -> f32 {
+        let Ok((_, transform, _)) = self.cameras.single() else {
+            return 0.0;
+        };
+        let up = transform.up();
+        self.to_screen(world)
+            .zip(self.to_screen(world + up * radius))
+            .map_or(0.0, |(a, b)| a.distance(b))
+    }
+
+    pub(crate) fn on_screen(&self, at: Vec2) -> bool {
+        self.screen.graph.contains(egui::pos2(at.x, at.y))
+    }
+
+    /// Every function drawn, in tile order.
+    pub(crate) fn drawn(&self) -> Vec<Drawn> {
+        let mut drawn: Vec<Drawn> = self
+            .tiles
+            .iter()
+            .filter(|(_, _, visible)| visible.get())
+            .filter_map(|(tile, transform, _)| {
+                let world = transform.translation();
+                let at = self.to_screen(world)?;
+                Some(Drawn {
+                    tile: tile.0,
+                    at,
+                    radius: self.screen_radius(world, transform.scale().x * 0.5),
+                    on_screen: self.on_screen(at),
+                })
+            })
+            .collect();
+        drawn.sort_by_key(|d| d.tile);
+        drawn
+    }
+
+    /// One function as drawn, or why it is not.
+    fn find(&self, tile: usize) -> Result<Drawn, String> {
+        let name = || node_name(&self.explorer, tile);
+        let Some((_, transform, visible)) = self.tiles.iter().find(|(t, ..)| t.0 == tile) else {
+            return Err(format!("{} has no node", name()));
+        };
+        if !visible.get() {
+            let module = self
+                .explorer
+                .graph()
+                .cluster(tile)
+                .map(|c| self.explorer.cluster_name(c))
+                .unwrap_or_default();
+            return Err(format!(
+                "{} is not drawn (folded into module {module}, or a hidden speck)",
+                name()
+            ));
+        }
+        let world = transform.translation();
+        let Some(at) = self.to_screen(world) else {
+            return Err(format!("{} is behind the camera", name()));
+        };
+        if !self.on_screen(at) {
+            return Err(format!(
+                "{} is drawn off the graph, at ({:.0}, {:.0})",
+                name(),
+                at.x,
+                at.y
+            ));
+        }
+        Ok(Drawn {
+            tile,
+            at,
+            radius: self.screen_radius(world, transform.scale().x * 0.5),
+            on_screen: true,
+        })
+    }
+
+    /// Whether the camera was panned or zoomed off the journey's start.
+    pub(crate) fn camera_free(&self) -> bool {
+        self.cameras.iter().any(|(_, _, orbit)| orbit.free)
+    }
+
+    fn camera_easing(&self) -> bool {
+        self.cameras.iter().any(|(_, _, orbit)| orbit.easing())
+    }
+
+    /// What would change on screen were the view to move, to tell when it rests.
+    fn seen(&self) -> String {
+        let e = &self.explorer;
+        format!(
+            "{:?}",
+            (
+                e.selected(),
+                e.hovered_tile,
+                e.pointed(),
+                e.disclose(),
+                e.aside(),
+                e.nucleus_focus(),
+                e.revision(),
+                e.moved(),
+                e.aim(),
+                e.nucleus().map(crate::nucleus::Nucleus::expanded),
+                self.help.0,
+                self.panel.mode,
+            )
+        )
+    }
+}
+
+/// Where the cameras draw: the window, or for a snapshot the window will not give, an
+/// image the window's size.
+#[derive(SystemParam)]
+struct Canvas<'w, 's> {
+    cameras: Query<'w, 's, (Entity, &'static mut RenderTarget), With<Camera>>,
+    images: ResMut<'w, Assets<Image>>,
+    window: Single<'w, 's, &'static Window, With<PrimaryWindow>>,
+}
+
+impl Canvas<'_, '_> {
+    /// Points every camera at an image the window's size, at its scale, so the
+    /// graph and egui lay out as on the window.
+    fn draw_offscreen(&mut self, drive: &mut Drive) {
+        let (width, height) = (self.window.physical_width(), self.window.physical_height());
+        let fits = drive
+            .offscreen
+            .as_ref()
+            .and_then(|handle| self.images.get(handle))
+            .is_some_and(|image| image.width() == width && image.height() == height);
+        if !fits {
+            let image =
+                Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
+            drive.offscreen = Some(self.images.add(image));
+        }
+        let Some(handle) = drive.offscreen.clone() else {
+            return;
+        };
+        let target = RenderTarget::Image(ImageRenderTarget {
+            handle,
+            scale_factor: self.window.scale_factor(),
+        });
+        if drive.targets.is_empty() {
+            drive.targets = self
+                .cameras
+                .iter()
+                .map(|(entity, target)| (entity, target.clone()))
+                .collect();
+        }
+        for (_, mut camera) in &mut self.cameras {
+            *camera = target.clone();
+        }
+    }
+
+    /// Points every camera back where it drew before.
+    fn draw_on_window(&mut self, drive: &mut Drive) {
+        for (entity, target) in drive.targets.drain(..) {
+            if let Ok((_, mut camera)) = self.cameras.get_mut(entity) {
+                *camera = target;
+            }
+        }
+    }
+}
+
+/// Runs the script: lets each step's input play out, waits for the view to rest,
+/// takes snapshots, and exits once the last is on disk.
+#[expect(clippy::too_many_arguments, reason = "a Bevy system")]
+fn advance(
+    mut commands: Commands,
+    mut drive: ResMut<Drive>,
+    view: View,
+    mut awake: ResMut<Awake>,
+    shots: Query<(), With<Screenshot>>,
+    time: Res<Time<Real>>,
+    mut exit: MessageWriter<AppExit>,
+    mut covered: MessageReader<WindowOccluded>,
+    mut canvas: Canvas,
+) {
+    drive.frame += 1;
+    if let Some(message) = covered.read().last() {
+        drive.covered = message.occluded;
+        info!(
+            "session: window covered: {} (frame {})",
+            message.occluded, drive.frame
+        );
+    }
+    let now = time.elapsed();
+    let started = *drive.started.get_or_insert(now);
+    let seen = view.seen();
+    let moving = std::mem::take(&mut awake.0) || view.camera_easing() || seen != drive.last_seen;
+    drive.last_seen = seen;
+    drive.calm = if moving { 0 } else { drive.calm + 1 };
+    match drive.phase {
+        Phase::Opening => {
+            if drive.frame >= SETTLE_FRAMES
+                && now.saturating_sub(started) >= SETTLE_TIME
+                && drive.calm >= CALM_FRAMES
+            {
+                let entry = json!({ "step": 0, "do": "open", "ok": true, "then": crate::truth::state(&view) });
+                info!("session: {entry}");
+                drive.log.push(entry);
+                begin_next(&mut commands, &mut drive, &view, now);
+            }
+        }
+        Phase::Acting => {
+            if drive.acts.is_empty() {
+                drive.phase = Phase::Settling(drive.frame, now);
+            }
+        }
+        Phase::Settling(frame, since) => {
+            let waited = now.saturating_sub(since);
+            let rested = drive.calm >= CALM_FRAMES
+                && drive.frame >= frame + CALM_FRAMES
+                && waited >= LEAST_SETTLE;
+            if rested || waited >= MOST_SETTLE {
+                if !rested {
+                    let trouble = format!(
+                        "still moving after {:.0}s; went on anyway",
+                        MOST_SETTLE.as_secs_f32()
+                    );
+                    drive.trouble.push(trouble);
+                }
+                finish(&mut drive, &view, Some(waited));
+                begin_next(&mut commands, &mut drive, &view, now);
+            }
+        }
+        Phase::Capturing(_)
+        | Phase::Offscreen
+        | Phase::Retargeted(_)
+        | Phase::CapturingOffscreen(_) => {
+            if photograph(&mut commands, &mut drive, &mut canvas, shots.is_empty()) {
+                finish(&mut drive, &view, None);
+                begin_next(&mut commands, &mut drive, &view, now);
+            }
+        }
+        Phase::Closing(at) => {
+            if shots.is_empty() && drive.frame >= at + DRAIN_FRAMES {
+                let session = json!({ "snaps": drive.snaps, "steps": drive.log });
+                write(&drive.dir.join("session.json"), &session);
+                drive.phase = Phase::Done;
+                exit.write(AppExit::Success);
+            }
+        }
+        Phase::Done => {}
+    }
+}
+
+/// Moves a snapshot along: from the window, else, when the window is covered or
+/// comes out black, drawn into an image, taken again while that comes out black.
+/// Returns whether it is done.
+fn photograph(
+    commands: &mut Commands,
+    drive: &mut Drive,
+    canvas: &mut Canvas,
+    taken: bool,
+) -> bool {
+    match drive.phase {
+        Phase::Capturing(at) if taken && drive.frame >= at + 2 => {
+            if !std::mem::take(&mut drive.black) {
+                return true;
+            }
+            let trouble = "the window came out black (macOS stopped drawing it); \
+                           drew the snapshot offscreen";
+            drive.trouble.push(trouble.to_owned());
+            canvas.draw_offscreen(drive);
+            drive.phase = Phase::Retargeted(drive.frame);
+        }
+        Phase::Offscreen => {
+            canvas.draw_offscreen(drive);
+            drive.phase = Phase::Retargeted(drive.frame);
+        }
+        // A few frames for the cameras and egui to take the image's size.
+        Phase::Retargeted(at) if drive.frame >= at + 3 => {
+            if let (Some(image), Some(name)) = (drive.offscreen.clone(), drive.snaps.last()) {
+                let name = name.clone();
+                shoot(commands, Screenshot::image(image), &drive.dir, &name);
+                drive.phase = Phase::CapturingOffscreen(drive.frame);
+            }
+        }
+        Phase::CapturingOffscreen(at) if taken && drive.frame >= at + 2 => {
+            if std::mem::take(&mut drive.black) {
+                if drive.retakes < RETAKES {
+                    drive.retakes += 1;
+                    drive.phase = Phase::Retargeted(drive.frame);
+                    return false;
+                }
+                let trouble = format!("still black after {RETAKES} offscreen retakes");
+                drive.trouble.push(trouble);
+            }
+            drive.retakes = 0;
+            canvas.draw_on_window(drive);
+            return true;
+        }
+        _ => {}
+    }
+    false
+}
+
+/// Logs how the step under way went.
+fn finish(drive: &mut Drive, view: &View, waited: Option<Duration>) {
+    let Some(index) = drive.step else {
+        return;
+    };
+    let trouble = std::mem::take(&mut drive.trouble);
+    let mut entry = json!({
+        "step": index + 1,
+        "do": drive.steps[index].0,
+        "ok": trouble.is_empty(),
+        "then": crate::truth::state(view),
+    });
+    if !trouble.is_empty() {
+        entry["trouble"] = json!(trouble);
+    }
+    if let Some(waited) = waited {
+        entry["settled_ms"] = json!(waited.as_millis());
+    }
+    info!("session: {entry}");
+    drive.log.push(entry);
+}
+
+/// Starts the next step that has anything to do, logging those that fail before they
+/// start; closes the session after the last.
+fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Duration) {
+    loop {
+        let index = drive.step.map_or(0, |i| i + 1);
+        drive.step = Some(index);
+        let Some((_, step)) = drive.steps.get(index).cloned() else {
+            drive.phase = Phase::Closing(drive.frame);
+            return;
+        };
+        if let Step::Snap(label) = &step {
+            snap(commands, drive, view, label.as_deref());
+            return;
+        }
+        match plan(drive, view, &step) {
+            Ok(acts) => {
+                drive.acts = acts.into();
+                drive.phase = if drive.acts.is_empty() {
+                    Phase::Settling(drive.frame, now)
+                } else {
+                    Phase::Acting
+                };
+                return;
+            }
+            Err(trouble) => {
+                drive.trouble.push(trouble);
+                finish(drive, view, None);
+            }
+        }
+    }
+}
+
+/// Saves the window as it shows next, and what it shows beside it.
+fn snap(commands: &mut Commands, drive: &mut Drive, view: &View, label: Option<&str>) {
+    let name = snap_name(drive.snaps.len() + 1, label);
+    let mut scene = crate::truth::scene(view);
+    scene["snap"] = json!(name);
+    scene["state"]["pointer"] = json!(drive.pointer.map(|at| [at.x.round(), at.y.round()]));
+    scene["log"] = json!(drive.log);
+    write(&drive.dir.join(format!("{name}.json")), &scene);
+    if drive.covered {
+        // The window draws nothing while covered; the next frames draw offscreen.
+        drive.snaps.push(name);
+        drive.phase = Phase::Offscreen;
+        return;
+    }
+    shoot(commands, Screenshot::primary_window(), &drive.dir, &name);
+    drive.snaps.push(name);
+    drive.phase = Phase::Capturing(drive.frame);
+}
+
+/// Takes the window, or the image, as it shows next, saving it unless it comes out
+/// black, which a window macOS has stopped drawing does.
+fn shoot(commands: &mut Commands, shot: Screenshot, dir: &std::path::Path, name: &str) {
+    let mut save = save_to_disk(dir.join(format!("{name}.png")));
+    commands.spawn(shot).observe(
+        move |captured: On<ScreenshotCaptured>, mut drive: ResMut<Drive>| {
+            if is_black(&captured.image) {
+                drive.black = true;
+            } else {
+                save(captured);
+            }
+        },
+    );
+}
+
+/// Whether an image is black throughout, judged from a sample of its pixels.
+fn is_black(image: &Image) -> bool {
+    let Some(data) = &image.data else {
+        return true;
+    };
+    // Every 97th pixel, its color bytes but not its alpha.
+    let (pixels, _) = data.as_chunks::<4>();
+    pixels
+        .iter()
+        .step_by(97)
+        .all(|pixel| pixel[..3].iter().all(|&byte| byte < 8))
+}
+
+fn write(path: &std::path::Path, value: &Value) {
+    if let Err(error) = std::fs::write(path, format!("{value:#}\n")) {
+        error!("could not write {}: {error}", path.display());
+    }
+}
+
+/// The hands' moves for a step, or why it cannot be taken.
+fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String> {
+    let key = |press| {
+        vec![
+            Act::Key(press, ButtonState::Pressed),
+            Act::Frames(1),
+            Act::Key(press, ButtonState::Released),
+            Act::Frames(1),
+        ]
+    };
+    let click = |at: Vec2| {
+        vec![
+            Act::Pointer(at),
+            Act::Frames(3),
+            Act::Mouse(MouseButton::Left, ButtonState::Pressed),
+            Act::Frames(1),
+            Act::Mouse(MouseButton::Left, ButtonState::Released),
+            Act::Frames(1),
+        ]
+    };
+    Ok(match step {
+        Step::Key(press) => key(*press),
+        Step::Point { gesture, unit } => {
+            let unit = unit.as_ref().map_err(Clone::clone)?;
+            let tile = view
+                .explorer
+                .map()
+                .tile_of(unit)
+                .ok_or_else(|| format!("{unit} is not in the graph"))?;
+            let at = view.find(tile)?.at;
+            let mut acts = vec![Act::Pointer(at), Act::Frames(3), Act::Expect(tile)];
+            let press = [
+                Act::Mouse(MouseButton::Left, ButtonState::Pressed),
+                Act::Frames(1),
+                Act::Mouse(MouseButton::Left, ButtonState::Released),
+                Act::Frames(1),
+            ];
+            match gesture {
+                Gesture::Hover => acts.push(Act::Pause(HOVER_REST)),
+                Gesture::Click => acts.extend(press),
+                Gesture::ShiftClick => {
+                    acts.push(Act::Shift(ButtonState::Pressed));
+                    acts.push(Act::Frames(1));
+                    acts.extend(press);
+                    acts.push(Act::Shift(ButtonState::Released));
+                }
+                Gesture::DoubleClick => {
+                    acts.extend(press.clone());
+                    acts.extend(press);
+                }
+            }
+            acts
+        }
+        Step::Bar(number) => click(bar_point(view, number)?),
+        Step::Button(text) => {
+            let (at, note) = button_point(view, text)?;
+            drive.trouble.extend(note);
+            click(at)
+        }
+        Step::Drag(by) => {
+            let start = drive
+                .pointer
+                .filter(|&p| view.on_screen(p) && view.screen.overlay_at(p).is_none())
+                .unwrap_or_else(|| {
+                    let c = view.screen.graph.center();
+                    Vec2::new(c.x, c.y)
+                });
+            let piece = *by / f32::from(DRAG_PIECES);
+            let mut acts = vec![
+                Act::Pointer(start),
+                Act::Frames(2),
+                Act::Mouse(MouseButton::Left, ButtonState::Pressed),
+                Act::Frames(1),
+            ];
+            acts.extend((0..DRAG_PIECES).map(|_| Act::Nudge(piece)));
+            acts.push(Act::Mouse(MouseButton::Left, ButtonState::Released));
+            acts.push(Act::Frames(1));
+            acts
+        }
+        Step::Scroll(notches) => {
+            let mut acts = Vec::new();
+            if drive.pointer.is_none() {
+                let c = view.screen.graph.center();
+                acts.push(Act::Pointer(Vec2::new(c.x, c.y)));
+                acts.push(Act::Frames(1));
+            }
+            let notch = if *notches > 0 { NOTCH } else { -NOTCH };
+            for _ in 0..notches.unsigned_abs() {
+                acts.push(Act::Wheel(notch));
+                acts.push(Act::Frames(1));
+            }
+            acts
+        }
+        Step::Wait(span) => vec![Act::Pause(*span)],
+        Step::Snap(_) => Vec::new(),
+    })
+}
+
+/// Where to click the journey bar numbered `number` (or, failing that, named it, as
+/// the journey's start must be): inside its left end, clear of
+/// the badge that unfolds it and the mark where other outcomes split off.
+fn bar_point(view: &View, number: &str) -> Result<Vec2, String> {
+    let Some(drawn) = &view.screen.bars else {
+        return Err("the journey panel is not showing (J shows it)".to_owned());
+    };
+    let disclosed = view.explorer.disclosure();
+    // By number, else by the name on it, among the bars disclosed.
+    let find = |matches: &dyn Fn(SpanId) -> bool| {
+        view.explorer.journey().and_then(|journey| {
+            journey
+                .spans()
+                .map(|(id, _)| id)
+                .filter(|&id| disclosed.shows(id))
+                .find(|&id| matches(id))
+        })
+    };
+    let span = find(&|id| disclosed.number(id) == Some(number))
+        .or_else(|| find(&|id| view.explorer.label(id) == number))
+        .ok_or_else(|| format!("no bar is numbered or named {number} at this depth"))?;
+    let Some(&(_, rect)) = drawn.bars.iter().find(|(s, _)| *s == span) else {
+        return Err(format!("bar {number} is not drawn"));
+    };
+    let shown = rect.intersect(drawn.content);
+    if !shown.is_positive() {
+        return Err(format!("bar {number} is scrolled out of the journey panel"));
+    }
+    let x = shown.min.x + (shown.width() / 2.0).min(12.0);
+    Ok(Vec2::new(x, shown.center().y))
+}
+
+/// Where to click the button or chip that says `text`, and a note when part of it
+/// is clipped away.
+fn button_point(view: &View, text: &str) -> Result<(Vec2, Option<String>), String> {
+    let widget = pick(&view.screen.widgets, text)?;
+    if !widget.enabled {
+        return Err(format!("the button `{}` is disabled", widget.text));
+    }
+    let note = widget.cut_off().then(|| {
+        format!(
+            "the button `{}` is cut off: only {:.0} of its {:.0} points wide show",
+            widget.text,
+            widget.rect.width(),
+            widget.full.width()
+        )
+    });
+    let c = widget.rect.center();
+    Ok((Vec2::new(c.x, c.y), note))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(words: &str, x: f32) -> Painted {
+        let rect = egui::Rect::from_min_size(egui::pos2(x, 0.0), egui::vec2(30.0, 10.0));
+        Painted {
+            text: words.to_owned(),
+            rect,
+            clip: rect,
+            opacity: 1.0,
+        }
+    }
+
+    fn rect(x0: f32, x1: f32) -> egui::Rect {
+        egui::Rect::from_min_max(egui::pos2(x0, -5.0), egui::pos2(x1, 15.0))
+    }
+
+    #[test]
+    fn an_area_holding_buttons_is_no_button_even_when_they_are_cut_off() {
+        // An overlay wider than the window, its close button mostly past the edge.
+        let found = vec![
+            (rect(-50.0, 1650.0), rect(0.0, 1600.0), true),
+            (rect(-30.0, 10.0), rect(0.0, 10.0), true),
+            (rect(100.0, 140.0), rect(100.0, 140.0), true),
+        ];
+        let texts = [text("close search, this list", 100.0), text("close", -25.0)];
+        let widgets = buttons(found, &texts);
+        let said: Vec<&str> = widgets.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(said, ["close", "close search, this list"]);
+        let close = pick(&widgets, "Close").unwrap();
+        assert!(close.cut_off(), "only 10 of its 40 points show");
+        assert_eq!(close.rect.center().x, 5.0, "clicked where it shows");
+    }
+
+    #[test]
+    fn a_button_is_found_by_part_of_a_short_label_only() {
+        let widget = |text: &str| Widget {
+            text: text.to_owned(),
+            rect: rect(0.0, 10.0),
+            full: rect(0.0, 10.0),
+            enabled: true,
+        };
+        let widgets = [
+            widget("one two three four five six seven eight nine callers"),
+            widget("● 4 callers  I"),
+        ];
+        assert_eq!(pick(&widgets, "callers").unwrap().text, "● 4 callers  I");
+        assert!(
+            pick(&widgets, "nothing")
+                .unwrap_err()
+                .contains("no button says")
+        );
+    }
+}
