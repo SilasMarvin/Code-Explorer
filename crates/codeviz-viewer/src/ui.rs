@@ -1778,9 +1778,27 @@ fn draw_graph_labels(
         to_screen(middle + up * radius)
     };
     let wall = |cluster: usize| to_screen(nucleus?.wall(cluster)?);
+    // A sphere's middle on screen and how far its edge is from it.
+    let sphere_on_screen = |ball: nucleus::Ball| {
+        let middle = to_screen(ball.center)?;
+        let edge = to_screen(ball.center + up * ball.radius)?;
+        Some((middle, middle.distance(edge)))
+    };
     let left_out = nucleus
         .map(|n| n.outside_left_out(graph))
         .unwrap_or_default();
+    // Browsing, the module the pointer is over, its name shown however small: the
+    // smallest whose sphere holds the pointer.
+    let mouse = painter.ctx().input(|i| i.pointer.hover_pos());
+    let pointed_module = nucleus.filter(|n| n.browsing()).and_then(|n| {
+        n.balls()
+            .filter_map(|(cluster, ball)| {
+                let (middle, edge) = sphere_on_screen(ball)?;
+                (mouse?.distance(middle) <= edge).then_some((edge, cluster))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, cluster)| cluster)
+    });
     if let Some(nucleus) = nucleus {
         // The nucleus and the open modules are named first, and of the rest only the
         // biggest, where there is room.
@@ -1848,13 +1866,26 @@ fn draw_graph_labels(
         }
         for (cluster, ball) in nucleus.balls() {
             let rank = match ball.body {
-                // Browsing, every module is named before any function, biggest first,
-                // so what is clicked never moves a module's name or leaves one out.
-                _ if browsing => (
-                    0,
+                // Browsing, the one the pointer is over is named last, over the rest.
+                _ if browsing && pointed_module == Some(cluster) => (
+                    POINTED,
                     std::cmp::Reverse(usize::MAX),
                     usize::MAX - nucleus.count(cluster),
                 ),
+                // Browsing, a module is named before any function, biggest first,
+                // when it shows big enough for its name to be read as its own: by
+                // how far the view is zoomed in alone, so what is clicked never moves
+                // a module's name or leaves one out.
+                _ if browsing => {
+                    if sphere_on_screen(ball).is_none_or(|(_, edge)| edge < NAMED_SPHERE) {
+                        continue;
+                    }
+                    (
+                        0,
+                        std::cmp::Reverse(usize::MAX),
+                        usize::MAX - nucleus.count(cluster),
+                    )
+                }
                 // Which module a named function lives in matters as much as its name.
                 Body::Nucleus | Body::Open => {
                     (0, std::cmp::Reverse(nucleus.count(cluster)), cluster)
@@ -1933,6 +1964,9 @@ fn draw_graph_labels(
         .flatten()
         .map(Named::Node)
         .collect();
+    if let Some(cluster) = pointed_module {
+        placer.top.insert(0, Named::Group(cluster));
+    }
     for ((tier, _, _), named) in order {
         match named {
             Named::Group(group) => {
@@ -1950,9 +1984,12 @@ fn draw_graph_labels(
                     });
                 let label = explorer.cluster_name(group);
                 // An open module says how much of it is named, and how many callers
-                // from outside the journey it holds beyond those drawn.
+                // from outside the journey it holds beyond those drawn. Browsing, only
+                // under the pointer, so a click never makes a name longer and pushes
+                // another module's out.
                 let named_note = nucleus
                     .filter(|n| body == Some(Body::Open) && n.opened(group) > 0)
+                    .filter(|n| !n.browsing() || pointed_module == Some(group))
                     .map(|n| format!("{} of {}", n.opened(group), n.count(group)));
                 let more = left_out.get(&group).copied().unwrap_or(0);
                 let more_note = (more > 0)
@@ -1962,23 +1999,24 @@ fn draw_graph_labels(
                     .flatten()
                     .reduce(|a, b| format!("{a} · {b}"));
                 let browsing = nucleus.is_some_and(Nucleus::browsing);
-                // Browsing, one size whatever is clicked, so a name opening or closing
-                // its module keeps its place.
+                // Browsing, as big as the module, whatever is clicked, so a name
+                // opening or closing its module keeps its place.
                 let size = match body {
-                    _ if browsing => 11.0,
+                    _ if browsing => browse_name_size(nucleus.map_or(0, |n| n.count(group))),
                     Some(Body::Nucleus) => 15.0,
                     Some(Body::Closed | Body::Faint) => 10.5,
                     _ => 12.0,
                 };
                 let job = label_job(None, &label.to_uppercase(), note, color, size, false);
-                // Expanded, the calls drawn end at the modules on the ring; browsing,
-                // every module is a landmark.
-                let force = browsing
+                // Expanded, the calls drawn end at the modules on the ring. Browsing,
+                // every module big enough is a landmark, kept off the others' names;
+                // the one the pointer is over is named come what may.
+                let force = (browsing && tier == POINTED)
                     || body == Some(Body::Nucleus)
                     || (body == Some(Body::Open) && nucleus.is_some_and(Nucleus::expanded));
                 let force = if force {
                     Force::Always
-                } else if more > 0 {
+                } else if more > 0 || browsing {
                     Force::Free
                 } else {
                     Force::Never
@@ -2216,6 +2254,16 @@ fn draw_graph_labels(
     if unnamed > 0 {
         unnamed_note(painter, unnamed, lit.len());
     }
+}
+
+/// Browsing, how far a sphere's edge must show from its middle, in points, for the
+/// module to be named without the pointer on it.
+const NAMED_SPHERE: f32 = 13.0;
+
+/// Browsing, how big a module's name is, by how many functions it holds.
+fn browse_name_size(count: usize) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "a function count")]
+    (9.5 + 1.2 * (count.max(1) as f32).ln()).clamp(10.0, 15.5)
 }
 
 /// How many of the functions lit had no room for their names, at the graph's foot

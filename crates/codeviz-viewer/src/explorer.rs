@@ -726,6 +726,11 @@ impl Explorer {
         self.return_to(self.browse_pose);
     }
 
+    /// Browsing, selects nothing, without remembering what was: the whole map.
+    pub(crate) fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
     /// Remembers where the camera stood browsing, when the view is about to go from
     /// browsing into a journey (`next`).
     fn leaving_browse(&mut self, next: ViewMode) {

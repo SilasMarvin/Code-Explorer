@@ -309,8 +309,8 @@ impl Viewer {
         self
     }
 
-    /// Opens browsing, with no journey open and the focus selected; Enter opens its
-    /// journey.
+    /// Opens browsing, with no journey open and the focus selected, or with none
+    /// given, nothing; Enter opens the selection's journey.
     #[must_use]
     pub fn browsing(mut self) -> Self {
         self.mode = ViewMode::Browse;
@@ -379,15 +379,19 @@ impl Viewer {
         }
         explorer.set_clustering(self.clustering);
         explorer.set_lens(self.lens);
-        if let Some(tile) = self
+        let focus = self
             .focus
             .take()
-            .and_then(|unit| explorer.map().tile_of(&unit))
-        {
+            .and_then(|unit| explorer.map().tile_of(&unit));
+        if let Some(tile) = focus {
             explorer.open_at(tile);
         }
         if self.mode == ViewMode::Browse {
             explorer.leave_journey();
+            // Browsing with nothing asked for, nothing is selected: the whole map.
+            if focus.is_none() {
+                explorer.clear_selection();
+            }
         }
         explorer.set_nucleus(self.z != ZView::Free);
         explorer.expand_nucleus(self.z == ZView::Expanded);

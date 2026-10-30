@@ -108,8 +108,9 @@ struct Third {
     /// the focus's module (X toggles it).
     #[arg(long, requires = "z")]
     expand: bool,
-    /// Open browsing, with no journey open and the focus selected: a click selects a
-    /// function and moves nothing; Enter opens the selected function's journey.
+    /// Open browsing, with no journey open and the focus selected, or without
+    /// --focus, nothing: a click selects a function and moves nothing; Enter opens the
+    /// selected function's journey.
     #[arg(long, conflicts_with = "expand")]
     browse: bool,
 }
