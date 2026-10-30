@@ -24,7 +24,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation, relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    nucleus::{self, Body},
+    nucleus::Body,
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -229,7 +229,7 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, clear, diff.is_some(), &explorer);
+            legend(ctx, clear, diff.is_some());
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -1710,97 +1710,36 @@ fn camera_free(
         });
 }
 
-/// What the colors mean, in two lines: what a node's fill says, then which way a
-/// link runs. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool, explorer: &Explorer) {
-    let gathered = explorer.nucleus().is_some();
-    let expanded = explorer.nucleus().is_some_and(nucleus::Nucleus::expanded);
-    egui::Area::new("legend".into())
-        .pivot(egui::Align2::LEFT_BOTTOM)
-        .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 215))
-                .corner_radius(8.0)
-                .inner_margin(egui::Margin::symmetric(10, 6))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        let swatch = |ui: &mut egui::Ui, mark: &str, color: Color, text: &str| {
-                            ui.label(egui::RichText::new(mark).color(egui_color(color)));
-                            ui.label(egui::RichText::new(text).size(12.5));
-                            ui.add_space(6.0);
-                        };
-                        if diffing {
-                            swatch(ui, "●", diff_view::ADDED, "added");
-                            swatch(ui, "●", diff_view::MODIFIED, "rewritten");
-                            swatch(ui, "●", diff_view::REMOVED, "removed");
-                            swatch(ui, "●", diff_view::MOVED, "moved");
-                            swatch(ui, "●", graph_view::UNCHANGED, "unchanged");
-                        } else if expanded {
-                            ui.label(
-                                egui::RichText::new(
-                                    "inside the focus's module, grown · named: what is \
-                                     two calls or fewer from the focus within it · \
-                                     specks: the rest",
-                                )
-                                .size(12.5),
-                            );
-                        } else if gathered {
-                            ui.label(
-                                egui::RichText::new(
-                                    "each sphere = a module · middle: the focus's, \
-                                     every function inside · near: those holding its \
-                                     callers and callees, named",
-                                )
-                                .size(12.5),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new("node color = its module, as its ring")
-                                    .size(12.5),
-                            );
-                        }
+/// In a diff, what a node's fill says. A hint at the keys below.
+fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+    if diffing {
+        egui::Area::new("legend".into())
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 215))
+                    .corner_radius(8.0)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            for (color, text) in [
+                                (diff_view::ADDED, "added"),
+                                (diff_view::MODIFIED, "rewritten"),
+                                (diff_view::REMOVED, "removed"),
+                                (diff_view::MOVED, "moved"),
+                                (graph_view::UNCHANGED, "unchanged"),
+                            ] {
+                                ui.label(egui::RichText::new("●").color(egui_color(color)));
+                                ui.label(egui::RichText::new(text).size(12.5));
+                                ui.add_space(6.0);
+                            }
+                        });
                     });
-                    if expanded && !diffing {
-                        ui.label(
-                            egui::RichText::new(
-                                "thin arrow = a call inside the module; a call out of it \
-                                 runs through the wall to its module, on the ring outside",
-                            )
-                            .size(12.5),
-                        );
-                    } else if gathered && !diffing {
-                        ui.label(
-                            egui::RichText::new(
-                                "arrow = every call from one module to the other, \
-                                 thicker the more; the named calls run along it",
-                            )
-                            .size(12.5),
-                        );
-                    }
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for (color, text) in [
-                            (CALLER, "calls into the focus"),
-                            (CALLEE, "calls out of it"),
-                        ] {
-                            ui.label(egui::RichText::new("→").color(egui_color(color)));
-                            ui.label(egui::RichText::new(text).size(12.5));
-                            ui.add_space(6.0);
-                        }
-                        ui.label(egui::RichText::new("→").color(egui_color(graph_view::FURTHER)));
-                        ui.label(egui::RichText::new("further along").size(12.5));
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new("journey bars match their nodes")
-                                .size(12.5)
-                                .color(MUTED),
-                        );
-                    });
-                });
-        });
+            });
+    }
     ctx.layer_painter(egui::LayerId::background())
         .with_clip_rect(area)
         .text(
