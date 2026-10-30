@@ -1004,7 +1004,13 @@ impl Nucleus {
             .into_iter()
             .map(|(_, at)| at)
             .collect();
-        let inside = lay_members(&members, &start, &calls, &reach);
+        // How big each is drawn there, against the sphere, with room for a ring.
+        let core = before * GROWTH;
+        let sizes: Vec<f32> = members
+            .iter()
+            .map(|&t| (node_size(graph, t) * NODE_SCALE * INSIDE_GROWTH / 2.0 + 0.6) / core)
+            .collect();
+        let inside = lay_members(&members, &start, &calls, &reach, &sizes);
         // Each module that could ever be named round it, at its bearing, kept apart
         // as if each named as much as one column holds.
         let mut counts: HashMap<usize, usize> = HashMap::new();
@@ -1657,12 +1663,15 @@ fn place_functions(
 }
 
 /// [`lay_inside`] for a module's `members`, by tile, from `start`, with the `calls`
-/// among them and how far each is from the focus by `reach`; turned to the usual view.
+/// among them and how far each is from the focus by `reach`; turned to the usual view,
+/// and what is near the focus, each as big as `sizes`, kept from touching as that view
+/// sees it.
 fn lay_members(
     members: &[usize],
     start: &[Vec3],
     calls: &[(usize, usize)],
     reach: &HashMap<usize, i32>,
+    sizes: &[f32],
 ) -> Vec<Vec3> {
     let local: HashMap<usize, usize> = members.iter().enumerate().map(|(i, &t)| (t, i)).collect();
     let calls: Vec<(usize, usize)> = calls.iter().map(|(a, b)| (local[a], local[b])).collect();
@@ -1674,13 +1683,51 @@ fn lay_members(
         .map(|(i, &at)| at + fibonacci(i, start.len()) * 0.01)
         .collect();
     let rotation = view_rotation();
-    lay_inside(
+    let mut at = lay_inside(
         &start,
         &calls,
         &hops,
         rotation * Vec3::X,
         rotation * Vec3::Z,
-    )
+    );
+    keep_apart(&mut at, &hops, sizes, rotation * Vec3::Z);
+    at
+}
+
+/// Pushes apart the functions near the focus, by `hops`, that touch as seen from
+/// `back`, each as big as `sizes`, until a gap shows between every two; the focus
+/// stays in the middle.
+fn keep_apart(at: &mut [Vec3], hops: &[Option<i32>], sizes: &[f32], back: Vec3) {
+    let near: Vec<usize> = (0..at.len()).filter(|&i| hops[i].is_some()).collect();
+    for _ in 0..80 {
+        let mut moved = false;
+        for (k, &i) in near.iter().enumerate() {
+            for &j in &near[k + 1..] {
+                let apart = at[j] - at[i];
+                let seen = apart - back * apart.dot(back);
+                let need = sizes[i] + sizes[j];
+                let distance = seen.length();
+                if distance >= need {
+                    continue;
+                }
+                let away = seen
+                    .try_normalize()
+                    .unwrap_or_else(|| fibonacci(i * 31 + j, 97).cross(back).normalize_or(Vec3::X));
+                let gap = need - distance;
+                let (share_i, share_j) = match (hops[i], hops[j]) {
+                    (Some(0), _) => (0.0, 1.0),
+                    (_, Some(0)) => (1.0, 0.0),
+                    _ => (0.5, 0.5),
+                };
+                at[i] = (at[i] - away * gap * share_i).clamp_length_max(0.92);
+                at[j] = (at[j] + away * gap * share_j).clamp_length_max(0.92);
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
 }
 
 /// Puts the modules in `rim` on a ring just outside the expanded nucleus's wall, as
@@ -3123,6 +3170,25 @@ mod tests {
 
         assert!(nucleus.hover(&graph, None));
         assert!(nucleus.touches().is_empty() && !nucleus.touched(idle));
+    }
+
+    #[test]
+    fn what_is_named_inside_never_touches() {
+        // The focus and two of its callees all start in one spot.
+        let mut at = vec![
+            Vec3::ZERO,
+            Vec3::new(0.01, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.3),
+        ];
+        let hops = [Some(0), Some(1), Some(1)];
+        keep_apart(&mut at, &hops, &[0.05; 3], Vec3::Z);
+        assert_eq!(at[0], Vec3::ZERO, "the focus stays");
+        let seen = |v: Vec3| v.truncate();
+        for (i, a) in at.iter().enumerate() {
+            for b in &at[i + 1..] {
+                assert!(seen(*a).distance(seen(*b)) >= 0.1 - 1e-4, "apart as seen");
+            }
+        }
     }
 
     #[test]
