@@ -1497,6 +1497,15 @@ fn label_hits_id() -> egui::Id {
 /// leads with.
 type LabelHit = (egui::Rect, usize, Option<String>);
 
+/// Every function's name as last drawn: its pill and the function, bottom first.
+pub(crate) fn drawn_labels(ctx: &egui::Context) -> Vec<(egui::Rect, usize)> {
+    ctx.data(|d| d.get_temp::<Vec<LabelHit>>(label_hits_id()))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(pill, tile, _)| (pill, tile))
+        .collect()
+}
+
 /// The function whose name, as last drawn, lies under `at`, the topmost, and the
 /// journey number the name leads with.
 pub(crate) fn label_at(ctx: &egui::Context, at: egui::Pos2) -> Option<(usize, Option<String>)> {

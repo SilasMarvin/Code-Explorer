@@ -425,6 +425,9 @@ pub(crate) struct Screen {
     pub(crate) bars: Option<DrawnBars>,
     /// Areas over the graph and panels, by name, with where they are.
     pub(crate) overlays: Vec<(String, egui::Rect)>,
+    /// Each function's name on the graph, a click on which picks it: its pill, and the
+    /// function, bottom first.
+    pub(crate) labels: Vec<(egui::Rect, usize)>,
 }
 
 impl Default for Screen {
@@ -436,6 +439,7 @@ impl Default for Screen {
             widgets: Vec::new(),
             bars: None,
             overlays: Vec::new(),
+            labels: Vec::new(),
         }
     }
 }
@@ -544,6 +548,7 @@ fn record(
         widgets: clickable,
         bars,
         overlays,
+        labels: crate::ui::drawn_labels(&ctx),
     };
 }
 
@@ -1068,7 +1073,11 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
                 .map()
                 .tile_of(unit)
                 .ok_or_else(|| format!("{unit} is not in the graph"))?;
-            let at = view.find(tile)?.at;
+            let at = if *gesture == Gesture::LabelClick {
+                label_point(view, tile)?
+            } else {
+                view.find(tile)?.at
+            };
             let mut acts = vec![Act::Pointer(at), Act::Frames(3), Act::Expect(tile)];
             let press = [
                 Act::Mouse(MouseButton::Left, ButtonState::Pressed),
@@ -1078,7 +1087,7 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
             ];
             match gesture {
                 Gesture::Hover => acts.push(Act::Pause(HOVER_REST)),
-                Gesture::Click => acts.extend(press),
+                Gesture::Click | Gesture::LabelClick => acts.extend(press),
                 Gesture::ShiftClick => {
                     acts.push(Act::Shift(ButtonState::Pressed));
                     acts.push(Act::Frames(1));
@@ -1138,6 +1147,26 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
         Step::Wait(span) => vec![Act::Pause(*span)],
         Step::Snap(_) => Vec::new(),
     })
+}
+
+/// Where to click a function's name: the middle of its pill, the topmost drawn.
+fn label_point(view: &View, tile: usize) -> Result<Vec2, String> {
+    let (pill, _) = view
+        .screen
+        .labels
+        .iter()
+        .rev()
+        .find(|(_, t)| *t == tile)
+        .ok_or_else(|| format!("{} has no name drawn", node_name(&view.explorer, tile)))?;
+    let shown = pill.intersect(view.screen.graph);
+    if !shown.is_positive() {
+        return Err(format!(
+            "{}'s name is drawn off the graph",
+            node_name(&view.explorer, tile)
+        ));
+    }
+    let c = shown.center();
+    Ok(Vec2::new(c.x, c.y))
 }
 
 /// Where to click the journey bar numbered `number` (or, failing that, named it, as

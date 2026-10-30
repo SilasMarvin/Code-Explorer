@@ -1,5 +1,6 @@
 //! The steps of a scripted session (`--script`), one per line, as a person would take
-//! them: keys, clicks and hovers on functions by name, clicks on journey bars and
+//! them: keys, clicks and hovers on functions by name or on their drawn names, clicks
+//! on journey bars and
 //! buttons by what they say, drags, scrolls, waits, and snapshots of what shows.
 
 use std::time::Duration;
@@ -17,6 +18,8 @@ pub(crate) enum Gesture {
     /// A click with Shift held.
     ShiftClick,
     DoubleClick,
+    /// A click on the function's name, where it is drawn, rather than on its node.
+    LabelClick,
 }
 
 /// One step of a session.
@@ -96,6 +99,7 @@ fn step(line: &str, find: &dyn Fn(&str) -> Result<UnitId, String>) -> Result<Ste
         "click" => point(Gesture::Click),
         "shift+click" => point(Gesture::ShiftClick),
         "doubleclick" => point(Gesture::DoubleClick),
+        "click-label" => point(Gesture::LabelClick),
         "bar" => Ok(Step::Bar(needs("a number")?.to_owned())),
         "button" => Ok(Step::Button(needs("its text")?.to_owned())),
         "drag" => {
@@ -163,6 +167,7 @@ mod tests {
             doubleclick main
             shift+click main
             hover main
+            click-label main
             bar 1.2
             button 3 callers
             drag 120 -40
@@ -175,7 +180,7 @@ mod tests {
             .into_iter()
             .map(|(_, s)| s)
             .collect();
-        assert_eq!(steps.len(), 13);
+        assert_eq!(steps.len(), 14);
         assert_eq!(steps[0], Step::Snap(Some("start".to_owned())));
         assert_eq!(steps[1], Step::Key(Press::parse("shift+i").unwrap()));
         assert_eq!(
@@ -185,12 +190,19 @@ mod tests {
                 unit: Ok(UnitId::new("x:Explorer::spotlit")),
             }
         );
-        assert_eq!(steps[7], Step::Bar("1.2".to_owned()));
-        assert_eq!(steps[8], Step::Button("3 callers".to_owned()));
-        assert_eq!(steps[9], Step::Drag(Vec2::new(120.0, -40.0)));
-        assert_eq!(steps[10], Step::Scroll(-2));
-        assert_eq!(steps[11], Step::Wait(Duration::from_millis(300)));
-        assert_eq!(steps[12], Step::Snap(None));
+        assert_eq!(
+            steps[7],
+            Step::Point {
+                gesture: Gesture::LabelClick,
+                unit: Ok(UnitId::new("x:main")),
+            }
+        );
+        assert_eq!(steps[8], Step::Bar("1.2".to_owned()));
+        assert_eq!(steps[9], Step::Button("3 callers".to_owned()));
+        assert_eq!(steps[10], Step::Drag(Vec2::new(120.0, -40.0)));
+        assert_eq!(steps[11], Step::Scroll(-2));
+        assert_eq!(steps[12], Step::Wait(Duration::from_millis(300)));
+        assert_eq!(steps[13], Step::Snap(None));
     }
 
     #[test]

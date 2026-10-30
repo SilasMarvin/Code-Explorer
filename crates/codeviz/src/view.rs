@@ -86,9 +86,9 @@ pub(crate) struct Display {
     #[arg(long, value_name = "KEYS", requires = "screenshot")]
     keys: Option<String>,
     /// Run a session from this file in one window, a step per line (`key x`, `click
-    /// UNIT`, `hover UNIT`, `doubleclick UNIT`, `bar 1.2`, `button TEXT`, `drag DX DY`,
-    /// `scroll N`, `wait MS`, `snap LABEL`); --screenshot names the directory each
-    /// snap's PNG and JSON go in.
+    /// UNIT`, `click-label UNIT`, `hover UNIT`, `doubleclick UNIT`, `bar 1.2`, `button
+    /// TEXT`, `drag DX DY`, `scroll N`, `wait MS`, `snap LABEL`); --screenshot names the
+    /// directory each snap's PNG and JSON go in.
     #[arg(
         long,
         value_name = "FILE",
