@@ -229,7 +229,14 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, clear, diff.is_some());
+            // The key hint runs along the window's foot, left of a docked journey.
+            let foot = panel_area.map_or(graph_area, |p| {
+                egui::Rect::from_min_max(
+                    graph_area.min,
+                    egui::pos2(p.min.x - 8.0, graph_area.max.y),
+                )
+            });
+            legend(ctx, clear, foot, diff.is_some());
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
@@ -1737,8 +1744,8 @@ fn camera_free(
         });
 }
 
-/// In a diff, what a node's fill says. A hint at the keys below.
-fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
+/// In a diff, what a node's fill says. A hint at the keys along `foot`.
+fn legend(ctx: &egui::Context, area: egui::Rect, foot: egui::Rect, diffing: bool) {
     if diffing {
         egui::Area::new("legend".into())
             .pivot(egui::Align2::LEFT_BOTTOM)
@@ -1768,9 +1775,9 @@ fn legend(ctx: &egui::Context, area: egui::Rect, diffing: bool) {
             });
     }
     ctx.layer_painter(egui::LayerId::background())
-        .with_clip_rect(area)
+        .with_clip_rect(foot)
         .text(
-            egui::pos2(area.min.x + 12.0, area.max.y - 10.0),
+            egui::pos2(foot.min.x + 12.0, foot.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
             "click a node to focus it · Enter follows it · I callers · O calls \
              · , . less or more of the journey · Backspace back · / search · S panel · H keys",
