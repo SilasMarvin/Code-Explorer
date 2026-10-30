@@ -61,8 +61,11 @@ const ROW: f32 = 22.0;
 const ROW_GAP: f32 = 5.0;
 /// Share of a slot left between consecutive bars on a row.
 const BAR_GAP: f32 = 0.06;
-/// Pixels a slot needs to name its call.
-const NAMED_SLOT: f32 = 110.0;
+/// How big a bar's name is drawn, and how small it shrinks to fit.
+const BAR_TEXT: f32 = 12.5;
+const BAR_TEXT_SMALL: f32 = 11.0;
+/// Rows a docked journey shows before it scrolls.
+const DOCKED_ROWS: f32 = 4.0;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
@@ -71,26 +74,22 @@ const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 
 /// Where the graph renders and where the panel sits, within the space between the
 /// side panels.
-pub(crate) fn split(
-    mode: PanelMode,
-    area: egui::Rect,
-    (rows, slots): (usize, f32),
-) -> (egui::Rect, Option<egui::Rect>) {
+pub(crate) fn split(mode: PanelMode, area: egui::Rect) -> (egui::Rect, Option<egui::Rect>) {
     match mode {
         PanelMode::Hidden => (area, None),
+        // Along the foot of the window, as wide as it, and as tall whatever the depth,
+        // so a level more or less never moves the graph; the graph renders above it,
+        // framed clear of it.
         PanelMode::Docked => {
-            let size = egui::vec2(
-                // Wide enough to name each call, up to the whole width.
-                (slots * NAMED_SLOT + PAD * 2.0)
-                    .clamp(380.0, 960.0_f32.max(area.width() * 0.52))
-                    .min(area.width() - MARGIN * 2.0),
-                // As tall as the journey needs, up to a share of the screen.
-                (HEADER + PAD * 2.0 + rows.max(2) as f32 * (ROW + ROW_GAP))
-                    .min((area.height() * 0.45).max(200.0))
-                    .min(area.height() - MARGIN * 2.0),
+            let height = (HEADER + PAD * 2.0 + DOCKED_ROWS * (ROW + ROW_GAP))
+                .min((area.height() * 0.4).max(140.0))
+                .min(area.height() - MARGIN * 2.0);
+            let panel = egui::Rect::from_min_max(
+                egui::pos2(area.min.x + MARGIN, area.max.y - MARGIN - height),
+                area.max - egui::vec2(MARGIN, MARGIN),
             );
-            let min = area.max - size - egui::vec2(MARGIN, MARGIN);
-            (area, Some(egui::Rect::from_min_size(min, size)))
+            let graph = egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, panel.min.y));
+            (graph, Some(panel))
         }
         PanelMode::Full => {
             let strip = area.height() * GRAPH_STRIP;
@@ -108,15 +107,6 @@ struct Bar {
     rect: egui::Rect,
     /// Whether it is disclosed; folded bars keep their place but are not drawn.
     shown: bool,
-}
-
-/// How many rows the journey takes, and how many slots across.
-pub(crate) fn extent(explorer: &Explorer) -> (usize, f32) {
-    let disclosed = explorer.disclosure();
-    let slots = explorer
-        .journey()
-        .map_or(0.0, |j| disclosed.layout(j.root()).1);
-    (disclosed.rows(), slots)
 }
 
 /// The bars a tether runs from: the cursor's, and the one under the pointer.
@@ -436,6 +426,7 @@ fn canvas(
     let mouse = response.hover_pos();
     let mut hovered = None;
     let mut fold_hit = None;
+    let mut unnamed_cursor = None;
     for bar in &bars {
         let Some(span) = track.span(bar.span) else {
             continue;
@@ -536,29 +527,54 @@ fn canvas(
                 egui::StrokeKind::Outside,
             );
         }
-        // Where the name would not fit whole, it is cut short with an ellipsis, as
-        // measured, never by the bar's edge; where not even a letter of it fits, the
-        // number alone.
+        // Every bar names its function: the whole name where it fits, else the
+        // function's own name without its type, then smaller, then without the number;
+        // only where not even that fits is it cut short with an ellipsis, as measured,
+        // and where not a letter of it fits, the number alone.
         let free = badge.map_or(bar.rect, |badge| {
             egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x - 2.0, bar.rect.max.y))
         });
         let painter = painter.with_clip_rect(bar.rect.intersect(content));
         let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
-        let mut label = format!("{sign}{}", explorer.label(bar.span));
-        if !number.is_empty() {
-            label = format!("{number}  {label}");
+        let label = explorer.label(bar.span);
+        let own = own_name(&label);
+        let numbered = |name: &str| {
+            if number.is_empty() {
+                format!("{sign}{name}")
+            } else {
+                format!("{number}  {sign}{name}")
+            }
+        };
+        let condition = span
+            .conditions
+            .last()
+            .map_or_else(String::new, |c| format!("  if {}", c.arm));
+        let room = free.width() - 10.0;
+        let tries = [
+            (format!("{}{condition}", numbered(&label)), BAR_TEXT),
+            (numbered(&label), BAR_TEXT),
+            (numbered(&own), BAR_TEXT),
+            (numbered(&own), BAR_TEXT_SMALL),
+            (format!("{sign}{own}"), BAR_TEXT_SMALL),
+        ];
+        let whole = tries
+            .iter()
+            .find(|(text, size)| text_width(&painter, text, *size) <= room);
+        let named = whole.cloned().or_else(|| {
+            fit_text(&painter, &numbered(&own), BAR_TEXT_SMALL, room)
+                .filter(|fitted| fitted.chars().count() > number.chars().count() + 3)
+                .map(|fitted| (fitted, BAR_TEXT_SMALL))
+        });
+        // The cursor's bar is named come what may, over its neighbours if it must.
+        if whole.is_none() && Some(bar.span) == cursor {
+            unnamed_cursor = Some((bar.rect, numbered(&own)));
         }
-        if let Some(condition) = span.conditions.last() {
-            label = format!("{label}  if {}", condition.arm);
-        }
-        let named = fit_text(&painter, &label, 12.5, free.width() - 10.0)
-            .filter(|fitted| fitted.chars().count() > number.chars().count() + 3);
-        if let Some(named) = named {
+        if let Some((named, size)) = named {
             painter.text(
                 bar.rect.left_center() + egui::vec2(5.0, 0.0),
                 egui::Align2::LEFT_CENTER,
                 named,
-                egui::FontId::proportional(12.5),
+                egui::FontId::proportional(size),
                 text,
             );
         } else {
@@ -619,6 +635,26 @@ fn canvas(
             egui::StrokeKind::Outside,
         );
         cursor_rect = content.intersects(rect).then_some(rect);
+    }
+    if let Some((rect, name)) = unnamed_cursor {
+        let galley = painter.layout_no_wrap(
+            name,
+            egui::FontId::proportional(BAR_TEXT_SMALL),
+            egui::Color32::WHITE,
+        );
+        let at = egui::pos2(
+            rect.min.x.max(content.min.x + 2.0),
+            rect.center().y - galley.size().y / 2.0,
+        );
+        let pill = egui::Rect::from_min_size(at, galley.size()).expand2(egui::vec2(5.0, 2.0));
+        painter.rect(
+            pill,
+            3.0,
+            BACKGROUND,
+            egui::Stroke::new(1.5, egui::Color32::WHITE),
+            egui::StrokeKind::Outside,
+        );
+        painter.galley(at, galley, egui::Color32::WHITE);
     }
 
     if let Some((_, label)) = &divergence_hit {
@@ -687,6 +723,23 @@ fn canvas(
         cursor: cursor_rect,
         hovered: hovered_rect,
     }
+}
+
+/// A function's own name from its label, without the type before it:
+/// `Explorer.graph_focus ↻` is `graph_focus ↻`.
+fn own_name(label: &str) -> String {
+    let mut done = false;
+    label
+        .split(' ')
+        .map(|word| match word.rsplit_once('.') {
+            Some((_, own)) if !done && !own.is_empty() => {
+                done = true;
+                own
+            }
+            _ => word,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// How wide `text` is drawn at `size`, in points.
