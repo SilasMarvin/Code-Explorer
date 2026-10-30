@@ -205,7 +205,7 @@ fn draw_ui(
             &to_screen,
             &explorer,
             diff.as_deref(),
-            transform.up().into(),
+            (transform.up().into(), transform.right().into()),
         );
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
@@ -1627,7 +1627,7 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     diff: Option<&DiffView>,
-    up: Vec3,
+    (up, right): (Vec3, Vec3),
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1749,7 +1749,21 @@ fn draw_graph_labels(
     let ring_top = |cluster: usize| {
         if let Some(nucleus) = nucleus {
             let ball = nucleus.ball(cluster)?;
-            return to_screen(ball.center + up * ball.radius);
+            let top = to_screen(ball.center + up * ball.radius);
+            if top.is_some() || !nucleus.browsing() {
+                return top;
+            }
+            // Browsing, a sphere cut by the window's edge is named on what of it
+            // shows.
+            let (middle, reach) = (ball.center, ball.radius * 0.7);
+            return [
+                middle,
+                middle + right * reach,
+                middle - right * reach,
+                middle - up * reach,
+            ]
+            .into_iter()
+            .find_map(to_screen);
         }
         let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
         to_screen(middle + up * radius)
