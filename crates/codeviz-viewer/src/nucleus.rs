@@ -28,6 +28,7 @@ use crate::{
     camera::{ANGLED, OrbitCamera},
     explorer::Explorer,
     graph_view::{CALLEE, CALLER, FURTHER, fit_distance, flow, node_size, orbit_anchor},
+    idle::Awake,
     scene::{PALETTE, lane_color},
 };
 
@@ -1020,12 +1021,13 @@ fn hits(origin: Vec3, direction: Vec3, ball: Ball) -> bool {
 
 /// Re-centers on the focus's module when the focus moves, and eases the spheres
 /// there.
-pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>) {
+pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake: ResMut<Awake>) {
     if explorer
         .bypass_change_detection()
         .ease_nucleus(time.delta_secs())
     {
         explorer.set_changed();
+        awake.0 = true;
     }
 }
 

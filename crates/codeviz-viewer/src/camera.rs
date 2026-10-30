@@ -77,6 +77,13 @@ impl Default for OrbitCamera {
 }
 
 impl OrbitCamera {
+    /// Whether the camera is still easing towards where it was sent.
+    pub(crate) fn easing(&self) -> bool {
+        self.goal_distance.is_some()
+            || self.goal_angles.is_some()
+            || self.focus.distance(self.target) > self.distance * 1e-4
+    }
+
     /// Eases towards looking at `target` from `distance` away.
     pub(crate) fn glide_to(&mut self, target: Vec3, distance: f32) {
         self.target = target;

@@ -18,6 +18,7 @@ mod disclosure;
 mod explorer;
 mod graph_view;
 mod history;
+mod idle;
 mod journey_panel;
 mod lens;
 mod nucleus;
@@ -396,10 +397,13 @@ impl Viewer {
             app.insert_resource(diff);
         }
         if let Some(path) = self.screenshot {
+            // A screenshot waits frames out, so it keeps drawing.
             app.add_plugins(capture::CapturePlugin {
                 path,
                 keys: self.keys,
             });
+        } else {
+            app.add_plugins(idle::IdlePlugin);
         }
         app.run()
     }

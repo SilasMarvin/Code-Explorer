@@ -8,6 +8,7 @@ use crate::{
     disclosure::Disclose,
     explorer::{Autoplay, Clustering, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
+    idle::Awake,
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
     nucleus,
@@ -368,12 +369,13 @@ fn autoplay(time: Res<Time>, mut autoplay: ResMut<Autoplay>, mut explorer: ResMu
 }
 
 /// Fades nodes in and out as the lens moves.
-fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>) {
+fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake: ResMut<Awake>) {
     if explorer
         .bypass_change_detection()
         .ease_visibility(time.delta_secs())
     {
         explorer.set_changed();
+        awake.0 = true;
     }
 }
 
@@ -383,12 +385,14 @@ fn simulate(
     mut explorer: ResMut<Explorer>,
     mut placed: Local<Option<u64>>,
     mut nodes: Query<(&Tile, &mut Transform)>,
+    mut awake: ResMut<Awake>,
 ) {
     explorer.bypass_change_detection().simulate(2);
     if *placed == Some(explorer.moved()) {
         return;
     }
     *placed = Some(explorer.moved());
+    awake.0 = true;
     for (tile, mut transform) in &mut nodes {
         if let Some(at) = explorer.tile_point(tile.0) {
             transform.translation = at;
