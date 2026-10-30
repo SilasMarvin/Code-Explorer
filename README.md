@@ -97,9 +97,16 @@ what the panel shows; disclosing through time, `V`, what the cursor has reached)
 journey call is drawn as its own arrow, from caller to callee along the journey's tree:
 blue for the middle's own calls, amber for every call further down, on arrows, name
 borders and names alike. Each function the journey runs carries its number as the
-panel numbers it, on a badge filled like its node and bar; one the journey runs more
-than once shows once, as `1.2 +2`. Nothing else is named or drawn, but the function
-under the pointer and the ends of its calls. Past 60 functions named, only the middle,
+panel numbers it, on a badge filled like its node and bar: the run nearest the journey's
+start, so a function the root calls second reads `2` at any depth, and `+2` when the
+journey runs it twice more; the cursor's function shows the cursor's own number. A
+middle off the journey (a function clicked that the journey never runs) names its own
+calls instead, blue, each the journey runs too numbered and marked `on the journey`, and
+the open journey's functions in its module stay drawn, small and muted, to click back
+onto. Nothing else is named or drawn, but the function under the pointer and the ends
+of its calls. A name always sits by its own function: never nearer another node, and
+one nudged along a side keeps a thread to its node and comes back beside it once there
+is room. Past 60 functions named, only the middle,
 the cursor and what is within two calls of the middle keep their names; the rest are
 named under the pointer. `Shift+I` leaves the callers out and `Shift+O` the journey;
 `N` leaves out the faint specks, the middle module's functions nothing names.
@@ -114,7 +121,9 @@ runs between them, colored as its call nearest the middle, and the calls run bes
 side by side, function to function. A new depth brings modules onto the ring or lets
 them go, easing every sphere to its new place. The pointer has to rest on a function
 for a moment (0.15 s) before the nucleus takes it as pointed at, so passing over a
-speck does not flash its calls.
+speck does not flash its calls, and after a click or a key nothing is pointed at until
+the pointer moves; a speck's name under the pointer is small and muted, and placed
+after every other name, so pointing moves none of them.
 
 Stepping through the journey (the arrows, `[`/`]`, their `Shift` forms, a journey bar,
 `Space`) moves nothing but the cursor: its function is filled pink and ringed twice in a
@@ -131,7 +140,9 @@ graph flat.
 `X`, or a double click on the nucleus away from its functions, expands it (`--expand`
 opens straight into it): the sphere grows to several times its size while the camera
 comes in, so you go inside the same object. It names exactly what the module view
-names. Inside, the module's functions are laid out by the calls among them: what is
+names. Inside, the module's functions are laid out by the calls among them, once for
+each middle from everything it could name at any depth, so a new depth, a side left
+out or the pointer moving only names and draws, and moves nothing: what is
 named gathers in the middle, the callers tending to one side and the journey to the
 other (a tendency, not an axis); the rest are faint specks out towards the wall, left
 out until `N` brings them in. Every module holding anything named sits on a ring just

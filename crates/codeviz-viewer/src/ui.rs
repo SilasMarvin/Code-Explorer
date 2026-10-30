@@ -1014,6 +1014,12 @@ struct Spot {
     over: bool,
 }
 
+impl Force {
+    fn always(on: bool) -> Self {
+        if on { Self::Always } else { Self::Never }
+    }
+}
+
 impl Spot {
     fn beside(side: usize, shift: i8) -> Self {
         Self {
@@ -1058,6 +1064,18 @@ impl Spot {
     }
 }
 
+/// How hard a label is placed when no place beside its node is free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Force {
+    /// Not at all: it goes unnamed.
+    Never,
+    /// Nudged along a side, or wherever it misleads least, but never over another
+    /// name.
+    Free,
+    /// Wherever it misleads least, over another name if it must.
+    Always,
+}
+
 /// A label as last drawn, so the next frame eases it instead of jumping it.
 #[derive(Clone)]
 struct Shown {
@@ -1077,7 +1095,11 @@ type ShownLabels = HashMap<Named, Shown>;
 /// slides when it must change sides, and fades in and out instead of popping.
 struct Placer<'a> {
     painter: &'a egui::Painter,
+    /// What labels keep off: first what was there before any label, then the
+    /// labels placed.
     taken: Vec<egui::Rect>,
+    /// How many of `taken` were there before any label.
+    blocked: usize,
     /// Every named node's disc, by tile: no function's label sits nearer another of
     /// them than its own.
     nodes: Vec<(usize, egui::Pos2, f32)>,
@@ -1102,6 +1124,7 @@ impl<'a> Placer<'a> {
         let dt = painter.ctx().input(|i| i.stable_dt).min(0.1);
         Self {
             painter,
+            blocked: taken.len(),
             taken,
             nodes,
             last: painter
@@ -1122,10 +1145,11 @@ impl<'a> Placer<'a> {
 
     /// Places `job` on a side of `node` (a disc of `edge` points) where it overlaps
     /// nothing already placed: the side it had last frame if that is still free,
-    /// else the first free one. When `force` is set and none is, it is nudged along a
-    /// side to the nearest free place, else put where it misleads least. A
-    /// function's label goes nowhere it would lie nearer another node than its own,
-    /// so it never reads as the other's. Returns whether it was placed.
+    /// else the first free one. When `force` asks and none is, it is nudged along a
+    /// side to the nearest free place, else put where it misleads least, which only
+    /// [`Force::Always`] lets lie over another name. A function's label goes nowhere
+    /// it would lie nearer another node than its own, so it never reads as the
+    /// other's. Returns whether it was placed.
     fn place(
         &mut self,
         key: Named,
@@ -1133,7 +1157,7 @@ impl<'a> Placer<'a> {
         edge: f32,
         job: egui::text::LayoutJob,
         stroke: Option<egui::Color32>,
-        force: bool,
+        force: Force,
     ) -> bool {
         let galley = self.painter.layout_job(job);
         let extent = galley.size();
@@ -1163,8 +1187,15 @@ impl<'a> Placer<'a> {
             .filter(|at| at.shift == 0)
             .or_else(|| free(&[0]))
             .or(kept)
-            .or_else(|| force.then(|| free(&NUDGES)).flatten())
-            .or_else(|| force.then(|| self.least_misleading(key, node, edge, extent)));
+            .or_else(|| (force != Force::Never).then(|| free(&NUDGES)).flatten())
+            .or_else(|| {
+                let (at, over_names) = self.least_misleading(key, node, edge, extent);
+                match force {
+                    Force::Always => Some(at),
+                    Force::Free if !over_names => Some(at),
+                    Force::Free | Force::Never => None,
+                }
+            });
         let Some(at) = at else {
             return false;
         };
@@ -1203,35 +1234,40 @@ impl<'a> Placer<'a> {
     }
 
     /// Where a name that must show goes when no place is free: wherever it misleads
-    /// least, over its own node if need be, then where it lies over least, nearest.
+    /// least, over its own node if need be, then where it lies over the fewest other
+    /// names and nodes, nearest; and whether it lies over another name there.
     fn least_misleading(
         &self,
         key: Named,
         node: egui::Pos2,
         edge: f32,
         extent: egui::Vec2,
-    ) -> Spot {
+    ) -> (Spot, bool) {
         let bounds = self.painter.clip_rect();
-        std::iter::once(0)
+        let (blocked, names) = self.taken.split_at(self.blocked);
+        let under = |rects: &[egui::Rect], rect: egui::Rect| {
+            rects
+                .iter()
+                .filter(|r| r.intersects(rect.expand2(PILL_PAD)))
+                .count()
+        };
+        let at = std::iter::once(0)
             .chain(NUDGES)
             .flat_map(|shift| (0..SIDES.len()).map(move |side| Spot::beside(side, shift)))
             .chain((0..SIDES.len()).map(Spot::over))
             .min_by_key(|&at| {
                 let rect = at.rect(node, edge, extent);
-                let under = self
-                    .taken
-                    .iter()
-                    .filter(|r| r.intersects(rect.expand2(PILL_PAD)))
-                    .count();
                 (
                     self.misread(key, rect, node, edge),
                     !bounds.contains_rect(rect),
-                    under,
+                    under(names, rect),
+                    under(blocked, rect),
                     at.over,
                     at.shift.unsigned_abs(),
                 )
             })
-            .unwrap_or(Spot::beside(0, 0))
+            .unwrap_or(Spot::beside(0, 0));
+        (at, under(names, at.rect(node, edge, extent)) > 0)
     }
 
     /// Draws what was placed, and fades out what was not where its node, found by
@@ -1711,7 +1747,7 @@ fn draw_graph_labels(
                 // Expanded, the calls drawn end at the modules on the ring.
                 let force = body == Some(Body::Nucleus)
                     || (body == Some(Body::Open) && nucleus.is_some_and(Nucleus::expanded));
-                placer.place(named, at, 0.0, job, None, force);
+                placer.place(named, at, 0.0, job, None, Force::always(force));
             }
             Named::Wall(group) => {
                 let Some(at) = wall(group) else {
@@ -1720,7 +1756,7 @@ fn draw_graph_labels(
                 let color = egui_color(lane_color(group % PALETTE.len()));
                 let label = explorer.cluster_name(group).to_uppercase();
                 let job = label_job(None, &label, None, color, 10.5, false);
-                placer.place(named, at, 4.0, job, None, true);
+                placer.place(named, at, 4.0, job, None, Force::Always);
             }
             Named::Node(tile) => {
                 let Some((node, edge)) = discs[tile] else {
@@ -1886,13 +1922,16 @@ fn draw_graph_labels(
                 // What is gone is struck through, which reads at any size.
                 let struck = change == Some(Change::Removed);
                 let job = label_job(lead, &name, aside, color, size, struck);
-                // The focus, what the pointer is over and what the spotlight picks out
-                // are named come what may; gathered round the focus's module, so is
-                // everything it names a name.
-                let force = tier == 0
-                    || hovered == Some(tile)
-                    || spotlit.contains(&tile)
-                    || (nucleus.is_some() && tier <= 2);
+                // The focus and what the pointer is over are named come what may;
+                // what the spotlight picks out, and gathered round the focus's module
+                // everything it names, wherever there is room.
+                let force = if tier == 0 || hovered == Some(tile) {
+                    Force::Always
+                } else if spotlit.contains(&tile) || (nucleus.is_some() && tier <= 2) {
+                    Force::Free
+                } else {
+                    Force::Never
+                };
                 placer.place(named, node, edge, job, stroke, force);
             }
         }
@@ -2436,6 +2475,7 @@ mod tests {
             let painter = ctx.layer_painter(egui::LayerId::background());
             let mut placer = Placer::new(&painter, blocked.to_vec(), Vec::new());
             let job = label_job(None, "draw_graph", None, egui::Color32::WHITE, 12.5, false);
+            let force = if force { Force::Always } else { Force::Never };
             assert!(placer.place(Named::Node(0), node, 5.0, job, None, force));
             placer.finish(|_| Some(node));
         });
