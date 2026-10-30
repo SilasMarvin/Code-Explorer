@@ -672,7 +672,7 @@ fn canvas(
         } else if let Some((scenario, _)) = divergence_hit {
             explorer.set_scenario(Some(scenario));
         } else if let Some(span) = hovered {
-            explorer.select(Some(span));
+            explorer.go_to(span);
         }
     }
     Tethers {

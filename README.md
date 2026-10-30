@@ -33,7 +33,8 @@ under it, as does the cursor wherever it lands, and `V` switches to showing call
 as the cursor reaches them. A closure counts as part of the function around it.
 
 Each color says one thing. A link's color says which way a call runs: violet into the
-focus, blue out of it, with dots flowing along it. A node's fill says where it lives,
+focus, blue for the focus's own calls out, with dots flowing along them, and amber for
+every call further down (the journey's, once it is open); calls further up are pale. A node's fill says where it lives,
 its module, the same color as its ring; under a diff it says what changed instead. A
 journey bar is filled exactly like its node, and its number sits on a badge of that
 color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
@@ -62,13 +63,19 @@ slim meter at the graph's right edge shows where it stands and what it measures 
 for a couple of seconds after `-`, `=`, `L` or `G`, and whenever the pointer is over it.
 In the journey, `←`/`→` move between calls by the same caller, `↓`/`↑` go in and out,
 `[`/`]` step through time. `/` searches for a function, `S` opens the side panel (the
-view's settings, outcomes, source and details), `H` lists every key, and `Esc` closes
-whichever of those is on top, or the spotlight.
+view's settings, outcomes, source and details), `H` lists the keys that do something in
+the view open (flat, nucleus or diff), in columns that fit the window and scroll past
+its height, under a line saying what each color means, and `Esc` closes whichever of
+those is on top, or the spotlight.
 
-Every new start, by `Enter`, a `Shift`-click, a search result, a change, an outcome or
-`Start here`, is remembered: `Backspace` (or `‹` in the top bar) goes back to the view
-before it, cursor, outcome, depth, opened calls and spotlight included, and
-`Shift+Backspace` (or `›`) forward again. Moving the cursor is not remembered. The
+Every move made by hand is remembered: a click on a function, on or off the journey, a
+journey bar or a digit, and every new start, by `Enter`, a `Shift`-click, a search
+result, a change, an outcome or `Start here`. `Backspace`, or `← Back` at the left of
+the top bar, goes back to the view before it, the function clicked, cursor, outcome,
+depth, opened calls and spotlight included, and `Shift+Backspace` (or `Forward →`)
+forward again; both buttons are always there, greyed out with nowhere to go. Stepping
+the cursor with the keys, and changing the depth, are not moves of their own: going
+back puts the cursor and depth back as they were when you left. The
 camera orbits where the journey starts and turns only when you start somewhere new;
 stepping through the journey at most pulls it back to keep the cursor's node in sight.
 Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
@@ -87,9 +94,9 @@ violet; and every call of the open journey from the middle down to the disclosed
 the depth the journey panel shows (`,` and `.`, the panel's `−`/`+`, `--depth N`; the
 depth counts from the middle, so when the middle is the journey's start it is exactly
 what the panel shows; disclosing through time, `V`, what the cursor has reached). Each
-journey call is drawn as its own arrow, from caller to
-callee along the journey's tree: blue out of the middle, fading a shade towards pale
-each level further down. Each function the journey runs carries its number as the
+journey call is drawn as its own arrow, from caller to callee along the journey's tree:
+blue for the middle's own calls, amber for every call further down, on arrows, name
+borders and names alike. Each function the journey runs carries its number as the
 panel numbers it, on a badge filled like its node and bar; one the journey runs more
 than once shows once, as `1.2 +2`. Nothing else is named or drawn, but the function
 under the pointer and the ends of its calls. Past 60 functions named, only the middle,
@@ -110,13 +117,14 @@ for a moment (0.15 s) before the nucleus takes it as pointed at, so passing over
 speck does not flash its calls.
 
 Stepping through the journey (the arrows, `[`/`]`, their `Shift` forms, a journey bar,
-`Space`) moves nothing but the cursor: its function is ringed twice in a white glow,
-pulsing for a moment where it lands, its name raised over the others on a larger,
-white-edged pill, and the journey's call into it drawn brightest. Pointing at a bar, or
-at a function, previews the same glow and bright call on its node. A cursor the depth
+`Space`) moves nothing but the cursor: its function is filled pink and ringed twice in a
+pink glow, pulsing for a moment where it lands, its name raised over the others on a
+larger, pink-edged pill, the journey's call into it drawn pink, and its bar filled pink
+with the cursor's white outline and a pink line up to the node. Pointing at a bar, or
+at a function, previews it in white: a glow on its node and its call brightened. A cursor the depth
 does not reach shows just under its module's sphere. A click on a function, `Enter`,
 or a `Shift`-click makes a new middle; one in another module eases every sphere to its
-new place. `Q` and `E` turn the view an eighth of the way round, refitting it, so the
+new place, and `Backspace` eases them back. `Q` and `E` turn the view an eighth of the way round, refitting it, so the
 depth shows; `F` comes back to the usual three-quarter view, and `Z` again lays the
 graph flat.
 

@@ -6,11 +6,11 @@
 //! ring round the nucleus, opened just far enough to name them; everything else stays
 //! a small solid sphere further out, in the direction a stable 3D layout of the
 //! modules has it, so a module keeps its bearing however the middle moves. Calls into
-//! the middle are violet; the journey's calls are blue out of the middle, fading a
-//! shade each level further down, function to function along thin arrows between
-//! modules. Space says only where things are: no axis stands for order, rank or
-//! distance in calls. A new middle, or a new depth, eases every sphere to its new
-//! place; stepping the journey's cursor only moves its ring.
+//! the middle are violet; the middle's own calls out are blue, and every journey call
+//! further down amber, function to function along thin arrows between modules. Space
+//! says only where things are: no axis stands for order, rank or distance in calls.
+//! A new middle, or a new depth, eases every sphere to its new place; stepping the
+//! journey's cursor only moves its ring.
 //!
 //! Expanded (`X`, a double click on the nucleus, or `--expand`), the nucleus grows to
 //! several times its size as the camera comes in, and its functions are laid out by
@@ -30,7 +30,8 @@ use crate::{
     camera::{ANGLED, OrbitCamera},
     explorer::{Explorer, Hidden, Side},
     graph_view::{
-        CALLEE, CALLER, FURTHER, fit_distance, flow, hidden_speck, node_size, orbit_anchor,
+        CALLEE, CALLER, CURSOR, DEEPER, FURTHER, fit_distance, flow, hidden_speck, node_size,
+        orbit_anchor,
     },
     idle::Awake,
     scene::{PALETTE, lane_color},
@@ -60,13 +61,13 @@ pub(crate) struct Ball {
 pub(crate) enum Flow {
     /// Calls the middle.
     Into,
-    /// A call of the journey, this many levels below the middle (1: the middle's own),
-    /// capped at [`SHADES`].
+    /// A call of the journey: 1 for the middle's own, 2 for any further down.
     Journey(u32),
 }
 
-/// Levels of the journey drawn each in its own shade; deeper ones share the last.
-const SHADES: u32 = 4;
+/// Levels of the journey drawn in a color of their own: the middle's calls, and every
+/// call below them alike.
+const SHADES: u32 = 2;
 
 impl Flow {
     /// The journey's call this many levels below the middle.
@@ -74,16 +75,13 @@ impl Flow {
         Self::Journey(level.clamp(1, SHADES))
     }
 
-    /// Violet into the middle; blue out of it, fading towards pale a shade each level
+    /// Violet into the middle, blue for its own calls out, amber for every call
     /// further down the journey.
     pub(crate) fn color(self) -> Color {
         match self {
             Self::Into => CALLER,
-            Self::Journey(level) => {
-                #[expect(clippy::cast_precision_loss, reason = "a small level")]
-                let share = (level.saturating_sub(1)) as f32 / (SHADES - 1) as f32;
-                CALLEE.mix(&FURTHER, share * 0.75)
-            }
+            Self::Journey(1) => CALLEE,
+            Self::Journey(_) => DEEPER,
         }
     }
 
@@ -2001,8 +1999,8 @@ pub(crate) fn draw(
             .arrow(a, b, FURTHER.with_alpha(0.8))
             .with_tip_length(0.7 * zoom);
     }
-    // The journey's call into the cursor, or into the function the pointer is on,
-    // is drawn last and brightest, so it reads over the rest.
+    // The journey's call into the cursor, in the cursor's color, or into the function
+    // the pointer is on, is drawn last and brightest, so it reads over the rest.
     let picked = |link: &Link| {
         link.flow != Flow::Into && (nucleus.marks(link.to) || nucleus.hovered() == Some(link.to))
     };
@@ -2017,11 +2015,7 @@ pub(crate) fn draw(
             continue;
         };
         let bright = picked.iter().any(|(i, _)| *i == index);
-        let color = if bright {
-            link.flow.color().mix(&Color::WHITE, 0.45)
-        } else {
-            link.flow.color().with_alpha(0.9)
-        };
+        let color = link_color(nucleus, link, bright);
         let end = short(*last_but_one, *last, link.to);
         // Thickened by a strand either side.
         let widths: &[f32] = if bright { &[0.0, -0.09, 0.09] } else { &[0.0] };
@@ -2038,6 +2032,18 @@ pub(crate) fn draw(
                 flow(&mut gizmos, pair[0], pair[1], color, time, index);
             }
         }
+    }
+}
+
+/// A named call's color: its flow's, but the cursor's for the call into the cursor,
+/// and brighter for the one into the function the pointer is on.
+fn link_color(nucleus: &Nucleus, link: &Link, bright: bool) -> Color {
+    if bright && nucleus.marks(link.to) {
+        CURSOR
+    } else if bright {
+        link.flow.color().mix(&Color::WHITE, 0.45)
+    } else {
+        link.flow.color().with_alpha(0.9)
     }
 }
 

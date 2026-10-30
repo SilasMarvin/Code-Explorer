@@ -33,10 +33,16 @@ use crate::{
 pub(crate) const CALLER: Color = Color::srgb(0.74, 0.52, 1.0);
 /// Calls out of the focus.
 pub(crate) const CALLEE: Color = Color::srgb(0.3, 0.72, 1.0);
+/// Calls of the journey past the focus's own: one color for every level below the
+/// first, so blue only ever means the focus's own calls.
+pub(crate) const DEEPER: Color = Color::srgb(1.0, 0.7, 0.22);
+/// The journey's cursor, where it is not the focus: its node, its name and the call
+/// into it. White stays the focus's.
+pub(crate) const CURSOR: Color = Color::srgb(1.0, 0.36, 0.72);
 /// What a diff left alone.
 pub(crate) const UNCHANGED: Color = Color::srgb(0.6, 0.64, 0.72);
-/// Calls further along, which do not touch the focus: an arrow, but no color, so violet
-/// and blue only ever mean into and out of the focus.
+/// Calls further up from the focus, which do not touch it: an arrow, but no color, so
+/// violet only ever means into the focus.
 pub(crate) const FURTHER: Color = Color::srgb(0.82, 0.85, 0.92);
 
 /// Calls away from the focus that still get their own shade; further is drawn as this.
@@ -47,6 +53,9 @@ const FARTHEST_SHADE: u32 = 3;
 pub(crate) enum NodeLook {
     /// The center of attention.
     Focus,
+    /// Gathered round the focus's module, the journey's cursor where it is not the
+    /// middle.
+    Cursor,
     /// Calls into the focus or called from it, this many calls away (capped at
     /// [`FARTHEST_SHADE`]), in its module's color.
     Near(usize, u32),
@@ -110,6 +119,7 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
     };
     let mut table = HashMap::new();
     table.insert(NodeLook::Focus, glow(Color::WHITE, 4.0));
+    table.insert(NodeLook::Cursor, glow(CURSOR, 2.6));
     for hops in 1..=FARTHEST_SHADE {
         // Bright and glowing next door, darker and flat further out.
         let (shade, strength) = match hops {
@@ -245,6 +255,9 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     if center == Some(tile) {
         return NodeLook::Focus;
     }
+    if explorer.cursor_mark() == Some(tile) {
+        return NodeLook::Cursor;
+    }
     let Some(reach) = explorer.reach() else {
         return NodeLook::Plain(color);
     };
@@ -272,13 +285,14 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
 }
 
 /// The color a node is filled with, at full strength: white for the focus, else what
-/// changed under a diff, else its module's. A journey bar is painted the same, so a
-/// bar and its node read as one thing.
+/// changed under a diff, else the cursor's where it is not the focus, else its
+/// module's. A journey bar is painted the same, so a bar and its node read as one thing.
 pub(crate) fn node_color(explorer: &Explorer, diff: Option<&DiffView>, tile: usize) -> Color {
     if explorer.lit_focus() == Some(tile) {
         return Color::WHITE;
     }
     match diff {
+        None if explorer.cursor_mark() == Some(tile) => CURSOR,
         Some(diff) => diff.change(tile).map_or(UNCHANGED, change_color),
         None => lane_color(explorer.tile_color(tile) % PALETTE.len()),
     }
@@ -422,8 +436,8 @@ pub(crate) fn draw_graph(
 const CURSOR_PULSE: f32 = 1.2;
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
-/// them; calls further along, nearer or further from it and on the journey's
-/// path, are pale arrows fading with distance; everything else is faint.
+/// them; calls further down from it are amber and further up pale, fading with
+/// distance, as are calls on the journey's path; everything else is faint.
 fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
@@ -498,9 +512,11 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
                 gizmos.arrow(a, b - back, color).with_tip_length(1.1);
                 flow(gizmos, a, b - back, color, time, index);
             }
-            Some((_, outer)) => {
+            // Further down from the focus, one other color; further up, pale.
+            Some((color, outer)) => {
+                let color = if color == CALLEE { DEEPER } else { FURTHER };
                 gizmos
-                    .arrow(a, b - back, FURTHER.with_alpha(fade(outer) * 0.8 * shown))
+                    .arrow(a, b - back, color.with_alpha(fade(outer) * 0.8 * shown))
                     .with_tip_length(0.8);
             }
             None if path.contains(&(from, to)) => {
@@ -585,7 +601,7 @@ fn draw_spotlight(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
 /// A white ring round the focus, and a fainter, wider one round the node under the
 /// pointer, in the graph or as a bar in the journey. Gathered round the focus's
 /// module, the journey's cursor, where it is not the nucleus's middle, gets two rings
-/// where it sits in a white glow, pulsing for a moment `age` seconds after it landed;
+/// where it sits in a glow of its own color, pulsing for a moment `age` seconds after it landed;
 /// the function under the pointer, a bar's included, glows as a preview of that.
 fn draw_attention(explorer: &Explorer, age: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
@@ -601,12 +617,12 @@ fn draw_attention(explorer: &Explorer, age: f32, gizmos: &mut Gizmos) {
         gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
     }
     let zoom = nucleus.map_or(1.0, nucleus::Nucleus::zoom);
-    let glow = |gizmos: &mut Gizmos, at: Vec3, radius: f32, strength: f32| {
+    let glow = |gizmos: &mut Gizmos, at: Vec3, radius: f32, color: Color, strength: f32| {
         for (grow, alpha) in [(1.3, 0.35), (1.9, 0.2), (2.6, 0.1)] {
             gizmos.sphere(
                 Isometry3d::from_translation(at),
                 radius + grow * zoom,
-                Color::srgba(1.0, 1.0, 1.0, alpha * strength),
+                color.with_alpha(alpha * strength),
             );
         }
     };
@@ -622,10 +638,10 @@ fn draw_attention(explorer: &Explorer, age: f32, gizmos: &mut Gizmos) {
             gizmos.sphere(
                 Isometry3d::from_translation(at),
                 size(tile) + (grow + pulse * 1.2) * zoom,
-                Color::WHITE,
+                CURSOR,
             );
         }
-        glow(gizmos, at, size(tile), 1.0);
+        glow(gizmos, at, size(tile), CURSOR, 1.0);
     }
     if nucleus.is_some()
         && let Some(tile) = explorer
@@ -633,7 +649,7 @@ fn draw_attention(explorer: &Explorer, age: f32, gizmos: &mut Gizmos) {
             .filter(|&t| Some(t) != focus && Some(t) != explorer.cursor_mark())
         && let Some(at) = explorer.tile_point(tile)
     {
-        glow(gizmos, at, size(tile), 0.6);
+        glow(gizmos, at, size(tile), Color::WHITE, 0.6);
     }
     if let Some(tile) = explorer.pointed().filter(|&t| Some(t) != focus)
         && let Some(at) = explorer.tile_point(tile)

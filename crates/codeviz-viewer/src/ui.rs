@@ -21,7 +21,7 @@ use crate::{
     depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
-    graph_view::{self, CALLEE, CALLER, Relation},
+    graph_view::{self, CALLEE, CALLER, CURSOR, DEEPER, Relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
     nucleus::{self, Body, End, Nucleus},
@@ -235,22 +235,13 @@ fn draw_ui(
             camera_free(ctx, graph_area, &explorer, &mut orbit);
         }
         if help.0 {
-            key_help(ctx, graph_area, &mut help.0);
+            let gathered = explorer.nucleus().is_some();
+            key_help(ctx, graph_area, &mut help.0, gathered, diff.is_some());
         }
         if let Some(area) = panel_area {
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(&explorer, &to_screen)) {
-                tether(ctx, bar, node, false);
-            }
-            // The bar under the pointer, to the node it stands for.
-            let hovered = explorer
-                .hovered_tile
-                .and_then(|tile| explorer.tile_point(tile))
-                .and_then(to_screen);
-            if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
-                tether(ctx, bar, node, true);
-            }
+            draw_tethers(ctx, &tethers, &explorer, &to_screen);
         }
     }
     Ok(())
@@ -373,9 +364,40 @@ fn above(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
     })
 }
 
-/// A line from a bar in the journey up to its node in the graph: faint for the
-/// cursor's, bright for the one under the pointer.
-fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2, bright: bool) {
+/// The cursor's bar tied to its node, in the cursor's color where its node is drawn in
+/// it, and the bar under the pointer to the node it stands for.
+fn draw_tethers(
+    ctx: &egui::Context,
+    tethers: &journey_panel::Tethers,
+    explorer: &Explorer,
+    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
+) {
+    if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(explorer, to_screen)) {
+        let color = if explorer.cursor_mark().is_some() {
+            egui_color(CURSOR)
+        } else {
+            egui::Color32::WHITE
+        };
+        tether(ctx, bar, node, color, false);
+    }
+    let hovered = explorer
+        .hovered_tile
+        .and_then(|tile| explorer.tile_point(tile))
+        .and_then(to_screen);
+    if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
+        tether(ctx, bar, node, egui::Color32::WHITE, true);
+    }
+}
+
+/// A line from a bar in the journey up to its node in the graph, in `color`: faint for
+/// the cursor's, bright for the one under the pointer.
+fn tether(
+    ctx: &egui::Context,
+    bar: egui::Rect,
+    node: egui::Pos2,
+    color: egui::Color32,
+    bright: bool,
+) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::new("tether"),
@@ -385,32 +407,32 @@ fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2, bright: bool) 
     } else {
         egui::pos2(bar.min.x + 2.0, bar.min.y)
     };
-    let alpha = if bright { 220 } else { 90 };
+    let alpha = if bright { 0.86 } else { 0.6 };
     painter.line_segment(
         [from, node],
-        egui::Stroke::new(
-            if bright { 1.5 } else { 1.0 },
-            egui::Color32::from_white_alpha(alpha),
-        ),
+        egui::Stroke::new(if bright { 1.5 } else { 1.25 }, color.gamma_multiply(alpha)),
     );
-    painter.circle_filled(from, 2.5, egui::Color32::WHITE);
+    painter.circle_filled(from, 2.5, color);
     if bright {
-        painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+        painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, color));
     }
 }
 
-/// Back and forward through where the view has been, as a browser's.
+/// Back and forward through where the view has been, as a browser's: always there,
+/// greyed out with nowhere to go.
 fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if ui
-        .add_enabled(explorer.can_go_back(), egui::Button::new("‹").small())
-        .on_hover_text("Back to the view before (Backspace)")
+        .add_enabled(explorer.can_go_back(), egui::Button::new("← Back"))
+        .on_hover_text("Back to the function, cursor and depth before (Backspace)")
+        .on_disabled_hover_text("Nowhere to go back to yet (Backspace)")
         .clicked()
     {
         explorer.go_back();
     }
     if ui
-        .add_enabled(explorer.can_go_forward(), egui::Button::new("›").small())
+        .add_enabled(explorer.can_go_forward(), egui::Button::new("Forward →"))
         .on_hover_text("Forward again (Shift+Backspace)")
+        .on_disabled_hover_text("Nothing gone back from (Shift+Backspace)")
         .clicked()
     {
         explorer.go_forward();
@@ -466,7 +488,7 @@ fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPan
             }
         }
         if let Some(frame) = chosen {
-            explorer.select(Some(frame));
+            explorer.go_to(frame);
         }
     });
 }
@@ -903,6 +925,8 @@ pub(crate) fn journey_title(explorer: &Explorer) -> String {
 
 const CALLER_TEXT: egui::Color32 = egui::Color32::from_rgb(206, 170, 255);
 const CALLEE_TEXT: egui::Color32 = egui::Color32::from_rgb(130, 196, 255);
+const DEEPER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 204, 128);
+const CURSOR_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 160, 210);
 /// Text on a bar or a badge filled with a node's color.
 const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
 const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
@@ -1592,14 +1616,17 @@ fn draw_graph_labels(
                 // Gathered round the focus's module, colored as its call is drawn.
                 let level = nucleus.and_then(|n| n.level(tile));
                 let color = match (tier, relation) {
+                    _ if cursor == Some(tile) => CURSOR_TEXT,
                     (0, _) => egui::Color32::WHITE,
                     _ if nucleus.is_some() => match level {
                         Some(-1) => CALLER_TEXT,
                         Some(1) => CALLEE_TEXT,
+                        Some(2..) => DEEPER_TEXT,
                         _ => egui::Color32::from_rgb(200, 205, 216),
                     },
                     (_, Some(Relation::Upstream(1))) => CALLER_TEXT,
                     (_, Some(Relation::Downstream(1))) => CALLEE_TEXT,
+                    (_, Some(Relation::Downstream(_))) => DEEPER_TEXT,
                     // Only what touches the focus is colored, as its links are.
                     (_, Some(_)) => egui::Color32::from_rgb(200, 205, 216),
                     (2 | 5, None) => egui::Color32::from_rgb(225, 229, 238),
@@ -1695,13 +1722,14 @@ fn draw_graph_labels(
                     _ => 11.0,
                 };
                 // The pill's border says which way it relates to the focus, as its link
-                // does; the cursor's is bright.
+                // does; the cursor's is its own color.
                 let stroke = match relation {
-                    _ if cursor == Some(tile) => Some(egui::Color32::WHITE),
+                    _ if cursor == Some(tile) => Some(egui_color(CURSOR)),
                     _ if tier == 0 => Some(egui::Color32::from_white_alpha(140)),
                     _ if nucleus.is_some() => match level {
                         Some(-1) => Some(egui_color(CALLER)),
                         Some(1) => Some(egui_color(CALLEE)),
+                        Some(2..) => Some(egui_color(DEEPER)),
                         _ => None,
                     },
                     Some(Relation::Upstream(1)) => Some(egui_color(CALLER)),
@@ -1710,6 +1738,7 @@ fn draw_graph_labels(
                         Some((Side::Callers, _)) => CALLER,
                         _ => CALLEE,
                     })),
+                    Some(Relation::Downstream(_)) => Some(egui_color(DEEPER).gamma_multiply(0.7)),
                     _ => None,
                 };
                 // What is gone is struck through, which reads at any size.
@@ -1883,132 +1912,338 @@ fn legend(ctx: &egui::Context, area: egui::Rect, foot: egui::Rect, diffing: bool
 /// Gathered round the focus's module, how many of the other modules are named.
 const CLOSED_NAMED: usize = 16;
 
-/// Every key, grouped by what it moves.
-const KEYS: [(&str, &[(&str, &str)]); 4] = [
+/// Which view a key does something in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum When {
+    Always,
+    /// The graph laid flat.
+    Flat,
+    /// The graph gathered round the focus's module (Z).
+    Nucleus,
+    /// A diff open over the graph.
+    Diff,
+}
+
+impl When {
+    fn applies(self, gathered: bool, diffing: bool) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Flat => !gathered,
+            Self::Nucleus => gathered,
+            Self::Diff => diffing,
+        }
+    }
+}
+
+/// A group of keys by title: each key, what it does, and in which view.
+type KeyGroup = (&'static str, &'static [(&'static str, &'static str, When)]);
+
+/// Every key, grouped by what it moves, each saying what it does in the view it
+/// applies in; H lists those that apply to the view open.
+const KEYS: [KeyGroup; 8] = [
     (
-        "Journey",
+        "Journey cursor",
         &[
-            ("← →", "previous / next call by the same caller"),
-            ("↓", "into the first call this one makes"),
-            ("↑", "out to its caller"),
-            ("[  ]", "back / forward one call in time"),
-            ("Shift ]", "step over this call's calls"),
-            ("Shift ↑", "step out to what runs after its caller"),
-            (",  .", "show a level less / more of it"),
-            ("V", "show calls by level / as the cursor reaches them"),
-            ("Space", "play"),
-            ("Enter", "follow the focus: start the journey there"),
+            (
+                "↓  ↑",
+                "into the first call it makes / out to its caller",
+                When::Always,
+            ),
+            (
+                "←  →",
+                "previous / next call by the same caller",
+                When::Always,
+            ),
+            (
+                "[  ]",
+                "back / forward one call, in the order they run",
+                When::Always,
+            ),
+            ("Shift ]", "step over this call's own calls", When::Always),
+            (
+                "Shift ↑",
+                "step out to what runs after its caller",
+                When::Always,
+            ),
+            ("1 – 9", "to the call with that number", When::Always),
+            ("click a bar", "to that call", When::Always),
+            ("Space", "play forward through the journey", When::Always),
+        ],
+    ),
+    (
+        "Journey depth",
+        &[
+            (
+                ",  .",
+                "show a level less / more of the journey",
+                When::Always,
+            ),
+            (
+                "V",
+                "show calls by level / only as far as the cursor ran",
+                When::Always,
+            ),
+        ],
+    ),
+    (
+        "Focus and going back",
+        &[
+            (
+                "click",
+                "focus a function; the cursor moves there if the journey runs it",
+                When::Flat,
+            ),
+            (
+                "click",
+                "make a function the middle; the cursor moves there if the journey runs it",
+                When::Nucleus,
+            ),
+            (
+                "Shift click",
+                "start the journey at a function",
+                When::Always,
+            ),
+            ("Enter", "start the journey at the focus", When::Always),
+            (
+                "Backspace",
+                "back to the function, cursor and depth before (← Back)",
+                When::Always,
+            ),
+            ("Shift Backspace", "forward again (Forward →)", When::Always),
+            ("/", "search for a function", When::Always),
+            (
+                "Esc",
+                "close search, this list, the spotlight, a focus off the journey, the side panel",
+                When::Always,
+            ),
+        ],
+    ),
+    (
+        "Calls in and out",
+        &[
+            (
+                "I",
+                "ring everything that calls the focus, and frame it",
+                When::Always,
+            ),
+            (
+                "O",
+                "ring everything the focus calls, and frame it",
+                When::Always,
+            ),
+            (
+                "Shift I",
+                "hide / show the callers (violet) and further up",
+                When::Flat,
+            ),
+            (
+                "Shift O",
+                "hide / show the calls out (blue, amber) and further down",
+                When::Flat,
+            ),
+            (
+                "Shift I",
+                "hide / show the calls into the middle (violet)",
+                When::Nucleus,
+            ),
+            (
+                "Shift O",
+                "hide / show the journey (blue, amber)",
+                When::Nucleus,
+            ),
+        ],
+    ),
+    (
+        "Nucleus",
+        &[
+            ("Z", "gather the graph round the focus's module", When::Flat),
+            ("Z", "lay the graph flat again", When::Nucleus),
+            (
+                "X, dbl-click",
+                "expand the middle's module / shrink it back",
+                When::Always,
+            ),
+            (
+                "N",
+                "hide / show the unnamed specks in the middle's module",
+                When::Nucleus,
+            ),
+            (
+                "point",
+                "expanded: rest on a function to draw its own calls, pale",
+                When::Nucleus,
+            ),
         ],
     ),
     (
         "Graph",
         &[
-            ("I", "pick out what calls the focus, and show it all"),
-            ("O", "pick out what the focus calls, and show it all"),
             (
-                "Shift I",
-                "hide what calls the focus, and what calls that (nucleus: its callers) / show it",
+                "-  =",
+                "reveal a ring less / more round the start",
+                When::Flat,
             ),
-            (
-                "Shift O",
-                "hide what the focus calls, and what that calls (nucleus: the journey) / show it",
-            ),
-            ("click", "focus a node; off the journey, for now"),
-            ("Shift click", "start the journey at a node"),
-            ("1 – 9", "move to the call with that number"),
-            ("Backspace", "back to the view before"),
-            ("Shift Backspace", "forward again"),
-            (
-                "Esc",
-                "close search, this list, the spotlight, a focus off the journey, the panel",
-            ),
-            ("- / =", "show a ring less / more around the start"),
-            ("L", "reveal around: focus → changes → journey"),
-            ("G", "nearness by: calls → space → blend"),
-            ("C", "diff: only what changed / everything"),
-            ("K", "cluster by modules / calls"),
-            (
-                "Z",
-                "gather round the focus: its callers and the journey to the depth / lay flat",
-            ),
-            (
-                "X, double click",
-                "expand the middle's module, naming the same (point at a function for its calls) / shrink it",
-            ),
-            (
-                "N",
-                "nucleus: leave out / bring back the nameless specks (out when expanded)",
-            ),
-            ("F", "follow the journey's start again, head-on"),
-            ("R", "frame the whole graph"),
-            ("D", "diff: status → impact → morph"),
-            ("T", "play or pause the morph"),
+            ("L", "reveal round: focus → changes → journey", When::Flat),
+            ("G", "nearness by: calls → space → blend", When::Flat),
+            ("K", "cluster by modules / calls", When::Flat),
+            ("C", "only what changed / everything", When::Diff),
+            ("D", "status → impact → morph", When::Diff),
+            ("T", "play or pause the morph", When::Diff),
         ],
     ),
     (
         "Camera",
         &[
-            ("two fingers", "orbit"),
-            ("Shift two fingers", "pan"),
-            ("pinch, Ctrl two fingers", "zoom towards the pointer"),
-            ("wheel", "zoom towards the pointer"),
-            ("left / middle drag", "orbit"),
-            ("right / Shift drag", "pan"),
-            ("Q / E", "turn an eighth of the way round"),
+            ("drag", "orbit (or two fingers)", When::Always),
+            (
+                "right drag",
+                "pan (or Shift drag, Shift two fingers)",
+                When::Always,
+            ),
+            (
+                "wheel, pinch",
+                "zoom towards the pointer (or Ctrl two fingers)",
+                When::Always,
+            ),
+            ("Q  E", "turn an eighth of the way round", When::Always),
+            ("F", "face the journey's start again", When::Flat),
+            ("F", "back to the usual three-quarter view", When::Nucleus),
+            ("R", "frame the whole graph", When::Always),
         ],
     ),
     (
         "Layout",
         &[
-            ("J", "show or hide the journey"),
-            ("M", "swap graph and journey"),
-            ("S", "show or hide the side panel"),
-            ("/", "search for a function"),
-            ("H", "this list"),
+            ("J", "show / hide the journey", When::Always),
+            ("M", "swap graph and journey", When::Always),
+            ("S", "show / hide the side panel", When::Always),
+            ("H", "this list", When::Always),
         ],
     ),
 ];
 
-fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool) {
+/// What each color means, as the help leads with it.
+fn color_key(gathered: bool) -> [(egui::Color32, &'static str); 5] {
+    [
+        (
+            egui::Color32::WHITE,
+            if gathered { "the middle" } else { "the focus" },
+        ),
+        (egui_color(CALLER), "calls into it"),
+        (egui_color(CALLEE), "its own calls out"),
+        (egui_color(DEEPER), "journey calls further down"),
+        (egui_color(CURSOR), "journey cursor, off the middle"),
+    ]
+}
+
+/// Width of the keys' column in the help.
+const KEY_WIDTH: f32 = 112.0;
+
+/// The keys that apply to the view open, in as many columns as fit `area`, scrolling
+/// past its height.
+fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, gathered: bool, diffing: bool) {
+    let margin = 16.0;
+    let width = (area.width() - 2.0 * margin).clamp(240.0, 1180.0);
+    let height = (area.height() - 2.0 * margin).max(160.0);
+    let columns = match width {
+        w if w >= 900.0 => 3,
+        w if w >= 560.0 => 2,
+        _ => 1,
+    };
+    let sections: Vec<(&str, Vec<(&str, &str)>)> = KEYS
+        .iter()
+        .map(|(title, keys)| {
+            let keys = keys
+                .iter()
+                .filter(|(.., when)| when.applies(gathered, diffing))
+                .map(|&(key, what, _)| (key, what))
+                .collect();
+            (*title, keys)
+        })
+        .filter(|(_, keys): &(_, Vec<_>)| !keys.is_empty())
+        .collect();
+    // Each section to the shortest column so far, in order.
+    let mut placed: Vec<Vec<usize>> = vec![Vec::new(); columns];
+    let mut lengths = vec![0; columns];
+    for (index, (_, keys)) in sections.iter().enumerate() {
+        let shortest = (0..columns).min_by_key(|&c| lengths[c]).unwrap_or(0);
+        placed[shortest].push(index);
+        lengths[shortest] += keys.len() + 2;
+    }
     egui::Area::new("key_help".into())
-        .pivot(egui::Align2::CENTER_CENTER)
-        .fixed_pos(area.center())
+        .pivot(egui::Align2::CENTER_TOP)
+        .fixed_pos(egui::pos2(area.center().x, area.min.y + margin))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 240))
+                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 245))
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
                 .corner_radius(10.0)
-                .inner_margin(egui::Margin::symmetric(18, 14))
+                .inner_margin(egui::Margin::symmetric(16, 12))
                 .show(ui, |ui| {
-                    ui.horizontal_top(|ui| {
-                        for (title, keys) in KEYS {
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(title).strong().size(14.0));
-                                ui.add_space(4.0);
-                                egui::Grid::new(title).spacing(egui::vec2(12.0, 4.0)).show(
-                                    ui,
-                                    |ui| {
-                                        for (key, what) in keys {
-                                            ui.label(
-                                                egui::RichText::new(*key)
-                                                    .monospace()
-                                                    .color(egui::Color32::WHITE),
-                                            );
-                                            ui.label(egui::RichText::new(*what).color(MUTED));
-                                            ui.end_row();
-                                        }
-                                    },
-                                );
-                            });
-                            ui.add_space(16.0);
+                    ui.set_width(width - 32.0);
+                    ui.horizontal(|ui| {
+                        let view = match (gathered, diffing) {
+                            (true, _) => "Keys in the nucleus",
+                            (false, true) => "Keys in the diff",
+                            (false, false) => "Keys on the flat graph",
+                        };
+                        ui.label(egui::RichText::new(view).strong().size(14.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("close (H)").clicked() {
+                                *open = false;
+                            }
+                        });
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (color, what) in color_key(gathered) {
+                            ui.label(egui::RichText::new("●").color(color));
+                            ui.label(egui::RichText::new(what).size(12.0).color(MUTED));
+                            ui.add_space(8.0);
                         }
                     });
-                    if ui.small_button("close").clicked() {
-                        *open = false;
-                    }
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(height - 70.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.columns(columns, |cols| {
+                                for (col, indices) in cols.iter_mut().zip(&placed) {
+                                    for &index in indices {
+                                        let (title, keys) = &sections[index];
+                                        key_section(col, title, keys);
+                                    }
+                                }
+                            });
+                        });
                 });
         });
+}
+
+/// One group of keys, each key in a fixed column and what it does wrapping beside it.
+fn key_section(ui: &mut egui::Ui, title: &str, keys: &[(&str, &str)]) {
+    ui.label(egui::RichText::new(title).strong().size(13.0));
+    ui.add_space(2.0);
+    for (key, what) in keys {
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(KEY_WIDTH, 14.0),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(KEY_WIDTH);
+                    ui.label(
+                        egui::RichText::new(*key)
+                            .monospace()
+                            .size(11.5)
+                            .color(egui::Color32::WHITE),
+                    );
+                },
+            );
+            ui.add(egui::Label::new(egui::RichText::new(*what).size(12.0).color(MUTED)).wrap());
+        });
+    }
+    ui.add_space(8.0);
 }
 
 /// The last two segments of a path: `orders::Order::total` is `Order.total`.
@@ -2126,5 +2361,34 @@ mod tests {
             settled = frame(&ctx, node, &[left]).1;
         }
         assert!(settled.x > 0.0, "and gets there: {settled:?}");
+    }
+
+    #[test]
+    fn the_key_list_fits_a_small_window() {
+        for (gathered, diffing) in [(true, false), (false, false), (false, true)] {
+            let ctx = egui::Context::default();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+            // Below the top bar.
+            let area = egui::Rect::from_min_max(egui::pos2(0.0, 30.0), screen.max);
+            let mut open = true;
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    key_help(ui.ctx(), area, &mut open, gathered, diffing);
+                });
+                output.textures_delta.clear();
+            }
+            let shown = ctx
+                .memory(|m| m.area_rect(egui::Id::new("key_help")))
+                .expect("the list shows");
+            eprintln!("{gathered} {diffing}: {shown:?}");
+            assert!(
+                area.contains_rect(shown),
+                "inside the window: {shown:?} in {area:?}"
+            );
+        }
     }
 }

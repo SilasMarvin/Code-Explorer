@@ -459,11 +459,14 @@ impl Explorer {
             disclose: self.disclose,
             expanded: self.track().expanded.clone(),
             spotlight: self.spotlight,
+            aside: self.aside,
+            held: self.held,
         }
     }
 
     /// Puts the view back as it was, all of it: the journey, its outcome and cursor,
-    /// how much of it shows, and the spotlight.
+    /// how much of it shows, the function clicked, and the spotlight. Gathered round
+    /// the focus's module, the nucleus eases back round the function it was.
     fn restore(&mut self, view: View) {
         let track = &mut self.track;
         if track.root != view.root {
@@ -483,8 +486,8 @@ impl Explorer {
         self.disclose = view.disclose;
         self.disclosure_epoch += 1;
         self.spotlight = view.spotlight;
-        self.aside = None;
-        self.held = None;
+        self.aside = view.aside;
+        self.held = view.held;
         self.aim += 1;
         self.recolor();
     }
@@ -557,6 +560,12 @@ impl Explorer {
             self.spotlight = None;
         }
         self.reveal_cursor();
+    }
+
+    /// Moves the cursor to a call picked by hand, a bar or a digit, remembering where
+    /// it was; stepping with the keys moves it without.
+    pub(crate) fn go_to(&mut self, span: SpanId) {
+        self.navigate(|explorer| explorer.select(Some(span)));
     }
 
     /// Opens the calls the cursor is folded under, a level at a time, as a click on
@@ -935,10 +944,14 @@ impl Explorer {
         self.aside.take().is_some()
     }
 
-    /// Moves the focus to a node, as a click does. On the journey, the cursor goes to
-    /// its call, opening what folds it; off the journey, the node is the focus for now,
-    /// and the journey stays as it was. Neither is a move to remember: Enter follows.
+    /// Moves the focus to a node, as a click does, remembering where it was. On the
+    /// journey, the cursor goes to its call, opening what folds it; off the journey,
+    /// the node is the focus for now, and the journey stays as it was. Enter follows.
     pub(crate) fn focus_tile(&mut self, tile: usize) {
+        self.navigate(|explorer| explorer.focus_on(tile));
+    }
+
+    fn focus_on(&mut self, tile: usize) {
         self.held = Some(tile);
         if let Some(span) = self.span_at(tile) {
             self.select(Some(span));
@@ -1091,7 +1104,7 @@ impl Explorer {
         else {
             return;
         };
-        self.select(Some(call));
+        self.go_to(call);
     }
 
     /// What calls `tile`, each once.
@@ -1890,7 +1903,10 @@ pub(crate) mod tests {
             Some("x:main"),
             "and the journey stays where it starts"
         );
-        assert!(!explorer.can_go_back(), "moving the cursor is not a move");
+        assert!(
+            explorer.can_go_back(),
+            "a digit is remembered, as a click is"
+        );
         explorer.open_numbered(1);
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
         assert!(
@@ -1943,7 +1959,60 @@ pub(crate) mod tests {
             "its bar shows"
         );
         assert!(explorer.aside().is_none());
-        assert!(!explorer.can_go_back(), "no move to remember");
+        assert!(explorer.go_back(), "a click is remembered");
+        assert_eq!(at(&explorer), "main", "and Back puts the cursor back");
+    }
+
+    #[test]
+    fn back_undoes_any_click_with_the_cursor_and_depth_it_left() {
+        let mut explorer = explorer();
+        explorer.open_at(tile(&explorer, "a"));
+        explorer.forget_history();
+        explorer.set_disclose(Disclose::Depth(2));
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "c");
+        let b = tile(&explorer, "b");
+
+        // Off the journey, at another depth.
+        explorer.focus_tile(b);
+        explorer.set_disclose(Disclose::Depth(1));
+        assert_eq!(explorer.aside(), Some(b));
+        assert!(explorer.go_back());
+        assert_eq!(explorer.aside(), None, "the node clicked off it is let go");
+        assert_eq!(
+            at(&explorer),
+            "c",
+            "the cursor is back where the keys left it"
+        );
+        assert_eq!(
+            explorer.disclose(),
+            Disclose::Depth(2),
+            "at the depth it was"
+        );
+
+        assert!(explorer.go_forward());
+        assert_eq!(explorer.aside(), Some(b), "forward clicks it again");
+        assert!(explorer.go_back());
+
+        // On the journey, gathered round the module: the middle comes back.
+        explorer.set_nucleus(true);
+        explorer.ease_nucleus(1.0);
+        let middle = explorer.nucleus().and_then(Nucleus::focus);
+        assert_eq!(middle, Some(tile(&explorer, "a")), "the journey's start");
+        explorer.focus_tile(tile(&explorer, "c"));
+        explorer.ease_nucleus(1.0);
+        assert_eq!(
+            explorer.nucleus().and_then(Nucleus::focus),
+            Some(tile(&explorer, "c"))
+        );
+        assert!(explorer.go_back());
+        explorer.ease_nucleus(1.0);
+        assert_eq!(
+            explorer.nucleus().and_then(Nucleus::focus),
+            middle,
+            "Back re-centers the nucleus where it was"
+        );
+        assert_eq!(at(&explorer), "c");
     }
 
     #[test]
@@ -1987,6 +2056,11 @@ pub(crate) mod tests {
         assert!(explorer.go_back());
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
         assert_eq!(at(&explorer), "c", "back on the journey, cursor and all");
+        assert_eq!(
+            explorer.aside(),
+            Some(b),
+            "and the node it had clicked off it"
+        );
     }
 
     #[test]

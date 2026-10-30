@@ -1,7 +1,7 @@
 //! Where the view has been, for going back and forward the way a browser does. Each
 //! entry is the whole view as it was when it was left: the journey and its outcome,
-//! the cursor, how much of it showed, and the spotlight, so going back puts all of it
-//! back rather than only the node it was on.
+//! the cursor, how much of it showed, the function clicked and the spotlight, so going
+//! back puts all of it back rather than only the node it was on.
 
 use std::collections::HashSet;
 
@@ -23,6 +23,10 @@ pub(crate) struct View {
     pub(crate) expanded: HashSet<SpanId>,
     /// The side in the spotlight, when it came on, and the node it was on for.
     pub(crate) spotlight: Option<(Side, f32, usize)>,
+    /// A node clicked off the journey, the focus while it was.
+    pub(crate) aside: Option<usize>,
+    /// The function last clicked, which the nucleus was gathered round.
+    pub(crate) held: Option<usize>,
 }
 
 /// Places left behind, and places gone back from.
