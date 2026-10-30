@@ -2049,13 +2049,17 @@ fn draw_graph_labels(
                     _ => (None, None),
                 };
                 // How the journey runs it, after anything else said of it.
-                let marks: Vec<&str> = [
-                    (disclosed.tile_sometimes(tile), "sometimes"),
-                    (disclosed.tile_fails(tile), "can fail"),
-                ]
-                .into_iter()
-                .filter_map(|(on, mark)| on.then_some(mark))
-                .collect();
+                // When it runs in the panel's words; where its runs differ, only that it
+                // does not always.
+                let when = disclosed.tile_sometimes(tile).then(|| {
+                    disclosed
+                        .tile_when(tile)
+                        .map_or("sometimes".to_owned(), |w| short(w, 26))
+                });
+                let marks: Vec<String> = when
+                    .into_iter()
+                    .chain(disclosed.tile_fails(tile).then(|| "can fail".to_owned()))
+                    .collect();
                 let aside = [aside, (!marks.is_empty()).then(|| marks.join(" · "))]
                     .into_iter()
                     .flatten()
@@ -2700,32 +2704,34 @@ fn reading(browsing: bool) -> &'static [&'static str] {
         "Each sphere is a module, in a color of its own; it says how many of its functions \
          the journey names (2 of 23). The middle one holds the start.",
         "On a name, 2 +1: the function's first call in the journey, numbered as in the \
-         panel, and how many more times the journey runs it; the number stays put as the \
-         cursor moves.",
+         panel, and how many more times the journey runs it; the number, and where the \
+         name sits, stay put as the cursor moves. Two functions of one name show their \
+         types (Explorer.root, Track.root).",
         "The panel: a bar per call, left to right in the order they run, a row a level \
-         deeper. A dashed bar runs only sometimes; +N on a bar is N calls folded under it, \
-         a click opens them; a green end returns, a red one fails. The line from a bar \
-         leads to its function.",
+         deeper. A dashed bar runs only sometimes, and says when (if …, in a loop), as \
+         the name in the graph does; a triangle and a count on a bar is that many calls \
+         folded under it, a click opens them; a green end returns, a red one fails. \
+         Pointing at a bar draws a line to its function.",
     ]
 }
 
 /// Below this height the keys scroll.
-const ROOM_FOR_KEYS: f32 = 560.0;
+const ROOM_FOR_KEYS: f32 = 900.0;
 
 /// Width of the keys' column in the help.
-const KEY_WIDTH: f32 = 112.0;
+const KEY_WIDTH: f32 = 88.0;
 
-/// The keys that apply to the view open, in as many columns as fit `area`, scrolling
-/// past its height.
+/// Widest the help grows.
+const HELP_WIDTH: f32 = 620.0;
+
+/// The keys that apply to the view open, on a sheet down the right of `area`, in two
+/// columns where they fit, scrolling past its height: the middle of the graph, where
+/// a journey is framed, stays in view.
 fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showing) {
     let margin = 16.0;
-    let width = (area.width() - 2.0 * margin).clamp(240.0, 1180.0);
+    let width = (area.width() - 2.0 * margin).clamp(240.0, HELP_WIDTH);
     let height = (area.height() - 2.0 * margin).max(160.0);
-    let columns = match width {
-        w if w >= 900.0 => 3,
-        w if w >= 560.0 => 2,
-        _ => 1,
-    };
+    let columns = if width >= 560.0 { 2 } else { 1 };
     let sections: Vec<(&str, Vec<(&str, &str)>)> = KEYS
         .iter()
         .map(|(title, keys)| {

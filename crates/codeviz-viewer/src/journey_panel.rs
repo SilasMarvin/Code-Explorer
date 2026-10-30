@@ -524,20 +524,32 @@ fn canvas(
         let number_width = text_width(&painter, number, 11.5);
         // What is folded under the bar, as a badge that opens it, where there is room
         // for its number beside it: a number says which call it is, the badge only
-        // how much more there is.
+        // how much more there is. A triangle, as a fold is drawn anywhere, and the
+        // count: never "+N", which on a name in the graph counts runs.
         let folded = disclosed.folded(bar.span);
-        let badge = (folded > 0 && bar.rect.width() > 26.0 + number_width + 12.0).then(|| {
+        let badge = (folded > 0 && bar.rect.width() > 30.0 + number_width + 12.0).then(|| {
             let badge = egui::Rect::from_min_max(
-                egui::pos2(bar.rect.max.x - 26.0, bar.rect.min.y + 3.0),
+                egui::pos2(bar.rect.max.x - 30.0, bar.rect.min.y + 3.0),
                 egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
             );
+            let ink = egui::Color32::from_rgb(220, 224, 234);
             painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(120));
+            let tip = egui::pos2(badge.min.x + 8.0, badge.center().y + 2.5);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    tip + egui::vec2(-3.5, -5.0),
+                    tip + egui::vec2(3.5, -5.0),
+                    tip,
+                ],
+                ink,
+                egui::Stroke::NONE,
+            ));
             painter.text(
-                badge.center(),
-                egui::Align2::CENTER_CENTER,
-                format!("+{folded}"),
+                egui::pos2(badge.min.x + 13.5, badge.center().y),
+                egui::Align2::LEFT_CENTER,
+                folded.to_string(),
                 egui::FontId::proportional(10.5),
-                egui::Color32::from_rgb(220, 224, 234),
+                ink,
             );
             if mouse.is_some_and(|p| badge.contains(p)) {
                 fold_hit = Some(bar.span);
@@ -570,10 +582,8 @@ fn canvas(
                 format!("{number}  {sign}{name}")
             }
         };
-        let condition = span
-            .conditions
-            .last()
-            .map_or_else(String::new, |c| format!("  if {}", c.arm));
+        let condition =
+            crate::disclosure::when(span).map_or_else(String::new, |w| format!("  {w}"));
         let room = free.width() - 10.0;
         let tries = [
             (format!("{}{condition}", numbered(&label)), BAR_TEXT),

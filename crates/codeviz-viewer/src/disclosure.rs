@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use codeviz_core::{Journey, SpanId};
+use codeviz_core::{Journey, Span, SpanId};
 use codeviz_layout::CodebaseMap;
 
 use crate::{
@@ -49,6 +49,9 @@ pub(crate) struct Disclosed {
     /// Nodes that can fail, and nodes every shown run of which is conditional.
     failing_tiles: HashSet<usize>,
     sometimes_tiles: HashSet<usize>,
+    /// For a node every shown run of which is conditional, when it runs, where every
+    /// run says the same.
+    whens: HashMap<usize, Option<String>>,
 }
 
 impl Disclosed {
@@ -116,8 +119,18 @@ impl Disclosed {
             if disclosed.fails.contains(&span) {
                 disclosed.failing_tiles.insert(tile);
             }
-            if journey.span(span).is_some_and(is_conditional) {
+            if let Some(span) = journey.span(span).filter(|s| is_conditional(s)) {
                 disclosed.sometimes_tiles.insert(tile);
+                let said = when(span);
+                disclosed
+                    .whens
+                    .entry(tile)
+                    .and_modify(|before| {
+                        if *before != said {
+                            *before = None;
+                        }
+                    })
+                    .or_insert(said);
             } else {
                 always.insert(tile);
             }
@@ -170,6 +183,14 @@ impl Disclosed {
     /// journey reaches it.
     pub(crate) fn tile_sometimes(&self, tile: usize) -> bool {
         self.sometimes_tiles.contains(&tile)
+    }
+
+    /// When a node every shown run of which is conditional runs, where its runs agree.
+    pub(crate) fn tile_when(&self, tile: usize) -> Option<&str> {
+        self.whens
+            .get(&tile)
+            .filter(|_| self.tile_sometimes(tile))?
+            .as_deref()
     }
 
     /// The calls a shown span makes, closures flattened, in order.
@@ -231,6 +252,21 @@ impl Disclosed {
     /// Whether more than the root shows.
     pub(crate) fn opened(&self) -> bool {
         self.numbers.len() > 1
+    }
+}
+
+/// When a call runs, if not every time its caller does, as the panel and the graph
+/// both say it: under the branch nearest it (`if user.is_admin()`, `unless cached`,
+/// `if Some(x)`), or in a loop.
+pub(crate) fn when(span: &Span) -> Option<String> {
+    match span.conditions.last() {
+        Some(condition) => Some(match (condition.arm.as_str(), &condition.guard) {
+            ("then", Some(guard)) => format!("if {guard}"),
+            ("else", Some(guard)) => format!("unless {guard}"),
+            (arm, _) => format!("if {arm}"),
+        }),
+        None if span.repeats => Some("in a loop".to_owned()),
+        None => None,
     }
 }
 
