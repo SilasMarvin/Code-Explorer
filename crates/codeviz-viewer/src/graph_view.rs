@@ -373,7 +373,7 @@ pub(crate) fn style_nodes(
         };
         let (scale, level) = match nucleus {
             Some(n) if quiet => (n.node_scale(true), LEVELS),
-            Some(n) if outside => (0.6 * n.node_scale(false), LEVELS / 2),
+            Some(n) if outside => (0.6 * n.node_scale(false), LEVELS / 3),
             Some(n) => (scale * n.node_scale(false), level),
             None => (scale, level),
         };

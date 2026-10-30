@@ -252,7 +252,7 @@ const RIM_MARGIN: f32 = 0.08;
 /// How much bigger a function is drawn inside the expanded nucleus.
 const INSIDE_GROWTH: f32 = 2.2;
 /// Between two functions named in a module on that ring.
-const RIM_SPACING: f32 = 5.0;
+const RIM_SPACING: f32 = 6.5;
 /// Between two columns of names in a module on that ring.
 const RIM_COLUMN_GAP: f32 = 18.0;
 /// Between two named calls running side by side along one arrow.
