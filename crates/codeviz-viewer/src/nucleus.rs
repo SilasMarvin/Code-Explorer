@@ -2504,7 +2504,17 @@ pub(crate) fn frame(
             };
             fit(nucleus, cursor, &mut camera, rotation, projection);
         } else if recentred {
-            camera.pan_to(nucleus.frame_center());
+            // Only when the cursor would show off the view, or near its edge.
+            let shows = cursor.is_some_and(|at| {
+                let Projection::Perspective(perspective) = projection else {
+                    return false;
+                };
+                let rotation = camera.aim_rotation();
+                fit_distance(&[at], camera.target, rotation, perspective) <= camera.goal_distance()
+            });
+            if !shows {
+                camera.pan_to(nucleus.frame_center());
+            }
         } else {
             reveal(nucleus, cursor, &mut camera, projection);
         }
@@ -2887,14 +2897,16 @@ pub(crate) fn draw(
             .with_tip_length(0.7 * zoom);
     }
     // The journey's call into the cursor, in the cursor's color, or into the function
-    // the pointer is on, and the calls in of a function selected off the journey, are
-    // drawn last and brightest, so they read over the rest.
+    // the pointer is on, and the calls in of a function selected off the journey, or
+    // of an outside caller the pointer is on, are drawn last and brightest, so they
+    // read over the rest.
     let aside = explorer.aside();
     let picked = |link: &Link| {
         let into = link.flow != Flow::Into
             && link.flow != Flow::Outside
             && (nucleus.marks(link.to) || nucleus.hovered() == Some(link.to));
-        into || (aside.is_some() && Some(link.from) == aside)
+        let pointed = link.flow == Flow::Outside && nucleus.hovered() == Some(link.from);
+        into || pointed || (aside.is_some() && Some(link.from) == aside)
     };
     let (picked, rest): (Vec<_>, Vec<_>) = nucleus
         .links()
