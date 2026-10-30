@@ -357,6 +357,9 @@ pub(crate) struct Explorer {
     pub(crate) pointed_number: Option<String>,
     /// Something said for a moment, as why a key moved nothing, numbered.
     notice: Option<(u64, String)>,
+    /// How many notices have been said, so one said after another was cleared still
+    /// counts as new.
+    said: u64,
     /// Where the camera stands, as last seen.
     pose: Option<Pose>,
     /// Where the camera stood browsing when a journey was last entered from there.
@@ -437,6 +440,7 @@ impl Explorer {
             outside: false,
             pointed_number: None,
             notice: None,
+            said: 0,
             pose: None,
             browse_pose: None,
             return_pose: None,
@@ -1771,8 +1775,8 @@ impl Explorer {
 
     /// Says something for a moment, over the graph.
     fn say(&mut self, text: &str) {
-        let count = self.notice.as_ref().map_or(0, |(n, _)| n + 1);
-        self.notice = Some((count, text.to_owned()));
+        self.said += 1;
+        self.notice = Some((self.said, text.to_owned()));
     }
 
     /// The last thing said for a moment, numbered so the same words said again show
