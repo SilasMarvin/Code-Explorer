@@ -628,9 +628,11 @@ impl Explorer {
 
     /// Moves the cursor, and the focus with it. The spotlight was on the focus
     /// it leaves, so it goes out; the calls folded over where it lands open, so its bar
-    /// shows.
+    /// shows; a notice goes.
     pub(crate) fn select(&mut self, span: Option<SpanId>) {
         let before = self.graph_focus();
+        // Whatever a key said it could not do is past once the cursor moves.
+        self.notice = None;
         self.aside = None;
         self.track_mut().selected = span;
         if self.graph_focus() != before {
@@ -1899,6 +1901,10 @@ pub(crate) mod tests {
             Some("The end of the journey")
         );
         explorer.step(Step::Back);
+        assert!(
+            explorer.notice().is_none(),
+            "said only until the cursor moves"
+        );
         explorer.set_disclose(Disclose::Depth(2));
         explorer.step(Step::Over);
         assert_eq!(at(&explorer), "b", "over skips a's callee c");
