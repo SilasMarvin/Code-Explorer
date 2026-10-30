@@ -304,6 +304,9 @@ pub(crate) struct Explorer {
     /// Bumped whenever the view is pointed somewhere by hand, so the camera turns to
     /// it even when that is where it already was.
     aim: u64,
+    /// Whether the cursor is being walked with the keys, its start already
+    /// remembered, so the rest of the walk is not.
+    walking: bool,
     /// The node under the pointer, in the graph or as a bar in the journey.
     pub(crate) hovered_tile: Option<usize>,
     /// A node clicked off the journey: the focus while it is set, until a journey key,
@@ -370,6 +373,7 @@ impl Explorer {
             changed_tiles: Vec::new(),
             history: History::default(),
             aim: 0,
+            walking: false,
             disclose: Disclose::default(),
             disclosure_epoch: 0,
             disclosure_cache: Mutex::new(None),
@@ -461,12 +465,15 @@ impl Explorer {
             spotlight: self.spotlight,
             aside: self.aside,
             held: self.held,
+            hidden: self.hidden,
+            specks: self.nucleus.as_ref().is_some_and(Nucleus::specks_hidden),
         }
     }
 
     /// Puts the view back as it was, all of it: the journey, its outcome and cursor,
-    /// how much of it shows, the function clicked, and the spotlight. Gathered round
-    /// the focus's module, the nucleus eases back round the function it was.
+    /// how much of it shows, the function clicked, the spotlight and what was hidden.
+    /// Gathered round the focus's module, the nucleus eases back round the function
+    /// it was. The camera frames it afresh, as it did when the view was first there.
     fn restore(&mut self, view: View) {
         let track = &mut self.track;
         if track.root != view.root {
@@ -488,7 +495,20 @@ impl Explorer {
         self.spotlight = view.spotlight;
         self.aside = view.aside;
         self.held = view.held;
+        if self.hidden != view.hidden {
+            self.hidden = view.hidden;
+            if let Some(nucleus) = &mut self.nucleus {
+                nucleus.set_hidden(&self.graph, self.hidden);
+            }
+        }
+        if let Some(nucleus) = &mut self.nucleus
+            && nucleus.specks_hidden() != view.specks
+        {
+            nucleus.toggle_specks();
+        }
+        self.walking = false;
         self.aim += 1;
+        self.moved += 1;
         self.recolor();
     }
 
@@ -499,6 +519,7 @@ impl Explorer {
         go(self);
         if self.view() != before {
             self.history.leave(before);
+            self.walking = false;
         }
     }
 
@@ -599,6 +620,7 @@ impl Explorer {
     /// Starts the journey at `root`, remembering where it was.
     pub(crate) fn set_root(&mut self, root: UnitId) {
         self.navigate(|explorer| explorer.replace_root(root));
+        self.aim += 1;
     }
 
     /// Starts the journey at `root` on its happy path, with the cursor on it.
@@ -656,6 +678,7 @@ impl Explorer {
                 explorer.replace_root(unit);
             }
         });
+        self.aim += 1;
     }
 
     pub(crate) fn toggle_zoom(&mut self, unit: UnitId) {
@@ -1407,8 +1430,19 @@ impl Explorer {
     }
 
     /// Moves the cursor. Returns the new position. With the focus off the journey, it
-    /// only goes back to the cursor.
+    /// only goes back to the cursor. A walk of steps is remembered once, from where it
+    /// began.
     pub(crate) fn step(&mut self, step: Step) -> Option<SpanId> {
+        let before = self.view();
+        let next = self.walk(step);
+        if !self.walking && self.view() != before {
+            self.history.leave(before);
+            self.walking = true;
+        }
+        next
+    }
+
+    fn walk(&mut self, step: Step) -> Option<SpanId> {
         if self.clear_aside() {
             return self.selected();
         }
@@ -1770,7 +1804,7 @@ pub(crate) mod tests {
         explorer.go_back();
         assert_eq!(explorer.journey().map(Journey::len), Some(4));
         assert_eq!(at(&explorer), "a", "back where the cursor was");
-        assert!(!explorer.can_go_back());
+        assert!(explorer.can_go_back(), "and the step there before it");
         assert!(explorer.can_go_forward());
 
         explorer.go_forward();
@@ -1812,7 +1846,8 @@ pub(crate) mod tests {
             Some(Side::Callers),
             "the spotlight back on"
         );
-        assert!(!explorer.go_back(), "and that was the first place");
+        assert!(explorer.go_back(), "then the walk to it");
+        assert!(!explorer.go_back(), "from the first place");
     }
 
     #[test]
@@ -1841,13 +1876,15 @@ pub(crate) mod tests {
     #[test]
     fn only_moves_are_remembered() {
         let mut explorer = explorer();
-        explorer.step(Step::Into);
         explorer.set_disclose(Disclose::Depth(3));
         explorer.toggle_spotlight(Side::Callees, 0.0);
+        explorer.toggle_hidden(Side::Callers);
         assert!(
             !explorer.can_go_back(),
-            "stepping and showing more are not moves"
+            "showing more, the spotlight and hiding are not moves"
         );
+        explorer.toggle_hidden(Side::Callers);
+        explorer.step(Step::Into);
 
         let main = tile(&explorer, "main");
         explorer.open_at(main);
@@ -1864,6 +1901,46 @@ pub(crate) mod tests {
             Some("x:main"),
             "opening the same node twice is one move"
         );
+    }
+
+    #[test]
+    fn a_walk_with_the_keys_is_one_move() {
+        let mut explorer = explorer();
+        explorer.step(Step::Into);
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "c");
+        explorer.set_disclose(Disclose::Depth(2));
+        explorer.step(Step::Back);
+        assert!(explorer.go_back(), "the walk is remembered");
+        assert_eq!(at(&explorer), "main", "from where it began");
+        assert_eq!(
+            explorer.disclose(),
+            Disclose::default(),
+            "at the depth it had"
+        );
+        assert!(!explorer.can_go_back(), "as one move");
+        assert!(explorer.go_forward());
+        assert_eq!(at(&explorer), "a", "forward to where it ended");
+
+        // A click ends the walk; the next walk is a move of its own.
+        explorer.focus_tile(tile(&explorer, "main"));
+        explorer.step(Step::Into);
+        explorer.step(Step::Into);
+        assert!(explorer.go_back());
+        assert_eq!(at(&explorer), "main", "back to where the second walk began");
+        assert!(explorer.go_back());
+        assert_eq!(at(&explorer), "a", "then to before the click");
+    }
+
+    #[test]
+    fn back_puts_back_what_was_hidden() {
+        let mut explorer = explorer();
+        explorer.toggle_hidden(Side::Callers);
+        explorer.open_at(tile(&explorer, "b"));
+        explorer.toggle_hidden(Side::Callers);
+        explorer.toggle_hidden(Side::Callees);
+        assert!(explorer.go_back());
+        assert!(explorer.hidden().callers && !explorer.hidden().callees);
     }
 
     #[test]
@@ -2146,6 +2223,7 @@ pub(crate) mod tests {
         );
         assert_eq!(explorer.anchor(), Some(main), "the camera stays on main");
 
+        assert!(explorer.go_back(), "back over the walk");
         assert!(explorer.go_back());
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
     }

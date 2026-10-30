@@ -1,14 +1,22 @@
 //! Where the view has been, for going back and forward the way a browser does. Each
 //! entry is the whole view as it was when it was left: the journey and its outcome,
-//! the cursor, how much of it showed, the function clicked and the spotlight, so going
-//! back puts all of it back rather than only the node it was on.
+//! the cursor, how much of it showed, the function clicked, the spotlight and what was
+//! hidden, so going back puts all of it back rather than only the node it was on.
+//!
+//! One rule says what makes an entry: whatever changes the nucleus's middle or where
+//! the journey starts, or moves the cursor by a click, a bar, a digit or Enter. A walk
+//! with the arrows or brackets is one entry however many steps it takes, so Back
+//! returns to where the walk began.
 
 use std::collections::HashSet;
 
 use codeviz_core::SpanId;
 use codeviz_ir::UnitId;
 
-use crate::{disclosure::Disclose, explorer::Side};
+use crate::{
+    disclosure::Disclose,
+    explorer::{Hidden, Side},
+};
 
 /// The most places remembered; older ones are forgotten.
 const LIMIT: usize = 200;
@@ -27,6 +35,9 @@ pub(crate) struct View {
     pub(crate) aside: Option<usize>,
     /// The function last clicked, which the nucleus was gathered round.
     pub(crate) held: Option<usize>,
+    /// The sides of the focus hidden, and whether the nucleus's specks were.
+    pub(crate) hidden: Hidden,
+    pub(crate) specks: bool,
 }
 
 /// Places left behind, and places gone back from.
