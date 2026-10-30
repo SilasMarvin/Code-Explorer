@@ -1641,8 +1641,24 @@ impl Explorer {
         }
         let journey = self.journey()?;
         let current = self.selected().unwrap_or_else(|| journey.root());
-        let span = journey.span(current)?;
+        let tile = |span: SpanId| self.unit_id(span).and_then(|u| self.map.tile_of(u));
+        // A closure is drawn as part of the function around it, with no bar or node of
+        // its own: the cursor never stops on one, and the calls made inside it are its
+        // caller's.
+        let closure = |span: SpanId| {
+            tile(span).is_some()
+                && journey.span(span).and_then(|s| s.parent).and_then(tile) == tile(span)
+        };
+        let parent = |span: SpanId| {
+            std::iter::successors(journey.span(span)?.parent, |&p| journey.span(p)?.parent)
+                .find(|&p| !closure(p))
+        };
+        let calls = |span: SpanId| disclosure::calls_of(journey, &tile, span).0;
         let nth = |index: usize| journey.spans().nth(index).map(|(id, _)| id);
+        // On from `span` in pre-order, past any closure.
+        let onward = |span: Option<SpanId>| {
+            std::iter::successors(span, |s| nth(s.index() + 1)).find(|&s| !closure(s))
+        };
         // The first span after `id`'s subtree, in pre-order.
         let after = |id: SpanId| {
             let end = journey.span(id).map_or(0, |s| s.exit);
@@ -1652,28 +1668,28 @@ impl Explorer {
                 .find(|(other, s)| s.enter >= end || !is_within(journey, *other, id))
                 .map(|(id, _)| id)
         };
+        let siblings = || parent(current).map(calls).unwrap_or_default();
+        let place = |list: &[SpanId]| list.iter().position(|&s| s == current);
         let next = match step {
-            Step::Into => nth(current.index() + 1),
-            Step::Back => current.index().checked_sub(1).and_then(nth),
-            Step::Over => after(current),
-            Step::Out => span.parent.and_then(after).or(span.parent),
-            Step::Next => journey
-                .spans()
-                .skip(current.index() + 1)
-                .find(|(_, s)| s.parent == span.parent)
-                .map(|(id, _)| id),
-            Step::Previous => journey
-                .spans()
-                .take(current.index())
-                .filter(|(_, s)| s.parent == span.parent)
-                .last()
-                .map(|(id, _)| id),
-            Step::Child => journey
-                .spans()
-                .skip(current.index() + 1)
-                .find(|(_, s)| s.parent == Some(current))
-                .map(|(id, _)| id),
-            Step::Parent => span.parent,
+            Step::Into => onward(nth(current.index() + 1)),
+            Step::Back => (0..current.index())
+                .rev()
+                .filter_map(nth)
+                .find(|&s| !closure(s)),
+            Step::Over => onward(after(current)),
+            Step::Out => parent(current).and_then(|p| onward(after(p)).or(Some(p))),
+            Step::Next => {
+                let list = siblings();
+                place(&list).and_then(|i| list.get(i + 1).copied())
+            }
+            Step::Previous => {
+                let list = siblings();
+                place(&list)
+                    .and_then(|i| i.checked_sub(1))
+                    .and_then(|i| list.get(i).copied())
+            }
+            Step::Child => calls(current).first().copied(),
+            Step::Parent => parent(current),
         };
         if next.is_some() {
             self.select(next);
@@ -2683,5 +2699,36 @@ pub(crate) mod tests {
             Some("x:x"),
             "Enter starts there"
         );
+    }
+
+    #[test]
+    fn the_cursor_never_stops_on_a_closure() {
+        // main runs a closure that calls a, then calls b itself.
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
+            { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "c#0", "text": "c", "targets": [ { "unit": "x:main::{closure#0}", "certainty": "exact" } ] },
+                { "key": "b#0", "text": "b", "targets": [ { "unit": "x:b", "certainty": "exact" } ] } ] },
+            { "id": "x:main::{closure#0}", "name": "{closure#0}", "kind": "closure", "role": "invocable", "parent": "x:main", "calls": [
+                { "key": "a#0", "text": "a", "targets": [ { "unit": "x:a", "certainty": "exact" } ] } ] },
+            { "id": "x:a", "name": "a", "kind": "fn", "role": "invocable" },
+            { "id": "x:b", "name": "b", "kind": "fn", "role": "invocable" } ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let mut explorer = Explorer::new(
+            system,
+            Some(UnitId::new("x:main")),
+            JourneyOptions::default(),
+        );
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "a", "past the closure, to its call");
+        explorer.step(Step::Next);
+        assert_eq!(at(&explorer), "b", "a and b are main's calls alike");
+        explorer.step(Step::Previous);
+        assert_eq!(at(&explorer), "a");
+        explorer.step(Step::Back);
+        assert_eq!(at(&explorer), "main", "back past the closure");
+        explorer.step(Step::Child);
+        assert_eq!(at(&explorer), "a");
+        explorer.step(Step::Parent);
+        assert_eq!(at(&explorer), "main");
     }
 }

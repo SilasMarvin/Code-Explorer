@@ -236,7 +236,7 @@ impl Disclosed {
 
 /// The calls a span makes, in order, and the closures it runs: calls made from inside
 /// a closure count as the caller's own.
-fn calls_of(
+pub(crate) fn calls_of(
     journey: &Journey,
     tile: &impl Fn(SpanId) -> Option<usize>,
     span: SpanId,
