@@ -339,6 +339,9 @@ pub(crate) fn style_nodes(
         // drawn at all, however near the focus it is.
         let named = nucleus.is_some_and(|n| n.lit(tile.0));
         let quiet = speck(&explorer, tile.0);
+        // Brought in from outside the journey: there, but quieter than the journey.
+        let outside =
+            nucleus.is_some_and(|n| n.outside(tile.0)) && explorer.aside() != Some(tile.0);
         let gone = quiet && nucleus.is_some_and(nucleus::Nucleus::specks_hidden);
         visibility.set_if_neq(if folded || gone {
             Visibility::Hidden
@@ -370,6 +373,7 @@ pub(crate) fn style_nodes(
         };
         let (scale, level) = match nucleus {
             Some(n) if quiet => (n.node_scale(true), LEVELS),
+            Some(n) if outside => (0.6 * n.node_scale(false), LEVELS / 2),
             Some(n) => (scale * n.node_scale(false), level),
             None => (scale, level),
         };

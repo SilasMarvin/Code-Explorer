@@ -725,6 +725,8 @@ impl Explorer {
             return;
         }
         self.track_mut().root = Some(root);
+        // A new journey brings in no one from outside it until asked.
+        self.outside = false;
         self.reroot();
     }
 
@@ -1026,6 +1028,7 @@ impl Explorer {
             return false;
         };
         let mut recentered = nucleus.set_browse(&self.graph, browsing);
+        nucleus.set_outside(&self.graph, self.outside);
         recentered |= nucleus.focus() != focus;
         if recentered {
             nucleus.recenter(&self.graph, focus);

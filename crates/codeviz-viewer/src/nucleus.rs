@@ -1075,8 +1075,11 @@ impl Nucleus {
             .or_else(|| (0..clusters).max_by_key(|&c| (self.counts[c], Reverse(c))))
             .unwrap_or(0);
         let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(center);
-        let mut links = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f));
+        // Laid out for every side, so hiding one only stops drawing it.
+        let every = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f, Hidden::default()));
+        let mut links = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f, self.hidden));
         let named = distances(&links, focus);
+        let laid = open_up(&every, focus, clusters, center, &cluster_of);
         let columns = open_up(&links, focus, clusters, center, &cluster_of);
         let context = if self.trail.aside && !self.hidden.hides(Side::Callees) {
             self.trail
@@ -1106,7 +1109,7 @@ impl Nucleus {
             center,
             back: view_rotation() * Vec3::Z,
         };
-        for (cluster, column) in columns.iter().enumerate() {
+        for (cluster, column) in laid.iter().enumerate() {
             if cluster != center && !column.is_empty() {
                 balls[cluster] = Ball {
                     center: Vec3::ZERO,
@@ -1115,10 +1118,19 @@ impl Nucleus {
                 };
             }
         }
-        let order = ring_order(&links, &self.trail.order, center, &cluster_of);
+        let order = ring_order(&every, &self.trail.order, center, &cluster_of);
         place_ring(&mut balls, &order, center);
         place_closed(&mut balls, &bearings);
-        let (mut points, mut shown) = place_functions(graph, &balls, &columns, center, &cluster_of);
+        let (mut points, mut shown) = place_functions(graph, &balls, &laid, center, &cluster_of);
+        // What a hidden side alone named keeps its place, undrawn.
+        for (cluster, column) in laid.iter().enumerate() {
+            for tile in column.iter().filter(|t| !columns[cluster].contains(t)) {
+                shown[*tile] = false;
+            }
+            if cluster != center && columns[cluster].is_empty() {
+                balls[cluster].body = Body::Closed;
+            }
+        }
         let calls_in = self.outside_calls(graph, &links, focus);
         let outside = place_outside(
             &mut balls,
@@ -1331,9 +1343,9 @@ impl Nucleus {
     /// The calls named round `focus`: each of its callers' into it, then each of the
     /// open journey's from it, in the journey's order; none on a side `hidden` leaves
     /// out.
-    fn named_calls(&self, graph: &ForceGraph, focus: usize) -> Vec<Link> {
+    fn named_calls(&self, graph: &ForceGraph, focus: usize, hidden: Hidden) -> Vec<Link> {
         let mut links: Vec<Link> = Vec::new();
-        if !self.hidden.hides(Side::Callers) {
+        if !hidden.hides(Side::Callers) {
             let mut callers: Vec<usize> = graph.callers(focus).filter(|&t| t != focus).collect();
             callers.sort_unstable();
             callers.dedup();
@@ -1343,7 +1355,7 @@ impl Nucleus {
                 flow: Flow::Into,
             }));
         }
-        if !self.hidden.hides(Side::Callees) {
+        if !hidden.hides(Side::Callees) {
             for call in &self.trail.calls {
                 if call.from != call.to
                     && !links.iter().any(|l| l.from == call.from && l.to == call.to)
@@ -1360,10 +1372,11 @@ impl Nucleus {
     }
 
     /// An arrow for each pair of modules a named call runs between, as thick as all
-    /// the calls between them.
+    /// the calls between them. A call in from outside the journey runs straight, on
+    /// no arrow, so the journey's own keep the arrows to themselves.
     fn join(&self, links: &[Link], cluster_of: &impl Fn(usize) -> usize) -> Vec<Tube> {
         let mut tubes: Vec<Tube> = Vec::new();
-        for link in links {
+        for link in links.iter().filter(|l| l.flow != Flow::Outside) {
             let (from, to) = (cluster_of(link.from), cluster_of(link.to));
             if from == to {
                 continue;
@@ -1601,10 +1614,11 @@ fn place_outside(
             .try_normalize()
             .unwrap_or_else(|| sideways(back));
         let radius = grid_radius(tiles.len(), SPACING, COLUMN_GAP, 2.6);
+        // Faint, as everything brought in from outside the journey is.
         balls[*cluster] = Ball {
             center: core + toward * (outer + radius),
             radius,
-            body: Body::Open,
+            body: Body::Faint,
         };
         beyond.push(*cluster);
     }
@@ -2689,32 +2703,7 @@ pub(crate) fn draw(
     let Ok(camera) = cameras.single() else {
         return;
     };
-    for (cluster, ball) in nucleus.balls() {
-        let color = lane_color(cluster % PALETTE.len());
-        // Brighter towards the edge, as glass is, with a faint halo outside it.
-        let rims: &[(f32, f32)] = match ball.body {
-            Body::Nucleus => &[
-                (0.9, 0.05),
-                (0.94, 0.09),
-                (0.97, 0.16),
-                (0.99, 0.32),
-                (1.0, 0.85),
-                (1.025, 0.18),
-            ],
-            Body::Open => &[(0.92, 0.06), (0.96, 0.12), (0.985, 0.25), (1.0, 0.7)],
-            Body::Faint => &[(0.97, 0.05), (1.0, 0.2)],
-            Body::Closed => &[],
-        };
-        for &(grow, alpha) in rims {
-            gizmos
-                .circle(
-                    Isometry3d::new(ball.center, camera.rotation),
-                    ball.radius * grow,
-                    color.with_alpha(alpha),
-                )
-                .resolution(96);
-        }
-    }
+    draw_rims(nucleus, camera.rotation, &mut gizmos);
     let graph = explorer.graph();
     let time = clock.elapsed_secs();
     let zoom = nucleus.zoom();
@@ -2753,9 +2742,14 @@ pub(crate) fn draw(
             .with_tip_length(0.7 * zoom);
     }
     // The journey's call into the cursor, in the cursor's color, or into the function
-    // the pointer is on, is drawn last and brightest, so it reads over the rest.
+    // the pointer is on, and the calls in of a function selected off the journey, are
+    // drawn last and brightest, so they read over the rest.
+    let aside = explorer.aside();
     let picked = |link: &Link| {
-        link.flow != Flow::Into && (nucleus.marks(link.to) || nucleus.hovered() == Some(link.to))
+        let into = link.flow != Flow::Into
+            && link.flow != Flow::Outside
+            && (nucleus.marks(link.to) || nucleus.hovered() == Some(link.to));
+        into || (aside.is_some() && Some(link.from) == aside)
     };
     let (picked, rest): (Vec<_>, Vec<_>) = nucleus
         .links()
@@ -2788,15 +2782,47 @@ pub(crate) fn draw(
     }
 }
 
+/// Rings round each sphere drawn, facing the camera, brighter towards the edge as glass
+/// is, with a faint halo outside it.
+fn draw_rims(nucleus: &Nucleus, facing: Quat, gizmos: &mut Gizmos) {
+    for (cluster, ball) in nucleus.balls() {
+        let color = lane_color(cluster % PALETTE.len());
+        // Brighter towards the edge, as glass is, with a faint halo outside it.
+        let rims: &[(f32, f32)] = match ball.body {
+            Body::Nucleus => &[
+                (0.9, 0.05),
+                (0.94, 0.09),
+                (0.97, 0.16),
+                (0.99, 0.32),
+                (1.0, 0.85),
+                (1.025, 0.18),
+            ],
+            Body::Open => &[(0.92, 0.06), (0.96, 0.12), (0.985, 0.25), (1.0, 0.7)],
+            Body::Faint => &[(0.97, 0.05), (1.0, 0.2)],
+            Body::Closed => &[],
+        };
+        for &(grow, alpha) in rims {
+            gizmos
+                .circle(
+                    Isometry3d::new(ball.center, facing),
+                    ball.radius * grow,
+                    color.with_alpha(alpha),
+                )
+                .resolution(96);
+        }
+    }
+}
+
 /// A named call's color: its flow's, but the cursor's for the call into the cursor,
 /// and brighter for the one into the function the pointer is on.
 fn link_color(nucleus: &Nucleus, link: &Link, bright: bool) -> Color {
-    if bright && nucleus.marks(link.to) {
-        CURSOR
-    } else if bright {
-        link.flow.color().mix(&Color::WHITE, 0.45)
-    } else {
-        link.flow.color().with_alpha(0.9)
+    match link.flow {
+        Flow::Outside if bright => Color::WHITE.with_alpha(0.85),
+        // Secondary: there to be found, not read first.
+        Flow::Outside => link.flow.color().with_alpha(0.16),
+        _ if bright && nucleus.marks(link.to) => CURSOR,
+        _ if bright => link.flow.color().mix(&Color::WHITE, 0.45),
+        _ => link.flow.color().with_alpha(0.9),
     }
 }
 
@@ -3397,7 +3423,7 @@ mod tests {
         let web = nucleus
             .ball(module(&graph, &map, "web::route"))
             .expect("a sphere");
-        assert_eq!(web.body, Body::Open);
+        assert_eq!(web.body, Body::Faint, "faint, beyond the ring");
         let after: Vec<Vec3> = nucleus
             .balls()
             .filter(|(c, b)| nucleus.shows_body(b.body) && *c != module(&graph, &map, "web::route"))

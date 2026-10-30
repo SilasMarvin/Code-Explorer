@@ -1542,6 +1542,11 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     }
 }
 
+/// Whether the graph is gathered into spheres.
+fn nucleus_open(explorer: &Explorer) -> bool {
+    explorer.nucleus().is_some()
+}
+
 /// Names beside graph nodes, most important first, each on a dark pill so it reads
 /// over links and glow. The focus's callees lead with the order it calls them in, and
 /// its callers note where in their own calls they call it. A name tries each side of
@@ -1574,6 +1579,8 @@ fn draw_graph_labels(
     let center = explorer.lit_focus();
     // Gathered round the focus's module, the journey's cursor is named where it sits.
     let cursor = explorer.cursor_mark();
+    // In a journey, a function selected off it, named as the focus is.
+    let aside = explorer.aside().filter(|_| nucleus_open(explorer));
     let hovered = explorer.pointed();
     let reach = explorer.reach();
     let related = |tile: usize| reach.and_then(|r| graph_view::shown_relation(explorer, r, tile));
@@ -1625,10 +1632,10 @@ fn draw_graph_labels(
         // what the pointer is on and its calls' ends come last, so pointing never
         // moves another name.
         let gathered = nucleus.map(|n| match () {
-            () if center == Some(tile) || cursor == Some(tile) => Some(0),
+            () if center == Some(tile) || cursor == Some(tile) || aside == Some(tile) => Some(0),
             () if n.labelled(tile) && n.level(tile).is_some_and(|l| l.abs() <= 1) => Some(1),
             () if n.labelled(tile) => Some(2),
-            () if n.context(tile) => Some(3),
+            () if n.context(tile) || n.outside(tile) => Some(3),
             () if hovered == Some(tile) || n.touched(tile) => Some(POINTED),
             () => None,
         });
@@ -1860,7 +1867,10 @@ fn draw_graph_labels(
                 // a middle off it, quietly.
                 let level = nucleus.and_then(|n| n.level(tile));
                 let speck = nucleus.is_some() && graph_view::speck(explorer, tile);
-                let quiet = speck || nucleus.is_some_and(|n| n.context(tile));
+                let quiet = speck
+                    || nucleus.is_some_and(|n| {
+                        n.context(tile) || (n.outside(tile) && aside != Some(tile))
+                    });
                 let color = match (tier, relation) {
                     _ if cursor == Some(tile) => CURSOR_TEXT,
                     (0, _) => egui::Color32::WHITE,
