@@ -10,7 +10,14 @@ use bevy::{
     winit::{UpdateMode, WinitSettings},
 };
 
-use crate::{camera::OrbitCamera, diff_view::DiffView, explorer::Autoplay};
+use codeviz_core::SpanId;
+
+use crate::{
+    camera::OrbitCamera,
+    diff_view::DiffView,
+    disclosure::Disclose,
+    explorer::{Autoplay, Explorer},
+};
 
 pub(crate) struct IdlePlugin;
 
@@ -29,14 +36,40 @@ impl Plugin for IdlePlugin {
 #[derive(Resource, Default)]
 pub(crate) struct Awake(pub(crate) bool);
 
+/// What the view shows that the panel can change after the scene's systems have run
+/// for the frame: the cursor, what is pointed at, the depth and the middle.
+type Shown = (
+    Option<SpanId>,
+    Option<usize>,
+    Disclose,
+    Option<usize>,
+    Option<usize>,
+);
+
 fn keep_awake(
     mut awake: ResMut<Awake>,
     autoplay: Res<Autoplay>,
     diff: Option<Res<DiffView>>,
     cameras: Query<&OrbitCamera>,
+    explorer: Option<Res<Explorer>>,
+    mut shown: Local<Option<Shown>>,
     mut redraw: MessageWriter<RequestRedraw>,
 ) {
+    // A click or hover in the journey panel lands after the scene has drawn the
+    // frame, so another one follows to show it.
+    let now = explorer.map(|e| {
+        (
+            e.selected(),
+            e.hovered_tile,
+            e.disclose(),
+            e.aside(),
+            e.nucleus_focus(),
+        )
+    });
+    let moved = now != *shown;
+    *shown = now;
     let busy = std::mem::take(&mut awake.0)
+        || moved
         || autoplay.playing
         || diff.is_some_and(|diff| diff.playing)
         || cameras.iter().any(OrbitCamera::easing);

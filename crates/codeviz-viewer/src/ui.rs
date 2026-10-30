@@ -24,7 +24,7 @@ use crate::{
     graph_view::{self, CALLEE, CALLER, Relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    nucleus::{Body, End, Nucleus},
+    nucleus::{self, Body, End, Nucleus},
     scene::{PALETTE, lane_color},
     source_diff,
 };
@@ -1010,6 +1010,8 @@ struct Placer<'a> {
     slide: f32,
     /// How much opacity a label gains or loses this frame.
     fade: f32,
+    /// Labels painted over all the others, the last on top.
+    top: Vec<Named>,
 }
 
 impl<'a> Placer<'a> {
@@ -1026,6 +1028,7 @@ impl<'a> Placer<'a> {
             anchors: HashMap::new(),
             slide: 1.0 - (-SLIDE * dt).exp(),
             fade: dt / FADE,
+            top: Vec::new(),
         }
     }
 
@@ -1148,7 +1151,10 @@ impl<'a> Placer<'a> {
         for (_, node, shown) in &leaving {
             self.paint(*node, shown);
         }
-        for (key, shown) in &self.next {
+        let rank = |key: &Named| self.top.iter().position(|k| k == key);
+        let mut placed: Vec<(&Named, &Shown)> = self.next.iter().collect();
+        placed.sort_by_key(|(key, _)| rank(key));
+        for (key, shown) in placed {
             if let Some(&node) = self.anchors.get(key) {
                 self.paint(node, shown);
             }
@@ -1344,14 +1350,16 @@ fn draw_graph_labels(
     // Where each shown node sits on screen, and how far its edge is from its middle.
     let discs: Vec<Option<(egui::Pos2, f32)>> = (0..map.tiles.len())
         .map(|tile| {
-            // Only what the lens shows at least half way gets a name.
-            // And, gathered round the focus's module, only what is drawn.
-            // The end of a call drawn is named however faint.
-            let ends = nucleus.is_some_and(|n| n.ends(tile));
-            let world = explorer
-                .tile_point(tile)
-                .filter(|_| explorer.visibility(tile) >= 0.5 || ends)
-                .filter(|_| nucleus.is_none_or(|n| n.shows(tile)))?;
+            // Only what the lens shows at least half way gets a name. Gathered round
+            // the focus's module, only the middle, what it names and what the pointer
+            // is on or draws the calls of, however faint.
+            let named = |n: &Nucleus| {
+                n.shows(tile) && (n.lit(tile) || center == Some(tile) || hovered == Some(tile))
+            };
+            let world = explorer.tile_point(tile).filter(|_| match nucleus {
+                Some(n) => named(n),
+                None => explorer.visibility(tile) >= 0.5,
+            })?;
             let node = to_screen(world)?;
             let scale = nucleus.map_or(1.0, |n| n.node_scale(false));
             let radius = graph_view::node_size(graph, tile) * scale / 2.0;
@@ -1366,13 +1374,24 @@ fn draw_graph_labels(
         if disc.is_none() {
             continue;
         }
+        // Gathered round the focus's module, one rule: the middle and the cursor,
+        // what the pointer is on and its calls' ends, then what the nucleus names.
+        let gathered = nucleus.map(|n| match () {
+            () if center == Some(tile) || cursor == Some(tile) => Some(0),
+            () if hovered == Some(tile) || n.touched(tile) => Some(1),
+            () if n.labelled(tile) && n.level(tile).is_some_and(|l| l.abs() <= 1) => Some(1),
+            () if n.labelled(tile) => Some(2),
+            () => None,
+        });
         let tier = match related(tile) {
+            _ if gathered.is_some() => match gathered.flatten() {
+                Some(tier) => tier,
+                None => continue,
+            },
             _ if center == Some(tile) || cursor == Some(tile) => 0,
             // What the pointer is over, and what the spotlight picks out, is named,
             // whatever else would be.
             _ if hovered == Some(tile) || spotlit.contains(&tile) => 1,
-            // So is the end of every call drawn round the expanded nucleus.
-            _ if nucleus.is_some_and(|n| n.ends(tile)) => 1,
             _ if diff_tier(tile) == Some(u8::MAX) => continue,
             // What the open journey discloses is named first, with its numbers; with
             // a journey open, what it folds away and callers further up go unnamed.
@@ -1380,14 +1399,6 @@ fn draw_graph_labels(
             // A change is named even where the journey folds it away, after what the
             // journey shows.
             _ if diff_tier(tile).is_some() => diff_tier(tile).map_or(2, |tier| tier.max(2)),
-            // Gathered round the focus's module, whatever it names is named, whether
-            // or not the journey shows it.
-            Some(Relation::Upstream(1) | Relation::Downstream(1))
-                if nucleus.is_some_and(|n| n.names(tile)) =>
-            {
-                1
-            }
-            _ if nucleus.is_some_and(|n| n.names(tile)) => 3,
             Some(Relation::Downstream(_)) if opened => continue,
             Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
             Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
@@ -1522,6 +1533,12 @@ fn draw_graph_labels(
             )
             .collect(),
     );
+    // The cursor's name, and the one the pointer is on, read over the rest.
+    placer.top = [hovered, cursor]
+        .into_iter()
+        .flatten()
+        .map(Named::Node)
+        .collect();
     for ((tier, _, _), named) in order {
         match named {
             Named::Group(group) => {
@@ -1572,8 +1589,15 @@ fn draw_graph_labels(
                     _ => node_name(explorer, tile),
                 };
                 let relation = related(tile);
+                // Gathered round the focus's module, colored as its call is drawn.
+                let level = nucleus.and_then(|n| n.level(tile));
                 let color = match (tier, relation) {
                     (0, _) => egui::Color32::WHITE,
+                    _ if nucleus.is_some() => match level {
+                        Some(-1) => CALLER_TEXT,
+                        Some(1) => CALLEE_TEXT,
+                        _ => egui::Color32::from_rgb(200, 205, 216),
+                    },
                     (_, Some(Relation::Upstream(1))) => CALLER_TEXT,
                     (_, Some(Relation::Downstream(1))) => CALLEE_TEXT,
                     // Only what touches the focus is colored, as its links are.
@@ -1608,6 +1632,8 @@ fn draw_graph_labels(
                             .map(|was| format!("was {}", tail(was))),
                     ),
                     _ if impact_note.is_some() => (None, impact_note),
+                    // Gathered round the focus's module, the journey's number says it.
+                    _ if nucleus.is_some() => (None, None),
                     (Some(Relation::Downstream(1)), Some(focus)) => {
                         let steps = call_steps(explorer, focus, tile);
                         (Some((numbered(&steps), color, None)), None)
@@ -1637,15 +1663,19 @@ fn draw_graph_labels(
                     .flatten()
                     .reduce(|a, b| format!("{a} · {b}"));
                 // A node the journey runs leads with its place in it, as its bar does.
-                let order = journey
-                    .get(&tile)
-                    .filter(|numbers| !numbers.is_empty())
-                    .map(|numbers| match numbers.as_slice() {
-                        [one] => one.clone(),
-                        [first, second] => format!("{first}, {second}"),
-                        [first, .., last] => format!("{first} … {last}"),
-                        [] => String::new(),
-                    });
+                // Gathered round the focus's module, its numbers below the middle.
+                let order = match nucleus {
+                    Some(n) => nucleus::badge(n.numbers(tile)),
+                    None => journey
+                        .get(&tile)
+                        .filter(|numbers| !numbers.is_empty())
+                        .map(|numbers| match numbers.as_slice() {
+                            [one] => one.clone(),
+                            [first, second] => format!("{first}, {second}"),
+                            [first, .., last] => format!("{first} … {last}"),
+                            [] => String::new(),
+                        }),
+                };
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one; what changed after it.
                 let fill = egui_color(graph_view::node_color(explorer, diff, tile));
@@ -1659,14 +1689,21 @@ fn draw_graph_labels(
                     (None, _) => lead,
                 };
                 let size = match tier {
+                    _ if cursor == Some(tile) => 15.0,
                     0 => 14.0,
                     1 => 12.0,
                     _ => 11.0,
                 };
                 // The pill's border says which way it relates to the focus, as its link
-                // does.
+                // does; the cursor's is bright.
                 let stroke = match relation {
+                    _ if cursor == Some(tile) => Some(egui::Color32::WHITE),
                     _ if tier == 0 => Some(egui::Color32::from_white_alpha(140)),
+                    _ if nucleus.is_some() => match level {
+                        Some(-1) => Some(egui_color(CALLER)),
+                        Some(1) => Some(egui_color(CALLEE)),
+                        _ => None,
+                    },
                     Some(Relation::Upstream(1)) => Some(egui_color(CALLER)),
                     Some(Relation::Downstream(1)) => Some(egui_color(CALLEE)),
                     _ if spotlit.contains(&tile) => Some(egui_color(match explorer.spotlight() {
@@ -1679,12 +1716,12 @@ fn draw_graph_labels(
                 let struck = change == Some(Change::Removed);
                 let job = label_job(lead, &name, aside, color, size, struck);
                 // The focus, what the pointer is over and what the spotlight picks out
-                // are named come what may.
-                // So is the end of every call drawn round the expanded nucleus.
+                // are named come what may; gathered round the focus's module, so is
+                // everything it names a name.
                 let force = tier == 0
                     || hovered == Some(tile)
                     || spotlit.contains(&tile)
-                    || nucleus.is_some_and(|n| n.ends(tile));
+                    || (nucleus.is_some() && tier <= 2);
                 placer.place(named, node, edge, job, stroke, force);
             }
         }
@@ -1870,11 +1907,11 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("O", "pick out what the focus calls, and show it all"),
             (
                 "Shift I",
-                "hide what calls the focus, and what calls that / show it",
+                "hide what calls the focus, and what calls that (nucleus: its callers) / show it",
             ),
             (
                 "Shift O",
-                "hide what the focus calls, and what that calls / show it",
+                "hide what the focus calls, and what that calls (nucleus: the journey) / show it",
             ),
             ("click", "focus a node; off the journey, for now"),
             ("Shift click", "start the journey at a node"),
@@ -1892,11 +1929,11 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("K", "cluster by modules / calls"),
             (
                 "Z",
-                "gather round the focus's module / lay flat; stepping leaves its middle put",
+                "gather round the focus: its callers and the journey to the depth / lay flat",
             ),
             (
                 "X, double click",
-                "expand the focus's module to see its calls inside (point at a function for its own) / shrink it",
+                "expand the middle's module, naming the same (point at a function for its calls) / shrink it",
             ),
             (
                 "N",

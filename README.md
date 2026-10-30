@@ -41,7 +41,8 @@ to it. `I` picks out everything that calls the focus and `O` everything it calls
 pulling the camera back only as far as it takes to show them all. `Shift+I` hides the
 focus's callers instead, and what calls those, with their arrows, and `Shift+O` its
 callees; press again to bring them back. On the flat graph they stop lighting up and
-fade with the rest; gathered into the nucleus they leave the view.
+fade with the rest; gathered into the nucleus, `Shift+I` takes its middle's callers
+out of the view and `Shift+O` the whole journey.
 
 The focus is where you are in the journey: the node under its cursor, ringed in white
 and named in the top bar beside how many calls it makes and takes. The arrows, a digit
@@ -75,54 +76,63 @@ brings it back.
 
 ## Nucleus
 
-`Z` (or `--z nucleus`, which opens on it) gathers the graph round the focus's module.
-Each module is a sphere, and space says only where things are. The focus's module is a
-large glass sphere in the middle with every one of its functions inside, where its own
-corner of the flat map has them. Modules holding what calls the focus or what it calls
-come into a ring round it, small glass spheres opened just far enough to name those
-functions, `3 of 9` saying how much of the module that is; a module holding what calls
-those callers, or what those callees call, sits just beyond the module it reaches the
-focus through. Every other module is a small dark sphere further back, in the
-direction a fixed 3D layout of the modules (modules that call each other more sit
-closer) has it from the focus's module, so a module keeps its bearing as the focus
-moves.
+`Z` (or `--z nucleus`, which opens on it) gathers the graph round one function, the
+middle: the function whose journey is open, in white, or the one last clicked. Each
+module is a sphere, and space says only where things are. The middle's module is a
+large glass sphere with every one of its functions inside, where its own corner of the
+flat map has them.
 
-An arrow joins two modules whenever a call this view names runs between them, a little
-thicker the more calls run from one to the other, but always thin: violet into the
-focus's module, blue out of it, pale one call further out. The named calls run beside
-it side by side, function to function, violet and blue ones with dots flowing along
-them. Functions in the middle module that relate to nothing named are faint specks;
-`N` leaves them out altogether, so they are neither drawn nor pointed at, and brings
-them back. The pointer has to rest on a function for a moment (0.15 s) before the
-nucleus takes it as pointed at, and off it as long before it lets go, so passing over a
+One rule says what is named. Shown are the middle; every function that calls it,
+violet; and every call of the open journey from the middle down to the disclosed depth,
+the depth the journey panel shows (`,` and `.`, the panel's `−`/`+`, `--depth N`; the
+depth counts from the middle, so when the middle is the journey's start it is exactly
+what the panel shows; disclosing through time, `V`, what the cursor has reached). Each
+journey call is drawn as its own arrow, from caller to
+callee along the journey's tree: blue out of the middle, fading a shade towards pale
+each level further down. Each function the journey runs carries its number as the
+panel numbers it, on a badge filled like its node and bar; one the journey runs more
+than once shows once, as `1.2 +2`. Nothing else is named or drawn, but the function
+under the pointer and the ends of its calls. Past 60 functions named, only the middle,
+the cursor and what is within two calls of the middle keep their names; the rest are
+named under the pointer. `Shift+I` leaves the callers out and `Shift+O` the journey;
+`N` leaves out the faint specks, the middle module's functions nothing names.
+
+A module holding anything named comes into a ring round the nucleus, a small glass
+sphere opened just far enough to name those functions, `3 of 9` saying how much of the
+module that is; one reached only through another module sits just beyond it. Every
+other module is a small dark sphere further back, in the direction a fixed 3D layout of
+the modules (modules that call each other more sit closer) has it, so a module keeps
+its bearing as the middle moves. A thin arrow joins two modules whenever a named call
+runs between them, colored as its call nearest the middle, and the calls run beside it
+side by side, function to function. A new depth brings modules onto the ring or lets
+them go, easing every sphere to its new place. The pointer has to rest on a function
+for a moment (0.15 s) before the nucleus takes it as pointed at, so passing over a
 speck does not flash its calls.
 
-The nucleus holds the function whose journey is open in the middle, in white, or the
-one last clicked. Stepping through the journey (the arrows, `[`/`]`, their `Shift`
-forms, a journey bar, `Space`) leaves everything where it is: the cursor's function is
-ringed twice in white and named where it sits, and if the view had folded it away it
-shows just under its module's sphere, on the line from its journey bar. A click on a
-function, `Enter`, or a `Shift`-click makes a new middle; one in another module eases
-every sphere to its new place, the new module coming in to the middle. `Q` and `E` turn
-the view an eighth of the way round, refitting it, so the depth shows; `F` comes back to
-the usual three-quarter view, and `Z` again lays the graph flat.
+Stepping through the journey (the arrows, `[`/`]`, their `Shift` forms, a journey bar,
+`Space`) moves nothing but the cursor: its function is ringed twice in a white glow,
+pulsing for a moment where it lands, its name raised over the others on a larger,
+white-edged pill, and the journey's call into it drawn brightest. Pointing at a bar, or
+at a function, previews the same glow and bright call on its node. A cursor the depth
+does not reach shows just under its module's sphere. A click on a function, `Enter`,
+or a `Shift`-click makes a new middle; one in another module eases every sphere to its
+new place. `Q` and `E` turn the view an eighth of the way round, refitting it, so the
+depth shows; `F` comes back to the usual three-quarter view, and `Z` again lays the
+graph flat.
 
 `X`, or a double click on the nucleus away from its functions, expands it (`--expand`
 opens straight into it): the sphere grows to several times its size while the camera
-comes in, so you go inside the same object. Inside, the module's functions are laid
-out by the calls among them: whatever is within two calls of the focus inside the
-module, up or down, gathers in the middle, the focus's callers tending to one side and
-its callees to the other (a tendency, not an axis); the rest are faint specks out
-towards the wall, left out until `N` brings them in. Only the focus's own calls are drawn, violet into it and blue out of
-it, with every caller and callee named. The modules it calls or is called by shrink
-onto a ring just outside the wall, each at the bearing it had, with the focus's own
-callers and callees there still named; each of its calls leaving the module runs out
-through the wall at the point facing its module and on into it. Point at another
-function inside to draw its own calls in and out as pale arrows, each end named: a
-function, or where the call leaves through the wall, under its module's name. They go
-when the pointer leaves. A name at the end of a call drawn is never dropped; when its
-place is taken it is nudged aside, on a thread back to its node. Clicking a function
-focuses it as usual, and `X` again shrinks the nucleus back among the other modules.
+comes in, so you go inside the same object. It names exactly what the module view
+names. Inside, the module's functions are laid out by the calls among them: what is
+named gathers in the middle, the callers tending to one side and the journey to the
+other (a tendency, not an axis); the rest are faint specks out towards the wall, left
+out until `N` brings them in. Every module holding anything named sits on a ring just
+outside the wall, each at the bearing it had, with its named functions in it; a call
+to one runs out through the wall at the point facing its module and on into it. Point
+at another function inside to draw its own calls in and out as pale arrows, each end
+named: a function, or where the call leaves through the wall, under its module's name.
+They go when the pointer leaves. Clicking a function focuses it as usual, and `X`
+again shrinks the nucleus back among the other modules.
 
 ## Diffs
 

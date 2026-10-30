@@ -16,15 +16,19 @@ use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
 
 use crate::{
-    disclosure::{Disclose, Disclosed},
+    disclosure::{self, Disclose, Disclosed},
     history::{History, View},
     lens::{self, Distances, Lens},
-    nucleus::Nucleus,
+    nucleus::{Nucleus, Trail},
 };
 
 /// What a disclosure was worked out for: the journey's revision, how it discloses,
 /// the spans opened by hand, and the cursor when that matters.
 type DisclosureKey = (u64, Disclose, u64, Option<SpanId>);
+
+/// What the nucleus's trail was worked out for: the journey's revision, how it
+/// discloses, the spans opened, the cursor when that matters, and the middle.
+type TrailKey = (u64, Disclose, u64, Option<SpanId>, Option<usize>);
 
 /// What the lens's distances were worked out for: where it starts, how it measures,
 /// and how often calls were retired and, when measuring in space, nodes moved.
@@ -317,6 +321,8 @@ pub(crate) struct Explorer {
     /// A function clicked, which the nucleus holds in its middle while the journey's
     /// cursor moves; without one, the journey's start.
     held: Option<usize>,
+    /// What the nucleus's trail was last worked out for.
+    traced: Option<TrailKey>,
     /// Which sides of the focus are hidden.
     hidden: Hidden,
 }
@@ -374,6 +380,7 @@ impl Explorer {
             revision: 0,
             nucleus: None,
             held: None,
+            traced: None,
             hidden: Hidden::default(),
         };
         explorer.color_groups();
@@ -691,10 +698,13 @@ impl Explorer {
         }
         self.nucleus = if on {
             self.settle_now();
-            Some(Nucleus::with_hidden(
+            let focus = self.nucleus_focus();
+            self.traced = Some(self.trail_key(focus));
+            Some(Nucleus::gather(
                 &self.graph,
-                self.nucleus_focus(),
+                focus,
                 self.hidden,
+                self.trail_from(focus),
             ))
         } else {
             None
@@ -755,6 +765,47 @@ impl Explorer {
         self.graph_focus().filter(|&t| Some(t) != nucleus.focus())
     }
 
+    /// What the nucleus's trail from `centre` depends on.
+    fn trail_key(&self, centre: Option<usize>) -> TrailKey {
+        (
+            self.revision,
+            self.disclose,
+            self.disclosure_epoch,
+            (self.disclose == Disclose::Time)
+                .then(|| self.selected())
+                .flatten(),
+            centre,
+        )
+    }
+
+    /// The open journey from `centre`, as the nucleus names it: from the journey's
+    /// start when that is the centre, else from the first run of it the journey shows,
+    /// or runs at all; nothing when the journey never runs it.
+    fn trail_from(&self, centre: Option<usize>) -> Trail {
+        let (Some(centre), Some(journey)) = (centre, self.journey()) else {
+            return Trail::default();
+        };
+        let disclosed = self.disclosure();
+        let start = if self.root_tile() == Some(centre) {
+            Some(journey.root())
+        } else {
+            let runs: Vec<SpanId> = journey
+                .spans()
+                .map(|(id, _)| id)
+                .filter(|&id| {
+                    self.track.unit_id(id).and_then(|u| self.map.tile_of(u)) == Some(centre)
+                })
+                .collect();
+            runs.iter()
+                .copied()
+                .find(|&span| disclosed.shows(span))
+                .or_else(|| runs.first().copied())
+        };
+        start.map_or_else(Trail::default, |start| {
+            disclosure::trail(&self.track, &self.map, start, self.disclose, &disclosed)
+        })
+    }
+
     /// Which sides of the focus are hidden.
     pub(crate) fn hidden(&self) -> Hidden {
         self.hidden
@@ -780,14 +831,23 @@ impl Explorer {
     /// journey's cursor where it sits, and eases it along by `dt` seconds. Returns
     /// whether what it shows changed, rather than only moved.
     pub(crate) fn ease_nucleus(&mut self, dt: f32) -> bool {
+        if self.nucleus.is_none() {
+            return false;
+        }
         let focus = self.nucleus_focus();
         let cursor = self.graph_focus();
+        let key = self.trail_key(focus);
+        let trail = (self.traced != Some(key)).then(|| self.trail_from(focus));
         let Some(nucleus) = &mut self.nucleus else {
             return false;
         };
-        let recentered = nucleus.focus() != focus;
+        let mut recentered = nucleus.focus() != focus;
         if recentered {
             nucleus.recenter(&self.graph, focus);
+        }
+        if let Some(trail) = trail {
+            self.traced = Some(key);
+            recentered |= nucleus.retrace(&self.graph, trail);
         }
         let marked = nucleus.mark(&self.graph, cursor.filter(|&t| Some(t) != focus));
         if nucleus.advance(dt) || recentered || marked {
@@ -2064,6 +2124,44 @@ pub(crate) mod tests {
             explorer.nucleus().and_then(Nucleus::focus),
             explorer.graph_focus(),
             "following the focus re-centers on it"
+        );
+    }
+
+    #[test]
+    fn the_nucleus_names_the_journey_to_the_depth_and_no_more() {
+        let mut explorer = explorer();
+        let [a, b, c] = ["a", "b", "c"].map(|name| tile(&explorer, name));
+        explorer.set_nucleus(true);
+        explorer.ease_nucleus(1.0);
+        let names = |explorer: &Explorer| {
+            let nucleus = explorer.nucleus().unwrap();
+            [a, b, c].map(|t| nucleus.names(t))
+        };
+        assert_eq!(names(&explorer), [true, true, false], "one level down");
+        assert_eq!(explorer.nucleus().unwrap().numbers(b), ["2"]);
+
+        explorer.step(Step::Into);
+        explorer.step(Step::Into);
+        explorer.ease_nucleus(1.0);
+        assert_eq!(explorer.graph_focus(), Some(c), "the cursor on c");
+        assert_eq!(
+            names(&explorer),
+            [true, true, false],
+            "stepping names nothing new"
+        );
+        assert!(explorer.nucleus().unwrap().marks(c), "but rings the cursor");
+
+        explorer.set_disclose(Disclose::Depth(2));
+        explorer.ease_nucleus(1.0);
+        assert_eq!(names(&explorer), [true, true, true], "two levels down");
+        assert_eq!(explorer.nucleus().unwrap().numbers(c), ["1.1"]);
+        assert_eq!(explorer.nucleus().unwrap().level(c), Some(2));
+
+        explorer.toggle_hidden(Side::Callees);
+        assert_eq!(
+            names(&explorer),
+            [false, false, false],
+            "the journey hidden"
         );
     }
 

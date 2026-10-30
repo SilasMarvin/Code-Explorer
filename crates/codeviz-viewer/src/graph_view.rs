@@ -23,6 +23,7 @@ use crate::{
     },
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
+    idle::Awake,
     lens::{Lens, SPECK, Source},
     nucleus,
     scene::{PALETTE, Tile, lane_color},
@@ -219,12 +220,11 @@ pub(crate) fn shown_relation(explorer: &Explorer, reach: &Reach, tile: usize) ->
 }
 
 /// Gathered round the focus's module, whether a function is drawn only as a small,
-/// faint speck: shown, but named by nothing and near nothing lit.
+/// faint speck: shown, but not the middle and named by nothing.
 pub(crate) fn speck(explorer: &Explorer, tile: usize) -> bool {
     explorer
         .nucleus()
-        .is_some_and(|n| n.shows(tile) && !n.lit(tile))
-        && matches!(node_look(explorer, tile), NodeLook::Faded(_))
+        .is_some_and(|n| n.shows(tile) && !n.lit(tile) && n.focus() != Some(tile))
 }
 
 /// Whether a function is a speck the nucleus leaves out altogether (N): not drawn,
@@ -316,10 +316,10 @@ pub(crate) fn style_nodes(
         });
         // Gathered round the focus's module, what it names, or what the function under
         // the pointer calls or is called by, shows plainly though the focus does not
-        // reach it; what relates to nothing named is a small, faint speck, or with
-        // specks left out, not drawn at all.
+        // reach it; anything else is a small, faint speck, or with specks left out, not
+        // drawn at all, however near the focus it is.
         let named = nucleus.is_some_and(|n| n.lit(tile.0));
-        let quiet = nucleus.is_some() && !named && matches!(look, Some(NodeLook::Faded(_)));
+        let quiet = speck(&explorer, tile.0);
         let gone = quiet && nucleus.is_some_and(nucleus::Nucleus::specks_hidden);
         visibility.set_if_neq(if folded || gone {
             Visibility::Hidden
@@ -331,6 +331,7 @@ pub(crate) fn style_nodes(
         };
         let look = match look {
             NodeLook::Faded(color) if named => NodeLook::Plain(color),
+            NodeLook::Near(color, _) if quiet => NodeLook::Faded(color),
             look => look,
         };
         // What the lens leaves out shrinks as well as fades, down to a speck.
@@ -390,6 +391,8 @@ pub(crate) fn draw_graph(
     diff: Option<Res<DiffView>>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
+    mut marked: Local<Option<(usize, f32)>>,
+    mut awake: ResMut<Awake>,
 ) {
     let gathered = explorer.nucleus().is_some();
     if !gathered {
@@ -403,8 +406,20 @@ pub(crate) fn draw_graph(
         None => draw_calls(&explorer, time, &mut gizmos),
     }
     draw_spotlight(&explorer, time, &mut gizmos);
-    draw_attention(&explorer, &mut gizmos);
+    // The cursor pulses for a moment wherever it lands.
+    let cursor = explorer.cursor_mark();
+    if cursor != marked.map(|(tile, _)| tile) {
+        *marked = cursor.map(|tile| (tile, time));
+    }
+    let age = marked.map_or(f32::INFINITY, |(_, since)| time - since);
+    if age < CURSOR_PULSE {
+        awake.0 = true;
+    }
+    draw_attention(&explorer, age, &mut gizmos);
 }
+
+/// Seconds the cursor pulses for when it lands on a function.
+const CURSOR_PULSE: f32 = 1.2;
 
 /// Calls into the focus are violet and calls out of it blue, with dots flowing along
 /// them; calls further along, nearer or further from it and on the journey's
@@ -570,8 +585,9 @@ fn draw_spotlight(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
 /// A white ring round the focus, and a fainter, wider one round the node under the
 /// pointer, in the graph or as a bar in the journey. Gathered round the focus's
 /// module, the journey's cursor, where it is not the nucleus's middle, gets two rings
-/// where it sits.
-fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
+/// where it sits in a white glow, pulsing for a moment `age` seconds after it landed;
+/// the function under the pointer, a bar's included, glows as a preview of that.
+fn draw_attention(explorer: &Explorer, age: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let nucleus = explorer.nucleus();
     // The node's own radius, as big as it is drawn.
@@ -584,16 +600,40 @@ fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
         let radius = size(tile) + 0.35;
         gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
     }
+    let zoom = nucleus.map_or(1.0, nucleus::Nucleus::zoom);
+    let glow = |gizmos: &mut Gizmos, at: Vec3, radius: f32, strength: f32| {
+        for (grow, alpha) in [(1.3, 0.35), (1.9, 0.2), (2.6, 0.1)] {
+            gizmos.sphere(
+                Isometry3d::from_translation(at),
+                radius + grow * zoom,
+                Color::srgba(1.0, 1.0, 1.0, alpha * strength),
+            );
+        }
+    };
     if let Some(tile) = explorer.cursor_mark()
         && let Some(at) = explorer.tile_point(tile)
     {
+        let pulse = if age < CURSOR_PULSE {
+            0.5 - 0.5 * (age * std::f32::consts::TAU / 0.4).cos()
+        } else {
+            0.0
+        };
         for grow in [0.35, 0.8] {
             gizmos.sphere(
                 Isometry3d::from_translation(at),
-                size(tile) + grow,
+                size(tile) + (grow + pulse * 1.2) * zoom,
                 Color::WHITE,
             );
         }
+        glow(gizmos, at, size(tile), 1.0);
+    }
+    if nucleus.is_some()
+        && let Some(tile) = explorer
+            .pointed()
+            .filter(|&t| Some(t) != focus && Some(t) != explorer.cursor_mark())
+        && let Some(at) = explorer.tile_point(tile)
+    {
+        glow(gizmos, at, size(tile), 0.6);
     }
     if let Some(tile) = explorer.pointed().filter(|&t| Some(t) != focus)
         && let Some(at) = explorer.tile_point(tile)

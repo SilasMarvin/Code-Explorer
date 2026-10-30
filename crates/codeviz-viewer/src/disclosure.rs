@@ -9,10 +9,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use codeviz_core::SpanId;
+use codeviz_core::{Journey, SpanId};
 use codeviz_layout::CodebaseMap;
 
-use crate::explorer::{Track, is_conditional};
+use crate::{
+    explorer::{Track, is_conditional},
+    nucleus::Trail,
+};
 
 /// How much of the journey shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -74,24 +77,9 @@ impl Disclosed {
         while let Some(span) = stack.pop() {
             let level = disclosed.levels.get(&span).copied().unwrap_or_default();
             let number = disclosed.numbers.get(&span).cloned().unwrap_or_default();
-            // Calls made from inside a closure count as the caller's own; the closure
-            // shows with it.
-            let mut children = Vec::new();
-            let mut pending: Vec<SpanId> = journey
-                .span(span)
-                .map_or_else(Vec::new, |s| s.children.iter().rev().copied().collect());
-            while let Some(child) = pending.pop() {
-                let inside = tile(child).is_some()
-                    && journey.span(child).and_then(|s| s.parent).and_then(tile) == tile(child);
-                if inside {
-                    disclosed.shown.insert(child);
-                    if let Some(s) = journey.span(child) {
-                        pending.extend(s.children.iter().rev().copied());
-                    }
-                } else {
-                    children.push(child);
-                }
-            }
+            // The closure shows with its caller.
+            let (children, inside) = calls_of(journey, &tile, span);
+            disclosed.shown.extend(inside);
             for (index, &child) in children.iter().enumerate() {
                 let open = match disclose {
                     Disclose::Time => journey.span(child).is_some_and(|s| s.enter <= cursor),
@@ -244,4 +232,91 @@ impl Disclosed {
     pub(crate) fn opened(&self) -> bool {
         self.numbers.len() > 1
     }
+}
+
+/// The calls a span makes, in order, and the closures it runs: calls made from inside
+/// a closure count as the caller's own.
+fn calls_of(
+    journey: &Journey,
+    tile: &impl Fn(SpanId) -> Option<usize>,
+    span: SpanId,
+) -> (Vec<SpanId>, Vec<SpanId>) {
+    let (mut children, mut inside) = (Vec::new(), Vec::new());
+    let mut pending: Vec<SpanId> = journey
+        .span(span)
+        .map_or_else(Vec::new, |s| s.children.iter().rev().copied().collect());
+    while let Some(child) = pending.pop() {
+        let closure = tile(child).is_some()
+            && journey.span(child).and_then(|s| s.parent).and_then(tile) == tile(child);
+        if closure {
+            inside.push(child);
+            if let Some(s) = journey.span(child) {
+                pending.extend(s.children.iter().rev().copied());
+            }
+        } else {
+            children.push(child);
+        }
+    }
+    (children, inside)
+}
+
+/// The open journey below `start`, one run of the nucleus's middle, as the nucleus
+/// names it: `depth` calls down from it, counted from it, or disclosing through time,
+/// what the journey discloses under it. Each call is numbered as the panel numbers it.
+pub(crate) fn trail(
+    track: &Track,
+    map: &CodebaseMap,
+    start: SpanId,
+    disclose: Disclose,
+    disclosed: &Disclosed,
+) -> Trail {
+    let mut trail = Trail::default();
+    let Some(journey) = track.journey() else {
+        return trail;
+    };
+    let tile = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
+    // Every call's number, from the root, as the panel numbers it.
+    let mut numbers: HashMap<SpanId, String> = HashMap::new();
+    let mut calls: HashMap<SpanId, Vec<SpanId>> = HashMap::new();
+    let mut stack = vec![journey.root()];
+    numbers.insert(journey.root(), String::new());
+    while let Some(span) = stack.pop() {
+        let number = numbers.get(&span).cloned().unwrap_or_default();
+        let (children, _) = calls_of(journey, &tile, span);
+        for (index, &child) in children.iter().enumerate() {
+            let child_number = if number.is_empty() {
+                format!("{}", index + 1)
+            } else {
+                format!("{number}.{}", index + 1)
+            };
+            numbers.insert(child, child_number);
+            stack.push(child);
+        }
+        calls.insert(span, children);
+    }
+    // Down from the start, in the journey's order.
+    let mut stack = vec![(start, 0)];
+    while let Some((span, level)) = stack.pop() {
+        let Some(from) = tile(span) else {
+            continue;
+        };
+        let level = level + 1;
+        let open: Vec<SpanId> = calls
+            .get(&span)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .copied()
+            .filter(|&child| match disclose {
+                Disclose::Depth(depth) => level <= depth,
+                Disclose::Time => disclosed.shows(child),
+            })
+            .collect();
+        for &child in &open {
+            if let (Some(to), Some(number)) = (tile(child), numbers.get(&child)) {
+                trail.add(from, to, level, number);
+            }
+        }
+        stack.extend(open.into_iter().rev().map(|child| (child, level)));
+    }
+    trail
 }
