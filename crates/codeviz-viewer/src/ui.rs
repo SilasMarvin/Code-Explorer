@@ -140,6 +140,7 @@ pub(crate) struct Chrome {
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
+#[expect(clippy::too_many_lines, reason = "the whole frame's chrome, in order")]
 fn draw_ui(
     mut contexts: EguiContexts,
     mut explorer: ResMut<Explorer>,
@@ -152,6 +153,7 @@ fn draw_ui(
     mut diff: Option<ResMut<DiffView>>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
+    mut moved: Local<u64>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let mut root_ui = egui::Ui::new(
@@ -187,7 +189,8 @@ fn draw_ui(
     } else {
         panel.mode
     };
-    let (graph_area, panel_area) = journey_panel::split(mode, central);
+    let rows = journey_panel::rows(&explorer);
+    let (graph_area, panel_area) = journey_panel::split(mode, central, rows);
     if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
@@ -200,12 +203,19 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
+        // A label new to the scene keeps its place once nothing moves any more.
+        let settled = !orbit.easing() && *moved == explorer.moved();
+        *moved = explorer.moved();
         draw_graph_labels(
             &painter,
             &to_screen,
             &explorer,
             diff.as_deref(),
             (transform.up().into(), transform.right().into()),
+            Framing {
+                settled,
+                strip: mode == PanelMode::Full,
+            },
         );
         // The graph's right edge clear of the diff card above and a docked journey
         // below, for the depth meter.
@@ -351,18 +361,6 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     }
 }
 
-/// Where the cursor's node is on screen, for the tether from its bar.
-fn cursor_node(
-    explorer: &Explorer,
-    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
-) -> Option<egui::Pos2> {
-    explorer
-        .focus()
-        .and_then(|unit| explorer.map().tile_of(unit))
-        .and_then(|tile| explorer.tile_point(tile))
-        .and_then(to_screen)
-}
-
 /// The part of the graph above a docked journey, for what sits at its bottom.
 fn above(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
     panel.map_or(graph, |p| {
@@ -370,58 +368,36 @@ fn above(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
     })
 }
 
-/// The cursor's bar tied to its node, in the cursor's color where its node is drawn in
-/// it, and the bar under the pointer to the node it stands for.
+/// The bar under the pointer tied to the node it stands for.
 fn draw_tethers(
     ctx: &egui::Context,
     tethers: &journey_panel::Tethers,
     explorer: &Explorer,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
 ) {
-    if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(explorer, to_screen)) {
-        let color = if explorer.cursor_mark().is_some() {
-            egui_color(CURSOR)
-        } else {
-            egui::Color32::WHITE
-        };
-        tether(ctx, bar, node, color, false);
-    }
     let hovered = explorer
         .hovered_tile
         .and_then(|tile| explorer.tile_point(tile))
         .and_then(to_screen);
     if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
-        tether(ctx, bar, node, egui::Color32::WHITE, true);
+        tether(ctx, bar, node);
     }
 }
 
-/// A line from a bar in the journey up to its node in the graph, in `color`: faint for
-/// the cursor's, bright for the one under the pointer.
-fn tether(
-    ctx: &egui::Context,
-    bar: egui::Rect,
-    node: egui::Pos2,
-    color: egui::Color32,
-    bright: bool,
-) {
+/// A line from the bar under the pointer up to its node in the graph, ringing it.
+fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::new("tether"),
     ));
-    let from = if bright {
-        egui::pos2(bar.center().x, bar.min.y)
-    } else {
-        egui::pos2(bar.min.x + 2.0, bar.min.y)
-    };
-    let alpha = if bright { 0.86 } else { 0.6 };
+    let from = egui::pos2(bar.center().x, bar.min.y);
+    let color = egui::Color32::WHITE;
     painter.line_segment(
         [from, node],
-        egui::Stroke::new(if bright { 1.5 } else { 1.25 }, color.gamma_multiply(alpha)),
+        egui::Stroke::new(1.5, color.gamma_multiply(0.86)),
     );
     painter.circle_filled(from, 2.5, color);
-    if bright {
-        painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, color));
-    }
+    painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, color));
 }
 
 /// Back and forward through where the view has been, as a browser's: always there,
@@ -1061,8 +1037,9 @@ enum Named {
     Wall(usize),
 }
 
-/// Tier, then bigger first, then a stable tiebreak.
-type LabelRank = (u8, std::cmp::Reverse<usize>, usize);
+/// Tier, then nearer the journey's start (a module first or last within its tier),
+/// then bigger first, then a stable tiebreak.
+type LabelRank = (u8, usize, std::cmp::Reverse<usize>, usize);
 
 /// Where a label may go around its node, in order of preference.
 const SIDES: [egui::Align2; 4] = [
@@ -1082,6 +1059,14 @@ const FADE: f32 = 0.18;
 /// How far along its side, in steps, a name that must show is nudged when every side
 /// is taken, nearest first: no further than a thread to it still reads as its own.
 const NUDGES: [i8; 6] = [1, -1, 2, -2, 3, -3];
+/// Further along its side, where a name that must show goes in a crowd when nearer
+/// would lie nearer another node than its own: its thread ties it to its node.
+const THREADED: [i8; 12] = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6];
+/// How far from its node, in points, a threaded name may go.
+const THREAD_REACH: f32 = 110.0;
+/// How much of a held name others may cover, as when its badge grows by a number,
+/// before it is placed elsewhere for now.
+const COVERED_SHARE: f32 = 0.25;
 
 /// Where a label sits against its node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1166,8 +1151,41 @@ struct Shown {
 /// Every label drawn last frame.
 type ShownLabels = HashMap<Named, Shown>;
 
+/// How long a label keeps the place it first took: browsing, for as long as the map
+/// is browsed; in a journey, for as long as that journey is open, gathered or expanded
+/// round its start, in the graph's usual frame or the strip above a full journey, and
+/// again when Back or Esc returns to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Scene {
+    Browse,
+    Journey {
+        start: Option<usize>,
+        expanded: bool,
+        strip: bool,
+    },
+}
+
+/// How the graph's names are drawn this frame: whether the view rests, so a new
+/// name's place is for keeps, and whether the graph is the strip above a full journey.
+#[derive(Debug, Clone, Copy)]
+struct Framing {
+    settled: bool,
+    strip: bool,
+}
+
+/// Where each label went when it first showed, by scene.
+type SpotBook = HashMap<Scene, HashMap<Named, Spot>>;
+
+/// Scenes remembered at most; past it the book starts again.
+const SCENES_KEPT: usize = 48;
+
+fn spot_book_id() -> egui::Id {
+    egui::Id::new("graph_label_spots")
+}
+
 /// Places labels so none overlaps another or a node that matters, and draws them
-/// eased from where they were: a label keeps its side while that side stays free,
+/// eased from where they were. Gathered, a label keeps the place it first took for as
+/// long as its scene lasts; otherwise it keeps its side while that side stays free. It
 /// slides when it must change sides, and fades in and out instead of popping.
 struct Placer<'a> {
     painter: &'a egui::Painter,
@@ -1197,6 +1215,35 @@ struct Placer<'a> {
     /// The journey number each function's label leads with, so a click on the label
     /// goes to that call.
     numbers: HashMap<Named, String>,
+    /// Where labels went when they first showed in this scene: they stay there, and
+    /// what shows later keeps off them.
+    held: HashMap<Named, Spot>,
+    /// Where labels new to the scene went this frame, to hold from now on.
+    chosen: HashMap<Named, Spot>,
+    /// Whether the view rests, so a new label's place is for keeps: while the camera
+    /// or the spheres still move, it is only for now.
+    keep: bool,
+    /// The names that sit right beside their nodes whatever else is placed: the
+    /// cursor's and the selection's.
+    beside: HashSet<Named>,
+    /// Those of them drawn only for being the cursor or the selection, which would
+    /// have gone unnamed otherwise and so take no room.
+    overlaid: HashSet<Named>,
+    /// Held names the view has closed up on since, to place for now once every held
+    /// name that still has room is placed, and before any new one.
+    displaced: Vec<Displaced>,
+    /// Names placed for now, away from where they are held, so they return there.
+    for_now: HashSet<Named>,
+}
+
+/// A held name with no room where it is held, as it was to be placed.
+struct Displaced {
+    key: Named,
+    node: egui::Pos2,
+    edge: f32,
+    job: egui::text::LayoutJob,
+    stroke: Option<egui::Color32>,
+    force: Force,
 }
 
 impl<'a> Placer<'a> {
@@ -1223,6 +1270,13 @@ impl<'a> Placer<'a> {
             fade: dt / FADE,
             top: Vec::new(),
             numbers: HashMap::new(),
+            held: HashMap::new(),
+            chosen: HashMap::new(),
+            keep: false,
+            beside: HashSet::new(),
+            overlaid: HashSet::new(),
+            displaced: Vec::new(),
+            for_now: HashSet::new(),
         }
     }
 
@@ -1231,12 +1285,16 @@ impl<'a> Placer<'a> {
     }
 
     /// Places `job` on a side of `node` (a disc of `edge` points) where it overlaps
-    /// nothing already placed: the side it had last frame if that is still free,
-    /// else the first free one. When `force` asks and none is, it is nudged along a
-    /// side to the nearest free place, else put where it misleads least, which only
-    /// [`Force::Always`] lets lie over another name. A function's label goes nowhere
-    /// it would lie nearer another node than its own, so it never reads as the
-    /// other's. Returns whether it was placed.
+    /// nothing already placed. A label the scene already holds goes where it went when
+    /// it first showed, whatever has shown since: what is new keeps off it, not the
+    /// reverse. Only where the view has closed up since, so that names placed before
+    /// it would cover much of it there, is it placed elsewhere for now, after every
+    /// held name with room, unless `force` is [`Force::Always`]; it goes back when
+    /// there is room again. A new label goes where [`Placer::new_spot`] finds room.
+    /// The cursor's and the selection's names are drawn right beside their nodes,
+    /// over others if they must, but take no more room than they would as any other's,
+    /// so where the cursor is never decides what else is named. Returns whether it
+    /// was placed, or put off until the held names are.
     fn place(
         &mut self,
         key: Named,
@@ -1249,47 +1307,41 @@ impl<'a> Placer<'a> {
         let galley = self.painter.layout_job(job);
         let extent = galley.size();
         let spot = |at: Spot| at.rect(node, edge, extent);
-        // Inside the graph, so no label is cut off at its edge.
-        let bounds = self.painter.clip_rect();
-        let against = self.against(key);
-        let fits = |rect: egui::Rect, pad: egui::Vec2| {
-            bounds.contains_rect(rect.expand2(pad))
-                && !against.iter().any(|r| r.intersects(rect.expand2(pad)))
-                && self.misread(key, rect, node, edge) == 0
-        };
         let previous = self.last.get(&key);
-        // A label holds its side until something actually covers it; a new side must
-        // be clear with room to spare. That margin keeps a label from flipping back
-        // and forth as the view moves.
-        let kept = previous
-            .map(|p| p.at)
-            .filter(|&at| !at.over && fits(spot(at), egui::Vec2::ZERO));
-        let free = |shifts: &[i8]| {
-            shifts
-                .iter()
-                .flat_map(|&shift| (0..SIDES.len()).map(move |side| Spot::beside(side, shift)))
-                .find(|&at| fits(spot(at), PILL_PAD))
+        let held = self.held.get(&key).copied();
+        let at = match held {
+            Some(at) if force == Force::Always || self.has_room(spot(at)) => Some(at),
+            Some(_) => {
+                self.displaced.push(Displaced {
+                    key,
+                    node,
+                    edge,
+                    job: (*galley.job).clone(),
+                    stroke,
+                    force,
+                });
+                return true;
+            }
+            None => self.new_spot(key, node, edge, extent, force),
         };
-        // A label nudged off its node goes back beside it as soon as there is room.
-        let at = kept
-            .filter(|at| at.shift == 0)
-            .or_else(|| free(&[0]))
-            .or(kept)
-            .or_else(|| (force != Force::Never).then(|| free(&NUDGES)).flatten())
-            .or_else(|| {
-                let (at, over_names) = self.least_misleading(key, node, edge, extent);
-                match force {
-                    Force::Always => Some(at),
-                    Force::Free if !over_names => Some(at),
-                    Force::Free | Force::Never => None,
-                }
-            });
-        let Some(at) = at else {
-            return false;
+        let beside = self.beside.contains(&key);
+        let drawn = match at {
+            Some(at) if !beside || (at.shift == 0 && !at.over) => at,
+            _ if beside => {
+                let last = previous.map(|p| p.at);
+                self.beside_spot(key, node, edge, extent, [last, held])
+            }
+            _ => return false,
         };
-        let rect = spot(at);
-        self.taken.push(rect.expand2(PILL_PAD));
-        let target = rect.min - node;
+        if let Some(at) = at {
+            self.taken.push(spot(at).expand2(PILL_PAD));
+            if held.is_none() && self.keep && !self.for_now.contains(&key) {
+                self.chosen.insert(key, at);
+            }
+        } else {
+            self.overlaid.insert(key);
+        }
+        let target = spot(drawn).min - node;
         let (offset, opacity) = match previous {
             Some(p) => (
                 p.offset + (target - p.offset) * self.slide,
@@ -1302,7 +1354,7 @@ impl<'a> Placer<'a> {
         self.next.insert(
             key,
             Shown {
-                at,
+                at: drawn,
                 offset,
                 opacity,
                 galley,
@@ -1311,6 +1363,163 @@ impl<'a> Placer<'a> {
             },
         );
         true
+    }
+
+    /// Whether a held name at `rect` is inside the graph and the names placed so far
+    /// cover little enough of it: as when its badge grows by a number.
+    fn has_room(&self, rect: egui::Rect) -> bool {
+        let covered: f32 = self
+            .names_and_cards()
+            .map(|r| r.intersect(rect))
+            .filter(egui::Rect::is_positive)
+            .map(|r| r.area())
+            .sum();
+        self.painter.clip_rect().contains_rect(rect) && covered <= rect.area() * COVERED_SHARE
+    }
+
+    /// Where a label new to the scene goes: the side it had last frame if that is
+    /// still free, else the first free one. When `force` asks and none is, it is
+    /// nudged along a side to the nearest free place, then further, on a thread, else
+    /// put where it misleads least, which only [`Force::Always`] lets lie over another
+    /// name. Beside its node or nudged, a function's label goes nowhere it would lie
+    /// nearer another node than its own, so it never reads as the other's.
+    fn new_spot(
+        &self,
+        key: Named,
+        node: egui::Pos2,
+        edge: f32,
+        extent: egui::Vec2,
+        force: Force,
+    ) -> Option<Spot> {
+        let spot = |at: Spot| at.rect(node, edge, extent);
+        // Inside the graph, so no label is cut off at its edge.
+        let bounds = self.painter.clip_rect();
+        let against = self.against(key);
+        let clear = |rect: egui::Rect, pad: egui::Vec2| {
+            bounds.contains_rect(rect.expand2(pad))
+                && !against.iter().any(|r| r.intersects(rect.expand2(pad)))
+        };
+        let fits = |rect: egui::Rect, pad: egui::Vec2| {
+            clear(rect, pad) && self.misread(key, rect, node, edge) == 0
+        };
+        // A label holds its side until something actually covers it; a new side must
+        // be clear with room to spare. That margin keeps a label from flipping back
+        // and forth while the view still moves.
+        let kept = self
+            .last
+            .get(&key)
+            .map(|p| p.at)
+            .filter(|&at| !at.over && fits(spot(at), egui::Vec2::ZERO));
+        let along = |shifts: &'static [i8]| {
+            shifts
+                .iter()
+                .flat_map(|&shift| (0..SIDES.len()).map(move |side| Spot::beside(side, shift)))
+        };
+        let free = |shifts: &'static [i8]| along(shifts).find(|&at| fits(spot(at), PILL_PAD));
+        // The nearest clear place a thread can reach.
+        let threaded = || {
+            along(&THREADED)
+                .map(|at| (spot(at).distance_to_pos(node), at))
+                .filter(|&(reach, at)| reach <= THREAD_REACH && clear(spot(at), PILL_PAD))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, at)| at)
+        };
+        // A label nudged off its node goes back beside it as soon as there is room.
+        kept.filter(|at| at.shift == 0)
+            .or_else(|| free(&[0]))
+            .or(kept)
+            .or_else(|| (force != Force::Never).then(|| free(&NUDGES)).flatten())
+            .or_else(|| (force != Force::Never).then(threaded).flatten())
+            .or_else(|| {
+                let (at, over_names) = self.least_misleading(key, node, edge, extent);
+                match force {
+                    Force::Always => Some(at),
+                    Force::Free if !over_names => Some(at),
+                    Force::Free | Force::Never => None,
+                }
+            })
+    }
+
+    /// Places the held names the view has closed up on since, for now, as new ones
+    /// are placed: they go back where they are held when there is room again.
+    fn place_displaced(&mut self) {
+        for displaced in std::mem::take(&mut self.displaced) {
+            let key = displaced.key;
+            let held = self.held.remove(&key);
+            self.for_now.insert(key);
+            self.place(
+                key,
+                displaced.node,
+                displaced.edge,
+                displaced.job,
+                displaced.stroke,
+                displaced.force,
+            );
+            if let Some(at) = held {
+                self.held.insert(key, at);
+            }
+        }
+    }
+
+    /// The cards over the graph and the names placed so far.
+    fn names_and_cards(&self) -> impl Iterator<Item = &egui::Rect> {
+        self.taken[..self.cards]
+            .iter()
+            .chain(&self.taken[self.blocked..])
+    }
+
+    /// Where the cursor's or the selection's name goes, right beside its node: on the
+    /// side it was drawn on last, else the side the scene holds it on, else the first
+    /// side, that lies over nothing; else wherever it covers least of the names there.
+    fn beside_spot(
+        &self,
+        key: Named,
+        node: egui::Pos2,
+        edge: f32,
+        extent: egui::Vec2,
+        before: [Option<Spot>; 2],
+    ) -> Spot {
+        let bounds = self.painter.clip_rect();
+        // On the side it was on before, if it can, so it moves least.
+        let candidates: Vec<Spot> = before
+            .into_iter()
+            .flatten()
+            .filter(|at| !at.over)
+            .map(|at| Spot::beside(at.side, 0))
+            .chain((0..SIDES.len()).map(|side| Spot::beside(side, 0)))
+            .collect();
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "an area in whole points, at least 0"
+        )]
+        let under = |rect: egui::Rect| {
+            let pill = rect.expand2(PILL_PAD);
+            self.names_and_cards()
+                .map(|r| r.intersect(pill))
+                .filter(egui::Rect::is_positive)
+                .map(|r| r.area() as u32)
+                .sum::<u32>()
+        };
+        candidates
+            .iter()
+            .copied()
+            .min_by_key(|&at| {
+                let rect = at.rect(node, edge, extent);
+                (
+                    under(rect),
+                    !bounds.contains_rect(rect),
+                    self.misread(key, rect, node, edge),
+                )
+            })
+            .unwrap_or(Spot::beside(0, 0))
+    }
+
+    /// Takes a label placed this frame off again: it fades out, and its place is not
+    /// held.
+    fn unplace(&mut self, key: Named) {
+        self.next.remove(&key);
+        self.chosen.remove(&key);
     }
 
     /// Whether `key` names a module as a landmark.
@@ -1489,6 +1698,15 @@ fn misread_by(
     by
 }
 
+/// A journey number as its parts, nearest the root first: `2` before `1.1`, and
+/// `1.10` after `1.9`.
+type NumberOrder = (usize, Vec<u32>);
+
+fn number_order(number: &str) -> NumberOrder {
+    let parts: Vec<u32> = number.split('.').filter_map(|p| p.parse().ok()).collect();
+    (parts.len(), parts)
+}
+
 fn label_hits_id() -> egui::Id {
     egui::Id::new("graph_label_hits")
 }
@@ -1637,6 +1855,7 @@ fn draw_graph_labels(
     explorer: &Explorer,
     diff: Option<&DiffView>,
     (up, right): (Vec3, Vec3),
+    framing: Framing,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     // Under a diff, what changed is named first and what it reaches next.
@@ -1700,6 +1919,32 @@ fn draw_graph_labels(
         })
         .collect();
 
+    // Gathered round a journey, its functions are named level by level in the panel's
+    // order, the start first, so a call's caller has room before the call does.
+    let ladder: Vec<usize> = if nucleus.is_some() {
+        let mut ladder: Vec<(NumberOrder, usize)> = journey
+            .iter()
+            .filter(|&(&tile, _)| start != Some(tile))
+            .filter_map(|(&tile, numbers)| {
+                numbers
+                    .iter()
+                    .map(|n| number_order(n))
+                    .min()
+                    .map(|first| (first, tile))
+            })
+            .collect();
+        ladder.sort();
+        ladder.into_iter().map(|(_, tile)| tile).collect()
+    } else {
+        Vec::new()
+    };
+    let rungs: HashMap<usize, usize> = start
+        .into_iter()
+        .chain(ladder.iter().copied())
+        .enumerate()
+        .map(|(rung, tile)| (tile, rung))
+        .collect();
+
     // Lower ranks are placed first and win any overlap.
     let mut order: Vec<(LabelRank, Named)> = Vec::new();
     for (tile, disc) in discs.iter().enumerate() {
@@ -1710,11 +1955,14 @@ fn draw_graph_labels(
         // then what the nucleus names, then the open journey round a middle off it;
         // what the pointer is on and its calls' ends come last, so pointing never
         // moves another name.
+        // The cursor is named where it would be anyway, so where it is never decides
+        // what else is: it is only drawn over the rest.
         let gathered = nucleus.map(|n| match () {
-            () if center == Some(tile) || cursor == Some(tile) || aside == Some(tile) => Some(0),
+            () if center == Some(tile) || aside == Some(tile) => Some(0),
             () if n.labelled(tile) && n.level(tile).is_some_and(|l| l.abs() <= 1) => Some(1),
             () if n.labelled(tile) => Some(2),
             () if n.context(tile) => Some(3),
+            () if cursor == Some(tile) => Some(4),
             // The few calls in from outside the journey drawn for each module, those
             // nearest it, are named after all the journey's own names.
             () if n.outside(tile) => Some(6),
@@ -1747,8 +1995,9 @@ fn draw_graph_labels(
             None if center.is_none() => 6,
             None => continue,
         };
+        let rung = rungs.get(&tile).copied().unwrap_or(usize::MAX);
         order.push((
-            (tier, std::cmp::Reverse(graph.degree(tile)), tile),
+            (tier, rung, std::cmp::Reverse(graph.degree(tile)), tile),
             Named::Node(tile),
         ));
     }
@@ -1860,7 +2109,7 @@ fn draw_graph_labels(
         walls.dedup();
         for cluster in walls {
             order.push((
-                (1, std::cmp::Reverse(nucleus.count(cluster)), cluster),
+                (1, 0, std::cmp::Reverse(nucleus.count(cluster)), cluster),
                 Named::Wall(cluster),
             ));
         }
@@ -1869,6 +2118,7 @@ fn draw_graph_labels(
                 // Browsing, the one the pointer is over is named last, over the rest.
                 _ if browsing && pointed_module == Some(cluster) => (
                     POINTED,
+                    0,
                     std::cmp::Reverse(usize::MAX),
                     usize::MAX - nucleus.count(cluster),
                 ),
@@ -1882,18 +2132,20 @@ fn draw_graph_labels(
                     }
                     (
                         0,
+                        0,
                         std::cmp::Reverse(usize::MAX),
                         usize::MAX - nucleus.count(cluster),
                     )
                 }
-                // Which module a named function lives in matters as much as its name.
+                // Which module a named function lives in matters as much as its name:
+                // right after the start's.
                 Body::Nucleus | Body::Open => {
-                    (0, std::cmp::Reverse(nucleus.count(cluster)), cluster)
+                    (0, 1, std::cmp::Reverse(nucleus.count(cluster)), cluster)
                 }
                 Body::Closed | Body::Faint
                     if named.contains(&cluster) || left_out.contains_key(&cluster) =>
                 {
-                    (6, std::cmp::Reverse(nucleus.count(cluster)), cluster)
+                    (6, 0, std::cmp::Reverse(nucleus.count(cluster)), cluster)
                 }
                 Body::Closed | Body::Faint => continue,
             };
@@ -1909,12 +2161,50 @@ fn draw_graph_labels(
             let size = radius as usize;
             let tier = if center.is_some() { 4 } else { 1 };
             order.push((
-                (tier, std::cmp::Reverse(size), cluster),
+                (tier, 0, std::cmp::Reverse(size), cluster),
                 Named::Group(cluster),
             ));
         }
     }
-    order.sort_by_key(|&(key, _)| key);
+    // Gathered, a label keeps the place it took when it first showed for as long as
+    // the scene lasts, and is placed before any new one, which keeps off it.
+    let scene = nucleus.map(|n| {
+        if n.browsing() {
+            Scene::Browse
+        } else {
+            Scene::Journey {
+                start,
+                expanded: n.expanded(),
+                strip: framing.strip,
+            }
+        }
+    });
+    let held = scene
+        .and_then(|scene| {
+            painter.ctx().data_mut(|d| {
+                d.get_temp_mut_or_default::<SpotBook>(spot_book_id())
+                    .get(&scene)
+                    .cloned()
+            })
+        })
+        .unwrap_or_default();
+    order.sort_by_key(|&(key, named)| (!held.contains_key(&named), key));
+    // Two functions of one name are told apart by their types: `Explorer.root`,
+    // `Track.root`.
+    let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for &(_, named) in &order {
+        if let Named::Node(tile) = named {
+            by_name
+                .entry(node_name(explorer, tile))
+                .or_default()
+                .push(tile);
+        }
+    }
+    let homonyms: HashSet<usize> = by_name
+        .into_values()
+        .filter(|tiles| tiles.len() > 1)
+        .flatten()
+        .collect();
 
     // Labels keep off the cards over the graph, as last laid out; the search box,
     // which comes and goes, last, as landmarks do not move for it.
@@ -1938,7 +2228,7 @@ fn draw_graph_labels(
             .chain(
                 order
                     .iter()
-                    .filter(|((tier, _, _), _)| *tier <= 3)
+                    .filter(|((tier, ..), _)| *tier <= 3)
                     .filter_map(|&(_, named)| match named {
                         Named::Node(tile) => discs[tile],
                         Named::Group(_) | Named::Wall(_) => None,
@@ -1958,8 +2248,17 @@ fn draw_graph_labels(
     );
     placer.cards = lasting;
     placer.landmarks = nucleus.is_some_and(Nucleus::browsing);
-    // The cursor's name, and the one the pointer is on, read over the rest.
-    placer.top = [hovered, cursor]
+    let held_keys: HashSet<Named> = held.keys().copied().collect();
+    placer.held = held;
+    placer.keep = framing.settled && scene.is_some();
+    placer.beside = [cursor, center, aside]
+        .into_iter()
+        .flatten()
+        .map(Named::Node)
+        .collect();
+    // The selection's and the cursor's names, and the one the pointer is on, read
+    // over the rest.
+    placer.top = [center, aside, hovered, cursor]
         .into_iter()
         .flatten()
         .map(Named::Node)
@@ -1967,7 +2266,14 @@ fn draw_graph_labels(
     if let Some(cluster) = pointed_module {
         placer.top.insert(0, Named::Group(cluster));
     }
-    for ((tier, _, _), named) in order {
+    let mut flushed = false;
+    for ((tier, ..), named) in order {
+        // Every held name that has room is placed; then those that have none, for
+        // now; then the new ones.
+        if !flushed && !held_keys.contains(&named) {
+            placer.place_displaced();
+            flushed = true;
+        }
         match named {
             Named::Group(group) => {
                 let Some(at) = ring_top(group) else {
@@ -2040,6 +2346,7 @@ fn draw_graph_labels(
                 // A change is named in full: `new` alone could be any type's.
                 let name = match (change, explorer.tile_unit(tile)) {
                     (Some(_), Some(unit)) => explorer.unit_name(unit),
+                    (None, Some(unit)) if homonyms.contains(&tile) => explorer.unit_name(unit),
                     _ => node_name(explorer, tile),
                 };
                 let relation = related(tile);
@@ -2129,13 +2436,17 @@ fn draw_graph_labels(
                     _ => (None, None),
                 };
                 // How the journey runs it, after anything else said of it.
-                let marks: Vec<&str> = [
-                    (disclosed.tile_sometimes(tile), "sometimes"),
-                    (disclosed.tile_fails(tile), "can fail"),
-                ]
-                .into_iter()
-                .filter_map(|(on, mark)| on.then_some(mark))
-                .collect();
+                // When it runs in the panel's words; where its runs differ, only that it
+                // does not always.
+                let when = disclosed.tile_sometimes(tile).then(|| {
+                    disclosed
+                        .tile_when(tile)
+                        .map_or("sometimes".to_owned(), |w| short(w, 26))
+                });
+                let marks: Vec<String> = when
+                    .into_iter()
+                    .chain(disclosed.tile_fails(tile).then(|| "can fail".to_owned()))
+                    .collect();
                 let aside = [aside, (!marks.is_empty()).then(|| marks.join(" · "))]
                     .into_iter()
                     .flatten()
@@ -2189,7 +2500,6 @@ fn draw_graph_labels(
                 // The cursor's name keeps the size it had before the cursor came, so it
                 // keeps its place too.
                 let size = match tier {
-                    _ if cursor == Some(tile) && center != Some(tile) => 12.0,
                     0 => 14.0,
                     _ if quiet => 10.0,
                     1 => 12.0,
@@ -2236,6 +2546,35 @@ fn draw_graph_labels(
             }
         }
     }
+    placer.place_displaced();
+    // A journey's function is named only under a caller that is: the panel's tree
+    // reads on the graph from the start down, never a call without its caller.
+    let numbered: HashMap<&str, usize> = journey
+        .iter()
+        .flat_map(|(&tile, numbers)| numbers.iter().map(move |n| (n.as_str(), tile)))
+        .collect();
+    let mut named_calls: HashSet<usize> = start.into_iter().collect();
+    for &tile in &ladder {
+        let key = Named::Node(tile);
+        if !placer.next.contains_key(&key) {
+            continue;
+        }
+        let under_named = journey.get(&tile).is_some_and(|numbers| {
+            numbers.iter().any(|n| match n.rsplit_once('.') {
+                None => true,
+                Some((caller, _)) => numbered
+                    .get(caller)
+                    .is_some_and(|caller| named_calls.contains(caller)),
+            })
+        });
+        // The cursor's name shows wherever it is, but names no calls under it that
+        // would not be named without it.
+        if !under_named && !placer.beside.contains(&key) && hovered != Some(tile) {
+            placer.unplace(key);
+        } else if under_named && !placer.overlaid.contains(&key) {
+            named_calls.insert(tile);
+        }
+    }
     // Every function lit and on screen is named, or counted here as not.
     let lit: Vec<usize> = nucleus.map_or_else(Vec::new, |n| {
         (0..discs.len())
@@ -2246,11 +2585,23 @@ fn draw_graph_labels(
         .iter()
         .filter(|&&tile| !placer.next.contains_key(&Named::Node(tile)))
         .count();
+    let chosen = std::mem::take(&mut placer.chosen);
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
         Named::Wall(group) => wall(group),
     });
+    if let Some(scene) = scene
+        && !chosen.is_empty()
+    {
+        painter.ctx().data_mut(|d| {
+            let book = d.get_temp_mut_or_default::<SpotBook>(spot_book_id());
+            if book.len() >= SCENES_KEPT && !book.contains_key(&scene) {
+                book.clear();
+            }
+            book.entry(scene).or_default().extend(chosen);
+        });
+    }
     if unnamed > 0 {
         unnamed_note(painter, unnamed, lit.len());
     }
@@ -2352,9 +2703,11 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
         if explorer.aside().is_some() {
             let chip = egui::Button::new(
                 egui::RichText::new("not on this journey · Enter starts one here")
-                    .small()
-                    .color(MUTED),
+                    .size(13.0)
+                    .color(egui::Color32::WHITE),
             )
+            .fill(egui::Color32::from_rgb(70, 52, 104))
+            .stroke(egui::Stroke::new(1.0, CALLER_TEXT))
             .corner_radius(8.0);
             if ui
                 .add(chip)
@@ -2790,32 +3143,34 @@ fn reading(browsing: bool) -> &'static [&'static str] {
         "Each sphere is a module, in a color of its own; it says how many of its functions \
          the journey names (2 of 23). The middle one holds the start.",
         "On a name, 2 +1: the function's first call in the journey, numbered as in the \
-         panel, and how many more times the journey runs it; the number stays put as the \
-         cursor moves.",
+         panel, and how many more times the journey runs it; the number, and where the \
+         name sits, stay put as the cursor moves. Two functions of one name show their \
+         types (Explorer.root, Track.root).",
         "The panel: a bar per call, left to right in the order they run, a row a level \
-         deeper. A dashed bar runs only sometimes; +N on a bar is N calls folded under it, \
-         a click opens them; a green end returns, a red one fails. The line from a bar \
-         leads to its function.",
+         deeper. A dashed bar runs only sometimes, and says when (if …, in a loop), as \
+         the name in the graph does; a triangle and a count on a bar is that many calls \
+         folded under it, a click opens them; a green end returns, a red one fails. \
+         Pointing at a bar draws a line to its function.",
     ]
 }
 
 /// Below this height the keys scroll.
-const ROOM_FOR_KEYS: f32 = 560.0;
+const ROOM_FOR_KEYS: f32 = 900.0;
 
 /// Width of the keys' column in the help.
-const KEY_WIDTH: f32 = 112.0;
+const KEY_WIDTH: f32 = 88.0;
 
-/// The keys that apply to the view open, in as many columns as fit `area`, scrolling
-/// past its height.
+/// Widest the help grows.
+const HELP_WIDTH: f32 = 620.0;
+
+/// The keys that apply to the view open, on a sheet down the right of `area`, in two
+/// columns where they fit, scrolling past its height: the middle of the graph, where
+/// a journey is framed, stays in view.
 fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showing) {
     let margin = 16.0;
-    let width = (area.width() - 2.0 * margin).clamp(240.0, 1180.0);
+    let width = (area.width() - 2.0 * margin).clamp(240.0, HELP_WIDTH);
     let height = (area.height() - 2.0 * margin).max(160.0);
-    let columns = match width {
-        w if w >= 900.0 => 3,
-        w if w >= 560.0 => 2,
-        _ => 1,
-    };
+    let columns = if width >= 560.0 { 2 } else { 1 };
     let sections: Vec<(&str, Vec<(&str, &str)>)> = KEYS
         .iter()
         .map(|(title, keys)| {
@@ -2837,8 +3192,8 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
         lengths[shortest] += keys.len() + 2;
     }
     egui::Area::new("key_help".into())
-        .pivot(egui::Align2::CENTER_TOP)
-        .fixed_pos(egui::pos2(area.center().x, area.min.y + margin))
+        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(egui::pos2(area.max.x - margin, area.min.y + margin))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
@@ -2861,34 +3216,36 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                             }
                         });
                     });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for (color, what) in color_key(view.browsing) {
-                            ui.label(egui::RichText::new("●").color(color));
-                            ui.label(egui::RichText::new(what).size(12.0).color(MUTED));
-                            ui.add_space(8.0);
-                        }
-                    });
-                    ui.label(
-                        egui::RichText::new(if view.browsing {
-                            "Browsing, a click selects a function and moves nothing. Enter \
-                             opens its journey."
-                        } else {
-                            "In a journey, the view gathers round where it starts and shows \
-                             only the journey; a click moves its cursor and nothing else. Esc \
-                             leaves it for browsing."
-                        })
-                        .size(12.0)
-                        .color(egui::Color32::WHITE),
-                    );
-                    for line in reading(view.browsing) {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(*line).size(12.0).color(MUTED))
-                                .wrap(),
+                    let body = |ui: &mut egui::Ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            for (color, what) in color_key(view.browsing) {
+                                ui.label(egui::RichText::new("●").color(color));
+                                ui.label(egui::RichText::new(what).size(12.0).color(MUTED));
+                                ui.add_space(8.0);
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new(if view.browsing {
+                                "Browsing, a click selects a function and moves nothing. \
+                                 Enter opens its journey."
+                            } else {
+                                "In a journey, the view gathers round where it starts and \
+                                 shows only the journey; a click moves its cursor and nothing \
+                                 else. Esc leaves it for browsing."
+                            })
+                            .size(12.0)
+                            .color(egui::Color32::WHITE),
                         );
-                    }
-                    ui.add_space(6.0);
-                    let keys = |ui: &mut egui::Ui| {
+                        for line in reading(view.browsing) {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(*line).size(12.0).color(MUTED),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        ui.add_space(6.0);
                         ui.columns(columns, |cols| {
                             for (col, indices) in cols.iter_mut().zip(&placed) {
                                 for &index in indices {
@@ -2901,12 +3258,13 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                     // Whole where the window has room, so no section is ever cut off at
                     // a height measured the frame before; scrolling where it has not.
                     if height >= ROOM_FOR_KEYS {
-                        keys(ui);
+                        body(ui);
                     } else {
                         egui::ScrollArea::vertical()
-                            .max_height(height - 70.0)
+                            .max_height(height - 50.0)
+                            .min_scrolled_height(height - 50.0)
                             .auto_shrink([false, true])
-                            .show(ui, keys);
+                            .show(ui, body);
                     }
                 });
         });
@@ -3005,6 +3363,82 @@ mod tests {
             text.center().distance(node) < 80.0,
             "and still near its node: {text:?}"
         );
+    }
+
+    /// Runs one frame of `place` calls on a fresh placer set up by `setup`, and
+    /// returns the labels as drawn and the placer's rooms taken.
+    fn placing(
+        setup: impl Fn(&mut Placer),
+        labels: &[(Named, egui::Pos2, Force)],
+    ) -> (ShownLabels, HashSet<Named>, usize) {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let mut overlaid = HashSet::new();
+        let mut taken = 0;
+        let mut output = ctx.run_ui(input, |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            let mut placer = Placer::new(&painter, Vec::new(), Vec::new());
+            setup(&mut placer);
+            for &(key, node, force) in labels {
+                let job = label_job(None, "draw_graph", None, egui::Color32::WHITE, 12.5, false);
+                placer.place(key, node, 5.0, job, None, force);
+            }
+            overlaid.clone_from(&placer.overlaid);
+            taken = placer.taken.len();
+            placer.finish(|_| Some(egui::Pos2::ZERO));
+        });
+        output.textures_delta.clear();
+        let shown = ctx
+            .data_mut(|d| d.get_temp::<ShownLabels>(Placer::id()))
+            .unwrap_or_default();
+        (shown, overlaid, taken)
+    }
+
+    #[test]
+    fn a_held_name_stays_put_and_new_ones_keep_off_it() {
+        let (a, b) = (egui::pos2(400.0, 300.0), egui::pos2(400.0, 318.0));
+        let left = Spot::beside(1, 0);
+        let (shown, ..) = placing(
+            |placer| {
+                placer.held.insert(Named::Node(0), left);
+            },
+            &[
+                (Named::Node(0), a, Force::Free),
+                (Named::Node(1), b, Force::Free),
+            ],
+        );
+        assert_eq!(shown[&Named::Node(0)].at, left, "where it first went");
+        let rect = |key: Named, node: egui::Pos2| {
+            let label = &shown[&key];
+            egui::Rect::from_min_size(node + label.offset, label.galley.size())
+        };
+        assert!(
+            !rect(Named::Node(1), b).intersects(rect(Named::Node(0), a)),
+            "the new name keeps off the held one"
+        );
+    }
+
+    #[test]
+    fn the_cursor_is_named_beside_its_node_without_taking_room() {
+        let node = egui::pos2(400.0, 300.0);
+        // A name already on every side of the cursor's node.
+        let crowd = |placer: &mut Placer| {
+            for side in 0..SIDES.len() {
+                let rect = Spot::beside(side, 0).rect(node, 5.0, egui::vec2(70.0, 14.0));
+                placer.taken.push(rect);
+            }
+            placer.beside.insert(Named::Node(0));
+        };
+        let (shown, overlaid, taken) = placing(crowd, &[(Named::Node(0), node, Force::Never)]);
+        assert_eq!(shown[&Named::Node(0)].at.shift, 0, "right beside its node");
+        assert!(overlaid.contains(&Named::Node(0)), "drawn over the others");
+        assert_eq!(taken, SIDES.len(), "and taking no room from them");
     }
 
     #[test]

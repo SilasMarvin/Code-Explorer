@@ -7,31 +7,53 @@ use bevy_egui::{EguiContexts, egui};
 
 use crate::explorer::Explorer;
 
-/// Seconds a notice shows for, at least. It keeps nothing drawing: it goes with the
+/// Seconds a notice shows for, at most. It keeps nothing drawing: it goes with the
 /// first frame drawn after, which the window draws within a second when idle.
 const HOLD: f32 = 2.0;
 /// Below the top bar.
 const TOP: f32 = 44.0;
 
-/// Draws the explorer's last notice for a moment after it is said.
+/// The notice on screen: which, when it was said, and in which mode.
+pub(crate) struct Said {
+    count: u64,
+    at: f32,
+    browsing: bool,
+    /// Whether the next key or click, or a change of mode, has put it away.
+    gone: bool,
+}
+
+/// Draws the explorer's last notice for a moment after it is said, until the next key
+/// or click, or until the view leaves the journey or enters one.
 pub(crate) fn draw(
     time: Res<Time>,
     explorer: Res<Explorer>,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
     mut contexts: EguiContexts,
-    mut said: Local<Option<(u64, f32)>>,
+    mut said: Local<Option<Said>>,
 ) {
     let Some((count, text)) = explorer.notice() else {
         return;
     };
     let now = time.elapsed_secs();
-    let since = match *said {
-        Some((seen, at)) if seen == count => at,
-        _ => {
-            *said = Some((count, now));
-            now
+    let browsing = explorer.browsing();
+    match &mut *said {
+        Some(said) if said.count == count => {
+            let acted = keys.get_just_pressed().next().is_some()
+                || buttons.get_just_pressed().next().is_some();
+            said.gone |= acted || said.browsing != browsing;
         }
-    };
-    if now - since > HOLD {
+        // Said this frame, by the key just pressed.
+        _ => {
+            *said = Some(Said {
+                count,
+                at: now,
+                browsing,
+                gone: false,
+            });
+        }
+    }
+    if said.as_ref().is_none_or(|s| s.gone || now - s.at > HOLD) {
         return;
     }
     let Ok(ctx) = contexts.ctx_mut() else {

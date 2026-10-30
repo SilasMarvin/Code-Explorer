@@ -64,31 +64,55 @@ const BAR_GAP: f32 = 0.06;
 /// How big a bar's name is drawn, and how small it shrinks to fit.
 const BAR_TEXT: f32 = 12.5;
 const BAR_TEXT_SMALL: f32 = 11.0;
-/// Rows a docked journey shows before it scrolls.
-const DOCKED_ROWS: f32 = 4.0;
+/// Rows a docked journey grows to before it scrolls: the start and four levels.
+const DOCKED_ROWS: usize = 5;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
 const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 
+/// The rows of bars the journey shows: a row a level, the start's included. Shown
+/// by time, as many as a docked panel holds, so the panel keeps its height while the
+/// cursor moves.
+pub(crate) fn rows(explorer: &Explorer) -> usize {
+    match explorer.disclose() {
+        Disclose::Time => DOCKED_ROWS,
+        Disclose::Depth(_) => explorer.disclosure().rows(),
+    }
+}
+
 /// Where the graph renders and where the panel sits, within the space between the
-/// side panels.
-pub(crate) fn split(mode: PanelMode, area: egui::Rect) -> (egui::Rect, Option<egui::Rect>) {
+/// side panels, with `rows` of bars to show.
+pub(crate) fn split(
+    mode: PanelMode,
+    area: egui::Rect,
+    rows: usize,
+) -> (egui::Rect, Option<egui::Rect>) {
     match mode {
         PanelMode::Hidden => (area, None),
-        // Along the foot of the window, as wide as it, and as tall whatever the depth,
-        // so a level more or less never moves the graph; the graph renders above it,
-        // framed clear of it.
+        // Along the foot of the window, as wide as it, and as tall as the levels shown,
+        // up to a few, past which it scrolls. The graph renders above the tallest it
+        // grows to, so a level more or less never moves the graph.
         PanelMode::Docked => {
-            let height = (HEADER + PAD * 2.0 + DOCKED_ROWS * (ROW + ROW_GAP))
-                .min((area.height() * 0.4).max(140.0))
-                .min(area.height() - MARGIN * 2.0);
+            #[expect(clippy::cast_precision_loss, reason = "a handful of rows")]
+            let height = |rows: usize| {
+                (HEADER + PAD * 2.0 + rows as f32 * (ROW + ROW_GAP))
+                    .min((area.height() * 0.4).max(140.0))
+                    .min(area.height() - MARGIN * 2.0)
+            };
+            let tallest = height(DOCKED_ROWS);
             let panel = egui::Rect::from_min_max(
-                egui::pos2(area.min.x + MARGIN, area.max.y - MARGIN - height),
+                egui::pos2(
+                    area.min.x + MARGIN,
+                    area.max.y - MARGIN - height(rows.clamp(2, DOCKED_ROWS)),
+                ),
                 area.max - egui::vec2(MARGIN, MARGIN),
             );
-            let graph = egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, panel.min.y));
+            let graph = egui::Rect::from_min_max(
+                area.min,
+                egui::pos2(area.max.x, area.max.y - MARGIN - tallest),
+            );
             (graph, Some(panel))
         }
         PanelMode::Full => {
@@ -109,15 +133,16 @@ struct Bar {
     shown: bool,
 }
 
-/// The bars a tether runs from: the cursor's, and the one under the pointer.
+/// The bar a tether runs from to its node: the one under the pointer. The cursor's
+/// bar has none: its node is the one pink node, and a line across the graph to it
+/// ran through the names on the way.
 #[derive(Default)]
 pub(crate) struct Tethers {
-    pub(crate) cursor: Option<egui::Rect>,
     pub(crate) hovered: Option<egui::Rect>,
 }
 
-/// Draws the panel and handles its input. Returns the bars to tether to their nodes
-/// in the graph.
+/// Draws the panel and handles its input. Returns the bar to tether to its node in
+/// the graph.
 pub(crate) fn draw(
     ctx: &egui::Context,
     rect: egui::Rect,
@@ -499,20 +524,32 @@ fn canvas(
         let number_width = text_width(&painter, number, 11.5);
         // What is folded under the bar, as a badge that opens it, where there is room
         // for its number beside it: a number says which call it is, the badge only
-        // how much more there is.
+        // how much more there is. A triangle, as a fold is drawn anywhere, and the
+        // count: never "+N", which on a name in the graph counts runs.
         let folded = disclosed.folded(bar.span);
-        let badge = (folded > 0 && bar.rect.width() > 26.0 + number_width + 12.0).then(|| {
+        let badge = (folded > 0 && bar.rect.width() > 30.0 + number_width + 12.0).then(|| {
             let badge = egui::Rect::from_min_max(
-                egui::pos2(bar.rect.max.x - 26.0, bar.rect.min.y + 3.0),
+                egui::pos2(bar.rect.max.x - 30.0, bar.rect.min.y + 3.0),
                 egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
             );
+            let ink = egui::Color32::from_rgb(220, 224, 234);
             painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(120));
+            let tip = egui::pos2(badge.min.x + 8.0, badge.center().y + 2.5);
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    tip + egui::vec2(-3.5, -5.0),
+                    tip + egui::vec2(3.5, -5.0),
+                    tip,
+                ],
+                ink,
+                egui::Stroke::NONE,
+            ));
             painter.text(
-                badge.center(),
-                egui::Align2::CENTER_CENTER,
-                format!("+{folded}"),
+                egui::pos2(badge.min.x + 13.5, badge.center().y),
+                egui::Align2::LEFT_CENTER,
+                folded.to_string(),
                 egui::FontId::proportional(10.5),
-                egui::Color32::from_rgb(220, 224, 234),
+                ink,
             );
             if mouse.is_some_and(|p| badge.contains(p)) {
                 fold_hit = Some(bar.span);
@@ -545,10 +582,8 @@ fn canvas(
                 format!("{number}  {sign}{name}")
             }
         };
-        let condition = span
-            .conditions
-            .last()
-            .map_or_else(String::new, |c| format!("  if {}", c.arm));
+        let condition =
+            crate::disclosure::when(span).map_or_else(String::new, |w| format!("  {w}"));
         let room = free.width() - 10.0;
         let tries = [
             (format!("{}{condition}", numbered(&label)), BAR_TEXT),
@@ -619,7 +654,6 @@ fn canvas(
         painter.rect_filled(content, 0.0, egui::Color32::from_black_alpha(140));
     }
 
-    let mut cursor_rect = None;
     if let Some(rect) = cursor.and_then(rect_of) {
         painter.line_segment(
             [
@@ -634,7 +668,6 @@ fn canvas(
             egui::Stroke::new(2.0, egui::Color32::WHITE),
             egui::StrokeKind::Outside,
         );
-        cursor_rect = content.intersects(rect).then_some(rect);
     }
     if let Some((rect, name)) = unnamed_cursor {
         let galley = painter.layout_no_wrap(
@@ -720,7 +753,6 @@ fn canvas(
         }
     }
     Tethers {
-        cursor: cursor_rect,
         hovered: hovered_rect,
     }
 }
