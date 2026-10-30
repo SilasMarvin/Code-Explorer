@@ -61,6 +61,8 @@ pub struct Viewer {
     /// Whether a diff opens showing only what changed.
     changes_only: bool,
     focus: Option<UnitId>,
+    /// The function a screenshot puts the pointer over.
+    hover: Option<UnitId>,
     /// How many levels of the opened journey show at first.
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
@@ -109,6 +111,7 @@ impl Viewer {
             lens_source: false,
             changes_only: true,
             focus: None,
+            hover: None,
             depth: None,
             bare: false,
             z: ZView::Free,
@@ -236,6 +239,13 @@ impl Viewer {
         self
     }
 
+    /// Opens as though the pointer were over this function, for a screenshot.
+    #[must_use]
+    pub fn with_hover(mut self, unit: UnitId) -> Self {
+        self.hover = Some(unit);
+        self
+    }
+
     /// Opens the journey this many levels deep instead of one.
     #[must_use]
     pub fn with_depth(mut self, depth: u32) -> Self {
@@ -328,6 +338,10 @@ impl Viewer {
         }
         explorer.set_nucleus(self.z != ZView::Free);
         explorer.expand_nucleus(self.z == ZView::Expanded);
+        explorer.hovered_tile = self
+            .hover
+            .take()
+            .and_then(|unit| explorer.map().tile_of(&unit));
         explorer
     }
 
@@ -391,7 +405,8 @@ impl Viewer {
             bare: self.bare,
             ..default()
         })
-        .init_resource::<Autoplay>();
+        .init_resource::<Autoplay>()
+        .init_resource::<idle::Awake>();
         if let Some(diff) = diff {
             app.insert_resource(diff);
         }

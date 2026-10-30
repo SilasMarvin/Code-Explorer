@@ -13,11 +13,14 @@
 //!
 //! Expanded (`X`, a double click on the nucleus, or `--expand`), the nucleus grows to
 //! several times its size as the camera comes in, and its functions are laid out by
-//! the calls among them: what is within two calls of the focus, up or down, named in
-//! the middle, the focus's callers leaning one way and its callees the other, the
-//! rest small and faint towards the wall. The modules it calls or is called by shrink
-//! onto a ring just outside the wall, at the bearings they had, and each call leaving
-//! the module runs out through the wall towards its module.
+//! the calls among them: what is within two calls of the focus, up or down, in the
+//! middle, the focus's callers leaning one way and its callees the other, the rest
+//! small towards the wall. Only the focus's own calls are drawn, and its callers and
+//! callees named; the modules it calls or is called by shrink onto a ring just outside
+//! the wall, at the bearings they had, and each of its calls leaving the module runs
+//! out through the wall towards its module. With the pointer over another function
+//! inside, that function's own calls in and out are drawn too, pale, and every end of
+//! them named.
 
 use std::{
     cmp::Reverse,
@@ -156,8 +159,22 @@ struct Arrangement {
     opened: Vec<usize>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
-    /// Expanded: the calls inside the module that this view does not name, drawn faint.
-    background: Vec<(usize, usize)>,
+}
+
+/// One end of a call the function under the pointer makes or takes, expanded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum End {
+    /// A function drawn: inside the nucleus, or named on the ring round it.
+    Function(usize),
+    /// Another module, where the call leaves the nucleus towards it.
+    Module(usize),
+}
+
+/// A call the function under the pointer makes or takes, expanded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Touch {
+    pub(crate) from: End,
+    pub(crate) to: End,
 }
 
 /// The graph gathered round the focus's module.
@@ -176,6 +193,9 @@ pub(crate) struct Nucleus {
     /// Whether the focus's module is expanded to show how calls run inside it.
     expanded: bool,
     now: Arrangement,
+    /// The function under the pointer, and, expanded, the calls it makes or takes.
+    hovered: Option<usize>,
+    touches: Vec<Touch>,
     /// Where the spheres and functions were when the last re-centering began.
     from: Option<(Vec<Ball>, Vec<Vec3>)>,
     /// How far along that re-centering is, 0 to 1.
@@ -214,6 +234,8 @@ impl Nucleus {
             flows,
             expanded: false,
             now: Arrangement::default(),
+            hovered: None,
+            touches: Vec::new(),
             from: None,
             progress: 1.0,
         };
@@ -256,6 +278,118 @@ impl Nucleus {
         self.from = Some((balls, points));
         self.progress = 0.0;
         self.now = self.arrange(graph, focus);
+        self.touches = self.touching(graph, self.hovered);
+    }
+
+    /// Marks the function under the pointer. Returns whether that changed.
+    pub(crate) fn hover(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
+        if tile == self.hovered {
+            return false;
+        }
+        self.hovered = tile;
+        self.touches = self.touching(graph, tile);
+        true
+    }
+
+    /// Expanded, the calls `tile` makes or takes when it is a function inside the
+    /// nucleus other than the focus, whose own are drawn already; one for each
+    /// function, or each other module where the far end is folded away.
+    fn touching(&self, graph: &ForceGraph, tile: Option<usize>) -> Vec<Touch> {
+        let Some(tile) = tile.filter(|&t| {
+            self.now.expanded
+                && Some(t) != self.now.focus
+                && self.module_of.get(t).copied().flatten() == Some(self.now.center)
+        }) else {
+            return Vec::new();
+        };
+        let mut touches = Vec::new();
+        for &(from, to) in &graph.calls {
+            let other = match () {
+                () if from == tile && to != tile => to,
+                () if to == tile && from != tile => from,
+                () => continue,
+            };
+            if Some(other) == self.now.focus {
+                continue;
+            }
+            let end = match self.module_of.get(other).copied().flatten() {
+                _ if self.shows(other) => End::Function(other),
+                Some(cluster) => End::Module(cluster),
+                None => continue,
+            };
+            let touch = if from == tile {
+                Touch {
+                    from: End::Function(tile),
+                    to: end,
+                }
+            } else {
+                Touch {
+                    from: end,
+                    to: End::Function(tile),
+                }
+            };
+            if !touches.contains(&touch) {
+                touches.push(touch);
+            }
+        }
+        touches
+    }
+
+    /// Whether a function is drawn full size: named, or an end of a call the
+    /// function under the pointer makes or takes.
+    pub(crate) fn lit(&self, tile: usize) -> bool {
+        self.names(tile) || self.touched(tile)
+    }
+
+    /// Expanded, the calls the function under the pointer makes or takes.
+    pub(crate) fn touches(&self) -> &[Touch] {
+        &self.touches
+    }
+
+    /// Whether a function is an end of a call drawn: the focus's own, or the
+    /// function under the pointer's. Such a function is always named.
+    pub(crate) fn ends(&self, tile: usize) -> bool {
+        self.now.expanded
+            && self.shows(tile)
+            && (self
+                .now
+                .links
+                .iter()
+                .any(|l| l.from == tile || l.to == tile)
+                || self.touched(tile))
+    }
+
+    /// Whether a function is an end of a call the function under the pointer makes or
+    /// takes.
+    pub(crate) fn touched(&self, tile: usize) -> bool {
+        self.touches
+            .iter()
+            .any(|t| t.from == End::Function(tile) || t.to == End::Function(tile))
+    }
+
+    /// Where a call the function under the pointer makes or takes ends, as drawn now,
+    /// coming from `toward`: at a function, at the near side of a module on the ring,
+    /// or else on the nucleus's wall on the way to that module.
+    pub(crate) fn end_point(&self, end: End, toward: Vec3) -> Option<Vec3> {
+        match end {
+            End::Function(tile) => self.point(tile),
+            End::Module(cluster) => {
+                let ball = self.ball(cluster)?;
+                if ball.body == Body::Open {
+                    let back = (toward - ball.center).normalize_or_zero();
+                    return Some(ball.center + back * ball.radius);
+                }
+                self.wall(cluster)
+            }
+        }
+    }
+
+    /// Where the nucleus's wall faces a module, as drawn now.
+    pub(crate) fn wall(&self, cluster: usize) -> Option<Vec3> {
+        let core = self.ball(self.now.center)?;
+        let ball = self.ball(cluster)?;
+        let out = (ball.center - core.center).try_normalize()?;
+        Some(core.center + out * core.radius)
     }
 
     /// Moves a re-centering along by `dt` seconds. Returns whether anything moved.
@@ -330,11 +464,6 @@ impl Nucleus {
     /// screen in the expanded nucleus.
     pub(crate) fn zoom(&self) -> f32 {
         if self.now.expanded { GROWTH * 0.5 } else { 1.0 }
-    }
-
-    /// Expanded: the calls inside the module this view does not name.
-    pub(crate) fn background(&self) -> &[(usize, usize)] {
-        &self.now.background
     }
 
     /// How many functions a module holds.
@@ -517,7 +646,6 @@ impl Nucleus {
             opened: opened.iter().map(Vec::len).collect(),
             tubes,
             links,
-            background: Vec::new(),
         }
     }
 
@@ -540,8 +668,8 @@ impl Nucleus {
             .filter(|&(a, b)| a != b && cluster_of(a) == center && cluster_of(b) == center)
             .collect();
         let reach = focus.map_or_else(HashMap::new, |f| within(&calls, f));
-        let (mut links, background) = inside_links(&calls, focus, &reach);
-        let exits = exits(graph, &reach, center, &cluster_of);
+        let mut links = inside_links(&calls, focus);
+        let exits = exits(graph, focus, center, &cluster_of);
         let mut rim: Vec<usize> = exits
             .iter()
             .map(|l| {
@@ -604,16 +732,17 @@ impl Nucleus {
             balls,
             points,
             shown,
-            named: reach
-                .keys()
-                .chain(columns.iter().flatten())
-                .copied()
+            // The focus's callers and callees alone: what is further along is drawn
+            // only while the pointer is over what leads to it.
+            named: links
+                .iter()
+                .flat_map(|l| [l.from, l.to])
+                .chain(columns.iter().flatten().copied())
                 .filter(|&t| Some(t) != focus)
                 .collect(),
             opened: columns.iter().map(Vec::len).collect(),
             tubes,
             links,
-            background,
         }
     }
 
@@ -914,68 +1043,39 @@ fn within(calls: &[(usize, usize)], focus: usize) -> HashMap<usize, i32> {
     reach
 }
 
-/// The calls inside the module, split into those this view names, which touch the
-/// focus or run along a chain of calls to it or from it, and the rest.
-fn inside_links(
-    calls: &[(usize, usize)],
-    focus: Option<usize>,
-    reach: &HashMap<usize, i32>,
-) -> (Vec<Link>, Vec<(usize, usize)>) {
-    let mut links = Vec::new();
-    let mut rest = Vec::new();
-    for &(from, to) in calls {
-        let flow = match (reach.get(&from), reach.get(&to)) {
-            _ if Some(to) == focus => Flow::Into,
-            _ if Some(from) == focus => Flow::OutOf,
-            // From further up to nearer, or from nearer down to further.
-            (Some(&a), Some(&b)) if a * b > 0 && a < b => Flow::Further,
-            _ => {
-                rest.push((from, to));
-                continue;
-            }
-        };
-        links.push(Link { from, to, flow });
-    }
-    (links, rest)
+/// The calls inside the module into the focus and out of it.
+fn inside_links(calls: &[(usize, usize)], focus: Option<usize>) -> Vec<Link> {
+    calls
+        .iter()
+        .filter_map(|&(from, to)| {
+            let flow = match () {
+                () if Some(to) == focus => Flow::Into,
+                () if Some(from) == focus => Flow::OutOf,
+                () => return None,
+            };
+            Some(Link { from, to, flow })
+        })
+        .collect()
 }
 
-/// The calls leaving the module from what it names, or coming into it: every one of
-/// the focus's, and for the rest one for each function, other module and direction: into the focus and its callers, and out of
-/// the focus and its callees, as flow runs.
+/// The focus's calls leaving the module, or coming into it, each once.
 fn exits(
     graph: &ForceGraph,
-    reach: &HashMap<usize, i32>,
+    focus: Option<usize>,
     center: usize,
     cluster_of: &impl Fn(usize) -> usize,
 ) -> Vec<Link> {
     let mut seen = HashSet::new();
     let mut links = Vec::new();
     for &(from, to) in &graph.calls {
-        let (a, b) = (cluster_of(from), cluster_of(to));
-        let (inside, other, outward) = match () {
-            () if a == center && b != center => (from, b, true),
-            () if b == center && a != center => (to, a, false),
+        let flow = match () {
+            () if Some(from) == focus && cluster_of(to) != center => Flow::OutOf,
+            () if Some(to) == focus && cluster_of(from) != center => Flow::Into,
             () => continue,
         };
-        let Some(&hops) = reach.get(&inside) else {
-            continue;
-        };
-        let along = hops == 0 || (hops > 0) == outward;
-        // Every call of the focus's own; of the rest, one for each other module.
-        let outer = match (hops, outward) {
-            (0, true) => to,
-            (0, false) => from,
-            _ => other,
-        };
-        if !along || !seen.insert((inside, outer, outward)) {
-            continue;
+        if seen.insert((from, to)) {
+            links.push(Link { from, to, flow });
         }
-        let flow = match hops {
-            0 if outward => Flow::OutOf,
-            0 => Flow::Into,
-            _ => Flow::Further,
-        };
-        links.push(Link { from, to, flow });
     }
     links
 }
@@ -1395,6 +1495,28 @@ pub(crate) fn double_click(
     }
 }
 
+/// Seconds the names round the function under the pointer take to settle once the
+/// pointer moves onto it or off it.
+const HOVER_SETTLE: f32 = 0.4;
+
+/// Expanded, draws the calls of the function under the pointer, and keeps drawing
+/// while the names at their ends fade in or out.
+pub(crate) fn hover(
+    time: Res<Time>,
+    mut explorer: ResMut<Explorer>,
+    mut awake: ResMut<Awake>,
+    mut settling: Local<f32>,
+) {
+    if explorer.bypass_change_detection().hover_nucleus() {
+        explorer.set_changed();
+        *settling = HOVER_SETTLE;
+    }
+    if *settling > 0.0 {
+        *settling -= time.delta_secs();
+        awake.0 = true;
+    }
+}
+
 /// Re-centers on the focus's module when the focus moves, and eases the spheres
 /// there.
 pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake: ResMut<Awake>) {
@@ -1735,20 +1857,34 @@ pub(crate) fn draw(
         if !nucleus.shows(tile) {
             return to;
         }
-        let quiet = !nucleus.names(tile) && nucleus.focus() != Some(tile);
+        let quiet = !nucleus.lit(tile) && nucleus.focus() != Some(tile);
         to - (to - from).normalize_or_zero()
             * node_size(graph, tile)
             * nucleus.node_scale(quiet)
             * 0.5
     };
-    // Expanded, the calls inside the module this view does not name, faint.
-    for &(from, to) in nucleus.background() {
-        let (Some(a), Some(b)) = (nucleus.point(from), nucleus.point(to)) else {
+    // Expanded, the calls of the function under the pointer, pale.
+    for touch in nucleus.touches() {
+        let toward = |end: End| match end {
+            End::Function(function) => nucleus.point(function),
+            End::Module(_) => None,
+        };
+        let Some(near) = toward(touch.from).or_else(|| toward(touch.to)) else {
             continue;
         };
+        let (Some(a), Some(b)) = (
+            nucleus.end_point(touch.from, near),
+            nucleus.end_point(touch.to, near),
+        ) else {
+            continue;
+        };
+        let b = match touch.to {
+            End::Function(callee) => short(a, b, callee),
+            End::Module(_) => b,
+        };
         gizmos
-            .arrow(a, short(a, b, to), FURTHER.with_alpha(0.055))
-            .with_tip_length(0.5 * zoom);
+            .arrow(a, b, FURTHER.with_alpha(0.8))
+            .with_tip_length(0.7 * zoom);
     }
     for (index, link) in nucleus.links().iter().enumerate() {
         let route = nucleus.route(link);
@@ -1781,8 +1917,9 @@ mod tests {
 
     use super::*;
 
-    /// Six modules: `web::route` calls `core::run`, which calls `db::put`, `log::say`
-    /// and `core::help`; `db::put` calls `disk::write`; `far` calls nothing.
+    /// Seven modules: `web::route` calls `core::run`, which calls `db::put`,
+    /// `log::say` and `core::help`; `core::help` calls `core::idle` and `ext::lib`;
+    /// `db::put` calls `disk::write`; `far` calls nothing.
     fn codebase() -> (ForceGraph, CodebaseMap) {
         let module = |name: &str| {
             format!(
@@ -1804,18 +1941,19 @@ mod tests {
                 calls.join(",")
             )
         };
-        let units: Vec<String> = ["web", "core", "db", "log", "disk", "far"]
+        let units: Vec<String> = ["web", "core", "db", "log", "disk", "ext", "far"]
             .into_iter()
             .map(module)
             .chain([
                 function("web::route", &["core::run"]),
                 function("core::run", &["db::put", "log::say", "core::help"]),
-                function("core::help", &[]),
+                function("core::help", &["core::idle", "ext::lib"]),
                 function("core::idle", &[]),
                 function("db::put", &["disk::write"]),
                 function("db::other", &[]),
                 function("log::say", &[]),
                 function("disk::write", &[]),
+                function("ext::lib", &[]),
                 function("far::alone", &[]),
             ])
             .collect();
@@ -2035,11 +2173,56 @@ mod tests {
             .ball(module(&graph, &map, "db::put"))
             .expect("a sphere");
         assert!((route[2].distance(db.center) - db.radius).abs() < 0.5);
-        assert!(nucleus.names(help), "within two calls, named");
+        assert!(nucleus.names(help), "called by the focus, named");
         assert!(
             !nucleus.names(tile(&map, "core::idle")),
-            "unrelated, not named"
+            "two calls along, not named"
         );
+    }
+
+    #[test]
+    fn expanded_draws_only_the_focus_calls_until_the_pointer_asks() {
+        let (graph, map) = codebase();
+        let mut nucleus = Nucleus::new(&graph, Some(tile(&map, "core::run")));
+        nucleus.expand(&graph, true);
+        while nucleus.advance(0.1) {}
+        assert!(
+            nucleus.links().iter().all(|l| l.flow != Flow::Further),
+            "nothing further along"
+        );
+        let (help, idle) = (tile(&map, "core::help"), tile(&map, "core::idle"));
+        let ext = module(&graph, &map, "ext::lib");
+        assert_eq!(
+            nucleus.ball(ext).map(|b| b.body),
+            Some(Body::Closed),
+            "only the focus's own calls put a module on the ring"
+        );
+        assert_eq!(nucleus.touches(), &[]);
+        assert!(!nucleus.ends(idle));
+
+        assert!(nucleus.hover(&graph, Some(help)));
+        let touches = nucleus.touches();
+        assert!(touches.contains(&Touch {
+            from: End::Function(help),
+            to: End::Function(idle),
+        }));
+        assert!(
+            touches.contains(&Touch {
+                from: End::Function(help),
+                to: End::Module(ext),
+            }),
+            "a call to a function folded away runs to its module"
+        );
+        assert_eq!(touches.len(), 2, "the focus's call to it is drawn already");
+        assert!(nucleus.ends(idle), "the end of a call drawn is named");
+        let core = nucleus
+            .ball(module(&graph, &map, "core::run"))
+            .expect("a sphere");
+        let wall = nucleus.wall(ext).expect("a wall");
+        assert!((wall.distance(core.center) - core.radius).abs() < 1e-3);
+
+        assert!(nucleus.hover(&graph, None));
+        assert!(nucleus.touches().is_empty() && !nucleus.ends(idle));
     }
 
     #[test]

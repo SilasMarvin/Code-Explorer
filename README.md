@@ -96,16 +96,19 @@ the usual three-quarter view, and `Z` again lays the graph flat.
 `X`, or a double click on the nucleus away from its functions, expands it (`--expand`
 opens straight into it): the sphere grows to several times its size while the camera
 comes in, so you go inside the same object. Inside, the module's functions are laid
-out by the calls among them. The focus and whatever is within two calls of it inside
-the module, up or down, are named and gather in the middle, the focus's callers
-tending to one side and its callees to the other (a tendency, not an axis); the rest
-are small faint specks out towards the wall. A call inside the module is a thin arrow,
-violet into the focus, blue out of it, pale further along, and faint grey when it
-touches nothing named. The modules it calls or is called by shrink onto a ring just
-outside the wall, each at the bearing it had, with the focus's own callers and callees
-there still named; every call leaving the module runs out through the wall at the
-point facing its module and on into it. Clicking a function focuses it as usual, and
-`X` again shrinks the nucleus back among the other modules.
+out by the calls among them: whatever is within two calls of the focus inside the
+module, up or down, gathers in the middle, the focus's callers tending to one side and
+its callees to the other (a tendency, not an axis); the rest are small faint specks out
+towards the wall. Only the focus's own calls are drawn, violet into it and blue out of
+it, with every caller and callee named. The modules it calls or is called by shrink
+onto a ring just outside the wall, each at the bearing it had, with the focus's own
+callers and callees there still named; each of its calls leaving the module runs out
+through the wall at the point facing its module and on into it. Point at another
+function inside to draw its own calls in and out as pale arrows, each end named: a
+function, or where the call leaves through the wall, under its module's name. They go
+when the pointer leaves. A name at the end of a call drawn is never dropped; when its
+place is taken it is nudged aside, on a thread back to its node. Clicking a function
+focuses it as usual, and `X` again shrinks the nucleus back among the other modules.
 
 ## Diffs
 
@@ -131,8 +134,8 @@ alone. Each scenario in `scenarios.json` renders bare (`--bare`: the graph and t
 journey, nothing else), and `--screenshot` writes `shot.truth.json` beside the image:
 the focus, every disclosed call with its number and module, whether it can fail or only
 sometimes runs, how many calls it folds away, and what a diff changed. `--keys` presses
-keys first (`--keys "i"`, `--keys ". . o"`), so a scenario can show a view you reach by
-hand. From that, `readability.py` writes questions with their answers (call order,
+keys first (`--keys "i"`, `--keys ". . o"`), and `--hover UNIT` puts the pointer over a
+function, so a scenario can show a view you reach by hand. From that, `readability.py` writes questions with their answers (call order,
 nesting, folding, failures, conditions, callers, which module a call lives in, changes)
 and grades what readers answer, by aspect, against the previous run.
 

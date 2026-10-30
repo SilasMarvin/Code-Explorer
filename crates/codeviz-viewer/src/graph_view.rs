@@ -295,10 +295,10 @@ pub(crate) fn style_nodes(
             Some(diff) => diff_look(&explorer, diff, tile.0),
             None => node_look(&explorer, tile.0),
         };
-        // Gathered round the focus's module, what it names but the focus does not
-        // reach still shows plainly; what relates to nothing named is a small, faint
-        // speck.
-        let named = nucleus.is_some_and(|n| n.names(tile.0));
+        // Gathered round the focus's module, what it names, or what the function under
+        // the pointer calls or is called by, shows plainly though the focus does not
+        // reach it; what relates to nothing named is a small, faint speck.
+        let named = nucleus.is_some_and(|n| n.lit(tile.0));
         let quiet = nucleus.is_some() && !named && matches!(look, NodeLook::Faded(_));
         let look = match look {
             NodeLook::Faded(color) if named => NodeLook::Plain(color),

@@ -668,6 +668,15 @@ impl Explorer {
         }
     }
 
+    /// Tells the nucleus which function the pointer is over. Returns whether that
+    /// changed.
+    pub(crate) fn hover_nucleus(&mut self) -> bool {
+        let tile = self.hovered_tile;
+        self.nucleus
+            .as_mut()
+            .is_some_and(|nucleus| nucleus.hover(&self.graph, tile))
+    }
+
     /// Re-centers the nucleus when the focus moved to another function, and eases it
     /// along by `dt` seconds. Returns whether what it shows changed, rather than only
     /// moved.

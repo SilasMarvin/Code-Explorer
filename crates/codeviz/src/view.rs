@@ -66,6 +66,10 @@ pub(crate) struct Display {
     /// Open with this function (entry label or unit id suffix) focused in the graph.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
+    /// With --screenshot, as though the pointer were over this function (entry label
+    /// or unit id suffix).
+    #[arg(long, value_name = "UNIT", requires = "screenshot")]
+    hover: Option<String>,
     /// Open the journey this many levels deep instead of one.
     #[arg(long, value_name = "LEVELS")]
     depth: Option<u32>,
@@ -189,6 +193,11 @@ pub(crate) fn open(
         .as_ref()
         .map(|query| crate::journey::find_one(&system, query))
         .transpose()?;
+    let hover = args
+        .hover
+        .as_ref()
+        .map(|query| crate::journey::find_one(&system, query))
+        .transpose()?;
     let title = format!("codeviz — {title}");
 
     let viewer = if before.is_empty() {
@@ -215,6 +224,9 @@ pub(crate) fn open(
     }
     if let Some(focus) = focus {
         viewer = viewer.with_focus(focus);
+    }
+    if let Some(hover) = hover {
+        viewer = viewer.with_hover(hover);
     }
     if let Some(scenario) = args.scenario {
         viewer = viewer.with_scenario(scenario);

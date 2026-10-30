@@ -37,6 +37,7 @@ impl Plugin for ScenePlugin {
                 graph_view::track_attention,
                 nucleus::double_click.run_if(not(egui_wants_any_pointer_input)),
                 nucleus::follow,
+                nucleus::hover,
                 simulate,
                 reveal,
                 nucleus::place_bodies,
@@ -141,8 +142,9 @@ fn on_node_click(
 }
 
 fn on_node_over(over: On<PointerOver>, tiles: Query<&Tile>, mut explorer: ResMut<Explorer>) {
+    // Inside the nucleus even a faint function can be pointed at, for its calls.
     if let Ok(tile) = tiles.get(over.entity)
-        && explorer.shown(tile.0)
+        && (explorer.shown(tile.0) || explorer.nucleus().is_some_and(|n| n.shows(tile.0)))
     {
         explorer.hovered_tile = Some(tile.0);
     }
