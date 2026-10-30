@@ -11,7 +11,7 @@ use crate::{
     idle::Awake,
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
-    nucleus,
+    nucleus, pick,
     ui::{Chrome, KeyHelp},
 };
 
@@ -32,6 +32,11 @@ impl Plugin for ScenePlugin {
             Update,
             (
                 stop_on_rebuild,
+                (
+                    pick::point,
+                    pick::click.run_if(not(egui_wants_any_pointer_input)),
+                )
+                    .chain(),
                 keyboard.run_if(not(egui_wants_any_keyboard_input)),
                 autoplay,
                 graph_view::track_attention,
@@ -46,6 +51,7 @@ impl Plugin for ScenePlugin {
                 nucleus::frame,
                 graph_view::frame_reveal,
                 graph_view::frame_spotlight,
+                graph_view::reveal_cursor,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
                 nucleus::draw,
@@ -98,65 +104,14 @@ fn spawn_nodes(
         let Some(at) = explorer.tile_point(index) else {
             continue;
         };
-        commands
-            .spawn((
-                Tile(index),
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d(material.clone()),
-                Transform::from_translation(at)
-                    .with_scale(Vec3::splat(graph_view::node_size(graph, index))),
-            ))
-            .observe(on_node_click)
-            .observe(on_node_over)
-            .observe(on_node_out);
-    }
-}
-
-/// Click moves the focus to a node: the journey's cursor when it runs the node, else
-/// the node alone, for now. Shift-click follows it, starting the journey there.
-fn on_node_click(
-    click: On<PointerClick>,
-    tiles: Query<&Tile>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mut explorer: ResMut<Explorer>,
-    mut panel: ResMut<JourneyPanel>,
-) {
-    if click.button != PointerButton::Primary {
-        return;
-    }
-    let Ok(tile) = tiles.get(click.entity) else {
-        return;
-    };
-    if !explorer.shown(tile.0) {
-        return;
-    }
-    if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-        explorer.open_at(tile.0);
-    } else {
-        explorer.focus_tile(tile.0);
-    }
-    // Clicking a node is asking what it does: the journey opens with it.
-    if panel.mode == PanelMode::Hidden {
-        panel.mode = PanelMode::Docked;
-    }
-}
-
-fn on_node_over(over: On<PointerOver>, tiles: Query<&Tile>, mut explorer: ResMut<Explorer>) {
-    // Inside the nucleus even a faint function can be pointed at, for its calls,
-    // unless the specks are left out.
-    if let Ok(tile) = tiles.get(over.entity)
-        && (explorer.shown(tile.0) || explorer.nucleus().is_some_and(|n| n.shows(tile.0)))
-        && !graph_view::hidden_speck(&explorer, tile.0)
-    {
-        explorer.hovered_tile = Some(tile.0);
-    }
-}
-
-fn on_node_out(out: On<PointerOut>, tiles: Query<&Tile>, mut explorer: ResMut<Explorer>) {
-    if let Ok(tile) = tiles.get(out.entity)
-        && explorer.hovered_tile == Some(tile.0)
-    {
-        explorer.hovered_tile = None;
+        // What the pointer is on is worked out by `pick`, from where nodes show.
+        commands.spawn((
+            Tile(index),
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation(at)
+                .with_scale(Vec3::splat(graph_view::node_size(graph, index))),
+        ));
     }
 }
 

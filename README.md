@@ -68,18 +68,26 @@ the view open (flat, nucleus or diff), in columns that fit the window and scroll
 its height, under a line saying what each color means, and `Esc` closes whichever of
 those is on top, or the spotlight.
 
-Every move made by hand is remembered: a click on a function, on or off the journey, a
-journey bar or a digit, and every new start, by `Enter`, a `Shift`-click, a search
-result, a change, an outcome or `Start here`. `Backspace`, or `← Back` at the left of
-the top bar, goes back to the view before it, the function clicked, cursor, outcome,
-depth, opened calls and spotlight included, and `Shift+Backspace` (or `Forward →`)
-forward again; both buttons are always there, greyed out with nowhere to go. Stepping
-the cursor with the keys, and changing the depth, are not moves of their own: going
-back puts the cursor and depth back as they were when you left. The
-camera orbits where the journey starts and turns only when you start somewhere new;
-stepping through the journey at most pulls it back to keep the cursor's node in sight.
-Pan or zoom and it stays where you put it, saying `camera free · F to follow` until `F`
-brings it back.
+One rule says what is remembered: everything that changes the middle or where the
+journey starts, or moves the cursor by a click (on a function or its name, on or off
+the journey), a journey bar, a digit or `Enter`, and every new start, by a
+`Shift`-click, a search result, a change, an outcome or `Start here`. A walk with the
+arrows or brackets is remembered once, however many steps it takes. `Backspace`, or
+`← Back` at the left of the top bar (the two always agree), goes back to the view
+before it, the function clicked, cursor, outcome, depth, opened calls, spotlight and
+what `Shift+I`, `Shift+O` and `N` hid included, framed afresh; after a walk, to where
+the walk began. `Shift+Backspace` (or `Forward →`) goes forward again; both buttons are
+always there, greyed out with nowhere to go. Changing the depth, or hiding a side, is
+not a move of its own. The camera frames the middle, its callers, the journey as
+disclosed and the cursor whenever you point it somewhere new, and refits for a level
+more or less; stepping through the journey moves it only when the cursor lands off
+screen or under the docked journey, and then pulls back just far enough to show it.
+Pan or zoom and it stays where you put it, saying `camera free · F to follow`, unless
+the cursor would leave the screen, until `F` brings it back.
+
+A click picks the function you see: a named function before a faint speck lying a
+pixel in front of it, and a function's name picks the function. Specks left out with
+`N` are never picked.
 
 ## Nucleus
 
@@ -125,8 +133,9 @@ at a function, previews it in white: a glow on its node and its call brightened.
 does not reach shows just under its module's sphere. A click on a function, `Enter`,
 or a `Shift`-click makes a new middle; one in another module eases every sphere to its
 new place, and `Backspace` eases them back. `Q` and `E` turn the view an eighth of the way round, refitting it, so the
-depth shows; `F` comes back to the usual three-quarter view, and `Z` again lays the
-graph flat.
+depth shows; `R` frames the middle, the open modules and the cursor again from the
+angle the camera has, `F` does the same from the usual three-quarter view, and `Z`
+again lays the graph flat.
 
 `X`, or a double click on the nucleus away from its functions, expands it (`--expand`
 opens straight into it): the sphere grows to several times its size while the camera

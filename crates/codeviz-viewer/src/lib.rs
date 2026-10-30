@@ -23,6 +23,7 @@ mod idle;
 mod journey_panel;
 mod lens;
 mod nucleus;
+mod pick;
 mod scene;
 mod script;
 mod source_diff;
@@ -427,7 +428,6 @@ impl Viewer {
             ..default()
         }))
         .add_plugins((
-            MeshPickingPlugin,
             EguiPlugin::default(),
             camera::OrbitCameraPlugin,
             scene::ScenePlugin,
