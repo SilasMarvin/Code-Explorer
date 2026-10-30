@@ -180,24 +180,18 @@ fn order(number: &str) -> (usize, Vec<u32>) {
     (parts.len(), parts)
 }
 
-/// A function's numbers on its badge: the call nearest the root, as the panel numbers
-/// it, and how many more times the journey runs it; with the cursor on it, the
-/// cursor's own number first.
-pub(crate) fn badge<'a>(
-    numbers: impl IntoIterator<Item = &'a String>,
-    cursor: Option<&str>,
-) -> Option<String> {
+/// A function's numbers on its badge: its first call in the panel's order, nearest
+/// the root, and how many more times the journey runs it. Where the cursor is never
+/// changes it, and a deeper level disclosed only adds to the count.
+pub(crate) fn badge<'a>(numbers: impl IntoIterator<Item = &'a String>) -> Option<String> {
     let mut numbers: Vec<&str> = numbers.into_iter().map(String::as_str).collect();
     numbers.sort_by_key(|n| order(n));
     numbers.dedup();
-    let first = cursor
-        .filter(|c| !c.is_empty())
-        .or_else(|| numbers.first().copied())?;
-    let more = numbers.iter().filter(|n| **n != first).count();
-    Some(if more == 0 {
-        first.to_owned()
+    let (first, more) = numbers.split_first()?;
+    Some(if more.is_empty() {
+        (*first).to_owned()
     } else {
-        format!("{first} +{more}")
+        format!("{first} +{}", more.len())
     })
 }
 
@@ -266,6 +260,9 @@ const ATLAS_ASPECT: f32 = 1.5;
 const OUTER_GAP: f32 = 12.0;
 /// Between a module and the calls in from outside the journey that hang off it.
 const HANG_GAP: f32 = 2.5;
+/// Of a module's callers from outside the journey (I), how many are drawn and named,
+/// those nearest the journey; the rest are a count on the module.
+const OUTSIDE_SHOWN: usize = 2;
 
 /// Where everything is, for one focus.
 #[derive(Debug, Clone, Default)]
@@ -1247,15 +1244,46 @@ impl Nucleus {
     }
 
     /// In a journey with I on, a call into each function shown on it, the middle
-    /// included, from each function that calls it and is not shown.
+    /// included, from each function that calls it and is not shown: of each module's
+    /// such callers, only the few nearest the journey.
     fn outside_calls(&self, graph: &ForceGraph, links: &[Link], focus: Option<usize>) -> Vec<Link> {
+        self.outside_split(graph, links, focus).0
+    }
+
+    /// In a journey with I on, how many callers from outside it each module holds
+    /// beyond those drawn, by cluster.
+    pub(crate) fn outside_left_out(&self, graph: &ForceGraph) -> HashMap<usize, usize> {
+        let links: Vec<Link> = self
+            .now
+            .links
+            .iter()
+            .filter(|l| l.flow != Flow::Outside)
+            .copied()
+            .collect();
+        self.outside_split(graph, &links, self.now.focus).1
+    }
+
+    /// The calls in from outside the journey that are drawn, and how many callers
+    /// each module holds beyond them. A module's callers are ranked by the shallowest
+    /// function on the journey they call, the middle first, then by how many of its
+    /// functions they call.
+    fn outside_split(
+        &self,
+        graph: &ForceGraph,
+        links: &[Link],
+        focus: Option<usize>,
+    ) -> (Vec<Link>, HashMap<usize, usize>) {
         let Some(focus) = focus.filter(|_| self.outside && !self.browse) else {
-            return Vec::new();
+            return (Vec::new(), HashMap::new());
         };
-        let mut on = vec![focus];
-        for link in links.iter().filter(|l| matches!(l.flow, Flow::Journey(_))) {
-            if !on.contains(&link.to) {
-                on.push(link.to);
+        // Each function on the journey, with its level: the middle's 0.
+        let mut on: Vec<(usize, u32)> = vec![(focus, 0)];
+        for link in links {
+            if let Flow::Journey(level) = link.flow {
+                match on.iter_mut().find(|(tile, _)| *tile == link.to) {
+                    Some(known) => known.1 = known.1.min(level),
+                    None => on.push((link.to, level)),
+                }
             }
         }
         let shown: HashSet<usize> = links
@@ -1264,18 +1292,42 @@ impl Nucleus {
             .chain([focus])
             .collect();
         let mut calls = Vec::new();
-        for to in on {
+        // Each caller's nearest level on the journey, and how many functions on it it
+        // calls.
+        let mut near: HashMap<usize, (u32, usize)> = HashMap::new();
+        for &(to, level) in &on {
             let mut callers: Vec<usize> =
                 graph.callers(to).filter(|c| !shown.contains(c)).collect();
             callers.sort_unstable();
             callers.dedup();
+            for &from in &callers {
+                let known = near.entry(from).or_insert((level, 0));
+                known.0 = known.0.min(level);
+                known.1 += 1;
+            }
             calls.extend(callers.into_iter().map(|from| Link {
                 from,
                 to,
                 flow: Flow::Outside,
             }));
         }
-        calls
+        let mut by_module: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &caller in near.keys() {
+            if let Some(cluster) = graph.cluster(caller) {
+                by_module.entry(cluster).or_default().push(caller);
+            }
+        }
+        let mut kept = HashSet::new();
+        let mut left_out = HashMap::new();
+        for (cluster, mut callers) in by_module {
+            callers.sort_by_key(|c| (near[c].0, Reverse(near[c].1), *c));
+            if callers.len() > OUTSIDE_SHOWN {
+                left_out.insert(cluster, callers.len() - OUTSIDE_SHOWN);
+            }
+            kept.extend(callers.into_iter().take(OUTSIDE_SHOWN));
+        }
+        calls.retain(|l| kept.contains(&l.from) || graph.cluster(l.from).is_none());
+        (calls, left_out)
     }
 
     /// The nucleus grown from `modules`, the module view, to several times its size,
@@ -3778,30 +3830,23 @@ mod tests {
         assert_eq!(trail.calls.len(), 4);
         assert_eq!(trail.numbers[&1], ["1", "2.1"]);
         assert_eq!(trail.numbers[&3], ["1.9", "1.10"], "in the journey's order");
-        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("1 +1"));
-        assert_eq!(badge(&trail.numbers[&2], None).as_deref(), Some("2"));
-        assert_eq!(badge(&[], None), None);
+        assert_eq!(badge(&trail.numbers[&1]).as_deref(), Some("1 +1"));
+        assert_eq!(badge(&trail.numbers[&2]).as_deref(), Some("2"));
+        assert_eq!(badge(&[]), None);
         let both = ["1.1".to_owned(), "2".to_owned(), "2".to_owned()];
-        assert_eq!(
-            badge(&both, None).as_deref(),
-            Some("2 +1"),
-            "sorted, once each"
-        );
+        assert_eq!(badge(&both).as_deref(), Some("2 +1"), "sorted, once each");
     }
 
     #[test]
-    fn a_badge_leads_with_the_call_nearest_the_root_or_the_cursor() {
+    fn a_badge_keeps_the_call_nearest_the_root_wherever_the_cursor_is() {
         let mut trail = Trail::default();
         trail.add(0, 1, 2, "1.1");
         trail.add(0, 1, 1, "2");
         assert_eq!(trail.numbers[&1], ["2", "1.1"], "the shallower first");
-        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("2 +1"));
-        assert_eq!(
-            badge(&trail.numbers[&1], Some("1.1")).as_deref(),
-            Some("1.1 +1"),
-            "the cursor's own number, and the other run"
-        );
-        assert_eq!(badge(&[], Some("3")).as_deref(), Some("3"));
+        assert_eq!(badge(&trail.numbers[&1]).as_deref(), Some("2 +1"));
+        // A level deeper adds a run further down, and the number stays.
+        trail.add(1, 1, 3, "1.1.4");
+        assert_eq!(badge(&trail.numbers[&1]).as_deref(), Some("2 +2"));
     }
 
     #[test]
