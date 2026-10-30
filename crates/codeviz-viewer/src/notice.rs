@@ -5,11 +5,11 @@
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
-use crate::{explorer::Explorer, idle::Awake};
+use crate::explorer::Explorer;
 
-/// Seconds a notice shows at full strength, then fades over.
-const HOLD: f32 = 1.6;
-const FADE: f32 = 0.6;
+/// Seconds a notice shows for, at least. It keeps nothing drawing: it goes with the
+/// first frame drawn after, which the window draws within a second when idle.
+const HOLD: f32 = 2.0;
 /// Below the top bar.
 const TOP: f32 = 44.0;
 
@@ -19,7 +19,6 @@ pub(crate) fn draw(
     explorer: Res<Explorer>,
     mut contexts: EguiContexts,
     mut said: Local<Option<(u64, f32)>>,
-    mut awake: ResMut<Awake>,
 ) {
     let Some((count, text)) = explorer.notice() else {
         return;
@@ -32,16 +31,9 @@ pub(crate) fn draw(
             now
         }
     };
-    let age = now - since;
-    if age > HOLD + FADE {
+    if now - since > HOLD {
         return;
     }
-    awake.0 = true;
-    let alpha = if age <= HOLD {
-        1.0
-    } else {
-        1.0 - (age - HOLD) / FADE
-    };
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -53,7 +45,7 @@ pub(crate) fn draw(
     let galley = painter.layout_no_wrap(
         text.to_owned(),
         egui::FontId::proportional(14.0),
-        egui::Color32::WHITE.gamma_multiply(alpha),
+        egui::Color32::WHITE,
     );
     let at = egui::pos2(
         screen.center().x - galley.size().x / 2.0,
@@ -63,7 +55,7 @@ pub(crate) fn draw(
     painter.rect_filled(
         backing,
         6.0,
-        egui::Color32::from_rgba_premultiplied(11, 13, 19, 225).gamma_multiply(alpha),
+        egui::Color32::from_rgba_premultiplied(11, 13, 19, 225),
     );
     painter.galley(at, galley, egui::Color32::WHITE);
 }

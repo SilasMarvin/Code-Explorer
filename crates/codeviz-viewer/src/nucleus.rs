@@ -944,33 +944,27 @@ impl Nucleus {
             .collect()
     }
 
-    /// The function the view is centred on: expanded in a journey, the cursor, so
-    /// whatever moves it there, a click, a key or a bar, centres the view on it the
-    /// same way; else the middle.
+    /// The function the view is centred on: expanded in a journey, the cursor while
+    /// it is inside the expanded module, so whatever moves it there, a click, a key
+    /// or a bar, centres the view on it the same way; else the middle.
     pub(crate) fn centre(&self) -> Option<usize> {
-        if self.now.expanded && !self.browse && self.marked.is_some() {
-            return self.marked;
+        let inside =
+            |tile: usize| self.module_of.get(tile).copied().flatten() == Some(self.now.center);
+        match self.marked {
+            Some(cursor) if self.now.expanded && !self.browse && inside(cursor) => Some(cursor),
+            _ => self.now.focus,
         }
-        self.now.focus
     }
 
-    /// Where the camera looks: expanded in a journey, the cursor; the nucleus in a
-    /// journey otherwise; browsing, the middle of the modules the function clicked
-    /// touches.
+    /// Where the camera looks: expanded in a journey, the function it centres on; the
+    /// nucleus in a journey otherwise; browsing, the middle of the modules the
+    /// function clicked touches.
     pub(crate) fn frame_center(&self) -> Vec3 {
         if self.now.expanded
             && !self.browse
-            && let Some(cursor) = self.marked
+            && let Some(at) = self.centre().and_then(|t| self.now.points.get(t).copied())
         {
-            let shown = self.now.shown.get(cursor).copied().unwrap_or(false);
-            let at = if shown {
-                self.now.points.get(cursor).copied()
-            } else {
-                self.under(cursor)
-            };
-            if let Some(at) = at {
-                return at;
-            }
+            return at;
         }
         let open: Vec<Vec3> = self
             .now
@@ -1554,8 +1548,9 @@ impl Nucleus {
     }
 
     /// The modules round the nucleus, in order: those the journey enters at any
-    /// depth, in the order it first enters them; then those holding only callers of
-    /// the middle, from `links`. The same at every depth, collapsed or expanded.
+    /// depth, in the order it first enters them, the shallower first; then those
+    /// holding only callers of the middle, from `links`. The same at every depth,
+    /// collapsed or expanded.
     fn ring_order(
         &self,
         links: &[Link],
@@ -1566,8 +1561,12 @@ impl Nucleus {
             .iter()
             .filter(|l| l.flow == Flow::Into)
             .map(|l| l.from);
+        // Level by level, as the panel's rows run, so the ring reads clockwise as the
+        // first row numbers its calls, and a module first entered deeper comes after.
+        let mut journey: Vec<usize> = self.journey_order(links).collect();
+        journey.sort_by_key(|t| self.trail.whole.get(t).copied().unwrap_or(u32::MAX));
         let mut order: Vec<usize> = Vec::new();
-        for tile in self.journey_order(links).chain(callers) {
+        for tile in journey.into_iter().chain(callers) {
             let cluster = cluster_of(tile);
             if cluster != center && !order.contains(&cluster) {
                 order.push(cluster);
@@ -3083,8 +3082,8 @@ mod tests {
             !nucleus.shows(tile(&map, "db::other")),
             "what an open module does not name stays folded"
         );
-        // Clockwise from the top in the order the journey first enters them, then
-        // the callers'.
+        // Clockwise from the top in the order the journey first enters them, level by
+        // level, then the callers'.
         let rotation = view_rotation();
         let turned = |id: &str| {
             let at = nucleus
@@ -3096,8 +3095,8 @@ mod tests {
         };
         let turns: Vec<f32> = [
             "db::put",
-            "disk::write",
             "log::say",
+            "disk::write",
             "ext::lib",
             "web::route",
         ]
