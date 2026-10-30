@@ -253,12 +253,13 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     if !explorer.shown(tile) {
         return NodeLook::Hidden;
     }
+    // The journey's cursor is the one pink node, wherever it is.
+    if explorer.cursor_mark() == Some(tile) {
+        return NodeLook::Cursor;
+    }
     let center = explorer.lit_focus();
     if center == Some(tile) {
         return NodeLook::Focus;
-    }
-    if explorer.cursor_mark() == Some(tile) {
-        return NodeLook::Cursor;
     }
     let Some(reach) = explorer.reach() else {
         return NodeLook::Plain(color);
@@ -290,11 +291,13 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
 /// changed under a diff, else the cursor's where it is not the focus, else its
 /// module's. A journey bar is painted the same, so a bar and its node read as one thing.
 pub(crate) fn node_color(explorer: &Explorer, diff: Option<&DiffView>, tile: usize) -> Color {
+    if diff.is_none() && explorer.cursor_mark() == Some(tile) {
+        return CURSOR;
+    }
     if explorer.lit_focus() == Some(tile) {
         return Color::WHITE;
     }
     match diff {
-        None if explorer.cursor_mark() == Some(tile) => CURSOR,
         Some(diff) => diff.change(tile).map_or(UNCHANGED, change_color),
         None => lane_color(explorer.tile_color(tile) % PALETTE.len()),
     }
@@ -612,11 +615,15 @@ fn draw_attention(explorer: &Explorer, age: f32, gizmos: &mut Gizmos) {
     let size =
         |tile: usize| node_size(graph, tile) * nucleus.map_or(1.0, |n| n.node_scale(false)) * 0.5;
     let focus = explorer.lit_focus();
-    if let Some(tile) = focus
-        && let Some(at) = explorer.tile_point(tile)
-    {
-        let radius = size(tile) + 0.35;
-        gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
+    // The focus, and in a journey a function selected off it, ringed in white.
+    let ringed = focus
+        .into_iter()
+        .chain(explorer.aside().filter(|_| nucleus.is_some()));
+    for tile in ringed {
+        if let Some(at) = explorer.tile_point(tile) {
+            let radius = size(tile) + 0.35;
+            gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
+        }
     }
     let zoom = nucleus.map_or(1.0, nucleus::Nucleus::zoom);
     let glow = |gizmos: &mut Gizmos, at: Vec3, radius: f32, color: Color, strength: f32| {
@@ -715,10 +722,10 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
 /// F turns to face the graph head-on, centered on the journey's start again (or,
-/// gathered round the focus's module, back to the nucleus's three-quarter view,
-/// framed as it was when the view was pointed there); R frames that same view from
-/// the angle the camera has, or flat, pulls back to take in the whole graph; Q and E
-/// turn the view an eighth of the way round, left and right.
+/// gathered into spheres, back to the three-quarter view, framed as it was when the
+/// view was pointed there); R frames that same view from the angle the camera has, or
+/// flat or browsing, pulls back to take in the whole graph; Q and E turn the view an
+/// eighth of the way round, left and right.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
@@ -749,6 +756,10 @@ pub(crate) fn graph_keys(
         }
         if keys.just_pressed(KeyCode::KeyR) {
             match explorer.nucleus() {
+                Some(gathered) if gathered.browsing() => {
+                    let rotation = camera.aim_rotation();
+                    nucleus::fit_all(gathered, &mut camera, rotation, projection);
+                }
                 Some(gathered) => {
                     let rotation = camera.aim_rotation();
                     nucleus::fit(gathered, cursor, &mut camera, rotation, projection);
@@ -890,17 +901,15 @@ fn frame_points(points: &[Vec3], anchor: Option<Vec3>, camera: &mut OrbitCamera)
     camera.glide_to(middle, (radius * 2.6).max(MIN_ORBIT_DISTANCE));
 }
 
-/// Keeps the anchor, the node you clicked, dead center: the camera orbits it and
-/// follows it as the graph moves. Gathered round the focus's module, it orbits the
-/// nucleus instead, which is always the middle.
-/// Not once the viewer has panned or zoomed away.
+/// Keeps the anchor, where the journey starts, dead center: the camera orbits it and
+/// follows it as the graph moves. Gathered into spheres, nothing moves but by hand,
+/// so the camera stays where it was framed. Not once the viewer has panned or zoomed
+/// away.
 pub(crate) fn hold_center(explorer: Res<Explorer>, mut cameras: Query<&mut OrbitCamera>) {
-    let at = if explorer.nucleus().is_some() {
-        Some(Vec3::ZERO)
-    } else {
-        explorer.anchor().and_then(|t| explorer.tile_point(t))
-    };
-    let Some(at) = at else {
+    if explorer.nucleus().is_some() {
+        return;
+    }
+    let Some(at) = explorer.anchor().and_then(|t| explorer.tile_point(t)) else {
         return;
     };
     for mut camera in &mut cameras {
@@ -1055,7 +1064,9 @@ pub(crate) fn reveal_cursor(
     if last.replace(watched) != Some(watched) {
         *until = now + REVEAL_WATCH;
     }
-    if now > *until {
+    // Gathered into spheres, the cursor moves and the camera does not: the journey
+    // was framed whole on entering it.
+    if now > *until || explorer.nucleus().is_some() {
         return;
     }
     let Some(at) = cursor.and_then(|t| explorer.tile_point(t)) else {

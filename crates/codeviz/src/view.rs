@@ -108,6 +108,25 @@ struct Third {
     /// the focus's module (X toggles it).
     #[arg(long, requires = "z")]
     expand: bool,
+    /// Open browsing, with no journey open and the focus selected: a click selects a
+    /// function and moves nothing; Enter opens the selected function's journey.
+    #[arg(long, conflicts_with = "expand")]
+    browse: bool,
+}
+
+impl Third {
+    fn apply(&self, mut viewer: Viewer) -> Viewer {
+        if let Some(ZArg::Nucleus) = self.z {
+            viewer = viewer.with_nucleus();
+        }
+        if self.expand {
+            viewer = viewer.expanded();
+        }
+        if self.browse {
+            viewer = viewer.browsing();
+        }
+        viewer
+    }
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -276,12 +295,7 @@ pub(crate) fn open(
     if args.bare {
         viewer = viewer.bare();
     }
-    if let Some(ZArg::Nucleus) = args.third.z {
-        viewer = viewer.with_nucleus();
-    }
-    if args.third.expand {
-        viewer = viewer.expanded();
-    }
+    viewer = args.third.apply(viewer);
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
     }

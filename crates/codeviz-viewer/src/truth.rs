@@ -58,7 +58,8 @@ pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
     calls.sort_by(|a, b| a.0.cmp(&b.0));
 
     let root = explorer.journey().map(codeviz_core::Journey::root);
-    let anchor = explorer.anchor();
+    // Browsing, what the view examines is the function selected.
+    let anchor = explorer.anchor().or_else(|| explorer.selection());
     let changes = diff.map(|diff| {
         let mut by_kind = serde_json::Map::new();
         for kind in [
@@ -79,7 +80,10 @@ pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
         Value::Object(by_kind)
     });
     json!({
-        "focus": explorer.root().map(|u| explorer.unit_name(u)),
+        "focus": match explorer.selection() {
+            Some(tile) => explorer.tile_unit(tile).map(|u| explorer.unit_name(u)),
+            None => explorer.root().map(|u| explorer.unit_name(u)),
+        },
         "focus_change": change(anchor),
         "focus_fails": root.is_some_and(|r| disclosed.fails(r)),
         "focus_hidden_calls": root.map_or(0, |r| disclosed.folded(r)),
@@ -116,6 +120,8 @@ pub(crate) fn state(view: &View) -> Value {
     let hidden = explorer.hidden();
     let centre = nucleus.and_then(Nucleus::focus);
     json!({
+        "mode": if explorer.browsing() { "browse" } else { "journey" },
+        "selection": explorer.selection().map(name),
         "focus": explorer.graph_focus().map(name),
         "centre": centre.map(name),
         "centre_module": centre.and_then(|t| module_of(explorer, t)),
@@ -139,6 +145,7 @@ pub(crate) fn state(view: &View) -> Value {
             "journey": hidden.callees,
             "specks": nucleus.is_some_and(Nucleus::specks_hidden),
         },
+        "outside_callers": explorer.outside_shown(),
         "spotlight": explorer.spotlight().map(|(side, _)| format!("{side:?}").to_lowercase()),
         "pointed": explorer.pointed().map(name),
         "under_pointer": explorer.hovered_tile.map(name),
@@ -512,7 +519,8 @@ fn flow_role(flow: Flow) -> String {
     match flow {
         Flow::Into => "calls the centre (violet)".to_owned(),
         Flow::Journey(1) => "the centre's call (blue)".to_owned(),
-        Flow::Journey(level) => format!("journey level {level} (paler blue)"),
+        Flow::Journey(level) => format!("journey level {level} (amber, darker the deeper)"),
+        Flow::Outside => "calls into the journey from off it (pale)".to_owned(),
     }
 }
 

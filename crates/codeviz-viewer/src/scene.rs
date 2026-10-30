@@ -256,8 +256,9 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Escape) {
         close_topmost(&mut explorer, &mut help, &mut chrome);
     }
-    // I and O pick out what calls into the focus and what it calls out to; with
-    // Shift, they hide that side, or show it again.
+    // I and O pick out what calls into the focus and what it calls out to; in a
+    // journey gathered round its start, I brings in every outside caller into it.
+    // With Shift, they hide that side, or show it again.
     for (key, side) in [
         (KeyCode::KeyI, Side::Callers),
         (KeyCode::KeyO, Side::Callees),
@@ -265,6 +266,8 @@ fn keyboard(
         if keys.just_pressed(key) {
             if shift {
                 explorer.toggle_hidden(side);
+            } else if side == Side::Callers {
+                explorer.press_callers(time.elapsed_secs());
             } else {
                 explorer.toggle_spotlight(side, time.elapsed_secs());
             }
@@ -302,7 +305,8 @@ fn keyboard(
 }
 
 /// Escape closes whatever is on top: the search box, the key list, the spotlight, a
-/// focus off the journey, then the side panel. It never moves the view.
+/// function selected off the journey, then the journey itself, for browsing with the
+/// cursor's function selected; browsing, the side panel.
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
     if chrome.search {
         chrome.search = false;
@@ -312,6 +316,8 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         explorer.clear_spotlight();
     } else if explorer.aside().is_some() {
         explorer.clear_aside();
+    } else if !explorer.browsing() {
+        explorer.leave_journey();
     } else if chrome.side {
         chrome.side = false;
     }

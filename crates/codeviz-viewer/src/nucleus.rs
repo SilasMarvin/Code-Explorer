@@ -1,16 +1,15 @@
-//! The nucleus (`Z`, or `--z nucleus`): the function in the middle's module as a large
-//! glass sphere with every one of its functions inside, and every other module a
-//! sphere around it. One rule says what is named: the function in the middle, what
-//! calls it, and every call of the open journey from it down to the disclosed depth,
-//! the same depth the journey panel shows. Modules holding any of those come into a
-//! ring round the nucleus, opened just far enough to name them; everything else stays
-//! a small solid sphere further out, in the direction a stable 3D layout of the
-//! modules has it, so a module keeps its bearing however the middle moves. Calls into
-//! the middle are violet; the middle's own calls out are blue, and every journey call
-//! further down amber, function to function along thin arrows between modules. Space
-//! says only where things are: no axis stands for order, rank or distance in calls.
-//! A new middle, or a new depth, eases every sphere to its new place; stepping the
-//! journey's cursor only moves its ring.
+//! The graph gathered into module spheres (`Z`, or `--z nucleus`), in one of two
+//! modes. Browsing, with no journey open, every module is a sphere at its place in
+//! one layout of the whole codebase, worked out once per document, with every one of
+//! its functions inside; a click lights the function clicked, white, its callers,
+//! violet, and its calls, blue, where they sit, and moves nothing. In a journey, the
+//! start's module is a large glass sphere in the middle and the modules the journey
+//! enters stand round it clockwise in the order it first enters them; shown are the
+//! start, what calls it, and the journey's calls down to the disclosed depth, the same
+//! depth the journey panel shows, and nothing else. Calls into the middle are violet;
+//! its own calls out blue, and every journey call further down amber, darker the
+//! deeper, function to function along thin arrows between modules. Space says only
+//! where things are: no axis stands for order, rank or distance in calls.
 //!
 //! Expanded (`X`, a double click on the nucleus, or `--expand`), the nucleus grows to
 //! several times its size as the camera comes in, and its functions are laid out by
@@ -48,8 +47,10 @@ pub(crate) enum Body {
     Nucleus,
     /// Holds functions near the focus: opened to show those alone, by name.
     Open,
-    /// Everything else: a small solid sphere.
+    /// Everything else: a small solid sphere, left out of a journey altogether.
     Closed,
+    /// Browsing, a module nothing named lives in: faint glass, its functions specks.
+    Faint,
 }
 
 /// A module's sphere.
@@ -65,13 +66,15 @@ pub(crate) struct Ball {
 pub(crate) enum Flow {
     /// Calls the middle.
     Into,
-    /// A call of the journey: 1 for the middle's own, 2 for any further down.
+    /// A call of the journey, this many levels below the middle: 1 for its own.
     Journey(u32),
+    /// A call into a function on the journey from a function off it (I).
+    Outside,
 }
 
-/// Levels of the journey drawn in a color of their own: the middle's calls, and every
-/// call below them alike.
-const SHADES: u32 = 2;
+/// Levels of the journey drawn in a shade of their own: the middle's calls blue, then
+/// amber, darker a level at a time; deeper than this, as dark as the last.
+const SHADES: u32 = 4;
 
 impl Flow {
     /// The journey's call this many levels below the middle.
@@ -79,22 +82,28 @@ impl Flow {
         Self::Journey(level.clamp(1, SHADES))
     }
 
-    /// Violet into the middle, blue for its own calls out, amber for every call
-    /// further down the journey.
+    /// Violet into the middle, blue for its own calls out, amber for the calls
+    /// further down the journey, darker the deeper; pale for a call in from outside.
     pub(crate) fn color(self) -> Color {
         match self {
             Self::Into => CALLER,
             Self::Journey(1) => CALLEE,
-            Self::Journey(_) => DEEPER,
+            Self::Journey(level) => {
+                #[expect(clippy::cast_precision_loss, reason = "a small level")]
+                let deeper = (level.min(SHADES) - 2) as f32;
+                DEEPER.mix(&Color::BLACK, 0.2 * deeper)
+            }
+            Self::Outside => FURTHER,
         }
     }
 
     /// Which of two flows an arrow carrying both says: into the middle, else the
-    /// shallowest level.
+    /// shallowest level, and a call in from outside last.
     fn rank(self) -> u32 {
         match self {
             Self::Into => 0,
             Self::Journey(level) => level,
+            Self::Outside => SHADES + 1,
         }
     }
 }
@@ -124,6 +133,9 @@ pub(crate) struct Trail {
     pub(crate) aside: bool,
     /// Off the journey, the open journey's functions, by tile.
     pub(crate) journey: HashSet<usize>,
+    /// Every function below the middle at any depth, in the order the journey first
+    /// runs it, which orders the modules round the nucleus.
+    pub(crate) order: Vec<usize>,
 }
 
 impl Trail {
@@ -148,6 +160,9 @@ impl Trail {
             self.calls.push(Call { from, to, level: 1 });
         }
         self.whole.entry(to).or_insert(1);
+        if !self.order.contains(&to) {
+            self.order.push(to);
+        }
         for number in numbers {
             let known = self.numbers.entry(to).or_default();
             if !known.contains(number) {
@@ -217,8 +232,6 @@ const COLUMN_GAP: f32 = 11.0;
 const SPACING: f32 = 2.8;
 /// Between the nucleus and a module in the near ring, for its arrows to show.
 const NEAR_GAP: f32 = 15.0;
-/// Between a module in the near ring and one beyond it.
-const BEYOND_GAP: f32 = 10.0;
 /// Space kept clear between two spheres.
 const MARGIN: f32 = 6.0;
 /// Seconds a re-centering takes.
@@ -244,6 +257,13 @@ const RIM_SPACING: f32 = 5.0;
 const RIM_COLUMN_GAP: f32 = 18.0;
 /// Between two named calls running side by side along one arrow.
 const STRAND_GAP: f32 = 0.45;
+/// Kept clear between two module spheres browsing.
+const ATLAS_MARGIN: f32 = 5.0;
+/// Between the ring round the nucleus and a module beyond it holding only calls in
+/// from outside the journey.
+const OUTER_GAP: f32 = 12.0;
+/// Between a module and the calls in from outside the journey that hang off it.
+const HANG_GAP: f32 = 2.5;
 
 /// Where everything is, for one focus.
 #[derive(Debug, Clone, Default)]
@@ -267,8 +287,20 @@ struct Arrangement {
     /// With the middle off the journey, the open journey's functions inside the
     /// nucleus, drawn plainly so they stay in view and can be clicked.
     context: HashSet<usize>,
+    /// In a journey with I on, every function off it that calls one on it.
+    outside: HashSet<usize>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
+}
+
+/// Browsing, where every module and function sits: one layout of the whole codebase,
+/// worked out once, whatever is clicked.
+#[derive(Debug, Clone)]
+struct Atlas {
+    /// By cluster.
+    balls: Vec<Ball>,
+    /// By tile.
+    points: Vec<Vec3>,
 }
 
 /// The expanded nucleus's layout for one middle: where its functions sit in a sphere
@@ -323,8 +355,15 @@ pub(crate) struct Nucleus {
     /// drawn there though the arrangement folds it away.
     marked: Option<usize>,
     /// Whether the functions named by nothing are left out altogether, rather than
-    /// drawn as faint specks: in the module view, and expanded.
-    specks_hidden: [bool; 2],
+    /// drawn as faint specks: in a journey's module view, expanded, and browsing.
+    specks_hidden: [bool; 3],
+    /// Whether the graph is browsed, laid out as the atlas has it, rather than
+    /// gathered round a journey.
+    browse: bool,
+    /// The layout browsing uses, once worked out.
+    atlas: Option<Atlas>,
+    /// In a journey, whether every outside caller into it shows (I).
+    outside: bool,
     /// The expanded layout, kept while the middle stays.
     laid: Option<Laid>,
     /// Where the spheres and functions were when the last re-centering began.
@@ -336,16 +375,18 @@ pub(crate) struct Nucleus {
 impl Nucleus {
     #[cfg(test)]
     pub(crate) fn new(graph: &ForceGraph, focus: Option<usize>, trail: Trail) -> Self {
-        Self::gather(graph, focus, Hidden::default(), trail)
+        Self::gather(graph, focus, Hidden::default(), trail, false)
     }
 
     /// Gathers the graph round `focus`'s module, naming its callers and `trail`, the
-    /// open journey from it, but for the sides `hidden` leaves out.
+    /// open journey from it, but for the sides `hidden` leaves out; or, to `browse`,
+    /// lays every module out where the atlas has it, lighting what `focus` touches.
     pub(crate) fn gather(
         graph: &ForceGraph,
         focus: Option<usize>,
         hidden: Hidden,
         trail: Trail,
+        browse: bool,
     ) -> Self {
         let clusters = graph.cluster_count();
         let tiles = graph.positions.len();
@@ -376,8 +417,12 @@ impl Nucleus {
             hidden,
             trail,
             marked: None,
-            // Expanded, the specks crowd round what the reader points at.
-            specks_hidden: [false, true],
+            // In a journey, only the journey shows; browsing, every function does, to
+            // be clicked.
+            specks_hidden: [true, true, false],
+            browse,
+            atlas: None,
+            outside: false,
             laid: None,
             from: None,
             progress: 1.0,
@@ -447,14 +492,56 @@ impl Nucleus {
     /// Whether the functions named by nothing are left out altogether in the view
     /// the nucleus is in, rather than drawn as faint specks.
     pub(crate) fn specks_hidden(&self) -> bool {
-        self.specks_hidden[usize::from(self.expanded)]
+        self.specks_hidden[self.view_slot()]
     }
 
     /// Leaves out the functions named by nothing, or draws them again as specks, in
     /// the view the nucleus is in.
     pub(crate) fn toggle_specks(&mut self) {
-        let hidden = &mut self.specks_hidden[usize::from(self.expanded)];
-        *hidden = !*hidden;
+        let slot = self.view_slot();
+        self.specks_hidden[slot] = !self.specks_hidden[slot];
+    }
+
+    /// Which view the nucleus is in: a journey's modules, expanded, or browsing.
+    fn view_slot(&self) -> usize {
+        if self.browse {
+            2
+        } else {
+            usize::from(self.expanded)
+        }
+    }
+
+    /// Whether the graph is browsed rather than gathered round a journey.
+    pub(crate) fn browsing(&self) -> bool {
+        self.browse
+    }
+
+    /// Browses the graph, laid out as the atlas has it, or gathers it round a
+    /// journey, easing there. Returns whether that changed.
+    pub(crate) fn set_browse(&mut self, graph: &ForceGraph, browse: bool) -> bool {
+        if browse == self.browse {
+            return false;
+        }
+        self.browse = browse;
+        if browse {
+            self.expanded = false;
+        }
+        self.recenter(graph, self.now.focus);
+        true
+    }
+
+    /// Shows every outside caller into the journey, or leaves them out, without
+    /// moving anything already there.
+    pub(crate) fn set_outside(&mut self, graph: &ForceGraph, on: bool) {
+        if on != self.outside {
+            self.outside = on;
+            self.recenter(graph, self.now.focus);
+        }
+    }
+
+    /// Whether a function is an outside caller into the journey, shown.
+    pub(crate) fn outside(&self, tile: usize) -> bool {
+        self.now.outside.contains(&tile)
     }
 
     /// Marks the journey's cursor where it sits, without moving anything else.
@@ -534,10 +621,14 @@ impl Nucleus {
     }
 
     /// Whether a function is drawn full size: named, the journey's cursor, the open
-    /// journey's with the middle off it, or an end of a call the function under the
-    /// pointer makes or takes.
+    /// journey's with the middle off it, an outside caller into the journey, or an end
+    /// of a call the function under the pointer makes or takes.
     pub(crate) fn lit(&self, tile: usize) -> bool {
-        self.names(tile) || self.marks(tile) || self.context(tile) || self.touched(tile)
+        self.names(tile)
+            || self.marks(tile)
+            || self.context(tile)
+            || self.outside(tile)
+            || self.touched(tile)
     }
 
     /// With the middle off the journey, whether a function is one of the open
@@ -650,6 +741,12 @@ impl Nucleus {
     /// Every module's sphere as drawn now, by cluster.
     pub(crate) fn balls(&self) -> impl Iterator<Item = (usize, Ball)> + '_ {
         (0..self.now.balls.len()).filter_map(|c| self.ball(c).map(|b| (c, b)))
+    }
+
+    /// Whether a module sphere of this body is drawn: in a journey, only those it
+    /// runs through.
+    pub(crate) fn shows_body(&self, body: Body) -> bool {
+        self.browse || body != Body::Closed
     }
 
     /// Whether a function is drawn.
@@ -811,7 +908,7 @@ impl Nucleus {
         self.now
             .balls
             .iter()
-            .filter(|b| b.body != Body::Closed)
+            .filter(|b| matches!(b.body, Body::Nucleus | Body::Open))
             .flat_map(|b| {
                 // Names hang to the right of an open module's functions.
                 let room = if b.body == Body::Open { 2.2 } else { 1.0 };
@@ -825,8 +922,39 @@ impl Nucleus {
             .collect()
     }
 
-    /// Everything placed around `focus`, the nucleus expanded or not.
+    /// Points round every sphere browsing shows, the whole codebase.
+    pub(crate) fn atlas_points(&self, rotation: Quat) -> Vec<Vec3> {
+        let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+        self.now
+            .balls
+            .iter()
+            .flat_map(|b| {
+                [
+                    b.center + (right + up) * b.radius,
+                    b.center - (right + up) * b.radius,
+                ]
+            })
+            .collect()
+    }
+
+    /// Where the camera looks: the nucleus in a journey; browsing, the module of the
+    /// function clicked.
+    pub(crate) fn frame_center(&self) -> Vec3 {
+        if self.browse {
+            self.now
+                .balls
+                .get(self.now.center)
+                .map_or(Vec3::ZERO, |b| b.center)
+        } else {
+            Vec3::ZERO
+        }
+    }
+
+    /// Everything placed around `focus`, the nucleus expanded or not, or browsing.
     fn arrange(&mut self, graph: &ForceGraph, focus: Option<usize>) -> Arrangement {
+        if self.browse {
+            return self.arrange_browse(graph, focus);
+        }
         let modules = self.arrange_modules(graph, focus);
         if self.expanded {
             let laid = self.laid_out(graph, &modules);
@@ -886,18 +1014,27 @@ impl Nucleus {
                 *counts.entry(cluster).or_insert(0) += 1;
             }
         }
-        let mut rim: Vec<usize> = counts.keys().copied().collect();
-        rim.sort_unstable();
+        // Clockwise in the order the journey first enters them, then those that only
+        // call the middle.
+        let mut rim: Vec<usize> = Vec::new();
+        for &tile in &self.trail.order {
+            let cluster = cluster_of(tile);
+            if counts.contains_key(&cluster) && !rim.contains(&cluster) {
+                rim.push(cluster);
+            }
+        }
+        let mut rest: Vec<usize> = counts
+            .keys()
+            .copied()
+            .filter(|c| !rim.contains(c))
+            .collect();
+        rest.sort_unstable();
+        rim.extend(rest);
         let radii: Vec<f32> = rim
             .iter()
             .map(|c| self.rim_radius(*c, counts[c].min(ROWS)))
             .collect();
-        let bearings = Bearings {
-            homes: &self.homes,
-            center,
-            back: view_rotation() * Vec3::Z,
-        };
-        let angles = rim_angles(&rim, &radii, before * GROWTH, &bearings);
+        let angles = rim_angles(&radii, before * GROWTH);
         let laid = Laid {
             key,
             inside: members.into_iter().zip(inside).collect(),
@@ -925,7 +1062,7 @@ impl Nucleus {
             .or_else(|| (0..clusters).max_by_key(|&c| (self.counts[c], Reverse(c))))
             .unwrap_or(0);
         let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(center);
-        let links = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f));
+        let mut links = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f));
         let named = distances(&links, focus);
         let columns = open_up(&links, focus, clusters, center, &cluster_of);
         let context = if self.trail.aside && !self.hidden.hides(Side::Callees) {
@@ -956,9 +1093,29 @@ impl Nucleus {
             center,
             back: view_rotation() * Vec3::Z,
         };
-        place_open(&mut balls, &columns, &links, focus, &bearings, &cluster_of);
+        for (cluster, column) in columns.iter().enumerate() {
+            if cluster != center && !column.is_empty() {
+                balls[cluster] = Ball {
+                    center: Vec3::ZERO,
+                    radius: grid_radius(column.len(), SPACING, COLUMN_GAP, 2.6),
+                    body: Body::Open,
+                };
+            }
+        }
+        let order = ring_order(&links, &self.trail.order, center, &cluster_of);
+        place_ring(&mut balls, &order, center);
         place_closed(&mut balls, &bearings);
-        let (points, shown) = place_functions(graph, &balls, &columns, center, &cluster_of);
+        let (mut points, mut shown) = place_functions(graph, &balls, &columns, center, &cluster_of);
+        let calls_in = self.outside_calls(graph, &links, focus);
+        let outside = place_outside(
+            &mut balls,
+            &mut points,
+            &mut shown,
+            &calls_in,
+            center,
+            &cluster_of,
+        );
+        links.extend(calls_in);
         let tubes = self.join(&links, &cluster_of);
         Arrangement {
             focus,
@@ -970,9 +1127,118 @@ impl Nucleus {
             named,
             columns,
             context,
+            outside,
             tubes,
             links,
         }
+    }
+
+    /// Browsing: every module where the atlas has it, every function inside its
+    /// module, and what `focus` touches lit where it sits: its callers and its own
+    /// calls, named, and their modules opened. Nothing moves for a new focus.
+    fn arrange_browse(&mut self, graph: &ForceGraph, focus: Option<usize>) -> Arrangement {
+        let (homes, counts) = (&self.homes, &self.counts);
+        let atlas = self
+            .atlas
+            .get_or_insert_with(|| atlas(graph, homes, counts))
+            .clone();
+        let clusters = self.homes.len();
+        let center = focus.and_then(|f| graph.cluster(f)).unwrap_or(0);
+        let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(center);
+        let links = focus.map_or_else(Vec::new, |f| self.browse_calls(graph, f));
+        let named = distances(&links, focus);
+        // Every module counts what it names, the focus's own among them.
+        let columns = open_up(&links, focus, clusters, usize::MAX, &cluster_of);
+        let mut balls = atlas.balls;
+        for (cluster, ball) in balls.iter_mut().enumerate() {
+            if (focus.is_some() && cluster == center) || !columns[cluster].is_empty() {
+                ball.body = Body::Open;
+            }
+        }
+        let shown = (0..graph.positions.len())
+            .map(|t| graph.cluster(t).is_some())
+            .collect();
+        let tubes = self.join(&links, &cluster_of);
+        Arrangement {
+            focus,
+            center,
+            expanded: false,
+            balls,
+            points: atlas.points,
+            shown,
+            named,
+            columns,
+            context: HashSet::new(),
+            outside: HashSet::new(),
+            tubes,
+            links,
+        }
+    }
+
+    /// Browsing, the calls named round `focus`: each of its callers' into it, then each
+    /// of its own calls, in the order written; none on a side `hidden` leaves out.
+    fn browse_calls(&self, graph: &ForceGraph, focus: usize) -> Vec<Link> {
+        let mut links: Vec<Link> = Vec::new();
+        if !self.hidden.hides(Side::Callers) {
+            let mut callers: Vec<usize> = graph.callers(focus).filter(|&t| t != focus).collect();
+            callers.sort_unstable();
+            callers.dedup();
+            links.extend(callers.into_iter().map(|from| Link {
+                from,
+                to: focus,
+                flow: Flow::Into,
+            }));
+        }
+        if !self.hidden.hides(Side::Callees) {
+            let written = graph.sequence(focus);
+            let callees: Vec<usize> = if written.is_empty() {
+                graph.callees(focus).collect()
+            } else {
+                written.to_vec()
+            };
+            for to in callees {
+                if to != focus && !links.iter().any(|l| l.from == focus && l.to == to) {
+                    links.push(Link {
+                        from: focus,
+                        to,
+                        flow: Flow::Journey(1),
+                    });
+                }
+            }
+        }
+        links
+    }
+
+    /// In a journey with I on, a call into each function shown on it, the middle
+    /// included, from each function that calls it and is not shown.
+    fn outside_calls(&self, graph: &ForceGraph, links: &[Link], focus: Option<usize>) -> Vec<Link> {
+        let Some(focus) = focus.filter(|_| self.outside && !self.browse) else {
+            return Vec::new();
+        };
+        let mut on = vec![focus];
+        for link in links.iter().filter(|l| matches!(l.flow, Flow::Journey(_))) {
+            if !on.contains(&link.to) {
+                on.push(link.to);
+            }
+        }
+        let shown: HashSet<usize> = links
+            .iter()
+            .flat_map(|l| [l.from, l.to])
+            .chain([focus])
+            .collect();
+        let mut calls = Vec::new();
+        for to in on {
+            let mut callers: Vec<usize> =
+                graph.callers(to).filter(|c| !shown.contains(c)).collect();
+            callers.sort_unstable();
+            callers.dedup();
+            calls.extend(callers.into_iter().map(|from| Link {
+                from,
+                to,
+                flow: Flow::Outside,
+            }));
+        }
+        calls
     }
 
     /// The nucleus grown from `modules`, the module view, to several times its size,
@@ -1023,12 +1289,27 @@ impl Nucleus {
                 shown[tile] = true;
             }
         }
+        let calls_in: Vec<Link> = modules
+            .links
+            .iter()
+            .copied()
+            .filter(|l| l.flow == Flow::Outside)
+            .collect();
+        let outside = place_outside(
+            &mut balls,
+            &mut points,
+            &mut shown,
+            &calls_in,
+            center,
+            &cluster_of,
+        );
         let tubes = self.join(&modules.links, &cluster_of);
         Arrangement {
             expanded: true,
             balls,
             points,
             shown,
+            outside,
             tubes,
             ..modules
         }
@@ -1111,14 +1392,6 @@ impl Bearings<'_> {
         (across, toward)
     }
 
-    /// For the near ring: round the nucleus as the usual view sees it, tilted towards
-    /// and away from the camera by only part of the way, so no module in it hides in
-    /// front of or behind the nucleus.
-    fn near(&self, cluster: usize) -> Vec3 {
-        let (across, toward) = self.split(cluster);
-        (across + self.back * toward * 0.6).normalize()
-    }
-
     /// For the rest of the codebase: standing back behind the nucleus, a bowl seen
     /// from the usual view, so it never crowds in front of what matters.
     fn behind(&self, cluster: usize) -> Vec3 {
@@ -1148,6 +1421,8 @@ fn distances(links: &[Link], focus: Option<usize>) -> HashMap<usize, i32> {
             Flow::Into => (link.from, -1),
             #[expect(clippy::cast_possible_wrap, reason = "a small level")]
             Flow::Journey(level) => (link.to, level as i32),
+            // An outside caller is shown, not named.
+            Flow::Outside => continue,
         };
         if Some(tile) == focus {
             continue;
@@ -1181,60 +1456,159 @@ fn open_up(
     columns
 }
 
-/// Opens the modules that name something into a ring round the nucleus: those
-/// holding a caller of the middle or a call it makes out along their own bearing,
-/// those reached only through another just beyond that one; then holds them apart.
-fn place_open(
-    balls: &mut [Ball],
-    opened: &[Vec<usize>],
+/// The modules round the nucleus, in order: those the journey enters, in the order
+/// it first enters them, by `runs`, every function below the middle in the order the
+/// journey first runs it; then those holding only callers of the middle.
+fn ring_order(
     links: &[Link],
-    focus: Option<usize>,
-    bearings: &Bearings,
+    runs: &[usize],
+    center: usize,
     cluster_of: &impl Fn(usize) -> usize,
-) {
-    let core = balls[bearings.center].radius;
-    let open: Vec<usize> = (0..balls.len())
-        .filter(|&c| c != bearings.center && !opened[c].is_empty())
+) -> Vec<usize> {
+    let named: HashSet<usize> = links
+        .iter()
+        .filter(|l| matches!(l.flow, Flow::Journey(_)))
+        .map(|l| l.to)
         .collect();
-    for &cluster in &open {
-        let radius = grid_radius(opened[cluster].len(), SPACING, COLUMN_GAP, 2.6);
-        balls[cluster] = Ball {
-            center: bearings.near(cluster) * (core + NEAR_GAP + radius),
+    // Whatever the runs leave out, as the links have it.
+    let journey = runs
+        .iter()
+        .copied()
+        .filter(|t| named.contains(t))
+        .chain(named.iter().copied());
+    let callers = links
+        .iter()
+        .filter(|l| l.flow == Flow::Into)
+        .map(|l| l.from);
+    let mut order: Vec<usize> = Vec::new();
+    for tile in journey.chain(callers) {
+        let cluster = cluster_of(tile);
+        if cluster != center && !order.contains(&cluster) {
+            order.push(cluster);
+        }
+    }
+    order
+}
+
+/// Stands the modules in `order` on a ring round the nucleus, `center`, clockwise
+/// from the top as the usual view sees it, each as big as it is, the ring just wide
+/// enough to hold them all with room between.
+fn place_ring(balls: &mut [Ball], order: &[usize], center: usize) {
+    let radii: Vec<f32> = order.iter().map(|&c| balls[c].radius).collect();
+    let widest = radii.iter().copied().fold(0.0, f32::max);
+    let least = balls[center].radius + NEAR_GAP + widest;
+    let (angles, ring) = clockwise(&radii, least, MARGIN);
+    let rotation = view_rotation();
+    let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+    for (&cluster, angle) in order.iter().zip(angles) {
+        balls[cluster].center = (right * angle.cos() + up * angle.sin()) * ring;
+    }
+}
+
+/// Angles round a ring, clockwise from the top, for spheres as big as `radii` in
+/// order, `margin` apart at least and the room left shared evenly between them; and
+/// the ring's radius, `least` or more when they need it.
+fn clockwise(radii: &[f32], least: f32, margin: f32) -> (Vec<f32>, f32) {
+    let widths: Vec<f32> = radii.iter().map(|r| 2.0 * r + margin).collect();
+    let total: f32 = widths.iter().sum();
+    let ring = least.max(total / std::f32::consts::TAU);
+    #[expect(clippy::cast_precision_loss, reason = "a short list")]
+    let spare = (std::f32::consts::TAU * ring - total).max(0.0) / widths.len().max(1) as f32;
+    let mut along = 0.0;
+    let mut angles = Vec::with_capacity(widths.len());
+    for (index, width) in widths.iter().enumerate() {
+        if index > 0 {
+            along += (widths[index - 1] + width) / 2.0 + spare;
+        }
+        angles.push(std::f32::consts::FRAC_PI_2 - along / ring);
+    }
+    (angles, ring)
+}
+
+/// Puts the outside callers `calls` brings in where they show without moving anything
+/// already placed: inside the nucleus where they sit; hanging outwards off a module on
+/// the ring; else in their own module beyond the ring, towards what they call. Returns
+/// them.
+fn place_outside(
+    balls: &mut [Ball],
+    points: &mut [Vec3],
+    shown: &mut [bool],
+    calls: &[Link],
+    center: usize,
+    cluster_of: &impl Fn(usize) -> usize,
+) -> HashSet<usize> {
+    let mut by_module: Vec<(usize, Vec<usize>)> = Vec::new();
+    for call in calls {
+        let cluster = cluster_of(call.from);
+        match by_module.iter_mut().find(|(c, _)| *c == cluster) {
+            Some((_, tiles)) if !tiles.contains(&call.from) => tiles.push(call.from),
+            Some(_) => {}
+            None => by_module.push((cluster, vec![call.from])),
+        }
+    }
+    let core = balls[center].center;
+    let placed: Vec<usize> = (0..balls.len())
+        .filter(|&c| matches!(balls[c].body, Body::Nucleus | Body::Open))
+        .collect();
+    let outer = placed
+        .iter()
+        .map(|&c| balls[c].center.distance(core) + balls[c].radius)
+        .fold(0.0, f32::max)
+        + OUTER_GAP;
+    let back = view_rotation() * Vec3::Z;
+    let mut beyond = Vec::new();
+    for (cluster, tiles) in &by_module {
+        let ball = balls[*cluster];
+        if *cluster == center {
+            for &tile in tiles {
+                shown[tile] = true;
+            }
+            continue;
+        }
+        if ball.body == Body::Open {
+            // A column out from the ring, past the module's wall.
+            let out = (ball.center - core).try_normalize().unwrap_or(Vec3::Y);
+            for (index, &tile) in tiles.iter().enumerate() {
+                let (column, row) = (index / ROWS, index % ROWS);
+                #[expect(clippy::cast_precision_loss, reason = "short lists")]
+                let at = out * (ball.radius + HANG_GAP + row as f32 * SPACING)
+                    + sideways(out) * column as f32 * COLUMN_GAP;
+                points[tile] = ball.center + at;
+                shown[tile] = true;
+            }
+            continue;
+        }
+        // Towards the functions on the journey it calls, as the usual view sees them.
+        let toward = calls
+            .iter()
+            .filter(|c| tiles.contains(&c.from))
+            .map(|c| points[c.to] - core)
+            .sum::<Vec3>();
+        let toward = (toward - back * toward.dot(back))
+            .try_normalize()
+            .unwrap_or_else(|| sideways(back));
+        let radius = grid_radius(tiles.len(), SPACING, COLUMN_GAP, 2.6);
+        balls[*cluster] = Ball {
+            center: core + toward * (outer + radius),
             radius,
             body: Body::Open,
         };
+        beyond.push(*cluster);
     }
-    let touches_focus = |cluster: usize| {
-        links.iter().any(|l| {
-            (Some(l.from) == focus || Some(l.to) == focus)
-                && (cluster_of(l.from) == cluster || cluster_of(l.to) == cluster)
-        })
-    };
-    for &cluster in open.iter().filter(|&&c| !touches_focus(c)) {
-        let through = links.iter().find_map(|l| {
-            let (a, b) = (cluster_of(l.from), cluster_of(l.to));
-            match () {
-                () if a == cluster && b != cluster => Some(b),
-                () if b == cluster && a != cluster => Some(a),
-                () => None,
-            }
-        });
-        let Some(through) = through.filter(|&t| t != bearings.center) else {
-            continue;
-        };
-        let base = balls[through];
-        let out =
-            (base.center.normalize_or_zero() * 2.0 + bearings.near(cluster)).normalize_or_zero();
-        let radius = balls[cluster].radius;
-        balls[cluster].center = base.center + out * (base.radius + BEYOND_GAP + radius);
-    }
-    // Apart as the usual view sees them, and as it sees them turned an eighth of the
-    // way either side, so none hides another or its names.
     let views: Vec<Vec3> = [0.0, -1.0, 1.0]
         .into_iter()
         .map(|turn| turned_view(turn * std::f32::consts::FRAC_PI_4) * Vec3::Z)
         .collect();
-    relax(balls, |b| b.body == Body::Open, MARGIN, &views, 300);
+    relax(balls, |c, _| beyond.contains(&c), MARGIN, &views, 200);
+    for (cluster, tiles) in &by_module {
+        if beyond.contains(cluster) {
+            for (&tile, at) in tiles.iter().zip(grid(tiles.len(), SPACING, COLUMN_GAP)) {
+                points[tile] = balls[*cluster].center + at;
+                shown[tile] = true;
+            }
+        }
+    }
+    by_module.into_iter().flat_map(|(_, tiles)| tiles).collect()
 }
 
 /// Puts every module that names nothing further out than the ring, behind it, the
@@ -1252,7 +1626,7 @@ fn place_closed(balls: &mut [Ball], bearings: &Bearings) {
             ball.center = bearings.behind(cluster) * (outer + 10.0 * far);
         }
     }
-    relax(balls, |b| b.body == Body::Closed, 1.5, &[], 60);
+    relax(balls, |_, b| b.body == Body::Closed, 1.5, &[], 60);
 }
 
 /// Where each function is drawn, and whether it is: the nucleus's own where the flat
@@ -1334,42 +1708,11 @@ fn place_rim(
     }
 }
 
-/// The angle round the expanded nucleus, as the usual view sees it, of each module in
-/// `rim`: its bearing from the middle, then spread round until none of them, as big as
-/// `radii`, crowds another.
-fn rim_angles(rim: &[usize], radii: &[f32], core: f32, bearings: &Bearings) -> Vec<f32> {
-    let rotation = view_rotation();
-    let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+/// The angle round the expanded nucleus, as the usual view sees it, of each module on
+/// the ring round it, as big as `radii`, in order clockwise from the top.
+fn rim_angles(radii: &[f32], core: f32) -> Vec<f32> {
     let widest = radii.iter().copied().fold(0.0, f32::max);
-    let ring = core * (1.0 + RIM_GAP) + widest;
-    let mut angles: Vec<f32> = rim
-        .iter()
-        .map(|&c| {
-            let at = bearings.near(c);
-            at.dot(up).atan2(at.dot(right))
-        })
-        .collect();
-    let mut order: Vec<usize> = (0..rim.len()).collect();
-    order.sort_by(|&a, &b| angles[a].total_cmp(&angles[b]));
-    if rim.len() > 1 {
-        for _ in 0..200 {
-            let mut moved = false;
-            for k in 0..order.len() {
-                let (i, j) = (order[k], order[(k + 1) % order.len()]);
-                let need = (radii[i] + radii[j] + core * RIM_MARGIN) / ring;
-                let gap = (angles[j] - angles[i]).rem_euclid(std::f32::consts::TAU);
-                if gap < need {
-                    angles[i] -= (need - gap) / 2.0;
-                    angles[j] += (need - gap) / 2.0;
-                    moved = true;
-                }
-            }
-            if !moved {
-                break;
-            }
-        }
-    }
-    angles
+    clockwise(radii, core * (1.0 + RIM_GAP) + widest, core * RIM_MARGIN).0
 }
 
 /// Lays a module's functions out in a sphere of radius one by the calls among them,
@@ -1438,6 +1781,73 @@ fn lay_inside(
         }
     }
     at
+}
+
+/// Browsing, where every module and function sits: each module where the stable
+/// layout of modules has it, spread so each holds all its functions with room between
+/// and none hides another as the usual view, or one turned an eighth of the way
+/// either side, sees them; each module's functions inside it where the flat graph has
+/// them about its middle.
+fn atlas(graph: &ForceGraph, homes: &[Vec3], counts: &[usize]) -> Atlas {
+    let clusters = homes.len();
+    let radii: Vec<f32> = counts.iter().map(|&n| atlas_radius(n)).collect();
+    let median = |mut values: Vec<f32>| {
+        values.sort_by(f32::total_cmp);
+        values.get(values.len() / 2).copied()
+    };
+    // As far apart as the typical module needs, nearest neighbour to nearest.
+    let nearest: Vec<f32> = (0..clusters)
+        .map(|i| {
+            (0..clusters)
+                .filter(|&j| j != i)
+                .map(|j| homes[i].distance(homes[j]))
+                .fold(f32::INFINITY, f32::min)
+        })
+        .filter(|d| d.is_finite())
+        .collect();
+    let gap = median(nearest).unwrap_or(1.0).max(1e-3);
+    let room = 2.0 * median(radii.clone()).unwrap_or(1.0) + ATLAS_MARGIN;
+    #[expect(clippy::cast_precision_loss, reason = "a module count")]
+    let middle = homes.iter().copied().sum::<Vec3>() / clusters.max(1) as f32;
+    let mut balls: Vec<Ball> = homes
+        .iter()
+        .zip(&radii)
+        .map(|(&home, &radius)| Ball {
+            center: (home - middle) * (room / gap),
+            radius,
+            body: Body::Faint,
+        })
+        .collect();
+    let views: Vec<Vec3> = [0.0, -1.0, 1.0]
+        .into_iter()
+        .map(|turn| turned_view(turn * std::f32::consts::FRAC_PI_4) * Vec3::Z)
+        .collect();
+    relax(&mut balls, |_, _| true, ATLAS_MARGIN, &views, 400);
+    #[expect(clippy::cast_precision_loss, reason = "a module count")]
+    let middle = balls.iter().map(|b| b.center).sum::<Vec3>() / clusters.max(1) as f32;
+    for ball in &mut balls {
+        ball.center -= middle;
+    }
+    let tiles = graph.positions.len();
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); clusters];
+    for tile in 0..tiles {
+        if let Some(cluster) = graph.cluster(tile) {
+            members[cluster].push(tile);
+        }
+    }
+    let mut points = vec![Vec3::ZERO; tiles];
+    for (cluster, members) in members.iter().enumerate() {
+        for (tile, at) in interior(graph, members, balls[cluster].radius) {
+            points[tile] = balls[cluster].center + at;
+        }
+    }
+    Atlas { balls, points }
+}
+
+/// Browsing, a module's size: room for every function it holds.
+fn atlas_radius(count: usize) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "a function count")]
+    (3.0 + (count as f32).sqrt()).clamp(4.0, 18.0)
 }
 
 /// The nucleus's size, roomy enough for all its functions, and never so small that
@@ -1566,7 +1976,7 @@ fn module_homes(count: usize, flows: &HashMap<(usize, usize), usize>) -> Vec<Vec
 /// sees them, moving across it; given none, in space.
 fn relax(
     balls: &mut [Ball],
-    movable: impl Fn(&Ball) -> bool,
+    movable: impl Fn(usize, &Ball) -> bool,
     margin: f32,
     views: &[Vec3],
     rounds: usize,
@@ -1581,7 +1991,7 @@ fn relax(
         let mut moved = false;
         for i in 0..balls.len() {
             for j in i + 1..balls.len() {
-                let (move_a, move_b) = (movable(&balls[i]), movable(&balls[j]));
+                let (move_a, move_b) = (movable(i, &balls[i]), movable(j, &balls[j]));
                 if !move_a && !move_b {
                     continue;
                 }
@@ -1825,25 +2235,26 @@ pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake:
     }
 }
 
-/// What the nucleus was last framed for: the function in its middle, where the
-/// journey starts, the hand that last pointed the view, whether it was expanded, and
-/// how much of the journey and of the focus's sides showed.
+/// What the nucleus was last framed for: whether it was browsed; in a journey, where
+/// it starts, the function in its middle and how much of it showed; the hand that last
+/// pointed the view; and whether it was expanded.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Framed {
-    focus: Option<usize>,
+    browsing: bool,
     anchor: Option<usize>,
+    focus: Option<usize>,
     aim: u64,
     expanded: bool,
-    disclose: Disclose,
-    hidden: Hidden,
+    disclose: Option<Disclose>,
 }
 
 /// Looks at the nucleus from far enough back to see it, every open module and the
-/// journey's cursor, turning to a three-quarter view from above when it first opens;
-/// again whenever the view is pointed somewhere new: a new middle, a new start, Enter,
-/// Back. A level more or less of the journey, or a side hidden, refits it too, unless
-/// the viewer has panned or zoomed away. Turns back to the usual view when the graph
-/// lies flat again.
+/// journey's cursor, turning to a three-quarter view from above, whenever the view is
+/// pointed somewhere new: a journey entered or left, a new start, Enter, a Back that
+/// crosses between them, expanding or shrinking back. Browsing, it frames the function
+/// clicked and what it touches only then, so a click moves nothing. A level more or
+/// less of the journey refits it too, unless the viewer has panned or zoomed away.
+/// Turns back to the usual view when the graph lies flat again.
 pub(crate) fn frame(
     explorer: Res<Explorer>,
     mut last: Local<Option<Framed>>,
@@ -1859,24 +2270,25 @@ pub(crate) fn frame(
         }
         return;
     };
+    let browsing = nucleus.browsing();
     let now = Framed {
-        focus: nucleus.focus(),
+        browsing,
         anchor: explorer.anchor(),
+        focus: nucleus.focus().filter(|_| !browsing),
         aim: explorer.aim(),
         expanded: nucleus.expanded(),
-        disclose: explorer.disclose(),
-        hidden: explorer.hidden(),
+        disclose: (!browsing).then(|| explorer.disclose()),
     };
     let before = last.replace(now);
     if before == Some(now) {
         return;
     }
-    // Expanding or shrinking back turns to the usual view too, where the ring of
-    // modules round the nucleus keeps the bearings they had.
-    let opening = before.is_none_or(|b| b.expanded != now.expanded);
+    // Entering or leaving a journey, expanding or shrinking back, turns to the usual
+    // view too, where the ring of modules round the nucleus keeps its order.
+    let opening = before.is_none_or(|b| (b.browsing, b.expanded) != (now.browsing, now.expanded));
     let pointed = opening
         || before.is_some_and(|b| (b.focus, b.anchor, b.aim) != (now.focus, now.anchor, now.aim));
-    let cursor = explorer.graph_focus().and_then(|t| explorer.tile_point(t));
+    let cursor = explorer.cursor_mark().and_then(|t| explorer.tile_point(t));
     for (mut camera, projection) in &mut cameras {
         if !pointed && camera.free {
             continue;
@@ -1894,7 +2306,8 @@ pub(crate) fn frame(
 }
 
 /// Glides to the nucleus from far enough back, turned to `rotation`, to see it all,
-/// and `also` (the journey's cursor) wherever it sits.
+/// and `also` (the journey's cursor) wherever it sits; browsing, to the function
+/// clicked and every module it touches, or with none, the whole codebase.
 pub(crate) fn fit(
     nucleus: &Nucleus,
     also: Option<Vec3>,
@@ -1902,15 +2315,46 @@ pub(crate) fn fit(
     rotation: Quat,
     projection: &Projection,
 ) {
+    let mut points = nucleus.frame_points(rotation);
+    if points.is_empty() {
+        points = nucleus.atlas_points(rotation);
+    }
+    points.extend(also);
+    glide(
+        &points,
+        nucleus.frame_center(),
+        camera,
+        rotation,
+        projection,
+    );
+}
+
+/// Browsing, glides to take in the whole codebase from where the camera turns to.
+pub(crate) fn fit_all(
+    nucleus: &Nucleus,
+    camera: &mut OrbitCamera,
+    rotation: Quat,
+    projection: &Projection,
+) {
+    let points = nucleus.atlas_points(rotation);
+    #[expect(clippy::cast_precision_loss, reason = "a point count")]
+    let middle = points.iter().copied().sum::<Vec3>() / points.len().max(1) as f32;
+    glide(&points, middle, camera, rotation, projection);
+}
+
+/// Glides to look at `center`, turned to `rotation`, from far enough back to see
+/// every one of `points`.
+fn glide(
+    points: &[Vec3],
+    center: Vec3,
+    camera: &mut OrbitCamera,
+    rotation: Quat,
+    projection: &Projection,
+) {
     let Projection::Perspective(perspective) = projection else {
         return;
     };
-    let mut points = nucleus.frame_points(rotation);
-    points.extend(also);
-    camera.glide_to(
-        Vec3::ZERO,
-        fit_distance(&points, Vec3::ZERO, rotation, perspective),
-    );
+    camera.glide_to(center, fit_distance(points, center, rotation, perspective));
 }
 
 /// A module's sphere in the scene.
@@ -1935,6 +2379,8 @@ pub(crate) struct Looks {
     nucleus: Vec<Handle<StandardMaterial>>,
     open: Vec<Handle<StandardMaterial>>,
     closed: Vec<Handle<StandardMaterial>>,
+    /// Browsing, glass so faint the module only just reads as one.
+    faint: Vec<Handle<StandardMaterial>>,
     /// By [`Flow`]: an arrow's shaft and its head.
     shafts: HashMap<Flow, Handle<StandardMaterial>>,
     heads: HashMap<Flow, Handle<StandardMaterial>>,
@@ -1975,7 +2421,8 @@ pub(crate) fn create_looks(
         ..default()
     };
     let colors: Vec<Color> = (0..PALETTE.len()).map(lane_color).collect();
-    let flows: Vec<Flow> = std::iter::once(Flow::Into)
+    let flows: Vec<Flow> = [Flow::Into, Flow::Outside]
+        .into_iter()
         .chain((1..=SHADES).map(Flow::Journey))
         .collect();
     let looks = Looks {
@@ -1991,6 +2438,10 @@ pub(crate) fn create_looks(
             .map(|&c| materials.add(glass(c, 0.08)))
             .collect(),
         closed: colors.iter().map(|&c| materials.add(solid(c))).collect(),
+        faint: colors
+            .iter()
+            .map(|&c| materials.add(glass(c, 0.025)))
+            .collect(),
         shafts: flows
             .iter()
             .map(|&f| {
@@ -2058,21 +2509,19 @@ pub(crate) fn place_bodies(
         }
     }
     for (sphere, mut transform, mut visibility, mut material) in &mut spheres {
-        let Some(ball) = nucleus.ball(sphere.0) else {
-            continue;
-        };
-        let color = sphere.0 % PALETTE.len();
-        let wanted = match ball.body {
-            Body::Nucleus => &looks.nucleus[color],
-            Body::Open => &looks.open[color],
-            Body::Closed => &looks.closed[color],
-        };
-        if &material.0 != wanted {
-            material.0 = wanted.clone();
+        if let Some(ball) = nucleus.ball(sphere.0) {
+            let shown = nucleus.shows_body(ball.body);
+            let placed =
+                Transform::from_translation(ball.center).with_scale(Vec3::splat(ball.radius));
+            transform.set_if_neq(placed);
+            dress(&looks, sphere.0, ball.body, &mut material);
+            // A journey shows the modules it runs through, and nothing else.
+            visibility.set_if_neq(if shown {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
         }
-        let placed = Transform::from_translation(ball.center).with_scale(Vec3::splat(ball.radius));
-        transform.set_if_neq(placed);
-        visibility.set_if_neq(Visibility::Inherited);
     }
 
     let tubes = nucleus.tubes();
@@ -2139,6 +2588,25 @@ pub(crate) fn place_bodies(
     }
 }
 
+/// Gives a module's sphere the look its body asks for.
+fn dress(
+    looks: &Looks,
+    cluster: usize,
+    body: Body,
+    material: &mut MeshMaterial3d<StandardMaterial>,
+) {
+    let color = cluster % PALETTE.len();
+    let wanted = match body {
+        Body::Nucleus => &looks.nucleus[color],
+        Body::Open => &looks.open[color],
+        Body::Closed => &looks.closed[color],
+        Body::Faint => &looks.faint[color],
+    };
+    if &material.0 != wanted {
+        material.0 = wanted.clone();
+    }
+}
+
 /// A rim round each glass sphere, facing the camera, so its edge reads as one
 /// outline; and the named calls, function to function along their arrows, with dots
 /// flowing along those that touch the focus.
@@ -2167,6 +2635,7 @@ pub(crate) fn draw(
                 (1.025, 0.18),
             ],
             Body::Open => &[(0.92, 0.06), (0.96, 0.12), (0.985, 0.25), (1.0, 0.7)],
+            Body::Faint => &[(0.97, 0.05), (1.0, 0.2)],
             Body::Closed => &[],
         };
         for &(grow, alpha) in rims {
@@ -2334,6 +2803,17 @@ mod tests {
         graph.cluster(tile(map, id)).expect("a module")
     }
 
+    /// Every function `tile` calls, `left` calls down, in the order written, first
+    /// calls first, each once.
+    fn runs(graph: &ForceGraph, tile: usize, left: u32, order: &mut Vec<usize>) {
+        for &callee in graph.sequence(tile) {
+            if left > 0 && !order.contains(&callee) {
+                order.push(callee);
+                runs(graph, callee, left - 1, order);
+            }
+        }
+    }
+
     /// What the graph says `from` calls, `depth` calls down, numbered as a journey
     /// would number it.
     fn trail(graph: &ForceGraph, from: usize, depth: u32) -> Trail {
@@ -2359,6 +2839,8 @@ mod tests {
                 stack.push((callee, level + 1, number));
             }
         }
+        // Everything below in the order a journey runs it, first calls first.
+        runs(graph, from, 10, &mut trail.order);
         // Everything below at any depth, as the journey would give it.
         let mut wave = vec![from];
         for level in 1..10 {
@@ -2414,21 +2896,36 @@ mod tests {
             !nucleus.shows(tile(&map, "db::other")),
             "what an open module does not name stays folded"
         );
-        let near = nucleus
-            .ball(module(&graph, &map, "db::put"))
-            .expect("a sphere");
-        let beyond = nucleus
-            .ball(module(&graph, &map, "disk::write"))
-            .expect("a sphere");
+        // Clockwise from the top in the order the journey first enters them, then
+        // the callers'.
+        let rotation = view_rotation();
+        let turned = |id: &str| {
+            let at = nucleus
+                .ball(module(&graph, &map, id))
+                .expect("a sphere")
+                .center;
+            let angle = at.dot(rotation * Vec3::Y).atan2(at.dot(rotation * Vec3::X));
+            (std::f32::consts::FRAC_PI_2 - angle).rem_euclid(std::f32::consts::TAU)
+        };
+        let turns: Vec<f32> = [
+            "db::put",
+            "disk::write",
+            "log::say",
+            "ext::lib",
+            "web::route",
+        ]
+        .map(turned)
+        .into();
+        assert!(turns[0] < 0.1, "the first at the top: {turns:?}");
         assert!(
-            beyond.center.length() > near.center.length(),
-            "what a callee calls sits beyond the callee's module"
+            turns.is_sorted(),
+            "clockwise in the journey's order: {turns:?}"
         );
         let far = nucleus
             .ball(module(&graph, &map, "far::alone"))
             .expect("a sphere");
         assert_eq!(far.body, Body::Closed);
-        assert!(far.center.length() > beyond.center.length());
+        assert!(!nucleus.shows_body(far.body), "and a journey leaves it out");
         let balls: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
         for (i, a) in balls.iter().enumerate() {
             for b in &balls[i + 1..] {
@@ -2665,7 +3162,7 @@ mod tests {
             callers: true,
             callees: false,
         };
-        let mut nucleus = Nucleus::gather(&graph, Some(run), hidden, trail(&graph, run, 1));
+        let mut nucleus = Nucleus::gather(&graph, Some(run), hidden, trail(&graph, run, 1), false);
         assert!(nucleus.links().iter().all(|l| l.flow != Flow::Into));
         assert!(!nucleus.names(tile(&map, "web::route")));
         assert_eq!(nucleus.ball(web).map(|b| b.body), Some(Body::Closed));
@@ -2709,18 +3206,118 @@ mod tests {
     }
 
     #[test]
-    fn specks_hide_by_default_only_when_expanded() {
+    fn specks_hide_in_a_journey_and_show_browsing() {
         let (graph, map) = codebase();
         let mut nucleus = around(&graph, &map, "core::run", 1);
-        assert!(!nucleus.specks_hidden());
+        assert!(nucleus.specks_hidden(), "a journey shows only itself");
         nucleus.expand(&graph, true);
         assert!(nucleus.specks_hidden());
         nucleus.toggle_specks();
         assert!(!nucleus.specks_hidden());
         nucleus.expand(&graph, false);
-        assert!(!nucleus.specks_hidden(), "each view keeps its own");
-        nucleus.toggle_specks();
-        assert!(nucleus.specks_hidden());
+        assert!(nucleus.specks_hidden(), "each view keeps its own");
+        nucleus.set_browse(&graph, true);
+        assert!(!nucleus.specks_hidden(), "browsing, every function shows");
+    }
+
+    #[test]
+    fn browsing_every_module_keeps_its_place_whatever_is_clicked() {
+        let (graph, map) = codebase();
+        let run = tile(&map, "core::run");
+        let mut nucleus =
+            Nucleus::gather(&graph, Some(run), Hidden::default(), Trail::default(), true);
+        let places = |nucleus: &Nucleus| {
+            let points: Vec<Option<Vec3>> = (0..graph.positions.len())
+                .map(|t| nucleus.point(t))
+                .collect();
+            let balls: Vec<(Vec3, f32)> =
+                nucleus.balls().map(|(_, b)| (b.center, b.radius)).collect();
+            (points, balls)
+        };
+        let before = places(&nucleus);
+        for id in ["db::put", "far::alone", "web::route", "core::help"] {
+            nucleus.recenter(&graph, Some(tile(&map, id)));
+            while nucleus.advance(0.1) {}
+            assert_eq!(places(&nucleus), before, "nothing moves for {id}");
+        }
+        nucleus.recenter(&graph, Some(run));
+        assert!(nucleus.names(tile(&map, "web::route")), "its caller");
+        assert_eq!(nucleus.level(tile(&map, "web::route")), Some(-1));
+        assert_eq!(nucleus.level(tile(&map, "db::put")), Some(1), "its call");
+        assert!(
+            !nucleus.names(tile(&map, "disk::write")),
+            "two calls down, not"
+        );
+        for id in ["db::put", "web::route", "core::run"] {
+            let ball = nucleus.ball(module(&graph, &map, id)).expect("a sphere");
+            assert_eq!(ball.body, Body::Open, "{id}'s module opens in place");
+        }
+        let far = nucleus
+            .ball(module(&graph, &map, "far::alone"))
+            .expect("a sphere");
+        assert_eq!(far.body, Body::Faint, "the rest recedes");
+        for id in ["far::alone", "db::other", "core::idle"] {
+            let tile = tile(&map, id);
+            assert!(nucleus.shows(tile), "{id} is drawn, to be clicked");
+            let ball = nucleus.ball(module(&graph, &map, id)).expect("a sphere");
+            let at = nucleus.point(tile).expect("a point");
+            assert!(
+                at.distance(ball.center) <= ball.radius,
+                "{id} inside its module"
+            );
+        }
+        let balls: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
+        for (i, a) in balls.iter().enumerate() {
+            for b in &balls[i + 1..] {
+                assert!(a.center.distance(b.center) >= a.radius + b.radius, "apart");
+            }
+        }
+    }
+
+    #[test]
+    fn an_outside_caller_hangs_beyond_what_was_there() {
+        let (graph, map) = codebase();
+        // With the start's callers left out, web::route calls core::run from off the
+        // journey.
+        let run = tile(&map, "core::run");
+        let mut nucleus = Nucleus::gather(
+            &graph,
+            Some(run),
+            Hidden {
+                callers: true,
+                callees: false,
+            },
+            trail(&graph, run, 1),
+            false,
+        );
+        let before: Vec<Vec3> = nucleus
+            .balls()
+            .filter(|(_, b)| nucleus.shows_body(b.body))
+            .map(|(_, b)| b.center)
+            .collect();
+        nucleus.set_outside(&graph, true);
+        while nucleus.advance(0.1) {}
+        let route = tile(&map, "web::route");
+        assert!(
+            nucleus.outside(route),
+            "the start's caller, left out, comes in from outside"
+        );
+        assert!(
+            nucleus
+                .links()
+                .iter()
+                .any(|l| l.flow == Flow::Outside && l.from == route)
+        );
+        let web = nucleus
+            .ball(module(&graph, &map, "web::route"))
+            .expect("a sphere");
+        assert_eq!(web.body, Body::Open);
+        let after: Vec<Vec3> = nucleus
+            .balls()
+            .filter(|(c, b)| nucleus.shows_body(b.body) && *c != module(&graph, &map, "web::route"))
+            .map(|(_, b)| b.center)
+            .collect();
+        assert_eq!(before, after, "the rest stays where it was");
     }
 
     #[test]
@@ -2862,7 +3459,7 @@ mod tests {
             callers: true,
             callees: false,
         };
-        let nucleus = Nucleus::gather(&graph, Some(help), hidden, trail);
+        let nucleus = Nucleus::gather(&graph, Some(help), hidden, trail, false);
         assert_eq!(nucleus.level(idle), Some(1), "its own call, blue");
         assert!(nucleus.names(lib), "out of the module too");
         assert!(nucleus.on_journey(idle) && !nucleus.on_journey(lib));
@@ -2885,7 +3482,7 @@ mod tests {
             callers: false,
             callees: true,
         };
-        let nucleus = Nucleus::gather(&graph, Some(run), hidden, trail(&graph, run, 2));
+        let nucleus = Nucleus::gather(&graph, Some(run), hidden, trail(&graph, run, 2), false);
         assert!(nucleus.names(tile(&map, "web::route")));
         assert!(nucleus.links().iter().all(|l| l.flow == Flow::Into));
         assert!(!nucleus.names(tile(&map, "db::put")));

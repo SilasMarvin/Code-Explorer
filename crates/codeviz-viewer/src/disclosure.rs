@@ -315,6 +315,17 @@ pub(crate) fn trail(
         }
         wave = next;
     }
+    // Every function below the start in the order the journey first runs it.
+    let mut stack = vec![start];
+    while let Some(span) = stack.pop() {
+        if span != start
+            && let Some(to) = tile(span)
+            && !trail.order.contains(&to)
+        {
+            trail.order.push(to);
+        }
+        stack.extend(calls.get(&span).map_or(&[][..], Vec::as_slice).iter().rev());
+    }
     // Down from the start, in the journey's order.
     let mut stack = vec![(start, 0)];
     while let Some((span, level)) = stack.pop() {
@@ -327,8 +338,10 @@ pub(crate) fn trail(
             .map_or(&[][..], Vec::as_slice)
             .iter()
             .copied()
+            // As deep as the depth, and wherever a call was opened by hand or for the
+            // cursor.
             .filter(|&child| match disclose {
-                Disclose::Depth(depth) => level <= depth,
+                Disclose::Depth(depth) => level <= depth || disclosed.shows(child),
                 Disclose::Time => disclosed.shows(child),
             })
             .collect();

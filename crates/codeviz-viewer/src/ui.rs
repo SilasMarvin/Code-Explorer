@@ -20,7 +20,7 @@ use crate::{
     camera::OrbitCamera,
     depth_meter,
     diff_view::{self, DiffStyle, DiffView},
-    explorer::{Clustering, Confidence, Explorer, Side},
+    explorer::{Clustering, Confidence, Explorer, Hidden, Side},
     graph_view::{self, CALLEE, CALLER, CURSOR, DEEPER, Relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
@@ -181,8 +181,14 @@ fn draw_ui(
         egui::pos2(screen.min.x + left, screen.min.y + top),
         egui::pos2(screen.max.x - right, screen.max.y - bottom),
     );
+    // Browsing, no journey is open, so its panel is not drawn.
+    let mode = if explorer.browsing() {
+        PanelMode::Hidden
+    } else {
+        panel.mode
+    };
     let (graph_area, panel_area) =
-        journey_panel::split(panel.mode, central, journey_panel::extent(&explorer));
+        journey_panel::split(mode, central, journey_panel::extent(&explorer));
     if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
@@ -284,7 +290,10 @@ fn panels(
                     focus_sides(ui, explorer, now);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         history_buttons(ui, explorer);
-                        breadcrumb(ui, explorer, panel);
+                        mode_label(ui, explorer);
+                        if !explorer.browsing() {
+                            breadcrumb(ui, explorer, panel);
+                        }
                     });
                 });
             });
@@ -437,6 +446,36 @@ fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
     {
         explorer.go_forward();
     }
+    ui.separator();
+}
+
+/// Which mode the view is in, always in the same place: `Browsing`, or `Journey ·`
+/// and where it starts.
+fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
+    let (text, hint) = match explorer.root().filter(|_| !explorer.browsing()) {
+        Some(root) => (
+            format!("Journey · {}", explorer.unit_name(root)),
+            "A journey is open: a click on a function it runs moves its cursor; \
+             Esc leaves it for browsing",
+        ),
+        None => (
+            "Browsing".to_owned(),
+            "No journey is open: a click selects a function and moves nothing; \
+             Enter or Shift-click opens its journey",
+        ),
+    };
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgba_premultiplied(30, 34, 46, 255))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .strong()
+                    .color(egui::Color32::WHITE),
+            )
+            .on_hover_text(hint);
+        });
     ui.separator();
 }
 
@@ -1113,6 +1152,9 @@ struct Placer<'a> {
     fade: f32,
     /// Labels painted over all the others, the last on top.
     top: Vec<Named>,
+    /// The journey number each function's label leads with, so a click on the label
+    /// goes to that call.
+    numbers: HashMap<Named, String>,
 }
 
 impl<'a> Placer<'a> {
@@ -1136,6 +1178,7 @@ impl<'a> Placer<'a> {
             slide: 1.0 - (-SLIDE * dt).exp(),
             fade: dt / FADE,
             top: Vec::new(),
+            numbers: HashMap::new(),
         }
     }
 
@@ -1293,14 +1336,14 @@ impl<'a> Placer<'a> {
         let mut placed: Vec<(&Named, &Shown)> = self.next.iter().collect();
         placed.sort_by_key(|(key, _)| rank(key));
         // A function's name picks it, as a click on the function would.
-        let mut hits = Vec::new();
+        let mut hits: Vec<LabelHit> = Vec::new();
         for (key, shown) in placed {
             if let Some(&node) = self.anchors.get(key) {
                 let pill = self.paint(node, shown);
                 if let Named::Node(tile) = *key
                     && shown.opacity >= 0.5
                 {
-                    hits.push((pill, tile));
+                    hits.push((pill, tile, self.numbers.get(key).cloned()));
                 }
             }
         }
@@ -1376,13 +1419,18 @@ fn label_hits_id() -> egui::Id {
     egui::Id::new("graph_label_hits")
 }
 
-/// The function whose name, as last drawn, lies under `at`: the topmost.
-pub(crate) fn label_at(ctx: &egui::Context, at: egui::Pos2) -> Option<usize> {
-    ctx.data(|d| d.get_temp::<Vec<(egui::Rect, usize)>>(label_hits_id()))?
+/// A function's name as drawn: its pill, the function, and the journey number it
+/// leads with.
+type LabelHit = (egui::Rect, usize, Option<String>);
+
+/// The function whose name, as last drawn, lies under `at`, the topmost, and the
+/// journey number the name leads with.
+pub(crate) fn label_at(ctx: &egui::Context, at: egui::Pos2) -> Option<(usize, Option<String>)> {
+    ctx.data(|d| d.get_temp::<Vec<LabelHit>>(label_hits_id()))?
         .iter()
         .rev()
-        .find(|(pill, _)| pill.contains(at))
-        .map(|&(_, tile)| tile)
+        .find(|(pill, ..)| pill.contains(at))
+        .map(|(_, tile, number)| (*tile, number.clone()))
 }
 
 /// What leads a label: text in a color, on a fill when it is a badge.
@@ -1627,7 +1675,9 @@ fn draw_graph_labels(
         // biggest, where there is room.
         let mut closed: Vec<(usize, usize)> = nucleus
             .balls()
-            .filter(|(_, ball)| ball.body == Body::Closed)
+            .filter(|(_, ball)| {
+                matches!(ball.body, Body::Closed | Body::Faint) && nucleus.shows_body(ball.body)
+            })
             .map(|(cluster, _)| (nucleus.count(cluster), cluster))
             .collect();
         closed.sort_unstable_by(|a, b| b.cmp(a));
@@ -1635,7 +1685,7 @@ fn draw_graph_labels(
         // that its name would lie over it.
         let discs: Vec<(egui::Pos2, f32)> = nucleus
             .balls()
-            .filter(|(_, ball)| ball.body != Body::Closed)
+            .filter(|(_, ball)| matches!(ball.body, Body::Nucleus | Body::Open))
             .filter_map(|(_, ball)| {
                 let middle = to_screen(ball.center)?;
                 let edge = to_screen(ball.center + up * ball.radius)?;
@@ -1649,11 +1699,17 @@ fn draw_graph_labels(
                 .is_none_or(|at| discs.iter().any(|&(m, r)| at.distance(m) < r + 110.0))
         };
         // Expanded, the rest of the codebase goes unnamed: the ring says where calls go.
+        // Browsing, the whole codebase is the map, each module named where there is
+        // room.
         let named: HashSet<usize> = closed
             .iter()
             .filter(|_| !nucleus.expanded())
             .filter(|&&(_, cluster)| !hidden(cluster))
-            .take(CLOSED_NAMED)
+            .take(if nucleus.browsing() {
+                usize::MAX
+            } else {
+                CLOSED_NAMED
+            })
             .map(|&(_, cluster)| cluster)
             .collect();
         // A call from the function under the pointer that leaves for a module off the
@@ -1680,8 +1736,8 @@ fn draw_graph_labels(
             let tier = match ball.body {
                 // Which module a named function lives in matters as much as its name.
                 Body::Nucleus | Body::Open => 0,
-                Body::Closed if named.contains(&cluster) => 6,
-                Body::Closed => continue,
+                Body::Closed | Body::Faint if named.contains(&cluster) => 6,
+                Body::Closed | Body::Faint => continue,
             };
             order.push((
                 (tier, std::cmp::Reverse(nucleus.count(cluster)), cluster),
@@ -1753,6 +1809,7 @@ fn draw_graph_labels(
                 let color =
                     egui_color(lane_color(group % PALETTE.len())).gamma_multiply(match body {
                         Some(Body::Nucleus | Body::Open) => 1.0,
+                        Some(Body::Faint) => 0.5,
                         Some(Body::Closed) => 0.35,
                         None if center.is_some() => 0.6,
                         None => 0.9,
@@ -1764,7 +1821,7 @@ fn draw_graph_labels(
                     .map(|n| format!("{} of {}", n.opened(group), n.count(group)));
                 let size = match body {
                     Some(Body::Nucleus) => 15.0,
-                    Some(Body::Closed) => 10.5,
+                    Some(Body::Closed | Body::Faint) => 10.5,
                     _ => 12.0,
                 };
                 let job = label_job(None, &label.to_uppercase(), note, color, size, false);
@@ -1903,6 +1960,12 @@ fn draw_graph_labels(
                             [] => String::new(),
                         }),
                 };
+                // A click on the name goes to the call it leads with.
+                if let Some(first) = order.as_deref().and_then(|o| o.split_whitespace().next()) {
+                    placer
+                        .numbers
+                        .insert(named, first.trim_end_matches(',').to_owned());
+                }
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one; what changed after it.
                 let fill = egui_color(graph_view::node_color(explorer, diff, tile));
@@ -1984,9 +2047,14 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
     called.sort_unstable();
     called.dedup();
     let lit = explorer.spotlight().map(|(side, _)| side);
+    let hidden = explorer.hidden();
+    let outside = explorer.outside_shown();
+    let gathered_journey = explorer.nucleus().is_some() && !explorer.browsing();
     let mut pressed = None;
     let mut follow = false;
+    let mut unhide = None;
     ui.horizontal(|ui| {
+        unhide = hidden_chips(ui, hidden);
         for (side, count, noun, key, color) in [
             (Side::Callers, calling, "caller", "I", CALLER),
             (Side::Callees, called.len(), "call", "O", CALLEE),
@@ -1995,11 +2063,15 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
             let text = egui::RichText::new(format!("● {count} {noun}{plural}  {key}"))
                 .color(egui_color(color));
             let hint = match side {
-                Side::Callers => "Pick out what calls it, and bring it all into view (I)",
-                Side::Callees => "Pick out what it calls, and bring it all into view (O)",
+                Side::Callers if gathered_journey => {
+                    "Bring in every function off the journey that calls one on it (I)"
+                }
+                Side::Callers => "Pick out what calls it (I)",
+                Side::Callees => "Pick out what it calls (O)",
             };
+            let on = lit == Some(side) || (side == Side::Callers && outside);
             if ui
-                .add_enabled(count > 0, egui::Button::selectable(lit == Some(side), text))
+                .add_enabled(count > 0, egui::Button::selectable(on, text))
                 .on_hover_text(hint)
                 .clicked()
             {
@@ -2011,11 +2083,22 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
                 .strong()
                 .color(egui::Color32::WHITE),
         )
-        .on_hover_text("The focus: what I, O and Enter act on. It moves with the journey's cursor");
-        ui.label(egui::RichText::new("focus").small().color(MUTED));
+        .on_hover_text(
+            "The focus: what I, O and Enter act on. Browsing, the function clicked; in a \
+             journey, its cursor, or a function clicked off it",
+        );
+        ui.label(
+            egui::RichText::new(if explorer.browsing() {
+                "selected"
+            } else {
+                "focus"
+            })
+            .small()
+            .color(MUTED),
+        );
         if explorer.aside().is_some() {
             let chip = egui::Button::new(
-                egui::RichText::new("not on this journey · Enter to follow")
+                egui::RichText::new("not on this journey · Enter starts one here")
                     .small()
                     .color(MUTED),
             )
@@ -2023,8 +2106,8 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
             if ui
                 .add(chip)
                 .on_hover_text(
-                    "Clicked off the journey. Enter, or a click here, starts the journey \
-                     here; an arrow or Esc goes back to the journey's cursor",
+                    "Selected off the journey, in place. Enter, or a click here, starts a \
+                     journey here; an arrow or Esc goes back to the journey's cursor",
                 )
                 .clicked()
             {
@@ -2032,12 +2115,43 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
             }
         }
     });
-    if let Some(side) = pressed {
-        explorer.toggle_spotlight(side, now);
+    match pressed {
+        Some(Side::Callers) => explorer.press_callers(now),
+        Some(side) => explorer.toggle_spotlight(side, now),
+        None => {}
+    }
+    if let Some(side) = unhide {
+        explorer.toggle_hidden(side);
     }
     if follow {
         explorer.trace_from_focus();
     }
+}
+
+/// What Shift+I and Shift+O left out, said where the sides are; returns the side
+/// whose chip was clicked, to bring it back.
+fn hidden_chips(ui: &mut egui::Ui, hidden: Hidden) -> Option<Side> {
+    let mut unhide = None;
+    for (side, on, text) in [
+        (Side::Callees, hidden.callees, "calls hidden · Shift+O"),
+        (Side::Callers, hidden.callers, "callers hidden · Shift+I"),
+    ] {
+        let chip = egui::Button::new(
+            egui::RichText::new(text)
+                .small()
+                .color(egui::Color32::WHITE),
+        )
+        .corner_radius(8.0);
+        if on
+            && ui
+                .add(chip)
+                .on_hover_text("Left out of the view; a click, or the key, brings them back")
+                .clicked()
+        {
+            unhide = Some(side);
+        }
+    }
+    unhide
 }
 
 /// Says the camera has been panned or zoomed away and no longer follows the journey,

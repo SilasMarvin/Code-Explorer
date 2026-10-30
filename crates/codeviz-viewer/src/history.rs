@@ -4,9 +4,10 @@
 //! hidden, so going back puts all of it back rather than only the node it was on.
 //!
 //! One rule says what makes an entry: whatever changes the nucleus's middle or where
-//! the journey starts, or moves the cursor by a click, a bar, a digit or Enter. A walk
-//! with the arrows or brackets is one entry however many steps it takes, so Back
-//! returns to where the walk began.
+//! the journey starts, opens or leaves a journey, selects a function browsing, or
+//! moves the cursor by a click, a bar, a digit or Enter. A walk with the arrows or
+//! brackets is one entry however many steps it takes, so Back returns to where the
+//! walk began. Back crosses between browsing and a journey as it crosses anything.
 
 use std::collections::HashSet;
 
@@ -15,7 +16,7 @@ use codeviz_ir::UnitId;
 
 use crate::{
     disclosure::Disclose,
-    explorer::{Hidden, Side},
+    explorer::{Hidden, Side, ViewMode},
 };
 
 /// The most places remembered; older ones are forgotten.
@@ -38,6 +39,12 @@ pub(crate) struct View {
     /// The sides of the focus hidden, and whether the nucleus's specks were.
     pub(crate) hidden: Hidden,
     pub(crate) specks: bool,
+    /// Whether a journey was open, or the view browsed.
+    pub(crate) mode: ViewMode,
+    /// Browsing, the function selected.
+    pub(crate) selection: Option<usize>,
+    /// In a journey, whether its outside callers showed.
+    pub(crate) outside: bool,
 }
 
 /// Places left behind, and places gone back from.

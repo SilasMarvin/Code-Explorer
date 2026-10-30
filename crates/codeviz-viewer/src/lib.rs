@@ -39,7 +39,7 @@ use codeviz_ir::{Document, UnitId};
 
 use crate::{
     diff_view::{DiffStyle, DiffView},
-    explorer::{Autoplay, Clustering, Explorer},
+    explorer::{Autoplay, Clustering, Explorer, ViewMode},
     journey_panel::{JourneyPanel, PanelMode},
     lens::{Lens, Measure, Source},
 };
@@ -75,6 +75,8 @@ pub struct Viewer {
     bare: bool,
     /// What the third dimension shows at first.
     z: ZView,
+    /// Whether it opens in the focus's journey or browsing.
+    mode: ViewMode,
     diff: Option<Comparison>,
 }
 
@@ -143,6 +145,7 @@ impl Viewer {
             depth: None,
             bare: false,
             z: ZView::Free,
+            mode: ViewMode::Journey,
             diff: None,
         }
     }
@@ -304,6 +307,14 @@ impl Viewer {
         self
     }
 
+    /// Opens browsing, with no journey open and the focus selected; Enter opens its
+    /// journey.
+    #[must_use]
+    pub fn browsing(mut self) -> Self {
+        self.mode = ViewMode::Browse;
+        self
+    }
+
     /// Initial journey options; adjustable in the UI.
     #[must_use]
     pub fn with_options(mut self, options: JourneyOptions) -> Self {
@@ -372,6 +383,9 @@ impl Viewer {
             .and_then(|unit| explorer.map().tile_of(&unit))
         {
             explorer.open_at(tile);
+        }
+        if self.mode == ViewMode::Browse {
+            explorer.leave_journey();
         }
         explorer.set_nucleus(self.z != ZView::Free);
         explorer.expand_nucleus(self.z == ZView::Expanded);

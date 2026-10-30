@@ -72,13 +72,18 @@ pub(crate) fn point(
     mut set: Local<Option<usize>>,
 ) {
     let cursor = window.cursor_position();
+    let mut number = None;
     let over = match cursor {
         Some(pointer) if !wants.wants_any_pointer_input() => {
             let named = contexts
                 .ctx_mut()
                 .ok()
                 .and_then(|ctx| ui::label_at(ctx, egui_pos(pointer)))
-                .filter(|&tile| pointable(&explorer, tile));
+                .filter(|(tile, _)| pointable(&explorer, *tile))
+                .map(|(tile, on_label)| {
+                    number = on_label;
+                    tile
+                });
             named.or_else(|| {
                 let (camera, view) = cameras.single().ok()?;
                 let spots: Vec<Spot> = tiles
@@ -100,6 +105,9 @@ pub(crate) fn point(
     };
     if explorer.hovered_tile != over {
         explorer.hovered_tile = over;
+    }
+    if explorer.pointed_number != number {
+        explorer.pointed_number = number;
     }
     *set = over;
 }
@@ -132,8 +140,9 @@ fn egui_pos(at: Vec2) -> bevy_egui::egui::Pos2 {
     bevy_egui::egui::pos2(at.x, at.y)
 }
 
-/// A click on a function moves the focus to it: the journey's cursor when it runs the
-/// function, else the function alone, for now. Shift-click follows it, starting the
+/// A click on a function moves the focus to it: browsing, it is selected; in a
+/// journey, the cursor goes to it when the journey runs it, to the call numbered on
+/// the name clicked, else it is selected alone, for now. Shift-click starts the
 /// journey there. A press that drags to orbit is no click.
 pub(crate) fn click(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -161,13 +170,15 @@ pub(crate) fn click(
     if !explorer.shown(tile) || hidden_speck(&explorer, tile) {
         return;
     }
-    if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if shift {
         explorer.open_at(tile);
     } else {
-        explorer.focus_tile(tile);
+        let number = explorer.pointed_number.clone();
+        explorer.focus_tile(tile, number.as_deref());
     }
-    // Clicking a node is asking what it does: the journey opens with it.
-    if panel.mode == PanelMode::Hidden {
+    // Opening a journey shows it in the panel.
+    if shift && panel.mode == PanelMode::Hidden {
         panel.mode = PanelMode::Docked;
     }
 }
