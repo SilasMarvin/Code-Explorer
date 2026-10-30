@@ -91,6 +91,13 @@ impl OrbitCamera {
         self.free = false;
     }
 
+    /// Eases back to `distance`, around wherever it is looking, without taking hold
+    /// of the focus again: a panned or zoomed view stays where it was put.
+    pub(crate) fn pull_back(&mut self, distance: f32) {
+        let goal = self.goal_distance.unwrap_or(self.distance);
+        self.goal_distance = Some(goal.max(distance));
+    }
+
     /// Moves the point orbited by `offset` at once, letting go of the focus.
     fn pan(&mut self, offset: Vec3) {
         self.target += offset;
@@ -208,9 +215,10 @@ fn camera_input(
         let pan =
             |delta: Vec2| (transform.right() * -delta.x + transform.up() * delta.y) * pan_scale;
         // Where the pointer is, at the depth of the point orbited.
+        // The window's cursor as it is: the conversion allows for where the viewport
+        // sits in the window itself.
         let pointer = window.cursor_position().and_then(|cursor| {
-            let corner = view.logical_viewport_rect().map_or(Vec2::ZERO, |r| r.min);
-            let ray = view.viewport_to_world(global, cursor - corner).ok()?;
+            let ray = view.viewport_to_world(global, cursor).ok()?;
             let ahead = transform.forward();
             let along = ray.direction.dot(*ahead);
             (along.abs() > 1e-4).then(|| {

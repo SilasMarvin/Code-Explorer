@@ -31,6 +31,7 @@ use codeviz_layout::ForceGraph;
 
 use crate::{
     camera::{ANGLED, OrbitCamera},
+    disclosure::Disclose,
     explorer::{Explorer, Hidden, Side},
     graph_view::{
         CALLEE, CALLER, CURSOR, DEEPER, FURTHER, fit_distance, flow, hidden_speck, node_size,
@@ -1691,8 +1692,7 @@ pub(crate) fn double_click(
         let nucleus = explorer.nucleus()?;
         let ball = nucleus.ball(nucleus.center())?;
         let (camera, global) = cameras.single().ok()?;
-        let corner = camera.logical_viewport_rect().map_or(Vec2::ZERO, |r| r.min);
-        let ray = camera.viewport_to_world(global, cursor? - corner).ok()?;
+        let ray = camera.viewport_to_world(global, cursor?).ok()?;
         let to_middle = ball.center - ray.origin;
         let nearest = ray.origin + *ray.direction * to_middle.dot(*ray.direction);
         Some(nearest.distance(ball.center) <= ball.radius)
@@ -1825,13 +1825,29 @@ pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake:
     }
 }
 
-/// Looks at the nucleus from far enough back to see it and every open module, turning
-/// to a three-quarter view from above when it first opens; again whenever the view is
-/// pointed somewhere new. Turns back to the usual view when the graph lies flat again.
+/// What the nucleus was last framed for: the function in its middle, where the
+/// journey starts, the hand that last pointed the view, whether it was expanded, and
+/// how much of the journey and of the focus's sides showed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Framed {
+    focus: Option<usize>,
+    anchor: Option<usize>,
+    aim: u64,
+    expanded: bool,
+    disclose: Disclose,
+    hidden: Hidden,
+}
+
+/// Looks at the nucleus from far enough back to see it, every open module and the
+/// journey's cursor, turning to a three-quarter view from above when it first opens;
+/// again whenever the view is pointed somewhere new: a new middle, a new start, Enter,
+/// Back. A level more or less of the journey, or a side hidden, refits it too, unless
+/// the viewer has panned or zoomed away. Turns back to the usual view when the graph
+/// lies flat again.
 pub(crate) fn frame(
     explorer: Res<Explorer>,
-    mut last: Local<Option<(Option<usize>, u64, bool)>>,
-    mut cameras: Query<(&mut OrbitCamera, &Transform, &Projection)>,
+    mut last: Local<Option<Framed>>,
+    mut cameras: Query<(&mut OrbitCamera, &Projection)>,
 ) {
     let Some(nucleus) = explorer.nucleus() else {
         // Laid flat again: back to the usual angle, round the journey's start.
@@ -1843,30 +1859,45 @@ pub(crate) fn frame(
         }
         return;
     };
-    let key = (nucleus.focus(), explorer.aim(), nucleus.expanded());
-    // Expanding or shrinking back turns to the usual view too, where the ring of
-    // modules round the nucleus keeps the bearings they had.
-    let opening = last.is_none_or(|(.., expanded)| expanded != nucleus.expanded());
-    if *last == Some(key) {
+    let now = Framed {
+        focus: nucleus.focus(),
+        anchor: explorer.anchor(),
+        aim: explorer.aim(),
+        expanded: nucleus.expanded(),
+        disclose: explorer.disclose(),
+        hidden: explorer.hidden(),
+    };
+    let before = last.replace(now);
+    if before == Some(now) {
         return;
     }
-    *last = Some(key);
-    for (mut camera, transform, projection) in &mut cameras {
+    // Expanding or shrinking back turns to the usual view too, where the ring of
+    // modules round the nucleus keeps the bearings they had.
+    let opening = before.is_none_or(|b| b.expanded != now.expanded);
+    let pointed = opening
+        || before.is_some_and(|b| (b.focus, b.anchor, b.aim) != (now.focus, now.anchor, now.aim));
+    let cursor = explorer.graph_focus().and_then(|t| explorer.tile_point(t));
+    for (mut camera, projection) in &mut cameras {
+        if !pointed && camera.free {
+            continue;
+        }
         if opening {
             camera.turn_to(VIEW);
         }
         let rotation = if opening {
             view_rotation()
         } else {
-            transform.rotation
+            camera.aim_rotation()
         };
-        fit(nucleus, &mut camera, rotation, projection);
+        fit(nucleus, cursor, &mut camera, rotation, projection);
     }
 }
 
-/// Glides to the nucleus from far enough back, turned to `rotation`, to see it all.
+/// Glides to the nucleus from far enough back, turned to `rotation`, to see it all,
+/// and `also` (the journey's cursor) wherever it sits.
 pub(crate) fn fit(
     nucleus: &Nucleus,
+    also: Option<Vec3>,
     camera: &mut OrbitCamera,
     rotation: Quat,
     projection: &Projection,
@@ -1874,7 +1905,8 @@ pub(crate) fn fit(
     let Projection::Perspective(perspective) = projection else {
         return;
     };
-    let points = nucleus.frame_points(rotation);
+    let mut points = nucleus.frame_points(rotation);
+    points.extend(also);
     camera.glide_to(
         Vec3::ZERO,
         fit_distance(&points, Vec3::ZERO, rotation, perspective),

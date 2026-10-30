@@ -13,6 +13,7 @@ use std::{
 };
 
 use bevy::prelude::*;
+use bevy_egui::{EguiContexts, egui};
 use codeviz_core::Change;
 use codeviz_layout::{ForceGraph, Reach};
 
@@ -24,6 +25,7 @@ use crate::{
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     idle::Awake,
+    journey_panel::{JourneyPanel, PanelMode},
     lens::{Lens, SPECK, Source},
     nucleus,
     scene::{PALETTE, Tile, lane_color},
@@ -713,21 +715,23 @@ fn draw_regions(explorer: &Explorer, gizmos: &mut Gizmos) {
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
 /// F turns to face the graph head-on, centered on the journey's start again (or,
-/// gathered round the focus's module, back to the nucleus's three-quarter view); R
-/// pulls back to take in the whole graph; Q and E turn the view an eighth of the way
-/// round, left and right.
+/// gathered round the focus's module, back to the nucleus's three-quarter view,
+/// framed as it was when the view was pointed there); R frames that same view from
+/// the angle the camera has, or flat, pulls back to take in the whole graph; Q and E
+/// turn the view an eighth of the way round, left and right.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
     mut cameras: Query<(&mut OrbitCamera, &Projection)>,
 ) {
+    let cursor = explorer.graph_focus().and_then(|t| explorer.tile_point(t));
     for (mut camera, projection) in &mut cameras {
         if keys.just_pressed(KeyCode::KeyF) {
             if let Some(gathered) = explorer.nucleus() {
                 camera.turn_to(nucleus::VIEW);
                 let (yaw, pitch) = nucleus::VIEW;
                 let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
-                nucleus::fit(gathered, &mut camera, rotation, projection);
+                nucleus::fit(gathered, cursor, &mut camera, rotation, projection);
             } else {
                 camera.turn_to(FRONT);
                 orbit_anchor(&explorer, &mut camera);
@@ -739,12 +743,18 @@ pub(crate) fn graph_keys(
                 // The nucleus refits to what the new angle sees.
                 if let Some(gathered) = explorer.nucleus() {
                     let rotation = camera.aim_rotation();
-                    nucleus::fit(gathered, &mut camera, rotation, projection);
+                    nucleus::fit(gathered, cursor, &mut camera, rotation, projection);
                 }
             }
         }
         if keys.just_pressed(KeyCode::KeyR) {
-            frame_all(&explorer, &mut camera);
+            match explorer.nucleus() {
+                Some(gathered) => {
+                    let rotation = camera.aim_rotation();
+                    nucleus::fit(gathered, cursor, &mut camera, rotation, projection);
+                }
+                None => frame_all(&explorer, &mut camera),
+            }
         }
     }
 }
@@ -1007,9 +1017,143 @@ pub(crate) fn follow_focus(
     }
 }
 
+/// Seconds after the cursor moves, or the view is pointed somewhere, in which the
+/// camera still makes sure the cursor shows: time for the nucleus to settle round it.
+const REVEAL_WATCH: f32 = 2.0;
+/// The share of the half-view the cursor may use before the camera pulls back for it,
+/// leaving room for its name.
+const REVEAL_ROOM: f32 = 0.82;
+/// Room kept between the cursor and the docked journey, in the view's half-widths.
+const PANEL_ROOM: f32 = 0.06;
+
+/// What the cursor showing depends on: the cursor, the nucleus's middle, the
+/// journey's start, the hand that last pointed the view, and how much of it shows.
+type Watched = (Option<usize>, Option<usize>, Option<usize>, u64, Disclose);
+
+/// When the cursor lands off screen, or under the docked journey, pulls back just far
+/// enough to bring it into view, round wherever the camera looks, without framing
+/// anything else afresh. Only after the cursor moves or the view changes, so a view
+/// panned or zoomed by hand stays as it was put unless the cursor would leave it.
+pub(crate) fn reveal_cursor(
+    time: Res<Time>,
+    explorer: Res<Explorer>,
+    panel: Res<JourneyPanel>,
+    mut contexts: EguiContexts,
+    mut last: Local<Option<Watched>>,
+    mut until: Local<f32>,
+    mut cameras: Query<(&mut OrbitCamera, &Camera, &GlobalTransform)>,
+) {
+    let cursor = explorer.graph_focus();
+    let watched = (
+        cursor,
+        explorer.lit_focus(),
+        explorer.anchor(),
+        explorer.aim(),
+        explorer.disclose(),
+    );
+    let now = time.elapsed_secs();
+    if last.replace(watched) != Some(watched) {
+        *until = now + REVEAL_WATCH;
+    }
+    if now > *until {
+        return;
+    }
+    let Some(at) = cursor.and_then(|t| explorer.tile_point(t)) else {
+        return;
+    };
+    let docked = (panel.mode == PanelMode::Docked)
+        .then(|| contexts.ctx_mut().ok())
+        .flatten()
+        .and_then(|ctx| ctx.memory(|m| m.area_rect(egui::Id::new("journey_panel"))));
+    for (mut orbit, camera, view) in &mut cameras {
+        // Whatever the camera is easing to may show it already.
+        if orbit.easing() {
+            continue;
+        }
+        let Some(ndc) = camera.world_to_ndc(view, at) else {
+            continue;
+        };
+        let depth = (at - view.translation()).dot(*view.forward());
+        let covered = docked.and_then(|rect| {
+            let area = camera.logical_viewport_rect()?;
+            let to_ndc = |p: egui::Pos2| {
+                let r = (Vec2::new(p.x, p.y) - area.min) / area.size();
+                Vec2::new(r.x * 2.0 - 1.0, 1.0 - r.y * 2.0)
+            };
+            Some(Rect::from_corners(to_ndc(rect.min), to_ndc(rect.max)))
+        });
+        if let Some(distance) = reveal_distance(ndc.truncate(), depth, orbit.distance, covered) {
+            orbit.pull_back(distance);
+        }
+    }
+}
+
+/// How far from what it orbits a camera now `distance` away must pull back for a point
+/// at `ndc` on its view, `depth` ahead of it, to show within [`REVEAL_ROOM`] of the
+/// middle and clear of `covered` (in the same terms); `None` when it already does.
+/// Pulling back draws every point in towards the middle of the view, along the line
+/// from it, by the ratio of its depths before and after.
+fn reveal_distance(ndc: Vec2, depth: f32, distance: f32, covered: Option<Rect>) -> Option<f32> {
+    if depth <= 0.1 {
+        // Behind the camera: back past it, and look again.
+        return Some(distance - depth + distance * 0.5);
+    }
+    // The share of its offset from the middle the point may keep.
+    let mut keep = [ndc.x, ndc.y]
+        .into_iter()
+        .filter(|v| v.abs() > REVEAL_ROOM)
+        .map(|v| REVEAL_ROOM / v.abs())
+        .fold(1.0_f32, f32::min);
+    if let Some(rect) = covered.map(|r| r.inflate(PANEL_ROOM))
+        && !rect.contains(Vec2::ZERO)
+        && rect.contains(ndc * keep)
+    {
+        // Along the line to the middle, it leaves the cover where the line meets it.
+        let enter = [
+            (ndc.x, rect.min.x, rect.max.x),
+            (ndc.y, rect.min.y, rect.max.y),
+        ]
+        .into_iter()
+        .filter(|&(v, ..)| v.abs() > f32::EPSILON)
+        .map(|(v, low, high)| {
+            let near = if v > 0.0 { low } else { high };
+            (near / v).max(0.0)
+        })
+        .fold(0.0_f32, f32::max);
+        keep = keep.min(enter * 0.98);
+    }
+    (keep < 0.999 && keep > 0.0).then(|| distance + depth / keep - depth)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pulls_back_for_the_cursor_only_as_far_as_it_must() {
+        assert_eq!(
+            reveal_distance(Vec2::new(0.3, -0.2), 50.0, 40.0, None),
+            None,
+            "on screen already"
+        );
+        let back = reveal_distance(Vec2::new(1.64, 0.0), 50.0, 40.0, None).unwrap();
+        assert!(
+            (back - (40.0 + 50.0)).abs() < 1e-3,
+            "twice as deep halves its offset: {back}"
+        );
+        let panel = Rect::from_corners(Vec2::new(0.0, -1.0), Vec2::new(1.0, -0.6));
+        let under = reveal_distance(Vec2::new(0.5, -0.8), 50.0, 40.0, Some(panel)).unwrap();
+        let ndc = Vec2::new(0.5, -0.8) * (50.0 / (50.0 + under - 40.0));
+        assert!(
+            ndc.y > -0.6 + PANEL_ROOM - 0.02 && ndc.y < -0.5,
+            "just clear of the journey: {ndc}"
+        );
+        assert_eq!(
+            reveal_distance(Vec2::new(-0.5, -0.8), 50.0, 40.0, Some(panel)),
+            None,
+            "beside it is clear"
+        );
+    }
 
     #[test]
     fn pulls_back_only_as_far_as_what_it_must_show() {

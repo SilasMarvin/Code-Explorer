@@ -423,7 +423,7 @@ fn tether(
 fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if ui
         .add_enabled(explorer.can_go_back(), egui::Button::new("← Back"))
-        .on_hover_text("Back to the function, cursor and depth before (Backspace)")
+        .on_hover_text("Back before the last click, bar, Enter or walk (Backspace)")
         .on_disabled_hover_text("Nowhere to go back to yet (Backspace)")
         .clicked()
     {
@@ -1292,11 +1292,21 @@ impl<'a> Placer<'a> {
         let rank = |key: &Named| self.top.iter().position(|k| k == key);
         let mut placed: Vec<(&Named, &Shown)> = self.next.iter().collect();
         placed.sort_by_key(|(key, _)| rank(key));
+        // A function's name picks it, as a click on the function would.
+        let mut hits = Vec::new();
         for (key, shown) in placed {
             if let Some(&node) = self.anchors.get(key) {
-                self.paint(node, shown);
+                let pill = self.paint(node, shown);
+                if let Named::Node(tile) = *key
+                    && shown.opacity >= 0.5
+                {
+                    hits.push((pill, tile));
+                }
             }
         }
+        self.painter
+            .ctx()
+            .data_mut(|d| d.insert_temp(label_hits_id(), hits));
         self.next
             .extend(leaving.into_iter().map(|(key, _, shown)| (key, shown)));
         let next = self.next;
@@ -1305,8 +1315,8 @@ impl<'a> Placer<'a> {
             .data_mut(|d| d.insert_temp(Self::id(), next));
     }
 
-    /// A label on its pill, at its eased place beside `node`.
-    fn paint(&self, node: egui::Pos2, shown: &Shown) {
+    /// A label on its pill, at its eased place beside `node`. Returns the pill.
+    fn paint(&self, node: egui::Pos2, shown: &Shown) -> egui::Rect {
         let mut painter = self.painter.clone();
         painter.multiply_opacity(shown.opacity.clamp(0.0, 1.0));
         let min = egui::emath::GuiRounding::round_to_pixels(
@@ -1331,6 +1341,7 @@ impl<'a> Placer<'a> {
             );
         }
         painter.galley(min, shown.galley.clone(), egui::Color32::WHITE);
+        pill
     }
 }
 
@@ -1359,6 +1370,19 @@ fn misread_by(
     )]
     let by = (mine - theirs - 0.5).max(0.0).ceil() as u32;
     by
+}
+
+fn label_hits_id() -> egui::Id {
+    egui::Id::new("graph_label_hits")
+}
+
+/// The function whose name, as last drawn, lies under `at`: the topmost.
+pub(crate) fn label_at(ctx: &egui::Context, at: egui::Pos2) -> Option<usize> {
+    ctx.data(|d| d.get_temp::<Vec<(egui::Rect, usize)>>(label_hits_id()))?
+        .iter()
+        .rev()
+        .find(|(pill, _)| pill.contains(at))
+        .map(|&(_, tile)| tile)
 }
 
 /// What leads a label: text in a color, on a fill when it is a badge.
@@ -2183,6 +2207,7 @@ const KEYS: [KeyGroup; 8] = [
                 "make a function the middle; the cursor moves there if the journey runs it",
                 When::Nucleus,
             ),
+            ("click a name", "as a click on its function", When::Always),
             (
                 "Shift click",
                 "start the journey at a function",
@@ -2191,7 +2216,7 @@ const KEYS: [KeyGroup; 8] = [
             ("Enter", "start the journey at the focus", When::Always),
             (
                 "Backspace",
-                "back to the function, cursor and depth before (← Back)",
+                "back before the last click, bar, Enter or walk with the keys (← Back)",
                 When::Always,
             ),
             ("Shift Backspace", "forward again (Forward →)", When::Always),
@@ -2293,7 +2318,12 @@ const KEYS: [KeyGroup; 8] = [
             ("Q  E", "turn an eighth of the way round", When::Always),
             ("F", "face the journey's start again", When::Flat),
             ("F", "back to the usual three-quarter view", When::Nucleus),
-            ("R", "frame the whole graph", When::Always),
+            ("R", "frame the whole graph", When::Flat),
+            (
+                "R",
+                "frame the middle, open modules and cursor from this angle",
+                When::Nucleus,
+            ),
         ],
     ),
     (
