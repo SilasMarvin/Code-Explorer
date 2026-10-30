@@ -560,6 +560,7 @@ fn flow_role(flow: Flow) -> String {
         Flow::Journey(1) => "the centre's call (blue)".to_owned(),
         Flow::Journey(level) => format!("journey level {level} (amber, darker the deeper)"),
         Flow::Outside => "calls into the journey from off it (pale)".to_owned(),
+        Flow::Module => "calls from one module to another, nothing selected (faint)".to_owned(),
     }
 }
 

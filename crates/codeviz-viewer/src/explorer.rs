@@ -2816,20 +2816,21 @@ pub(crate) mod tests {
         assert!(explorer.browsing());
         assert_eq!(explorer.selection(), Some(main), "the cursor's function");
         assert!(explorer.disclosed_tiles().is_empty(), "no journey numbers");
-        let places = |explorer: &Explorer| {
+        let balls = |explorer: &Explorer| -> Vec<Vec3> {
             let nucleus = explorer.nucleus().unwrap();
-            let points: Vec<Option<Vec3>> = [main, a, b, c].map(|t| nucleus.point(t)).into();
-            let balls: Vec<Vec3> = nucleus.balls().map(|(_, ball)| ball.center).collect();
-            (points, balls)
+            nucleus.balls().map(|(_, ball)| ball.center).collect()
         };
-        let before = places(&explorer);
+        let point = |explorer: &Explorer, tile: usize| explorer.nucleus().unwrap().point(tile);
+        let before = balls(&explorer);
         for tile in [a, c, b, main] {
+            let at = point(&explorer, tile);
             explorer.focus_tile(tile, None);
             while explorer.ease_nucleus(0.5) {}
             explorer.ease_nucleus(1.0);
             assert_eq!(explorer.selection(), Some(tile));
             assert_eq!(explorer.lit_focus(), Some(tile), "lit white where it sits");
-            assert_eq!(places(&explorer), before, "nothing moved");
+            assert_eq!(point(&explorer, tile), at, "the function clicked stays put");
+            assert_eq!(balls(&explorer), before, "no module moved");
         }
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
         assert!(explorer.step(Step::Into).is_none(), "no journey to walk");
