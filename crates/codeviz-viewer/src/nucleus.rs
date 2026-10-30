@@ -259,6 +259,8 @@ const RIM_COLUMN_GAP: f32 = 18.0;
 const STRAND_GAP: f32 = 0.45;
 /// Kept clear between two module spheres browsing.
 const ATLAS_MARGIN: f32 = 5.0;
+/// Browsing, how much wider than high the codebase is laid out, as a window is.
+const ATLAS_ASPECT: f32 = 1.5;
 /// Between the ring round the nucleus and a module beyond it holding only calls in
 /// from outside the journey.
 const OUTER_GAP: f32 = 12.0;
@@ -937,17 +939,22 @@ impl Nucleus {
             .collect()
     }
 
-    /// Where the camera looks: the nucleus in a journey; browsing, the module of the
-    /// function clicked.
+    /// Where the camera looks: the nucleus in a journey; browsing, the middle of the
+    /// modules the function clicked touches.
     pub(crate) fn frame_center(&self) -> Vec3 {
-        if self.browse {
-            self.now
-                .balls
-                .get(self.now.center)
-                .map_or(Vec3::ZERO, |b| b.center)
-        } else {
-            Vec3::ZERO
+        let open: Vec<Vec3> = self
+            .now
+            .balls
+            .iter()
+            .filter(|b| self.browse && b.body == Body::Open)
+            .map(|b| b.center)
+            .collect();
+        if open.is_empty() {
+            return Vec3::ZERO;
         }
+        #[expect(clippy::cast_precision_loss, reason = "a module count")]
+        let middle = open.iter().copied().sum::<Vec3>() / open.len() as f32;
+        middle
     }
 
     /// Everything placed around `focus`, the nucleus expanded or not, or browsing.
@@ -1872,8 +1879,21 @@ fn atlas(graph: &ForceGraph, homes: &[Vec3], counts: &[usize]) -> Atlas {
     relax(&mut balls, |_, _| true, ATLAS_MARGIN, &views, 400);
     #[expect(clippy::cast_precision_loss, reason = "a module count")]
     let middle = balls.iter().map(|b| b.center).sum::<Vec3>() / clusters.max(1) as f32;
+    // As wide as a window is, against its height, as the usual view sees it: pulled
+    // apart sideways, never together, so none comes to hide another.
+    let rotation = view_rotation();
+    let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+    let spread = |along: Vec3| {
+        balls
+            .iter()
+            .map(|b| (b.center - middle).dot(along).abs())
+            .fold(0.0, f32::max)
+    };
+    let (wide, high) = (spread(right), spread(up));
+    let stretch = (ATLAS_ASPECT * high / wide.max(1e-3)).clamp(1.0, 3.0);
     for ball in &mut balls {
-        ball.center -= middle;
+        let offset = ball.center - middle;
+        ball.center = offset + right * offset.dot(right) * (stretch - 1.0);
     }
     let tiles = graph.positions.len();
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); clusters];
