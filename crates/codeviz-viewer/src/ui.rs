@@ -21,7 +21,7 @@ use crate::{
     depth_meter,
     diff_view::{self, DiffStyle, DiffView},
     explorer::{Clustering, Confidence, Explorer, Side},
-    graph_view::{self, CALLEE, CALLER, Relation, relation},
+    graph_view::{self, CALLEE, CALLER, Relation},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
     nucleus::{Body, End, Nucleus},
@@ -1323,10 +1323,12 @@ fn draw_graph_labels(
             _ => None,
         }
     };
-    let center = explorer.graph_focus();
-    let hovered = explorer.hovered_tile;
+    let center = explorer.lit_focus();
+    // Gathered round the focus's module, the journey's cursor is named where it sits.
+    let cursor = explorer.cursor_mark();
+    let hovered = explorer.pointed();
     let reach = explorer.reach();
-    let related = |tile: usize| reach.and_then(|r| relation(r, tile));
+    let related = |tile: usize| reach.and_then(|r| graph_view::shown_relation(explorer, r, tile));
     let spotlit = explorer.spotlit();
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
@@ -1365,7 +1367,7 @@ fn draw_graph_labels(
             continue;
         }
         let tier = match related(tile) {
-            _ if center == Some(tile) => 0,
+            _ if center == Some(tile) || cursor == Some(tile) => 0,
             // What the pointer is over, and what the spotlight picks out, is named,
             // whatever else would be.
             _ if hovered == Some(tile) || spotlit.contains(&tile) => 1,
@@ -1866,6 +1868,14 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("I", "pick out what calls the focus, and show it all"),
             ("O", "pick out what the focus calls, and show it all"),
+            (
+                "Shift I",
+                "hide what calls the focus, and what calls that / show it",
+            ),
+            (
+                "Shift O",
+                "hide what the focus calls, and what that calls / show it",
+            ),
             ("click", "focus a node; off the journey, for now"),
             ("Shift click", "start the journey at a node"),
             ("1 – 9", "move to the call with that number"),
@@ -1880,10 +1890,17 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
             ("G", "nearness by: calls → space → blend"),
             ("C", "diff: only what changed / everything"),
             ("K", "cluster by modules / calls"),
-            ("Z", "gather round the focus's module / lay flat"),
+            (
+                "Z",
+                "gather round the focus's module / lay flat; stepping leaves its middle put",
+            ),
             (
                 "X, double click",
                 "expand the focus's module to see its calls inside (point at a function for its own) / shrink it",
+            ),
+            (
+                "N",
+                "nucleus: leave out / bring back the nameless specks (out when expanded)",
             ),
             ("F", "follow the journey's start again, head-on"),
             ("R", "frame the whole graph"),

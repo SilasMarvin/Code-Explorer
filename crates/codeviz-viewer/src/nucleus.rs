@@ -32,8 +32,10 @@ use codeviz_layout::ForceGraph;
 
 use crate::{
     camera::{ANGLED, OrbitCamera},
-    explorer::Explorer,
-    graph_view::{CALLEE, CALLER, FURTHER, fit_distance, flow, node_size, orbit_anchor},
+    explorer::{Explorer, Hidden, Side},
+    graph_view::{
+        CALLEE, CALLER, FURTHER, fit_distance, flow, hidden_speck, node_size, orbit_anchor,
+    },
     idle::Awake,
     scene::{PALETTE, lane_color},
 };
@@ -196,6 +198,14 @@ pub(crate) struct Nucleus {
     /// The function under the pointer, and, expanded, the calls it makes or takes.
     hovered: Option<usize>,
     touches: Vec<Touch>,
+    /// Which sides of the focus are left out, with their calls.
+    hidden: Hidden,
+    /// The journey's cursor, when it is not the focus: marked where it sits, and
+    /// drawn there though the arrangement folds it away.
+    marked: Option<usize>,
+    /// Whether the functions named by nothing are left out altogether, rather than
+    /// drawn as faint specks: in the module view, and expanded.
+    specks_hidden: [bool; 2],
     /// Where the spheres and functions were when the last re-centering began.
     from: Option<(Vec<Ball>, Vec<Vec3>)>,
     /// How far along that re-centering is, 0 to 1.
@@ -203,7 +213,13 @@ pub(crate) struct Nucleus {
 }
 
 impl Nucleus {
+    #[cfg(test)]
     pub(crate) fn new(graph: &ForceGraph, focus: Option<usize>) -> Self {
+        Self::with_hidden(graph, focus, Hidden::default())
+    }
+
+    /// Gathers the graph round `focus`'s module, leaving out the sides `hidden` says.
+    pub(crate) fn with_hidden(graph: &ForceGraph, focus: Option<usize>, hidden: Hidden) -> Self {
         let clusters = graph.cluster_count();
         let tiles = graph.positions.len();
         let mut counts = vec![0; clusters];
@@ -236,6 +252,10 @@ impl Nucleus {
             now: Arrangement::default(),
             hovered: None,
             touches: Vec::new(),
+            hidden,
+            marked: None,
+            // Expanded, the specks crowd round what the reader points at.
+            specks_hidden: [false, true],
             from: None,
             progress: 1.0,
         };
@@ -279,6 +299,50 @@ impl Nucleus {
         self.progress = 0.0;
         self.now = self.arrange(graph, focus);
         self.touches = self.touching(graph, self.hovered);
+    }
+
+    /// Leaves out a side of the focus, with its calls, or brings it back, easing
+    /// there.
+    pub(crate) fn set_hidden(&mut self, graph: &ForceGraph, hidden: Hidden) {
+        if hidden != self.hidden {
+            self.hidden = hidden;
+            self.recenter(graph, self.now.focus);
+        }
+    }
+
+    /// Whether the functions named by nothing are left out altogether in the view
+    /// the nucleus is in, rather than drawn as faint specks.
+    pub(crate) fn specks_hidden(&self) -> bool {
+        self.specks_hidden[usize::from(self.expanded)]
+    }
+
+    /// Leaves out the functions named by nothing, or draws them again as specks, in
+    /// the view the nucleus is in.
+    pub(crate) fn toggle_specks(&mut self) {
+        let hidden = &mut self.specks_hidden[usize::from(self.expanded)];
+        *hidden = !*hidden;
+    }
+
+    /// Marks the journey's cursor where it sits, without moving anything else.
+    /// Returns whether that changed.
+    pub(crate) fn mark(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
+        if tile == self.marked {
+            return false;
+        }
+        self.marked = tile;
+        // A call of the function under the pointer may now end at it.
+        self.touches = self.touching(graph, self.hovered);
+        true
+    }
+
+    /// Whether a function is the journey's cursor, marked where it sits.
+    pub(crate) fn marks(&self, tile: usize) -> bool {
+        self.marked == Some(tile)
+    }
+
+    /// The function the pointer has settled on.
+    pub(crate) fn hovered(&self) -> Option<usize> {
+        self.hovered
     }
 
     /// Marks the function under the pointer. Returns whether that changed.
@@ -335,10 +399,10 @@ impl Nucleus {
         touches
     }
 
-    /// Whether a function is drawn full size: named, or an end of a call the
-    /// function under the pointer makes or takes.
+    /// Whether a function is drawn full size: named, the journey's cursor, or an end
+    /// of a call the function under the pointer makes or takes.
     pub(crate) fn lit(&self, tile: usize) -> bool {
-        self.names(tile) || self.touched(tile)
+        self.names(tile) || self.marks(tile) || self.touched(tile)
     }
 
     /// Expanded, the calls the function under the pointer makes or takes.
@@ -411,13 +475,25 @@ impl Nucleus {
     }
 
     /// Where a function is drawn: inside its module's sphere, or at its middle when
-    /// it is folded away.
+    /// it is folded away; the journey's cursor, folded away, just under its module.
     pub(crate) fn point(&self, tile: usize) -> Option<Vec3> {
+        if self.marks(tile) && !self.now.shown.get(tile).copied().unwrap_or(false) {
+            return self.under(tile);
+        }
         let to = *self.now.points.get(tile)?;
         Some(match &self.from {
             Some((_, points)) => points.get(tile).map_or(to, |&p| p.lerp(to, self.eased())),
             None => to,
         })
+    }
+
+    /// Just under a function's module as the usual view sees it, where a function
+    /// the arrangement folds away shows without moving anything: clear of the
+    /// module's name on top and of the arrows leaving its sides.
+    fn under(&self, tile: usize) -> Option<Vec3> {
+        let ball = self.ball(self.module_of.get(tile).copied().flatten()?)?;
+        let down = view_rotation() * Vec3::NEG_Y;
+        Some(ball.center + down * (ball.radius + 0.8 * self.zoom()))
     }
 
     /// A module's sphere as drawn now.
@@ -440,7 +516,7 @@ impl Nucleus {
 
     /// Whether a function is drawn.
     pub(crate) fn shows(&self, tile: usize) -> bool {
-        self.now.shown.get(tile).copied().unwrap_or(false)
+        self.marks(tile) || self.now.shown.get(tile).copied().unwrap_or(false)
     }
 
     /// Whether a function is named as calling the focus, called by it, or two calls
@@ -611,7 +687,7 @@ impl Nucleus {
             .or_else(|| (0..clusters).max_by_key(|&c| (self.counts[c], Reverse(c))))
             .unwrap_or(0);
         let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(center);
-        let links = focus.map_or_else(Vec::new, |f| pick(graph, f, &self.degrees));
+        let links = focus.map_or_else(Vec::new, |f| pick(graph, f, &self.degrees, self.hidden));
         let (links, opened, named) = open_up(links, focus, clusters, center, &cluster_of);
 
         let mut balls: Vec<Ball> = (0..clusters)
@@ -668,8 +744,8 @@ impl Nucleus {
             .filter(|&(a, b)| a != b && cluster_of(a) == center && cluster_of(b) == center)
             .collect();
         let reach = focus.map_or_else(HashMap::new, |f| within(&calls, f));
-        let mut links = inside_links(&calls, focus);
-        let exits = exits(graph, focus, center, &cluster_of);
+        let mut links = inside_links(&calls, focus, self.hidden);
+        let exits = exits(graph, focus, center, &cluster_of, self.hidden);
         let mut rim: Vec<usize> = exits
             .iter()
             .map(|l| {
@@ -956,8 +1032,8 @@ fn place_functions(
 
 /// The calls named around `focus`: what calls it and what it calls, the busiest
 /// first, then what calls those callers and what those callees call, a few through
-/// each.
-fn pick(graph: &ForceGraph, focus: usize, degrees: &[usize]) -> Vec<Link> {
+/// each; none on a side `hidden` leaves out.
+fn pick(graph: &ForceGraph, focus: usize, degrees: &[usize], hidden: Hidden) -> Vec<Link> {
     let busiest = |tiles: &mut dyn Iterator<Item = usize>| {
         let mut list: Vec<usize> = tiles.filter(|&t| t != focus).collect();
         list.sort_unstable();
@@ -965,10 +1041,17 @@ fn pick(graph: &ForceGraph, focus: usize, degrees: &[usize]) -> Vec<Link> {
         list.sort_by_key(|&t| (Reverse(degrees.get(t).copied().unwrap_or(0)), t));
         list
     };
-    let mut inward = busiest(&mut graph.callers(focus));
-    inward.truncate(NEAR_CAP);
-    let mut outward = busiest(&mut graph.callees(focus));
-    outward.truncate(NEAR_CAP);
+    let side = |side: Side, tiles: &mut dyn Iterator<Item = usize>| {
+        let mut list = if hidden.hides(side) {
+            Vec::new()
+        } else {
+            busiest(tiles)
+        };
+        list.truncate(NEAR_CAP);
+        list
+    };
+    let inward = side(Side::Callers, &mut graph.callers(focus));
+    let outward = side(Side::Callees, &mut graph.callees(focus));
     let mut links: Vec<Link> = inward
         .iter()
         .map(|&from| Link {
@@ -1043,8 +1126,9 @@ fn within(calls: &[(usize, usize)], focus: usize) -> HashMap<usize, i32> {
     reach
 }
 
-/// The calls inside the module into the focus and out of it.
-fn inside_links(calls: &[(usize, usize)], focus: Option<usize>) -> Vec<Link> {
+/// The calls inside the module into the focus and out of it, but for a side
+/// `hidden` leaves out.
+fn inside_links(calls: &[(usize, usize)], focus: Option<usize>, hidden: Hidden) -> Vec<Link> {
     calls
         .iter()
         .filter_map(|&(from, to)| {
@@ -1053,17 +1137,28 @@ fn inside_links(calls: &[(usize, usize)], focus: Option<usize>) -> Vec<Link> {
                 () if Some(from) == focus => Flow::OutOf,
                 () => return None,
             };
-            Some(Link { from, to, flow })
+            Some(Link { from, to, flow }).filter(|l| shown(l, hidden))
         })
         .collect()
 }
 
-/// The focus's calls leaving the module, or coming into it, each once.
+/// Whether a call into or out of the focus is on a side `hidden` keeps.
+fn shown(link: &Link, hidden: Hidden) -> bool {
+    match link.flow {
+        Flow::Into => !hidden.callers,
+        Flow::OutOf => !hidden.callees,
+        Flow::Further => true,
+    }
+}
+
+/// The focus's calls leaving the module, or coming into it, each once, but for a
+/// side `hidden` leaves out.
 fn exits(
     graph: &ForceGraph,
     focus: Option<usize>,
     center: usize,
     cluster_of: &impl Fn(usize) -> usize,
+    hidden: Hidden,
 ) -> Vec<Link> {
     let mut seen = HashSet::new();
     let mut links = Vec::new();
@@ -1073,8 +1168,9 @@ fn exits(
             () if Some(to) == focus && cluster_of(from) != center => Flow::Into,
             () => continue,
         };
-        if seen.insert((from, to)) {
-            links.push(Link { from, to, flow });
+        let link = Link { from, to, flow };
+        if shown(&link, hidden) && seen.insert((from, to)) {
+            links.push(link);
         }
     }
     links
@@ -1437,8 +1533,12 @@ fn interior(graph: &ForceGraph, members: &[usize], radius: f32) -> Vec<(usize, V
 }
 
 /// Z gathers the graph round the focus's module, or lays it flat again; X expands the
-/// nucleus, or shrinks it back, gathering the graph first when it lies flat.
+/// nucleus, or shrinks it back, gathering the graph first when it lies flat; N leaves
+/// out the functions named by nothing, or draws them again as specks.
 pub(crate) fn toggle(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer) {
+    if keys.just_pressed(KeyCode::KeyN) {
+        explorer.toggle_specks();
+    }
     if keys.just_pressed(KeyCode::KeyZ) {
         let on = explorer.nucleus().is_none();
         explorer.set_nucleus(on);
@@ -1499,17 +1599,72 @@ pub(crate) fn double_click(
 /// pointer moves onto it or off it.
 const HOVER_SETTLE: f32 = 0.4;
 
-/// Expanded, draws the calls of the function under the pointer, and keeps drawing
-/// while the names at their ends fade in or out.
+/// Seconds the pointer rests on a function, or off it, before the nucleus takes it
+/// as pointed at or no longer: passing over one on the way elsewhere draws nothing.
+const HOVER_DELAY: f32 = 0.15;
+
+/// Holds a change of what the pointer is over until it has lasted [`HOVER_DELAY`].
+#[derive(Debug, Default)]
+pub(crate) struct Settle {
+    /// What the pointer moved onto, and since when, in seconds of app time.
+    pending: Option<(Option<usize>, f32)>,
+}
+
+impl Settle {
+    /// Given what the pointer is over, what is taken as pointed at now and the time:
+    /// whether to take what the pointer is over instead, as it has stayed there long
+    /// enough.
+    fn settle(&mut self, over: Option<usize>, taken: Option<usize>, now: f32) -> bool {
+        if over == taken {
+            self.pending = None;
+            return false;
+        }
+        match self.pending {
+            Some((tile, since)) if tile == over => {
+                let landed = now - since >= HOVER_DELAY;
+                if landed {
+                    self.pending = None;
+                }
+                landed
+            }
+            _ => {
+                self.pending = Some((over, now));
+                false
+            }
+        }
+    }
+
+    /// Whether a change is being held, so the frames keep coming until it lands.
+    fn waiting(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
+/// Expanded, draws the calls of the function the pointer has rested on, and keeps
+/// drawing while the names at their ends fade in or out. A speck left out is never
+/// pointed at, though the pointer was on it when it went.
 pub(crate) fn hover(
     time: Res<Time>,
     mut explorer: ResMut<Explorer>,
     mut awake: ResMut<Awake>,
+    mut held: Local<Settle>,
     mut settling: Local<f32>,
 ) {
-    if explorer.bypass_change_detection().hover_nucleus() {
+    let Some(taken) = explorer.nucleus().map(Nucleus::hovered) else {
+        *held = Settle::default();
+        return;
+    };
+    let over = explorer
+        .hovered_tile
+        .filter(|&t| !hidden_speck(&explorer, t));
+    if held.settle(over, taken, time.elapsed_secs())
+        && explorer.bypass_change_detection().hover_nucleus(over)
+    {
         explorer.set_changed();
         *settling = HOVER_SETTLE;
+    }
+    if held.waiting() {
+        awake.0 = true;
     }
     if *settling > 0.0 {
         *settling -= time.delta_secs();
@@ -2265,5 +2420,91 @@ mod tests {
             Nucleus::new(&graph, None).homes,
             Nucleus::new(&graph, None).homes
         );
+    }
+
+    #[test]
+    fn hiding_callers_leaves_out_their_calls_and_modules() {
+        let (graph, map) = codebase();
+        let run = tile(&map, "core::run");
+        let web = module(&graph, &map, "web::route");
+        let hidden = Hidden {
+            callers: true,
+            callees: false,
+        };
+        let mut nucleus = Nucleus::with_hidden(&graph, Some(run), hidden);
+        assert!(nucleus.links().iter().all(|l| l.flow != Flow::Into));
+        assert!(!nucleus.names(tile(&map, "web::route")));
+        assert_eq!(nucleus.ball(web).map(|b| b.body), Some(Body::Closed));
+        assert!(nucleus.names(tile(&map, "db::put")), "callees stay");
+
+        nucleus.expand(&graph, true);
+        assert!(nucleus.links().iter().all(|l| l.flow == Flow::OutOf));
+        nucleus.set_hidden(
+            &graph,
+            Hidden {
+                callers: false,
+                callees: true,
+            },
+        );
+        assert!(nucleus.links().iter().all(|l| l.flow == Flow::Into));
+        assert!(nucleus.names(tile(&map, "web::route")));
+    }
+
+    #[test]
+    fn the_cursor_shows_where_it_sits_without_moving_anything() {
+        let (graph, map) = codebase();
+        let mut nucleus = Nucleus::new(&graph, Some(tile(&map, "core::run")));
+        let other = tile(&map, "db::other");
+        let db = module(&graph, &map, "db::put");
+        assert!(!nucleus.shows(other));
+        let before: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
+        assert!(nucleus.mark(&graph, Some(other)));
+        assert!(nucleus.shows(other) && nucleus.lit(other));
+        let after: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
+        assert_eq!(before, after, "nothing moves");
+        let ball = nucleus.ball(db).expect("a sphere");
+        let at = nucleus.point(other).expect("a point");
+        assert!(
+            at.distance(ball.center) > ball.radius,
+            "just outside its module"
+        );
+        assert!(at.distance(ball.center) < ball.radius + 2.0);
+        assert!(!nucleus.mark(&graph, Some(other)), "no change");
+        assert!(nucleus.mark(&graph, None));
+        assert!(!nucleus.shows(other));
+    }
+
+    #[test]
+    fn specks_hide_by_default_only_when_expanded() {
+        let (graph, map) = codebase();
+        let mut nucleus = Nucleus::new(&graph, Some(tile(&map, "core::run")));
+        assert!(!nucleus.specks_hidden());
+        nucleus.expand(&graph, true);
+        assert!(nucleus.specks_hidden());
+        nucleus.toggle_specks();
+        assert!(!nucleus.specks_hidden());
+        nucleus.expand(&graph, false);
+        assert!(!nucleus.specks_hidden(), "each view keeps its own");
+        nucleus.toggle_specks();
+        assert!(nucleus.specks_hidden());
+    }
+
+    #[test]
+    fn the_pointer_counts_once_it_rests() {
+        let mut held = Settle::default();
+        assert!(!held.settle(Some(3), None, 0.0), "not at once");
+        assert!(held.waiting());
+        assert!(!held.settle(Some(3), None, 0.1));
+        assert!(held.settle(Some(3), None, 0.16), "after a rest");
+        assert!(!held.waiting());
+        // Passing over one function on the way to another takes neither.
+        assert!(!held.settle(Some(4), Some(3), 1.0));
+        assert!(!held.settle(Some(5), Some(3), 1.1));
+        assert!(!held.settle(Some(5), Some(3), 1.2));
+        assert!(held.settle(Some(5), Some(3), 1.26));
+        // Off and back on before the delay keeps it.
+        assert!(!held.settle(None, Some(5), 2.0));
+        assert!(!held.settle(Some(5), Some(5), 2.05));
+        assert!(!held.waiting());
     }
 }

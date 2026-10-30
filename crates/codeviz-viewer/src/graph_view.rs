@@ -209,12 +209,39 @@ pub(crate) fn relation(reach: &Reach, tile: usize) -> Option<Relation> {
     }
 }
 
+/// [`relation`], but none on a side of the focus that is hidden.
+pub(crate) fn shown_relation(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<Relation> {
+    let hidden = explorer.hidden();
+    relation(reach, tile).filter(|r| match r {
+        Relation::Upstream(_) => !hidden.callers,
+        Relation::Downstream(_) => !hidden.callees,
+    })
+}
+
+/// Gathered round the focus's module, whether a function is drawn only as a small,
+/// faint speck: shown, but named by nothing and near nothing lit.
+pub(crate) fn speck(explorer: &Explorer, tile: usize) -> bool {
+    explorer
+        .nucleus()
+        .is_some_and(|n| n.shows(tile) && !n.lit(tile))
+        && matches!(node_look(explorer, tile), NodeLook::Faded(_))
+}
+
+/// Whether a function is a speck the nucleus leaves out altogether (N): not drawn,
+/// and not pointed at.
+pub(crate) fn hidden_speck(explorer: &Explorer, tile: usize) -> bool {
+    explorer
+        .nucleus()
+        .is_some_and(nucleus::Nucleus::specks_hidden)
+        && speck(explorer, tile)
+}
+
 pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     let color = explorer.tile_color(tile) % PALETTE.len();
     if !explorer.shown(tile) {
         return NodeLook::Hidden;
     }
-    let center = explorer.graph_focus();
+    let center = explorer.lit_focus();
     if center == Some(tile) {
         return NodeLook::Focus;
     }
@@ -233,7 +260,7 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
     let opened = disclosed.opened();
     // Gathered round the focus's module, whatever it names lights.
     let named = explorer.nucleus().is_some_and(|n| n.names(tile));
-    match relation(reach, tile) {
+    match shown_relation(explorer, reach, tile) {
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Upstream(hops) | Relation::Downstream(hops)) if named => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
@@ -248,7 +275,7 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
 /// changed under a diff, else its module's. A journey bar is painted the same, so a
 /// bar and its node read as one thing.
 pub(crate) fn node_color(explorer: &Explorer, diff: Option<&DiffView>, tile: usize) -> Color {
-    if explorer.graph_focus() == Some(tile) {
+    if explorer.lit_focus() == Some(tile) {
         return Color::WHITE;
     }
     match diff {
@@ -283,23 +310,25 @@ pub(crate) fn style_nodes(
     for (tile, mut material, mut transform, mut visibility) in &mut nodes {
         // Gathered round the focus's module, what a module folds away is not drawn.
         let folded = nucleus.is_some_and(|n| !n.shows(tile.0));
-        visibility.set_if_neq(if folded {
+        let look = (!folded).then(|| match &diff {
+            Some(diff) => diff_look(&explorer, diff, tile.0),
+            None => node_look(&explorer, tile.0),
+        });
+        // Gathered round the focus's module, what it names, or what the function under
+        // the pointer calls or is called by, shows plainly though the focus does not
+        // reach it; what relates to nothing named is a small, faint speck, or with
+        // specks left out, not drawn at all.
+        let named = nucleus.is_some_and(|n| n.lit(tile.0));
+        let quiet = nucleus.is_some() && !named && matches!(look, Some(NodeLook::Faded(_)));
+        let gone = quiet && nucleus.is_some_and(nucleus::Nucleus::specks_hidden);
+        visibility.set_if_neq(if folded || gone {
             Visibility::Hidden
         } else {
             Visibility::Inherited
         });
-        if folded {
+        let Some(look) = look.filter(|_| !gone) else {
             continue;
-        }
-        let look = match &diff {
-            Some(diff) => diff_look(&explorer, diff, tile.0),
-            None => node_look(&explorer, tile.0),
         };
-        // Gathered round the focus's module, what it names, or what the function under
-        // the pointer calls or is called by, shows plainly though the focus does not
-        // reach it; what relates to nothing named is a small, faint speck.
-        let named = nucleus.is_some_and(|n| n.lit(tile.0));
-        let quiet = nucleus.is_some() && !named && matches!(look, NodeLook::Faded(_));
         let look = match look {
             NodeLook::Faded(color) if named => NodeLook::Plain(color),
             look => look,
@@ -384,6 +413,7 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
     let center = explorer.graph_focus();
     let reach = explorer.reach();
+    let hidden = explorer.hidden();
     let point = |tile: usize| explorer.tile_point(tile);
     let map = explorer.map();
     let track = explorer.track();
@@ -421,8 +451,13 @@ fn draw_calls(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
         // A link lights up when it takes one step nearer the focus (violet) or one
         // step further out from it (blue).
         let lit = reach.and_then(|reach| {
-            let up = hops(&reach.upstream, from).zip(hops(&reach.upstream, to));
-            let down = hops(&reach.downstream, from).zip(hops(&reach.downstream, to));
+            // A side of the focus that is hidden lights nothing.
+            let up = hops(&reach.upstream, from)
+                .zip(hops(&reach.upstream, to))
+                .filter(|_| !hidden.callers);
+            let down = hops(&reach.downstream, from)
+                .zip(hops(&reach.downstream, to))
+                .filter(|_| !hidden.callees);
             match (up, down) {
                 (Some((outer, inner)), _)
                     if outer == inner + 1 && (!opened || outer == 1 || spotlit.contains(&from)) =>
@@ -533,20 +568,37 @@ fn draw_spotlight(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
 }
 
 /// A white ring round the focus, and a fainter, wider one round the node under the
-/// pointer, in the graph or as a bar in the journey.
+/// pointer, in the graph or as a bar in the journey. Gathered round the focus's
+/// module, the journey's cursor, where it is not the nucleus's middle, gets two rings
+/// where it sits.
 fn draw_attention(explorer: &Explorer, gizmos: &mut Gizmos) {
     let graph = explorer.graph();
-    let focus = explorer.graph_focus();
+    let nucleus = explorer.nucleus();
+    // The node's own radius, as big as it is drawn.
+    let size =
+        |tile: usize| node_size(graph, tile) * nucleus.map_or(1.0, |n| n.node_scale(false)) * 0.5;
+    let focus = explorer.lit_focus();
     if let Some(tile) = focus
         && let Some(at) = explorer.tile_point(tile)
     {
-        let radius = node_size(graph, tile) * 0.5 + 0.35;
+        let radius = size(tile) + 0.35;
         gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
     }
-    if let Some(tile) = explorer.hovered_tile.filter(|&t| Some(t) != focus)
+    if let Some(tile) = explorer.cursor_mark()
         && let Some(at) = explorer.tile_point(tile)
     {
-        let radius = node_size(graph, tile) * 0.5 + 0.6;
+        for grow in [0.35, 0.8] {
+            gizmos.sphere(
+                Isometry3d::from_translation(at),
+                size(tile) + grow,
+                Color::WHITE,
+            );
+        }
+    }
+    if let Some(tile) = explorer.pointed().filter(|&t| Some(t) != focus)
+        && let Some(at) = explorer.tile_point(tile)
+    {
+        let radius = size(tile) + 0.6;
         gizmos.sphere(
             Isometry3d::from_translation(at),
             radius,

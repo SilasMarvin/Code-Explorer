@@ -142,9 +142,11 @@ fn on_node_click(
 }
 
 fn on_node_over(over: On<PointerOver>, tiles: Query<&Tile>, mut explorer: ResMut<Explorer>) {
-    // Inside the nucleus even a faint function can be pointed at, for its calls.
+    // Inside the nucleus even a faint function can be pointed at, for its calls,
+    // unless the specks are left out.
     if let Ok(tile) = tiles.get(over.entity)
         && (explorer.shown(tile.0) || explorer.nucleus().is_some_and(|n| n.shows(tile.0)))
+        && !graph_view::hidden_speck(&explorer, tile.0)
     {
         explorer.hovered_tile = Some(tile.0);
     }
@@ -299,13 +301,18 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Escape) {
         close_topmost(&mut explorer, &mut help, &mut chrome);
     }
-    // I and O pick out what calls into the focus and what it calls out to.
+    // I and O pick out what calls into the focus and what it calls out to; with
+    // Shift, they hide that side, or show it again.
     for (key, side) in [
         (KeyCode::KeyI, Side::Callers),
         (KeyCode::KeyO, Side::Callees),
     ] {
         if keys.just_pressed(key) {
-            explorer.toggle_spotlight(side, time.elapsed_secs());
+            if shift {
+                explorer.toggle_hidden(side);
+            } else {
+                explorer.toggle_spotlight(side, time.elapsed_secs());
+            }
         }
     }
     if keys.just_pressed(KeyCode::Space) {

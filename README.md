@@ -38,7 +38,10 @@ its module, the same color as its ring; under a diff it says what changed instea
 journey bar is filled exactly like its node, and its number sits on a badge of that
 color beside the node, so a bar finds its node at a glance; hovering a bar draws a line
 to it. `I` picks out everything that calls the focus and `O` everything it calls,
-pulling the camera back only as far as it takes to show them all.
+pulling the camera back only as far as it takes to show them all. `Shift+I` hides the
+focus's callers instead, and what calls those, with their arrows, and `Shift+O` its
+callees; press again to bring them back. On the flat graph they stop lighting up and
+fade with the rest; gathered into the nucleus they leave the view.
 
 The focus is where you are in the journey: the node under its cursor, ringed in white
 and named in the top bar beside how many calls it makes and takes. The arrows, a digit
@@ -88,7 +91,18 @@ An arrow joins two modules whenever a call this view names runs between them, a 
 thicker the more calls run from one to the other, but always thin: violet into the
 focus's module, blue out of it, pale one call further out. The named calls run beside
 it side by side, function to function, violet and blue ones with dots flowing along
-them. Functions in the middle module that relate to nothing named are faint specks. A new focus in another module eases
+them. Functions in the middle module that relate to nothing named are faint specks;
+`N` leaves them out altogether, so they are neither drawn nor pointed at, and brings
+them back. The pointer has to rest on a function for a moment (0.15 s) before the
+nucleus takes it as pointed at, and off it as long before it lets go, so passing over a
+speck does not flash its calls.
+
+The nucleus holds the function whose journey is open in the middle, in white, or the
+one last clicked. Stepping through the journey (the arrows, `[`/`]`, their `Shift`
+forms, a journey bar, `Space`) leaves everything where it is: the cursor's function is
+ringed twice in white and named where it sits, and if the view had folded it away it
+shows just under its module's sphere, on the line from its journey bar. A click on a
+function, `Enter`, or a `Shift`-click makes a new middle; one in another module eases
 every sphere to its new place, the new module coming in to the middle. `Q` and `E` turn
 the view an eighth of the way round, refitting it, so the depth shows; `F` comes back to
 the usual three-quarter view, and `Z` again lays the graph flat.
@@ -98,8 +112,8 @@ opens straight into it): the sphere grows to several times its size while the ca
 comes in, so you go inside the same object. Inside, the module's functions are laid
 out by the calls among them: whatever is within two calls of the focus inside the
 module, up or down, gathers in the middle, the focus's callers tending to one side and
-its callees to the other (a tendency, not an axis); the rest are small faint specks out
-towards the wall. Only the focus's own calls are drawn, violet into it and blue out of
+its callees to the other (a tendency, not an axis); the rest are faint specks out
+towards the wall, left out until `N` brings them in. Only the focus's own calls are drawn, violet into it and blue out of
 it, with every caller and callee named. The modules it calls or is called by shrink
 onto a ring just outside the wall, each at the bearing it had, with the focus's own
 callers and callees there still named; each of its calls leaving the module runs out

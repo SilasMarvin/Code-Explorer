@@ -227,6 +227,38 @@ pub(crate) enum Side {
     Callees,
 }
 
+/// Which sides of the focus are hidden, with their calls: what calls it (Shift+I),
+/// what it calls (Shift+O), each with what is further along that way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Hidden {
+    pub(crate) callers: bool,
+    pub(crate) callees: bool,
+}
+
+impl Hidden {
+    pub(crate) fn hides(self, side: Side) -> bool {
+        match side {
+            Side::Callers => self.callers,
+            Side::Callees => self.callees,
+        }
+    }
+
+    /// The same with one side hidden if it showed, or shown if it was hidden.
+    #[must_use]
+    pub(crate) fn toggled(self, side: Side) -> Self {
+        match side {
+            Side::Callers => Self {
+                callers: !self.callers,
+                ..self
+            },
+            Side::Callees => Self {
+                callees: !self.callees,
+                ..self
+            },
+        }
+    }
+}
+
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
     system: System,
@@ -282,6 +314,11 @@ pub(crate) struct Explorer {
     revision: u64,
     /// The graph gathered round the focus's module, when it is.
     nucleus: Option<Nucleus>,
+    /// A function clicked, which the nucleus holds in its middle while the journey's
+    /// cursor moves; without one, the journey's start.
+    held: Option<usize>,
+    /// Which sides of the focus are hidden.
+    hidden: Hidden,
 }
 
 impl Explorer {
@@ -336,6 +373,8 @@ impl Explorer {
             lane_colors: HashMap::new(),
             revision: 0,
             nucleus: None,
+            held: None,
+            hidden: Hidden::default(),
         };
         explorer.color_groups();
         if let Some(root) = root {
@@ -438,6 +477,7 @@ impl Explorer {
         self.disclosure_epoch += 1;
         self.spotlight = view.spotlight;
         self.aside = None;
+        self.held = None;
         self.aim += 1;
         self.recolor();
     }
@@ -548,6 +588,7 @@ impl Explorer {
     /// Starts the journey at `root` on its happy path, with the cursor on it.
     fn replace_root(&mut self, root: UnitId) {
         self.aside = None;
+        self.held = None;
         if self.root() == Some(&root) {
             return;
         }
@@ -592,6 +633,7 @@ impl Explorer {
             return;
         };
         self.navigate(|explorer| {
+            explorer.held = None;
             if explorer.root() == Some(&unit) {
                 explorer.select(explorer.journey().map(Journey::root));
             } else {
@@ -649,7 +691,11 @@ impl Explorer {
         }
         self.nucleus = if on {
             self.settle_now();
-            Some(Nucleus::new(&self.graph, self.graph_focus()))
+            Some(Nucleus::with_hidden(
+                &self.graph,
+                self.nucleus_focus(),
+                self.hidden,
+            ))
         } else {
             None
         };
@@ -668,20 +714,74 @@ impl Explorer {
         }
     }
 
-    /// Tells the nucleus which function the pointer is over. Returns whether that
-    /// changed.
-    pub(crate) fn hover_nucleus(&mut self) -> bool {
-        let tile = self.hovered_tile;
+    /// Tells the nucleus which function the pointer has settled on. Returns whether
+    /// that changed.
+    pub(crate) fn hover_nucleus(&mut self, tile: Option<usize>) -> bool {
         self.nucleus
             .as_mut()
             .is_some_and(|nucleus| nucleus.hover(&self.graph, tile))
     }
 
-    /// Re-centers the nucleus when the focus moved to another function, and eases it
-    /// along by `dt` seconds. Returns whether what it shows changed, rather than only
-    /// moved.
+    /// The function under the pointer as drawn: gathered round the focus's module,
+    /// the one the pointer has settled on, so passing over a function does not flash.
+    pub(crate) fn pointed(&self) -> Option<usize> {
+        match &self.nucleus {
+            Some(nucleus) => nucleus.hovered(),
+            None => self.hovered_tile,
+        }
+    }
+
+    /// The function the nucleus is arranged round: the one last clicked, else the
+    /// journey's start. Stepping through the journey leaves it put.
+    pub(crate) fn nucleus_focus(&self) -> Option<usize> {
+        self.held
+            .or_else(|| self.root_tile())
+            .or_else(|| self.graph_focus())
+    }
+
+    /// The node drawn as the focus, white, whose callers and callees light up: the
+    /// nucleus's middle when the graph is gathered round it, else the focus.
+    pub(crate) fn lit_focus(&self) -> Option<usize> {
+        match &self.nucleus {
+            Some(nucleus) => nucleus.focus(),
+            None => self.graph_focus(),
+        }
+    }
+
+    /// Gathered round the focus's module, the journey's cursor (or a node clicked
+    /// off it) when it is not the nucleus's middle: it is marked where it sits.
+    pub(crate) fn cursor_mark(&self) -> Option<usize> {
+        let nucleus = self.nucleus.as_ref()?;
+        self.graph_focus().filter(|&t| Some(t) != nucleus.focus())
+    }
+
+    /// Which sides of the focus are hidden.
+    pub(crate) fn hidden(&self) -> Hidden {
+        self.hidden
+    }
+
+    /// Hides one side of the focus, with its calls, or shows it again.
+    pub(crate) fn toggle_hidden(&mut self, side: Side) {
+        self.hidden = self.hidden.toggled(side);
+        if let Some(nucleus) = &mut self.nucleus {
+            nucleus.set_hidden(&self.graph, self.hidden);
+            self.moved += 1;
+        }
+    }
+
+    /// Hides the nucleus's nameless specks, or shows them again, in the view it is in.
+    pub(crate) fn toggle_specks(&mut self) {
+        if let Some(nucleus) = &mut self.nucleus {
+            nucleus.toggle_specks();
+        }
+    }
+
+    /// Re-centers the nucleus when the function it is held round changes, marks the
+    /// journey's cursor where it sits, and eases it along by `dt` seconds. Returns
+    /// whether what it shows changed, rather than only moved.
     pub(crate) fn ease_nucleus(&mut self, dt: f32) -> bool {
-        let focus = self.graph_focus();
+        let focus = self.nucleus_focus();
+        let cursor = self.graph_focus();
         let Some(nucleus) = &mut self.nucleus else {
             return false;
         };
@@ -689,10 +789,11 @@ impl Explorer {
         if recentered {
             nucleus.recenter(&self.graph, focus);
         }
-        if nucleus.advance(dt) || recentered {
+        let marked = nucleus.mark(&self.graph, cursor.filter(|&t| Some(t) != focus));
+        if nucleus.advance(dt) || recentered || marked {
             self.moved += 1;
         }
-        recentered
+        recentered || marked
     }
 
     pub(crate) fn clustering(&self) -> Clustering {
@@ -778,6 +879,7 @@ impl Explorer {
     /// its call, opening what folds it; off the journey, the node is the focus for now,
     /// and the journey stays as it was. Neither is a move to remember: Enter follows.
     pub(crate) fn focus_tile(&mut self, tile: usize) {
+        self.held = Some(tile);
         if let Some(span) = self.span_at(tile) {
             self.select(Some(span));
         } else if self.aside != Some(tile) {
@@ -832,6 +934,7 @@ impl Explorer {
             return;
         };
         if self.root() == Some(&unit) {
+            self.held = None;
             self.select(self.journey().map(Journey::root));
             return;
         }
@@ -1099,18 +1202,18 @@ impl Explorer {
         self.visibility(tile) >= lens::SPECK
     }
 
-    /// What reaches the focus and what it reaches, once [`Self::refresh_reach`] has
-    /// run.
+    /// What reaches the focus drawn and what it reaches, once
+    /// [`Self::refresh_reach`] has run.
     pub(crate) fn reach(&self) -> Option<&Reach> {
         self.reach
             .as_ref()
-            .filter(|(tile, _)| Some(*tile) == self.graph_focus())
+            .filter(|(tile, _)| Some(*tile) == self.lit_focus())
             .map(|(_, reach)| reach)
     }
 
     /// Recomputes [`Self::reach`] when the focus moved. Returns whether it did.
     pub(crate) fn refresh_reach(&mut self) -> bool {
-        let focus = self.graph_focus();
+        let focus = self.lit_focus();
         if self.reach.as_ref().map(|(tile, _)| *tile) == focus {
             return false;
         }
@@ -1911,5 +2014,75 @@ pub(crate) mod tests {
 
         assert!(explorer.go_back());
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:a"));
+    }
+
+    #[test]
+    fn the_nucleus_holds_its_middle_while_the_cursor_steps() {
+        let mut explorer = explorer();
+        let tile = |explorer: &Explorer, name: &str| {
+            explorer
+                .map()
+                .tile_of(&UnitId::new(format!("x:{name}")))
+                .unwrap()
+        };
+        let (main, a, b) = (
+            tile(&explorer, "main"),
+            tile(&explorer, "a"),
+            tile(&explorer, "b"),
+        );
+        explorer.set_nucleus(true);
+        explorer.ease_nucleus(1.0);
+        assert_eq!(explorer.nucleus().and_then(Nucleus::focus), Some(main));
+
+        explorer.step(Step::Into);
+        explorer.ease_nucleus(1.0);
+        assert_eq!(explorer.graph_focus(), Some(a), "the cursor moved");
+        assert_eq!(
+            explorer.nucleus().and_then(Nucleus::focus),
+            Some(main),
+            "the middle did not"
+        );
+        assert_eq!(explorer.lit_focus(), Some(main));
+        assert_eq!(explorer.cursor_mark(), Some(a), "the cursor is marked");
+        assert!(explorer.nucleus().is_some_and(|n| n.marks(a)));
+
+        explorer.focus_tile(b);
+        explorer.ease_nucleus(1.0);
+        assert_eq!(
+            explorer.nucleus().and_then(Nucleus::focus),
+            Some(b),
+            "a click re-centers"
+        );
+        assert_eq!(explorer.cursor_mark(), None);
+        explorer.step(Step::Back);
+        explorer.ease_nucleus(1.0);
+        assert_eq!(explorer.nucleus().and_then(Nucleus::focus), Some(b));
+
+        explorer.trace_from_focus();
+        explorer.ease_nucleus(1.0);
+        assert_eq!(
+            explorer.nucleus().and_then(Nucleus::focus),
+            explorer.graph_focus(),
+            "following the focus re-centers on it"
+        );
+    }
+
+    #[test]
+    fn hiding_a_side_unlights_it() {
+        let mut explorer = explorer();
+        explorer.step(Step::Into);
+        explorer.refresh_reach();
+        let main = explorer.map().tile_of(&UnitId::new("x:main")).unwrap();
+        let reach = explorer.reach().unwrap().clone();
+        assert!(crate::graph_view::shown_relation(&explorer, &reach, main).is_some());
+        explorer.toggle_hidden(Side::Callers);
+        assert!(explorer.hidden().hides(Side::Callers));
+        assert_eq!(
+            crate::graph_view::shown_relation(&explorer, &reach, main),
+            None,
+            "a's caller is hidden"
+        );
+        explorer.toggle_hidden(Side::Callers);
+        assert_eq!(explorer.hidden(), Hidden::default());
     }
 }
