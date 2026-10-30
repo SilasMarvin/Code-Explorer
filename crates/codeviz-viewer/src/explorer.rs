@@ -24,6 +24,7 @@ use crate::{
     disclosure::{self, Disclose, Disclosed},
     history::{History, View},
     lens::{self, Distances, Lens},
+    module_names,
     nucleus::{Nucleus, Trail},
 };
 
@@ -291,6 +292,9 @@ pub(crate) struct Explorer {
     map: CodebaseMap,
     /// The codebase as a graph of calls.
     graph: ForceGraph,
+    /// What each module sphere is called, by cluster: its name, told apart from
+    /// another module's of the same name.
+    module_names: Vec<String>,
     clustering: Clustering,
     /// Whether the graph is still moving.
     settling: bool,
@@ -378,6 +382,16 @@ impl Explorer {
             graph.step();
         }
         let tiles = map.tiles.len();
+        let module_names = {
+            let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
+                .map(|cluster| {
+                    let id = graph.cluster_unit(cluster)?;
+                    let unit = system.unit(id).or_else(|| layout.as_ref()?.unit(id))?;
+                    Some((id.as_str(), unit.name.as_str()))
+                })
+                .collect();
+            module_names::qualified(&modules)
+        };
         let mut explorer = Self {
             system,
             layout_system: layout,
@@ -386,6 +400,7 @@ impl Explorer {
             track: Track::default(),
             map,
             graph,
+            module_names,
             clustering,
             settling: true,
             journey_tiles: HashMap::new(),
@@ -1516,11 +1531,10 @@ impl Explorer {
     }
 
     /// A module cluster's name: the module's own, else its container's.
+    /// A module's name, with as much of its path as tells it from another module's of
+    /// the same name.
     pub(crate) fn cluster_name(&self, cluster: usize) -> String {
-        self.graph
-            .cluster_unit(cluster)
-            .and_then(|id| self.any_unit(id))
-            .map_or_else(String::new, |unit| unit.name.clone())
+        self.module_names.get(cluster).cloned().unwrap_or_default()
     }
 
     /// Gives every container a color, after those the journey uses.
