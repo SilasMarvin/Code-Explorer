@@ -2,16 +2,20 @@
 //! the keys that move the cursor and switch what is shown.
 
 use bevy::prelude::*;
-use bevy_egui::input::{egui_wants_any_keyboard_input, egui_wants_any_pointer_input};
+use bevy_egui::{
+    EguiPrimaryContextPass,
+    input::{egui_wants_any_keyboard_input, egui_wants_any_pointer_input},
+};
 
 use crate::{
+    camera,
     disclosure::Disclose,
     explorer::{Autoplay, Clustering, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
     idle::Awake,
     journey_panel::{JourneyPanel, PanelMode},
     lens::Lens,
-    nucleus, pick,
+    notice, nucleus, pick,
     ui::{Chrome, KeyHelp},
 };
 
@@ -51,13 +55,14 @@ impl Plugin for ScenePlugin {
                 nucleus::frame,
                 graph_view::frame_reveal,
                 graph_view::frame_spotlight,
-                graph_view::reveal_cursor,
+                (graph_view::reveal_cursor, camera::restore_pose).chain(),
                 graph_view::style_nodes,
                 graph_view::draw_graph,
                 nucleus::draw,
             )
                 .chain(),
-        );
+        )
+        .add_systems(EguiPrimaryContextPass, notice::draw);
     }
 }
 

@@ -19,6 +19,8 @@ use bevy::{
 };
 use bevy_egui::{EguiGlobalSettings, PrimaryEguiContext, input::egui_wants_any_pointer_input};
 
+use crate::{explorer::Explorer, nucleus};
+
 pub(crate) struct OrbitCameraPlugin;
 
 impl Plugin for OrbitCameraPlugin {
@@ -31,7 +33,7 @@ impl Plugin for OrbitCameraPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (crate::graph_view::hold_center, apply_camera)
+                (crate::graph_view::hold_center, apply_camera, remember_pose)
                     .chain()
                     .before(TransformSystems::Propagate),
             );
@@ -142,6 +144,47 @@ impl OrbitCamera {
         self.yaw -= turns * std::f32::consts::TAU;
         self.goal_angles = Some((yaw, pitch));
     }
+
+    /// Eases across to look at `target` from as far away as it is going to be,
+    /// taking hold of the focus again.
+    pub(crate) fn pan_to(&mut self, target: Vec3) {
+        self.target = target;
+        self.free = false;
+    }
+
+    /// The distance it is easing to, or is at.
+    pub(crate) fn goal_distance(&self) -> f32 {
+        self.goal_distance.unwrap_or(self.distance)
+    }
+
+    /// Where the camera is going to be once it stops easing.
+    pub(crate) fn pose(&self) -> Pose {
+        Pose {
+            target: self.target,
+            distance: self.goal_distance(),
+            angles: self.goal_angles.unwrap_or((self.yaw, self.pitch)),
+            free: self.free,
+        }
+    }
+
+    /// Eases back to a pose it had.
+    pub(crate) fn return_to(&mut self, pose: Pose) {
+        self.target = pose.target;
+        self.goal_distance = Some(pose.distance);
+        self.turn_to(pose.angles);
+        self.free = pose.free;
+    }
+}
+
+/// Where the camera stands: what it looks at, from how far and at what angle, and
+/// whether the viewer had moved it by hand. Kept with each place in the history, so
+/// going back looks at it as it was seen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Pose {
+    target: Vec3,
+    distance: f32,
+    angles: (f32, f32),
+    free: bool,
 }
 
 const ORBIT_SPEED: f32 = 0.005;
@@ -280,5 +323,40 @@ fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Tran
         let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
         transform.translation = camera.focus + rotation * Vec3::Z * camera.distance;
         transform.rotation = rotation;
+    }
+}
+
+/// Tells the explorer where the camera stands, for its history and for leaving a
+/// journey, without counting as a change to it.
+fn remember_pose(mut explorer: ResMut<Explorer>, cameras: Query<&OrbitCamera>) {
+    if let Ok(camera) = cameras.single() {
+        explorer.bypass_change_detection().see(camera.pose());
+    }
+}
+
+/// Sends the camera back where the explorer asks, once each time it asks: to where it
+/// stood at a place gone back to, or browsing again, to where it stood before the
+/// journey was entered, or with no such place, to take in the whole codebase. Runs
+/// after everything else that aims the camera, so this has the last word.
+pub(crate) fn restore_pose(
+    explorer: Res<Explorer>,
+    mut last: Local<Option<u64>>,
+    mut cameras: Query<(&mut OrbitCamera, &Projection)>,
+) {
+    let Some((count, pose)) = explorer.return_pose() else {
+        return;
+    };
+    if last.replace(count) == Some(count) {
+        return;
+    }
+    for (mut camera, projection) in &mut cameras {
+        match (pose, explorer.nucleus()) {
+            (Some(pose), _) => camera.return_to(pose),
+            (None, Some(gathered)) if gathered.browsing() => {
+                let rotation = camera.aim_rotation();
+                nucleus::fit_all(gathered, &mut camera, rotation, projection);
+            }
+            (None, _) => {}
+        }
     }
 }

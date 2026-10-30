@@ -21,8 +21,9 @@ use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
 
 use crate::{
+    camera::Pose,
     disclosure::{self, Disclose, Disclosed},
-    history::{History, View},
+    history::{History, Seen, View},
     lens::{self, Distances, Lens},
     nucleus::{Nucleus, Trail},
 };
@@ -336,9 +337,6 @@ pub(crate) struct Explorer {
     revision: u64,
     /// The graph gathered round the focus's module, when it is.
     nucleus: Option<Nucleus>,
-    /// A function clicked, which the nucleus holds in its middle while the journey's
-    /// cursor moves; without one, the journey's start.
-    held: Option<usize>,
     /// What the nucleus's trail was last worked out for.
     traced: Option<TrailKey>,
     /// Which sides of the focus are hidden.
@@ -353,6 +351,15 @@ pub(crate) struct Explorer {
     /// The journey number on the name last pointed at, so a click on a name goes to
     /// the call it numbers.
     pub(crate) pointed_number: Option<String>,
+    /// Something said for a moment, as why a key moved nothing, numbered.
+    notice: Option<(u64, String)>,
+    /// Where the camera stands, as last seen.
+    pose: Option<Pose>,
+    /// Where the camera stood browsing when a journey was last entered from there.
+    browse_pose: Option<Pose>,
+    /// Where the camera is to go back to, numbered: a pose it had, or with none, the
+    /// whole codebase.
+    return_pose: Option<(u64, Option<Pose>)>,
 }
 
 impl Explorer {
@@ -408,13 +415,16 @@ impl Explorer {
             lane_colors: HashMap::new(),
             revision: 0,
             nucleus: None,
-            held: None,
             traced: None,
             hidden: Hidden::default(),
             mode: ViewMode::Journey,
             selection: None,
             outside: false,
             pointed_number: None,
+            notice: None,
+            pose: None,
+            browse_pose: None,
+            return_pose: None,
         };
         explorer.color_groups();
         if root.is_none() {
@@ -496,20 +506,24 @@ impl Explorer {
             expanded: self.track().expanded.clone(),
             spotlight: self.spotlight,
             aside: self.aside,
-            held: self.held,
             hidden: self.hidden,
             specks: self.nucleus.as_ref().is_some_and(Nucleus::specks_hidden),
             mode: self.mode,
             selection: self.selection,
             outside: self.outside,
+            pose: Seen(self.pose),
         }
     }
 
     /// Puts the view back as it was, all of it: the journey, its outcome and cursor,
     /// how much of it shows, the function clicked, the spotlight and what was hidden.
     /// Gathered round the focus's module, the nucleus eases back round the function
-    /// it was. The camera frames it afresh, as it did when the view was first there.
+    /// it was, and the camera back to where it stood.
     fn restore(&mut self, view: View) {
+        self.leaving_browse(view.mode);
+        if let Some(pose) = view.pose.0 {
+            self.return_to(Some(pose));
+        }
         let track = &mut self.track;
         if track.root != view.root {
             track.root = view.root;
@@ -529,7 +543,6 @@ impl Explorer {
         self.disclosure_epoch += 1;
         self.spotlight = view.spotlight;
         self.aside = view.aside;
-        self.held = view.held;
         self.mode = view.mode;
         self.selection = view.selection;
         self.outside = view.outside;
@@ -557,6 +570,9 @@ impl Explorer {
     fn navigate(&mut self, go: impl FnOnce(&mut Self)) {
         let before = self.view();
         go(self);
+        if before.mode == ViewMode::Browse && self.mode == ViewMode::Journey {
+            self.browse_pose = before.pose.0;
+        }
         if self.view() != before {
             self.history.leave(before);
             self.walking = false;
@@ -686,10 +702,35 @@ impl Explorer {
             explorer.selection = explorer.graph_focus();
             explorer.mode = ViewMode::Browse;
             explorer.aside = None;
-            explorer.held = None;
             explorer.spotlight = None;
         });
         self.aim += 1;
+        // Back to the codebase as it was seen before the journey, unframed.
+        self.return_to(self.browse_pose);
+    }
+
+    /// Remembers where the camera stood browsing, when the view is about to go from
+    /// browsing into a journey (`next`).
+    fn leaving_browse(&mut self, next: ViewMode) {
+        if self.mode == ViewMode::Browse && next == ViewMode::Journey {
+            self.browse_pose = self.pose;
+        }
+    }
+
+    /// Sends the camera back to `pose`, or with none, to the whole codebase.
+    fn return_to(&mut self, pose: Option<Pose>) {
+        let count = self.return_pose.map_or(0, |(n, _)| n + 1);
+        self.return_pose = Some((count, pose));
+    }
+
+    /// Where the camera is to go back to, numbered, once each time it is asked.
+    pub(crate) fn return_pose(&self) -> Option<(u64, Option<Pose>)> {
+        self.return_pose
+    }
+
+    /// Notes where the camera stands, for the history and for leaving a journey.
+    pub(crate) fn see(&mut self, pose: Pose) {
+        self.pose = Some(pose);
     }
 
     /// In a journey, whether every outside caller into it shows.
@@ -720,7 +761,6 @@ impl Explorer {
     /// Starts the journey at `root` on its happy path, with the cursor on it.
     fn replace_root(&mut self, root: UnitId) {
         self.aside = None;
-        self.held = None;
         if self.root() == Some(&root) {
             return;
         }
@@ -768,7 +808,6 @@ impl Explorer {
             return;
         };
         self.navigate(|explorer| {
-            explorer.held = None;
             explorer.mode = ViewMode::Journey;
             if explorer.root() == Some(&unit) {
                 explorer.aside = None;
@@ -856,18 +895,11 @@ impl Explorer {
         }
         if on {
             self.set_nucleus(true);
-        } else {
-            self.held = None;
         }
         if let Some(nucleus) = &mut self.nucleus {
             nucleus.expand(&self.graph, on);
             self.moved += 1;
         }
-    }
-
-    /// Whether the nucleus is expanded.
-    fn expanded(&self) -> bool {
-        self.nucleus.as_ref().is_some_and(Nucleus::expanded)
     }
 
     /// Tells the nucleus which function the pointer has settled on. Returns whether
@@ -888,16 +920,13 @@ impl Explorer {
     }
 
     /// The function the nucleus is arranged round: browsing, the one selected; in a
-    /// journey, its start, or expanded, the function inside it last clicked. Stepping
-    /// through the journey, or a click anywhere else, leaves it put.
+    /// journey, its start, expanded or not, so it shows the journey and nothing else.
+    /// Stepping through the journey, or a click anywhere, leaves it put.
     pub(crate) fn nucleus_focus(&self) -> Option<usize> {
         if self.browsing() {
             return self.selection;
         }
-        self.held
-            .filter(|_| self.expanded())
-            .or_else(|| self.root_tile())
-            .or_else(|| self.graph_focus())
+        self.root_tile().or_else(|| self.graph_focus())
     }
 
     /// The node drawn as the focus, white, whose callers and callees light up: the
@@ -1012,7 +1041,7 @@ impl Explorer {
         }
     }
 
-    /// Re-centers the nucleus when the function it is held round changes, marks the
+    /// Re-centers the nucleus when the function it is arranged round changes, marks the
     /// journey's cursor where it sits, and eases it along by `dt` seconds. Returns
     /// whether what it shows changed, rather than only moved.
     pub(crate) fn ease_nucleus(&mut self, dt: f32) -> bool {
@@ -1147,13 +1176,6 @@ impl Explorer {
     }
 
     fn focus_on(&mut self, tile: usize, number: Option<&str>) {
-        let inside = self
-            .nucleus
-            .as_ref()
-            .is_some_and(|n| n.expanded() && self.graph.cluster(tile) == Some(n.center()));
-        if inside {
-            self.held = Some(tile);
-        }
         if let Some(span) = self.span_at(tile, number) {
             self.select(Some(span));
         } else if self.aside != Some(tile) {
@@ -1222,7 +1244,6 @@ impl Explorer {
         };
         self.mode = ViewMode::Journey;
         if self.root() == Some(&unit) {
-            self.held = None;
             self.aside = None;
             self.select(self.journey().map(Journey::root));
             return;
@@ -1652,15 +1673,28 @@ impl Explorer {
             tile(span).is_some()
                 && journey.span(span).and_then(|s| s.parent).and_then(tile) == tile(span)
         };
+        // The keys read the picture as it is: they stop only on a call drawn, one with
+        // a node of its own (not a closure, nor a call to one of several functions)
+        // and disclosed, so they never open a level or reach past the depth shown.
+        // Disclosing through time, the next call in time discloses itself.
+        let disclosed = self.disclosure();
+        let by_time = self.disclose == Disclose::Time;
+        let drawn = |span: SpanId| {
+            tile(span).is_some() && !closure(span) && (by_time || disclosed.number(span).is_some())
+        };
         let parent = |span: SpanId| {
             std::iter::successors(journey.span(span)?.parent, |&p| journey.span(p)?.parent)
-                .find(|&p| !closure(p))
+                .find(|&p| drawn(p))
         };
-        let calls = |span: SpanId| disclosure::calls_of(journey, &tile, span).0;
+        let calls = |span: SpanId| {
+            let mut calls = disclosure::calls_of(journey, &tile, span).0;
+            calls.retain(|&c| drawn(c));
+            calls
+        };
         let nth = |index: usize| journey.spans().nth(index).map(|(id, _)| id);
-        // On from `span` in pre-order, past any closure.
+        // On from `span` in pre-order, past anything not drawn.
         let onward = |span: Option<SpanId>| {
-            std::iter::successors(span, |s| nth(s.index() + 1)).find(|&s| !closure(s))
+            std::iter::successors(span, |s| nth(s.index() + 1)).find(|&s| drawn(s))
         };
         // The first span after `id`'s subtree, in pre-order.
         let after = |id: SpanId| {
@@ -1678,7 +1712,7 @@ impl Explorer {
             Step::Back => (0..current.index())
                 .rev()
                 .filter_map(nth)
-                .find(|&s| !closure(s)),
+                .find(|&s| drawn(s)),
             Step::Over => onward(after(current)),
             Step::Out => parent(current).and_then(|p| onward(after(p)).or(Some(p))),
             Step::Next => {
@@ -1696,8 +1730,58 @@ impl Explorer {
         };
         if next.is_some() {
             self.select(next);
+        } else {
+            let hidden = |span: SpanId| {
+                tile(span).is_some() && !closure(span) && disclosed.number(span).is_none()
+            };
+            // Calls past the depth shown: under the cursor for ↓, anywhere ahead
+            // for ] and the like.
+            let folded = !by_time
+                && match step {
+                    Step::Child => disclosure::calls_of(journey, &tile, current)
+                        .0
+                        .into_iter()
+                        .any(hidden),
+                    _ => journey
+                        .spans()
+                        .skip(current.index() + 1)
+                        .any(|(span, _)| hidden(span)),
+                };
+            let first = current == journey.root();
+            self.say(stuck(step, first, folded));
         }
         next
+    }
+
+    /// Says something for a moment, over the graph.
+    fn say(&mut self, text: &str) {
+        let count = self.notice.as_ref().map_or(0, |(n, _)| n + 1);
+        self.notice = Some((count, text.to_owned()));
+    }
+
+    /// The last thing said for a moment, numbered so the same words said again show
+    /// again.
+    pub(crate) fn notice(&self) -> Option<(u64, &str)> {
+        self.notice.as_ref().map(|(n, text)| (*n, text.as_str()))
+    }
+}
+
+/// What a key that cannot move the cursor says: why not, and what would. `first` is
+/// whether the cursor is on the journey's start, `folded` whether calls under it are
+/// past the depth shown.
+fn stuck(step: Step, first: bool, folded: bool) -> &'static str {
+    match step {
+        Step::Parent | Step::Back if first => "Already at the journey's start",
+        Step::Parent => "Nothing above this call is drawn",
+        Step::Back => "No earlier call is drawn",
+        Step::Next => "No later call from the same caller",
+        Step::Previous => "No earlier call from the same caller",
+        Step::Child if folded => "Its calls are folded: . shows a level more",
+        Step::Child => "It makes no calls",
+        Step::Into | Step::Over | Step::Out if folded => {
+            "The end of what is shown: . shows a level more"
+        }
+        Step::Into | Step::Over | Step::Out => "The end of the journey",
     }
 }
 
@@ -1803,6 +1887,19 @@ pub(crate) mod tests {
 
         explorer.step(Step::Into);
         assert_eq!(at(&explorer), "a");
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "b", "c is folded under a, so ] passes it by");
+        assert_eq!(
+            explorer.step(Step::Into),
+            None,
+            "and stops at the end of what shows"
+        );
+        assert_eq!(
+            explorer.notice().map(|(_, text)| text),
+            Some("The end of the journey")
+        );
+        explorer.step(Step::Back);
+        explorer.set_disclose(Disclose::Depth(2));
         explorer.step(Step::Over);
         assert_eq!(at(&explorer), "b", "over skips a's callee c");
 
@@ -1829,11 +1926,29 @@ pub(crate) mod tests {
         assert_eq!(explorer.step(Step::Next), None, "b is main's last call");
         explorer.step(Step::Previous);
         assert_eq!(at(&explorer), "a");
+        assert_eq!(
+            explorer.step(Step::Child),
+            None,
+            "c is past the depth shown"
+        );
+        assert_eq!(
+            explorer.notice().map(|(_, text)| text),
+            Some("Its calls are folded: . shows a level more"),
+            "and it says so"
+        );
+        explorer.set_disclose(Disclose::Depth(2));
         explorer.step(Step::Child);
         assert_eq!(at(&explorer), "c");
         assert_eq!(explorer.step(Step::Child), None);
+        assert_eq!(explorer.notice().map(|(_, t)| t), Some("It makes no calls"));
         explorer.step(Step::Parent);
         assert_eq!(at(&explorer), "a");
+        explorer.step(Step::Parent);
+        assert_eq!(explorer.step(Step::Parent), None);
+        assert_eq!(
+            explorer.notice().map(|(_, t)| t),
+            Some("Already at the journey's start")
+        );
     }
 
     #[test]
@@ -1994,6 +2109,7 @@ pub(crate) mod tests {
     #[test]
     fn the_focus_reaches_up_its_callers() {
         let mut explorer = explorer();
+        explorer.set_disclose(Disclose::Depth(2));
         explorer.step(Step::Into);
         explorer.step(Step::Into);
         assert_eq!(at(&explorer), "c");
@@ -2123,9 +2239,9 @@ pub(crate) mod tests {
     fn a_walk_with_the_keys_is_one_move() {
         let mut explorer = explorer();
         explorer.step(Step::Into);
+        explorer.set_disclose(Disclose::Depth(2));
         explorer.step(Step::Into);
         assert_eq!(at(&explorer), "c");
-        explorer.set_disclose(Disclose::Depth(2));
         explorer.step(Step::Back);
         assert!(explorer.go_back(), "the walk is remembered");
         assert_eq!(at(&explorer), "main", "from where it began");
@@ -2140,6 +2256,7 @@ pub(crate) mod tests {
 
         // A click ends the walk; the next walk is a move of its own.
         explorer.focus_tile(tile(&explorer, "main"), None);
+        explorer.set_disclose(Disclose::Depth(2));
         explorer.step(Step::Into);
         explorer.step(Step::Into);
         assert!(explorer.go_back());
@@ -2218,23 +2335,48 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_cursor_opens_what_it_is_folded_under() {
+    fn the_keys_never_open_what_is_folded() {
         let mut explorer = explorer();
         explorer.step(Step::Into);
         let a = explorer.selected().unwrap();
         assert_eq!(explorer.disclosure().folded(a), 1, "c is folded under a");
+        assert_eq!(explorer.step(Step::Child), None);
+        assert_eq!(at(&explorer), "a", "the cursor stays on what shows");
+        assert_eq!(explorer.disclosure().folded(a), 1, "and c stays folded");
+        explorer.toggle_expanded(a);
         explorer.step(Step::Child);
-        assert_eq!(at(&explorer), "c");
+        assert_eq!(at(&explorer), "c", "opened by hand, it is there to step to");
         assert_eq!(
             explorer.disclosure().number(explorer.selected().unwrap()),
-            Some("1.1"),
-            "and shows, numbered, once the cursor is on it"
+            Some("1.1")
         );
-        explorer.toggle_expanded(a);
-        assert!(
-            !explorer.disclosed(explorer.selected().unwrap()),
-            "folding it again by hand still folds it"
+    }
+
+    #[test]
+    fn the_keys_pass_calls_with_no_node_of_their_own() {
+        // main's first call could run either b or c, which has no node; its second
+        // runs d.
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
+            { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "dyn#0", "text": "handler.run", "targets": [
+                    { "unit": "x:b", "certainty": "exact" }, { "unit": "x:c", "certainty": "exact" } ] },
+                { "key": "d#0", "text": "d", "targets": [ { "unit": "x:d", "certainty": "exact" } ] } ] },
+            { "id": "x:b", "name": "b", "kind": "fn", "role": "invocable" },
+            { "id": "x:c", "name": "c", "kind": "fn", "role": "invocable" },
+            { "id": "x:d", "name": "d", "kind": "fn", "role": "invocable" } ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let mut explorer = Explorer::new(
+            system,
+            Some(UnitId::new("x:main")),
+            JourneyOptions::default(),
         );
+        explorer.step(Step::Into);
+        assert_eq!(at(&explorer), "d", "past the call to one of two");
+        assert_eq!(explorer.step(Step::Previous), None);
+        explorer.step(Step::Back);
+        assert_eq!(at(&explorer), "main");
+        explorer.step(Step::Child);
+        assert_eq!(at(&explorer), "d");
     }
 
     #[test]
@@ -2494,6 +2636,88 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn expanded_a_click_centres_the_cursor_and_keeps_the_journey() {
+        let mut explorer = explorer();
+        let [main, a, b] = ["main", "a", "b"].map(|name| tile(&explorer, name));
+        explorer.set_nucleus(true);
+        explorer.expand_nucleus(true);
+        explorer.ease_nucleus(1.0);
+        let named = |explorer: &Explorer| {
+            let nucleus = explorer.nucleus().unwrap();
+            [main, a, b].map(|t| nucleus.names(t) || nucleus.focus() == Some(t))
+        };
+        let before = named(&explorer);
+        assert_eq!(explorer.nucleus().and_then(Nucleus::centre), Some(main));
+
+        explorer.focus_tile(a, None);
+        explorer.ease_nucleus(1.0);
+        let nucleus = explorer.nucleus().unwrap();
+        assert_eq!(
+            nucleus.focus(),
+            Some(main),
+            "the journey still starts at main"
+        );
+        assert_eq!(nucleus.centre(), Some(a), "the clicked call is the centre");
+        assert_eq!(explorer.cursor_mark(), Some(a), "and the cursor");
+        assert_eq!(named(&explorer), before, "naming the same journey");
+
+        explorer.step(Step::Next);
+        explorer.ease_nucleus(1.0);
+        assert_eq!(
+            explorer.nucleus().and_then(Nucleus::centre),
+            Some(b),
+            "a key centres the same way"
+        );
+        explorer.go_to(explorer.journey().unwrap().root());
+        explorer.ease_nucleus(1.0);
+        assert_eq!(
+            explorer.nucleus().and_then(Nucleus::centre),
+            Some(main),
+            "and a bar"
+        );
+    }
+
+    #[test]
+    fn back_and_esc_put_the_camera_back_where_it_stood() {
+        use crate::camera::OrbitCamera;
+        let mut camera = OrbitCamera::default();
+        let first = camera.pose();
+        camera.pan_to(Vec3::new(40.0, 0.0, 0.0));
+        let second = camera.pose();
+        camera.pan_to(Vec3::new(0.0, 40.0, 0.0));
+        let third = camera.pose();
+        let returned = |explorer: &Explorer| explorer.return_pose().and_then(|(_, p)| p);
+
+        let mut explorer = explorer();
+        let [a, b] = ["a", "b"].map(|name| tile(&explorer, name));
+        explorer.see(first);
+        explorer.focus_tile(a, None);
+        explorer.see(second);
+        assert!(explorer.go_back());
+        assert_eq!(returned(&explorer), Some(first), "Back looks as it looked");
+        assert!(explorer.go_forward());
+        assert_eq!(returned(&explorer), Some(second), "and so does Forward");
+
+        explorer.leave_journey();
+        explorer.see(third);
+        explorer.focus_tile(b, None);
+        explorer.trace_from_focus();
+        explorer.see(first);
+        explorer.leave_journey();
+        assert!(explorer.browsing());
+        assert_eq!(
+            returned(&explorer),
+            Some(third),
+            "Esc goes back to the codebase as it was seen before Enter"
+        );
+        assert_eq!(
+            explorer.selection(),
+            Some(b),
+            "with the cursor's function selected"
+        );
+    }
+
+    #[test]
     fn the_nucleus_names_the_journey_to_the_depth_and_no_more() {
         let mut explorer = explorer();
         let [a, b, c] = ["a", "b", "c"].map(|name| tile(&explorer, name));
@@ -2506,14 +2730,13 @@ pub(crate) mod tests {
         assert_eq!(names(&explorer), [true, true, false], "one level down");
         assert_eq!(explorer.nucleus().unwrap().numbers(b), ["2"]);
 
-        explorer.step(Step::Into);
-        explorer.step(Step::Into);
+        explorer.focus_tile(c, None);
         explorer.ease_nucleus(1.0);
         assert_eq!(explorer.graph_focus(), Some(c), "the cursor on c");
         assert_eq!(
             names(&explorer),
             [true, true, true],
-            "the call the cursor stepped into opens, as its bar does"
+            "the call clicked opens, as its bar does"
         );
         assert!(explorer.nucleus().unwrap().marks(c), "and rings the cursor");
         explorer.toggle_expanded(explorer.stack(explorer.selected().unwrap())[1]);

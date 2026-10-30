@@ -1,7 +1,8 @@
 //! Where the view has been, for going back and forward the way a browser does. Each
 //! entry is the whole view as it was when it was left: the journey and its outcome,
 //! the cursor, how much of it showed, the function clicked, the spotlight and what was
-//! hidden, so going back puts all of it back rather than only the node it was on.
+//! hidden, and where the camera stood, so going back puts all of it back, seen as it
+//! was, rather than only the node it was on.
 //!
 //! One rule says what makes an entry: whatever changes the nucleus's middle or where
 //! the journey starts, opens or leaves a journey, selects a function browsing, or
@@ -15,6 +16,7 @@ use codeviz_core::SpanId;
 use codeviz_ir::UnitId;
 
 use crate::{
+    camera::Pose,
     disclosure::Disclose,
     explorer::{Hidden, Side, ViewMode},
 };
@@ -34,8 +36,6 @@ pub(crate) struct View {
     pub(crate) spotlight: Option<(Side, f32, usize)>,
     /// A node clicked off the journey, the focus while it was.
     pub(crate) aside: Option<usize>,
-    /// The function last clicked, which the nucleus was gathered round.
-    pub(crate) held: Option<usize>,
     /// The sides of the focus hidden, and whether the nucleus's specks were.
     pub(crate) hidden: Hidden,
     pub(crate) specks: bool,
@@ -45,6 +45,19 @@ pub(crate) struct View {
     pub(crate) selection: Option<usize>,
     /// In a journey, whether its outside callers showed.
     pub(crate) outside: bool,
+    /// Where the camera stood.
+    pub(crate) pose: Seen,
+}
+
+/// Where the camera stood at a place in the history: put back with it, but never what
+/// makes two places differ, so moving the camera is no move of its own.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Seen(pub(crate) Option<Pose>);
+
+impl PartialEq for Seen {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// Places left behind, and places gone back from.

@@ -123,13 +123,16 @@ pub(crate) fn state(view: &View) -> Value {
     let nucleus = explorer.nucleus();
     let disclosed = explorer.disclosure();
     let hidden = explorer.hidden();
-    let centre = nucleus.and_then(Nucleus::focus);
+    // Expanded in a journey, the view centres on the cursor; the module in the middle
+    // is the start's still.
+    let centre = nucleus.and_then(Nucleus::centre);
+    let middle = nucleus.and_then(Nucleus::focus);
     json!({
         "mode": if explorer.browsing() { "browse" } else { "journey" },
         "selection": explorer.selection().map(name),
         "focus": explorer.graph_focus().map(name),
         "centre": centre.map(name),
-        "centre_module": centre.and_then(|t| module_of(explorer, t)),
+        "centre_module": middle.and_then(|t| module_of(explorer, t)),
         "nucleus": match nucleus {
             None => "off",
             Some(n) if n.expanded() => "expanded",
@@ -488,8 +491,11 @@ fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
 fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     let mut roles = Vec::new();
     if let Some(n) = explorer.nucleus() {
-        if n.focus() == Some(tile) {
+        if n.centre() == Some(tile) {
             roles.push("centre".to_owned());
+        }
+        if n.focus() == Some(tile) && n.centre() != Some(tile) {
+            roles.push("start".to_owned());
         }
         if n.marks(tile) {
             roles.push("cursor".to_owned());

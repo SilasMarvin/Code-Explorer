@@ -22,6 +22,7 @@ mod history;
 mod idle;
 mod journey_panel;
 mod lens;
+mod notice;
 mod nucleus;
 mod pick;
 mod scene;
