@@ -155,8 +155,61 @@ fn receivers_resolve_through_declared_types() {
             (".work".into(), Some(Certainty::Exact)),
             // `u8` is known and has no `solo` here: not a guess at `B::solo`.
             (".solo".into(), None),
-            // Nothing known about `unknown`: matched by name.
-            (".solo".into(), Some(Certainty::Inferred)),
+            // Nothing known about `unknown`: not a guess at `B::solo` either.
+            (".solo".into(), None),
+        ]
+    );
+}
+
+#[test]
+fn methods_on_values_of_unknown_type_are_not_ours_by_name() {
+    // `Option::map`, egui's `Area::order` and `Vec::len` are not the workspace's
+    // `Explorer::map`, `Store::order` and `Journey::len`.
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Explorer { tiles: Vec<u32> }
+         impl Explorer { pub fn map(&self) -> &Vec<u32> { &self.tiles } }
+         pub struct Store;
+         impl Store { pub fn order(&self, id: u32) -> Option<u32> { Some(id) } }
+         pub struct Journey;
+         impl Journey { pub fn len(&self) -> usize { 0 } pub fn is_empty(&self) -> bool { true } }
+         pub fn panel(names: &[String]) -> usize {
+             egui::Area::new(\"panel\").order(egui::Order::Foreground);
+             let lengths = names.iter().map(|name| name.len());
+             names.len() + lengths.sum::<usize>() + usize::from(names.is_empty())
+         }
+         pub fn real(explorer: &Explorer, store: &Store, journey: &Journey) -> usize {
+             explorer.map();
+             store.order(1);
+             journey.len()
+         }",
+    )]);
+    let resolved: Vec<(String, Vec<String>)> = calls(unit(&document, "app::panel"))
+        .into_iter()
+        .filter(|(_, targets)| !targets.is_empty())
+        .collect();
+    assert_eq!(
+        resolved,
+        [(
+            "{closure#0}".to_owned(),
+            vec!["rust:app::panel::{closure#0}".to_owned()]
+        )],
+        "only the closure handed to `map` resolves"
+    );
+    let closure = unit(&document, "app::panel::{closure#0}");
+    assert_eq!(calls(closure), [(".len".to_owned(), vec![])]);
+    assert_eq!(
+        calls(unit(&document, "app::real")),
+        [
+            (
+                ".map".to_owned(),
+                vec!["rust:app::Explorer::map".to_owned()]
+            ),
+            (
+                ".order".to_owned(),
+                vec!["rust:app::Store::order".to_owned()]
+            ),
+            (".len".to_owned(), vec!["rust:app::Journey::len".to_owned()]),
         ]
     );
 }
@@ -213,6 +266,8 @@ fn receivers_resolve_through_wrappers_patterns_and_closures() {
             call(".span", "Track::span")
         ]
     );
+    // An untyped parameter shadows the capture of the same name.
+    assert_eq!(resolved("app::system::{closure#1}"), []);
 }
 
 #[test]

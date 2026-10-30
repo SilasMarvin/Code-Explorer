@@ -21,8 +21,8 @@ pub(crate) enum Resolve {
     Auto,
     /// rust-analyzer, which type-checks the workspace: exact, but slow.
     RustAnalyzer,
-    /// The syntax alone: fast, but method calls on values of unknown type are matched
-    /// by name.
+    /// The syntax alone: fast, but method calls on values of unknown type are left
+    /// unresolved.
     Syntax,
 }
 

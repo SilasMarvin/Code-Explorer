@@ -245,9 +245,10 @@ impl<'a> Index<'a> {
         receiver: Option<&Receiver>,
     ) -> (Vec<usize>, Certainty) {
         let Some((ty, certainty)) = receiver.and_then(|r| self.receiver_type(caller, r)) else {
-            // Nothing is known about the receiver: match by name.
-            let candidates = self.methods.get(name).map_or(&[][..], Vec::as_slice);
-            return (candidates.to_vec(), Certainty::Inferred);
+            // Nothing is known about the receiver. It is most often a std or dependency
+            // type (`Option::map`, `Vec::len`), so a method of ours with the same name
+            // is a guess that invents calls; leave it unresolved.
+            return (Vec::new(), Certainty::Inferred);
         };
         let type_name = ty.last().map_or("", String::as_str);
         if self.extraction.traits.contains(type_name) {

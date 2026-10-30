@@ -4,9 +4,11 @@
 //! tree. With [`Resolver::RustAnalyzer`], call sites resolve to what rust-analyzer says
 //! they call. Otherwise, and for any call it leaves unresolved, they resolve
 //! syntactically: module paths, `use` imports, `Self`, `self` and declared types are
-//! followed, and method calls on other receivers are matched by name and marked
-//! [`Certainty::Inferred`]. Calls whose final segment is capitalized are treated as
-//! tuple-struct or enum constructors and dropped.
+//! followed, through smart pointers and into closures. A method call on a value whose
+//! type they do not reveal is left unresolved: it is far more often `Option::map` or
+//! `Vec::len` than a method of ours with the same name. A path matched only by its tail
+//! is marked [`Certainty::Inferred`]. Calls whose final segment is capitalized are
+//! treated as tuple-struct or enum constructors and dropped.
 //!
 //! Control flow is mapped onto IR steps: `if`/`match` → branch, loops → loop,
 //! `return`/`Err(..)`/`panic!` → exit, and `?` (or a tail call in a function returning
@@ -42,7 +44,7 @@ pub struct AnalyzeOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Resolver {
     /// From the syntax alone: fast, but a method call on a value of unknown type is
-    /// matched by name.
+    /// left unresolved.
     #[default]
     Syntax,
     /// From `rust-analyzer scip`, which type-checks the workspace: slow, since build
