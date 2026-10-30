@@ -167,6 +167,8 @@ struct Drive {
     /// where each camera drew before.
     offscreen: Option<Handle<Image>>,
     targets: Vec<(Entity, RenderTarget)>,
+    /// Where everything was at the last snap, to say what moved since.
+    placed: Option<crate::truth::Places>,
 }
 
 /// The messages a window sends for a mouse and a keyboard.
@@ -581,6 +583,8 @@ fn words_of(job: &egui::text::LayoutJob) -> String {
 pub(crate) struct Drawn {
     pub(crate) tile: usize,
     pub(crate) at: Vec2,
+    /// Where it is in the world.
+    pub(crate) world: Vec3,
     pub(crate) radius: f32,
     /// Whether it is inside the graph's part of the window, in front of the camera.
     pub(crate) on_screen: bool,
@@ -649,6 +653,7 @@ impl View<'_, '_> {
                 Some(Drawn {
                     tile: tile.0,
                     at,
+                    world,
                     radius: self.screen_radius(world, transform.scale().x * 0.5),
                     on_screen: self.on_screen(at),
                 })
@@ -691,9 +696,16 @@ impl View<'_, '_> {
         Ok(Drawn {
             tile,
             at,
+            world,
             radius: self.screen_radius(world, transform.scale().x * 0.5),
             on_screen: true,
         })
+    }
+
+    /// Where the camera is and which way it faces.
+    pub(crate) fn camera(&self) -> Option<(Vec3, Quat)> {
+        let (_, transform, _) = self.cameras.single().ok()?;
+        Some((transform.translation(), transform.rotation()))
     }
 
     /// Whether the camera was panned or zoomed off the journey's start.
@@ -973,6 +985,11 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
 fn snap(commands: &mut Commands, drive: &mut Drive, view: &View, label: Option<&str>) {
     let name = snap_name(drive.snaps.len() + 1, label);
     let mut scene = crate::truth::scene(view);
+    let placed = crate::truth::Places::of(view);
+    if let Some((since, before)) = drive.snaps.last().zip(drive.placed.as_ref()) {
+        scene["moved"] = crate::truth::moved(&view.explorer, before, &placed, since);
+    }
+    drive.placed = Some(placed);
     scene["snap"] = json!(name);
     scene["state"]["pointer"] = json!(drive.pointer.map(|at| [at.x.round(), at.y.round()]));
     scene["log"] = json!(drive.log);

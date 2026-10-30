@@ -4,7 +4,12 @@
 //! runs, and what a diff changed. A scripted session's snapshots say more: what is
 //! drawn where on screen, by name, and what can be clicked ([`scene`]).
 
-use bevy::{color::Color, math::Vec2};
+use std::collections::HashMap;
+
+use bevy::{
+    color::Color,
+    math::{Quat, Vec2, Vec3},
+};
 use bevy_egui::egui;
 use codeviz_core::Change;
 use serde_json::{Value, json};
@@ -220,6 +225,7 @@ pub(crate) fn scene(view: &View) -> Value {
                 "functions": n.count(cluster),
                 "named": n.opened(cluster),
                 "at": point(at),
+                "world": [round(ball.center.x), round(ball.center.y), round(ball.center.z)],
                 "radius": round(radius),
                 "on_screen": view.on_screen(at),
                 "label": label.map(|i| labels[i].text.clone()),
@@ -243,6 +249,7 @@ pub(crate) fn scene(view: &View) -> Value {
     json!({
         "window": [screen.window.x, screen.window.y],
         "graph_area": rect(screen.graph),
+        "camera": camera(view),
         "state": state(view),
         "nodes": nodes,
         "modules": modules,
@@ -258,6 +265,19 @@ pub(crate) fn scene(view: &View) -> Value {
         "help": help.flatten(),
         "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect) })).collect::<Vec<_>>(),
         "content": of(explorer, view.diff.as_deref()),
+    })
+}
+
+/// Where the camera is in the world, and which way it faces.
+fn camera(view: &View) -> Value {
+    let Some((at, facing)) = view.camera() else {
+        return Value::Null;
+    };
+    let ahead = facing * Vec3::NEG_Z;
+    let fine = |v: f32| (v * 100.0).round() / 100.0;
+    json!({
+        "at": [round(at.x), round(at.y), round(at.z)],
+        "facing": [fine(ahead.x), fine(ahead.y), fine(ahead.z)],
     })
 }
 
@@ -338,23 +358,36 @@ fn mislabelled(
             };
             let own = drawn.iter().find(|d| d.tile == tile)?;
             let mine = gap(label.rect, own);
-            let (other, theirs) = nodes
+            let nearest = nodes
                 .iter()
                 .filter(|d| d.tile != tile)
                 .map(|d| (d, gap(label.rect, d)))
-                .min_by(|a, b| a.1.total_cmp(&b.1))?;
-            (theirs + 1.0 < mine).then(|| {
-                json!({
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            match nearest {
+                Some((other, theirs)) if theirs + 1.0 < mine => Some(json!({
                     "text": label.text,
                     "of": node_name(explorer, tile),
                     "nearer": node_name(explorer, other.tile),
                     "own_gap": round(mine),
                     "nearer_gap": round(theirs),
-                })
-            })
+                })),
+                // Far from every node, its own included, it names nothing a reader
+                // can see.
+                _ if mine > FAR_LABEL => Some(json!({
+                    "text": label.text,
+                    "of": node_name(explorer, tile),
+                    "nearer": Value::Null,
+                    "own_gap": round(mine),
+                })),
+                _ => None,
+            }
         })
         .collect()
 }
+
+/// How far, in points, a function's label may sit from its node before it counts as
+/// naming nothing a reader can see.
+const FAR_LABEL: f32 = 40.0;
 
 /// Gathered round a module, whether a function is drawn only as a faint speck.
 fn speck(explorer: &Explorer, tile: usize) -> bool {
@@ -618,6 +651,107 @@ fn bars(view: &View) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Where everything was drawn at one snap, in the world and on screen, and the camera.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Places {
+    /// Every function drawn, by tile: on screen, and in the world.
+    nodes: HashMap<usize, (Vec2, Vec3)>,
+    /// Every module sphere drawn, by cluster: its middle and radius.
+    modules: HashMap<usize, (Vec3, f32)>,
+    camera: Option<(Vec3, Quat)>,
+}
+
+impl Places {
+    pub(crate) fn of(view: &View) -> Self {
+        let explorer = &*view.explorer;
+        let modules = explorer.nucleus().map_or_else(HashMap::new, |n| {
+            n.balls()
+                .filter(|(_, ball)| n.shows_body(ball.body))
+                .map(|(cluster, ball)| (cluster, (ball.center, ball.radius)))
+                .collect()
+        });
+        Self {
+            nodes: view
+                .drawn()
+                .into_iter()
+                .map(|d| (d.tile, (d.at, d.world)))
+                .collect(),
+            modules,
+            camera: view.camera(),
+        }
+    }
+}
+
+/// Least a function or sphere moves in the world, or on screen in points, to count
+/// as moved.
+const MOVED_WORLD: f32 = 0.01;
+const MOVED_SCREEN: f32 = 0.5;
+
+/// What moved between two snaps: the camera; of the functions drawn in both, how many
+/// moved in the world and on screen, the most, and some by name; of the module
+/// spheres, how many moved or changed size; and how many functions came and went.
+pub(crate) fn moved(explorer: &Explorer, before: &Places, after: &Places, since: &str) -> Value {
+    let camera = match (before.camera, after.camera) {
+        (Some((a, ra)), Some((b, rb))) => json!({
+            "moved": a.distance(b) > MOVED_WORLD || ra.angle_between(rb) > 1e-4,
+            "by": round(a.distance(b)),
+            "turned_degrees": round(ra.angle_between(rb).to_degrees()),
+        }),
+        _ => Value::Null,
+    };
+    let mut shifts: Vec<(usize, f32, f32)> = after
+        .nodes
+        .iter()
+        .filter_map(|(&tile, &(screen, world))| {
+            let &(was_screen, was_world) = before.nodes.get(&tile)?;
+            Some((tile, world.distance(was_world), screen.distance(was_screen)))
+        })
+        .collect();
+    let compared = shifts.len();
+    shifts.retain(|&(_, world, screen)| world > MOVED_WORLD || screen > MOVED_SCREEN);
+    shifts.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.total_cmp(&a.2)));
+    let in_world = shifts.iter().filter(|s| s.1 > MOVED_WORLD).count();
+    let examples: Vec<Value> = shifts
+        .iter()
+        .take(8)
+        .map(|&(tile, world, screen)| {
+            json!({ "name": node_name(explorer, tile), "world": round(world), "screen": round(screen) })
+        })
+        .collect();
+    let mut spheres: Vec<(usize, f32, f32)> = after
+        .modules
+        .iter()
+        .filter_map(|(&cluster, &(center, radius))| {
+            let &(was, was_radius) = before.modules.get(&cluster)?;
+            Some((cluster, center.distance(was), (radius - was_radius).abs()))
+        })
+        .collect();
+    let modules_compared = spheres.len();
+    spheres.retain(|&(_, by, grew)| by > MOVED_WORLD || grew > MOVED_WORLD);
+    json!({
+        "since": since,
+        "camera": camera,
+        "nodes": {
+            "compared": compared,
+            "moved_in_world": in_world,
+            "moved_on_screen": shifts.iter().filter(|s| s.2 > MOVED_SCREEN).count(),
+            "most_world": round(shifts.first().map_or(0.0, |s| s.1)),
+            "most_screen": round(shifts.iter().map(|s| s.2).fold(0.0, f32::max)),
+            "examples": examples,
+        },
+        "modules": {
+            "compared": modules_compared,
+            "moved": spheres.iter().filter(|s| s.1 > MOVED_WORLD).count(),
+            "resized": spheres.iter().filter(|s| s.2 > MOVED_WORLD).count(),
+            "examples": spheres.iter().take(6).map(|&(cluster, by, grew)| json!({
+                "name": explorer.cluster_name(cluster), "by": round(by), "grew": round(grew),
+            })).collect::<Vec<_>>(),
+        },
+        "appeared": after.nodes.keys().filter(|t| !before.nodes.contains_key(t)).count(),
+        "gone": before.nodes.keys().filter(|t| !after.nodes.contains_key(t)).count(),
+    })
 }
 
 fn round(value: f32) -> f32 {
