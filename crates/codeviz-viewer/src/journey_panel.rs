@@ -503,9 +503,14 @@ fn canvas(
             painter.rect_filled(mark.intersect(bar.rect), 0.0, color);
         }
 
-        // What is folded under the bar, as a badge that opens it.
+        // The same number the graph puts on the node, then what changed and the name.
+        let number = disclosed.number(bar.span).unwrap_or_default();
+        let number_width = text_width(&painter, number, 11.5);
+        // What is folded under the bar, as a badge that opens it, where there is room
+        // for its number beside it: a number says which call it is, the badge only
+        // how much more there is.
         let folded = disclosed.folded(bar.span);
-        let badge = (folded > 0 && bar.rect.width() > 40.0).then(|| {
+        let badge = (folded > 0 && bar.rect.width() > 26.0 + number_width + 12.0).then(|| {
             let badge = egui::Rect::from_min_max(
                 egui::pos2(bar.rect.max.x - 26.0, bar.rect.min.y + 3.0),
                 egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
@@ -531,39 +536,33 @@ fn canvas(
                 egui::StrokeKind::Outside,
             );
         }
-        // The same number the graph puts on the node, then what changed and the name;
-        // where the name would not fit, the number alone.
-        let number = disclosed.number(bar.span).unwrap_or_default();
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a small, clamped character count"
-        )]
-        let room = ((bar.rect.width() - if badge.is_some() { 38.0 } else { 10.0 }) / 6.8)
-            .clamp(0.0, 300.0) as usize;
+        // Where the name would not fit whole, it is cut short with an ellipsis, as
+        // measured, never by the bar's edge; where not even a letter of it fits, the
+        // number alone.
+        let free = badge.map_or(bar.rect, |badge| {
+            egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x - 2.0, bar.rect.max.y))
+        });
         let painter = painter.with_clip_rect(bar.rect.intersect(content));
-        if room >= number.len() + 6 {
-            let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
-            let mut label = format!("{sign}{}", explorer.label(bar.span));
-            if !number.is_empty() {
-                label = format!("{number}  {label}");
-            }
-            if let Some(condition) = span.conditions.last() {
-                label = format!("{label}  if {}", condition.arm);
-            }
+        let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
+        let mut label = format!("{sign}{}", explorer.label(bar.span));
+        if !number.is_empty() {
+            label = format!("{number}  {label}");
+        }
+        if let Some(condition) = span.conditions.last() {
+            label = format!("{label}  if {}", condition.arm);
+        }
+        let named = fit_text(&painter, &label, 12.5, free.width() - 10.0)
+            .filter(|fitted| fitted.chars().count() > number.chars().count() + 3);
+        if let Some(named) = named {
             painter.text(
                 bar.rect.left_center() + egui::vec2(5.0, 0.0),
                 egui::Align2::LEFT_CENTER,
-                short(&label, room),
+                named,
                 egui::FontId::proportional(12.5),
                 text,
             );
         } else {
-            // Beside the badge, not under it.
-            let free = badge.map_or(bar.rect, |badge| {
-                egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x, bar.rect.max.y))
-            });
-            if free.width() < 6.5 * number.len() as f32 + 3.0 {
+            if free.width() < number_width + 4.0 {
                 continue;
             }
             painter.text(
@@ -688,6 +687,38 @@ fn canvas(
         cursor: cursor_rect,
         hovered: hovered_rect,
     }
+}
+
+/// How wide `text` is drawn at `size`, in points.
+fn text_width(painter: &egui::Painter, text: &str, size: f32) -> f32 {
+    painter
+        .layout_no_wrap(
+            text.to_owned(),
+            egui::FontId::proportional(size),
+            egui::Color32::WHITE,
+        )
+        .size()
+        .x
+}
+
+/// `text` at `size`, whole if it fits in `width` points, else cut short with an
+/// ellipsis to fit; `None` when not even its first letter does.
+fn fit_text(painter: &egui::Painter, text: &str, size: f32, width: f32) -> Option<String> {
+    if text_width(painter, text, size) <= width {
+        return Some(text.to_owned());
+    }
+    let count = text.chars().count();
+    // The most characters that fit with the ellipsis, found by halving.
+    let (mut fits, mut over) = (0, count);
+    while over - fits > 1 {
+        let mid = usize::midpoint(fits, over);
+        if text_width(painter, &short(text, mid), size) <= width {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    (fits > 0).then(|| short(text, fits))
 }
 
 /// A rectangle's outline in dashes.
