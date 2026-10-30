@@ -1,14 +1,21 @@
 //! What a view means to show, written beside its screenshot so a reader's account of
 //! the picture can be checked against it: the examined function, every disclosed call
 //! with its number, the module it lives in, whether it can fail or only sometimes
-//! runs, and what a diff changed.
+//! runs, and what a diff changed. A scripted session's snapshots say more: what is
+//! drawn where on screen, by name, and what can be clicked ([`scene`]).
 
+use bevy::{color::Color, math::Vec2};
+use bevy_egui::egui;
 use codeviz_core::Change;
 use serde_json::{Value, json};
 
 use crate::{
     diff_view::DiffView,
+    disclosure::Disclose,
+    drive::{Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
+    graph_view::{CALLEE, CALLER, FURTHER, Relation, shown_relation},
+    nucleus::{End, Flow, Nucleus},
     ui::node_name,
 };
 
@@ -99,11 +106,491 @@ fn name_of(change: Change) -> &'static str {
     }
 }
 
+/// The view's state in words: what is focused and centred, the journey's cursor and
+/// depth, what is hidden, which panels show, and where back and forward lead.
+pub(crate) fn state(view: &View) -> Value {
+    let explorer = &*view.explorer;
+    let name = |tile: usize| node_name(explorer, tile);
+    let nucleus = explorer.nucleus();
+    let disclosed = explorer.disclosure();
+    let hidden = explorer.hidden();
+    let centre = nucleus.and_then(Nucleus::focus);
+    json!({
+        "focus": explorer.graph_focus().map(name),
+        "centre": centre.map(name),
+        "centre_module": centre.and_then(|t| module_of(explorer, t)),
+        "nucleus": match nucleus {
+            None => "off",
+            Some(n) if n.expanded() => "expanded",
+            Some(_) => "modules",
+        },
+        "journey_start": explorer.root().map(|u| explorer.unit_name(u)),
+        "cursor": explorer.selected().map(|span| json!({
+            "number": disclosed.number(span),
+            "name": explorer.label(span),
+        })),
+        "aside": explorer.aside().map(name),
+        "depth": match explorer.disclose() {
+            Disclose::Depth(depth) => json!(depth),
+            Disclose::Time => json!("time"),
+        },
+        "hidden": {
+            "callers": hidden.callers,
+            "journey": hidden.callees,
+            "specks": nucleus.is_some_and(Nucleus::specks_hidden),
+        },
+        "spotlight": explorer.spotlight().map(|(side, _)| format!("{side:?}").to_lowercase()),
+        "pointed": explorer.pointed().map(name),
+        "under_pointer": explorer.hovered_tile.map(name),
+        "journey_panel": format!("{:?}", view.panel.mode).to_lowercase(),
+        "side_panel": view.chrome.side,
+        "search": view.chrome.search,
+        "help": view.help.0,
+        "back": explorer.can_go_back(),
+        "forward": explorer.can_go_forward(),
+        "camera_free": view.camera_free(),
+    })
+}
+
+/// What a snapshot shows, by name and place on screen (window points, `[x0, y0, x1,
+/// y1]` for a rectangle): every function drawn with its roles and its label, every
+/// module sphere, every arrow, every label with what it overlaps, the journey's bars,
+/// the buttons, the overlays, any other text, and [`state`] and [`of`] besides.
+pub(crate) fn scene(view: &View) -> Value {
+    let explorer = &*view.explorer;
+    let screen = &*view.screen;
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, screen.window);
+    let near = |a: egui::Rect, b: egui::Rect| {
+        (a.min - b.min).length() < 1.5 && (a.max - b.max).length() < 1.5
+    };
+    // Graph labels are clipped to the graph; the rest is chrome.
+    let (labels, chrome): (Vec<&Painted>, Vec<&Painted>) = screen
+        .texts
+        .iter()
+        .filter(|t| t.opacity > 0.05)
+        .partition(|t| near(t.clip, screen.graph));
+    let drawn = view.drawn();
+    let nucleus = explorer.nucleus();
+    let balls: Vec<(usize, Vec2, f32)> = nucleus.map_or_else(Vec::new, |n| {
+        n.balls()
+            .filter_map(|(cluster, ball)| {
+                let at = view.to_screen(ball.center)?;
+                Some((cluster, at, view.screen_radius(ball.center, ball.radius)))
+            })
+            .collect()
+    });
+    let named = match_labels(explorer, &labels, &drawn, &balls);
+    let label_of = |what: Named| named.iter().position(|&n| n == Some(what));
+
+    let nodes: Vec<Value> = drawn
+        .iter()
+        .map(|d| {
+            let label = label_of(Named::Node(d.tile));
+            json!({
+                "name": node_name(explorer, d.tile),
+                "unit": explorer.tile_unit(d.tile).map(ToString::to_string),
+                "module": module_of(explorer, d.tile),
+                "roles": roles(explorer, d.tile),
+                "numbers": numbers(explorer, d.tile),
+                "at": point(d.at),
+                "radius": round(d.radius),
+                "on_screen": d.on_screen,
+                "label": label.map(|i| labels[i].text.clone()),
+                "label_rect": label.map(|i| rect(labels[i].rect)),
+                "crowded_by": crowding(explorer, &drawn, d),
+            })
+        })
+        .collect();
+    let modules: Vec<Value> = balls
+        .iter()
+        .filter_map(|&(cluster, at, radius)| {
+            let n = nucleus?;
+            let ball = n.ball(cluster)?;
+            let label = label_of(Named::Module(cluster));
+            Some(json!({
+                "name": explorer.cluster_name(cluster),
+                "body": format!("{:?}", ball.body).to_lowercase(),
+                "functions": n.count(cluster),
+                "named": n.opened(cluster),
+                "at": point(at),
+                "radius": round(radius),
+                "on_screen": view.on_screen(at),
+                "label": label.map(|i| labels[i].text.clone()),
+            }))
+        })
+        .collect();
+    let overlays: Vec<Value> = screen
+        .overlays
+        .iter()
+        .map(|(name, r)| json!({ "name": name, "rect": rect(*r), "clipped": !window.contains_rect(*r) }))
+        .collect();
+    let label_list = label_entries(explorer, screen, &labels, &named);
+    let help = view.help.0.then(|| {
+        screen
+            .overlays
+            .iter()
+            .find(|(name, _)| name.starts_with("key help"))
+            .map(|(_, r)| json!({ "rect": rect(*r), "clipped": !window.contains_rect(*r) }))
+    });
+    json!({
+        "window": [screen.window.x, screen.window.y],
+        "graph_area": rect(screen.graph),
+        "state": state(view),
+        "nodes": nodes,
+        "modules": modules,
+        "arrows": arrows(view, &drawn),
+        "module_arrows": nucleus.map_or_else(Vec::new, |n| module_arrows(explorer, n)),
+        "labels": label_list,
+        "bars": bars(view),
+        "buttons": screen.widgets.iter().map(|w| json!({
+            "text": w.text, "rect": rect(w.rect), "enabled": w.enabled, "cut_off": w.cut_off(),
+        })).collect::<Vec<_>>(),
+        "overlays": overlays,
+        "help": help.flatten(),
+        "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect) })).collect::<Vec<_>>(),
+        "content": of(explorer, view.diff.as_deref()),
+    })
+}
+
+/// Every label on the graph: what it says and names, where, which others it
+/// overlaps, whether it is cut off, and what lies over it.
+fn label_entries(
+    explorer: &Explorer,
+    screen: &Screen,
+    labels: &[&Painted],
+    named: &[Option<Named>],
+) -> Vec<Value> {
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, screen.window);
+    labels
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let crossed: Vec<usize> = labels
+                .iter()
+                .enumerate()
+                .filter(|&(other_index, other)| {
+                    other_index != index && other.rect.shrink(1.0).intersects(text.rect.shrink(1.0))
+                })
+                .map(|(other_index, _)| other_index)
+                .collect();
+            let under: Vec<&str> = screen
+                .overlays
+                .iter()
+                .filter(|(_, r)| r.intersects(text.rect))
+                .map(|(name, _)| name.as_str())
+                .collect();
+            let (kind, of) = match named[index] {
+                Some(Named::Node(tile)) => ("function", Some(node_name(explorer, tile))),
+                Some(Named::Module(cluster)) => ("module", Some(explorer.cluster_name(cluster))),
+                None => ("other", None),
+            };
+            json!({
+                "index": index,
+                "text": text.text,
+                "rect": rect(text.rect),
+                "names": kind,
+                "of": of,
+                "overlaps": crossed,
+                "cut_off": !text.clip.contains_rect(text.rect) || !window.contains_rect(text.rect),
+                "under": under,
+                "opacity": round(text.opacity),
+            })
+        })
+        .collect()
+}
+
+/// What a label on the graph names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Named {
+    Node(usize),
+    Module(usize),
+}
+
+/// Which label names which function or module: the nearest label that carries its
+/// name, each label taken once, nearest pairs first.
+fn match_labels(
+    explorer: &Explorer,
+    labels: &[&Painted],
+    drawn: &[Drawn],
+    balls: &[(usize, Vec2, f32)],
+) -> Vec<Option<Named>> {
+    // How far a label may sit from what it names, past its edge: the placer nudges a
+    // crowded one a few rows along.
+    const REACH: f32 = 160.0;
+    let mut pairs: Vec<(f32, usize, Named)> = Vec::new();
+    let mut consider = |what: Named, name: &str, at: Vec2, edge: f32| {
+        for (i, label) in labels.iter().enumerate() {
+            if !carries(&label.text, name) {
+                continue;
+            }
+            let distance = label.rect.distance_to_pos(egui::pos2(at.x, at.y));
+            if distance <= edge + REACH {
+                pairs.push((distance, i, what));
+            }
+        }
+    };
+    for d in drawn {
+        consider(
+            Named::Node(d.tile),
+            &node_name(explorer, d.tile),
+            d.at,
+            d.radius,
+        );
+    }
+    for &(cluster, at, radius) in balls {
+        let name = explorer.cluster_name(cluster).to_uppercase();
+        consider(Named::Module(cluster), &name, at, radius);
+    }
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut named = vec![None; labels.len()];
+    let mut taken = Vec::new();
+    for (_, label, what) in pairs {
+        if named[label].is_none() && !taken.contains(&what) {
+            named[label] = Some(what);
+            taken.push(what);
+        }
+    }
+    named
+}
+
+/// Whether `text` carries `name` as a whole word.
+fn carries(text: &str, name: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    !name.is_empty()
+        && text.match_indices(name).any(|(at, _)| {
+            let before = text[..at].chars().next_back();
+            let after = text[at + name.len()..].chars().next();
+            !before.is_some_and(word) && !after.is_some_and(word)
+        })
+}
+
+/// The other functions drawn so near one that they cover half of it or more, but for
+/// specks: two calls can land on one spot and read as one node.
+fn crowding(explorer: &Explorer, drawn: &[Drawn], node: &Drawn) -> Vec<String> {
+    let speck = |tile: usize| {
+        explorer
+            .nucleus()
+            .is_some_and(|n| !n.lit(tile) && n.focus() != Some(tile))
+    };
+    if speck(node.tile) {
+        return Vec::new();
+    }
+    drawn
+        .iter()
+        .filter(|other| other.tile != node.tile && !speck(other.tile))
+        .filter(|other| other.at.distance(node.at) < node.radius.max(other.radius) * 0.5)
+        .map(|other| node_name(explorer, other.tile))
+        .collect()
+}
+
+fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
+    explorer
+        .graph()
+        .cluster(tile)
+        .map(|cluster| explorer.cluster_name(cluster))
+}
+
+/// What a drawn function is to the view: the centre, the journey's cursor, a caller,
+/// a call of the journey so many levels down, under the pointer, an end of the call
+/// the pointer's function makes or takes; else, gathered round a module, a speck.
+fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
+    let mut roles = Vec::new();
+    if let Some(n) = explorer.nucleus() {
+        if n.focus() == Some(tile) {
+            roles.push("centre".to_owned());
+        }
+        if n.marks(tile) {
+            roles.push("cursor".to_owned());
+        }
+        match n.level(tile) {
+            Some(-1) => roles.push("caller".to_owned()),
+            Some(level) if level > 0 => roles.push(format!("journey level {level}")),
+            _ => {}
+        }
+        if n.hovered() == Some(tile) {
+            roles.push("hovered".to_owned());
+        }
+        if n.touched(tile) {
+            roles.push("end of hovered's call".to_owned());
+        }
+        if roles.is_empty() {
+            roles.push("speck".to_owned());
+        }
+        return roles;
+    }
+    if explorer.lit_focus() == Some(tile) {
+        roles.push("centre".to_owned());
+    }
+    match explorer
+        .reach()
+        .and_then(|r| shown_relation(explorer, r, tile))
+    {
+        Some(Relation::Upstream(hops)) => roles.push(format!("caller, {hops} up")),
+        Some(Relation::Downstream(hops)) => roles.push(format!("callee, {hops} down")),
+        None => {}
+    }
+    if explorer.disclosure().tiles().contains_key(&tile) {
+        roles.push("journey".to_owned());
+    }
+    if explorer.hovered_tile == Some(tile) {
+        roles.push("hovered".to_owned());
+    }
+    roles
+}
+
+/// A function's numbers in the open journey.
+fn numbers(explorer: &Explorer, tile: usize) -> Vec<String> {
+    match explorer.nucleus() {
+        Some(n) => n.numbers(tile).to_vec(),
+        None => explorer
+            .disclosure()
+            .tiles()
+            .get(&tile)
+            .cloned()
+            .unwrap_or_default(),
+    }
+}
+
+/// What an arrow's color says.
+fn flow_role(flow: Flow) -> String {
+    match flow {
+        Flow::Into => "calls the centre (violet)".to_owned(),
+        Flow::Journey(1) => "the centre's call (blue)".to_owned(),
+        Flow::Journey(level) => format!("journey level {level} (paler blue)"),
+    }
+}
+
+/// Every call drawn as an arrow, function to function: gathered round a module, those
+/// it names and those of the function under the pointer; laid flat, the calls into and
+/// out of the focus between functions drawn.
+fn arrows(view: &View, drawn: &[Drawn]) -> Vec<Value> {
+    let explorer = &*view.explorer;
+    let name = |tile: usize| node_name(explorer, tile);
+    let Some(n) = explorer.nucleus() else {
+        let Some(focus) = explorer.lit_focus() else {
+            return Vec::new();
+        };
+        let hidden = explorer.hidden();
+        let shown = |tile: usize| drawn.iter().any(|d| d.tile == tile);
+        return explorer
+            .graph()
+            .calls
+            .iter()
+            .filter(|&&(from, to)| from != to && shown(from) && shown(to))
+            .filter_map(|&(from, to)| {
+                let (role, color) = if to == focus && !hidden.callers {
+                    ("calls the focus (violet)", CALLER)
+                } else if from == focus && !hidden.callees {
+                    ("the focus's call (blue)", CALLEE)
+                } else {
+                    return None;
+                };
+                Some(json!({ "from": name(from), "to": name(to), "role": role, "color": hex(color) }))
+            })
+            .collect();
+    };
+    let end = |end: End| match end {
+        End::Function(tile) => name(tile),
+        End::Module(cluster) => format!("module {}", explorer.cluster_name(cluster)),
+    };
+    n.links()
+        .iter()
+        .map(|link| {
+            json!({
+                "from": name(link.from),
+                "to": name(link.to),
+                "role": flow_role(link.flow),
+                "color": hex(link.flow.color()),
+            })
+        })
+        .chain(n.touches().iter().map(|touch| {
+            json!({
+                "from": end(touch.from),
+                "to": end(touch.to),
+                "role": "a call of the function under the pointer (pale)",
+                "color": hex(FURTHER),
+            })
+        }))
+        .collect()
+}
+
+/// The thick arrows between module spheres, each carrying every call one way.
+fn module_arrows(explorer: &Explorer, n: &Nucleus) -> Vec<Value> {
+    n.tubes()
+        .iter()
+        .map(|tube| {
+            json!({
+                "from": explorer.cluster_name(tube.from),
+                "to": explorer.cluster_name(tube.to),
+                "calls": tube.calls,
+                "role": flow_role(tube.flow),
+            })
+        })
+        .collect()
+}
+
+/// The journey's bars drawn in its panel, by number.
+fn bars(view: &View) -> Vec<Value> {
+    let explorer = &*view.explorer;
+    let Some(drawn) = &view.screen.bars else {
+        return Vec::new();
+    };
+    let disclosed = explorer.disclosure();
+    let cursor = explorer.selected();
+    let track = explorer.track();
+    drawn
+        .bars
+        .iter()
+        .filter(|(_, r)| r.intersects(drawn.content))
+        .map(|&(span, r)| {
+            let tile = track.unit_id(span).and_then(|u| explorer.map().tile_of(u));
+            json!({
+                "number": disclosed.number(span),
+                "name": explorer.label(span),
+                "rect": rect(r),
+                "cursor": cursor == Some(span),
+                "lit": tile.is_some() && tile == explorer.hovered_tile,
+                "cut_off": !drawn.content.contains_rect(r),
+            })
+        })
+        .collect()
+}
+
+fn round(value: f32) -> f32 {
+    (value * 10.0).round() / 10.0
+}
+
+fn point(at: Vec2) -> Value {
+    json!([round(at.x), round(at.y)])
+}
+
+fn rect(r: egui::Rect) -> Value {
+    json!([
+        round(r.min.x),
+        round(r.min.y),
+        round(r.max.x),
+        round(r.max.y)
+    ])
+}
+
+fn hex(color: Color) -> String {
+    color.to_srgba().to_hex()
+}
+
 #[cfg(test)]
 mod tests {
     use codeviz_ir::UnitId;
 
     use super::*;
+
+    #[test]
+    fn a_label_carries_a_name_only_as_a_whole_word() {
+        assert!(carries(" 1.2  spotlit can fail", "spotlit"));
+        assert!(carries("EXPLORER 3 of 40", "EXPLORER"));
+        assert!(!carries("spotlit_more", "spotlit"));
+        assert!(!carries("respotlit", "spotlit"));
+        assert!(!carries("anything", ""));
+    }
 
     #[test]
     fn lists_the_disclosed_calls_in_order_with_what_is_folded() {

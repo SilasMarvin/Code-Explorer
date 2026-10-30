@@ -15,6 +15,7 @@ mod capture;
 mod depth_meter;
 mod diff_view;
 mod disclosure;
+mod drive;
 mod explorer;
 mod graph_view;
 mod history;
@@ -23,6 +24,7 @@ mod journey_panel;
 mod lens;
 mod nucleus;
 mod scene;
+mod script;
 mod source_diff;
 mod truth;
 mod ui;
@@ -51,6 +53,9 @@ pub struct Viewer {
     screenshot: Option<PathBuf>,
     /// Keys a screenshot presses first, once the scene settles.
     keys: Vec<capture::Press>,
+    /// A session's steps, each with its line; with one, the screenshot path is the
+    /// directory its snapshots go in.
+    script: Option<Vec<(String, script::Step)>>,
     scenario: Option<usize>,
     step: usize,
     panel: PanelMode,
@@ -70,6 +75,27 @@ pub struct Viewer {
     /// What the third dimension shows at first.
     z: ZView,
     diff: Option<Comparison>,
+}
+
+/// A session's steps, read from a script a step per line: `key shift+i`, `click
+/// Explorer::spotlit`, `hover`, `doubleclick`, `bar 1.2`, `button close`, `drag 100 0`,
+/// `scroll 2`, `wait 300`, `snap label`.
+#[derive(Debug)]
+pub struct Script(Vec<(String, script::Step)>);
+
+impl Script {
+    /// Reads `text`, looking each function up by name with `find`; one not found
+    /// fails its step when it comes, not the script.
+    ///
+    /// # Errors
+    ///
+    /// Names the first line it cannot read.
+    pub fn parse(
+        text: &str,
+        find: &dyn Fn(&str) -> Result<UnitId, String>,
+    ) -> Result<Self, String> {
+        script::parse(text, find).map(Self)
+    }
 }
 
 /// What the third dimension shows.
@@ -103,6 +129,7 @@ impl Viewer {
             title: "codeviz".to_owned(),
             screenshot: None,
             keys: Vec::new(),
+            script: None,
             scenario: None,
             step: 0,
             panel: PanelMode::default(),
@@ -311,6 +338,15 @@ impl Viewer {
         Ok(self)
     }
 
+    /// Runs a session in one window instead of taking one screenshot: the script's
+    /// steps, each through the input a person would give, with the view let settle
+    /// after each. The screenshot path is the directory the snapshots go in.
+    #[must_use]
+    pub fn with_script(mut self, script: Script) -> Self {
+        self.script = Some(script.0);
+        self
+    }
+
     fn explorer(&mut self) -> Explorer {
         let mut explorer = Explorer::with_layout(
             std::mem::take(&mut self.system),
@@ -410,7 +446,13 @@ impl Viewer {
         if let Some(diff) = diff {
             app.insert_resource(diff);
         }
-        if let Some(path) = self.screenshot {
+        if let (Some(dir), Some(steps)) = (&self.screenshot, self.script) {
+            // A session waits for the view to rest, so it keeps drawing.
+            app.add_plugins(drive::DrivePlugin {
+                dir: dir.clone(),
+                steps,
+            });
+        } else if let Some(path) = self.screenshot {
             // A screenshot waits frames out, so it keeps drawing.
             app.add_plugins(capture::CapturePlugin {
                 path,

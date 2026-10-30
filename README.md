@@ -171,6 +171,14 @@ function, so a scenario can show a view you reach by hand. From that, `readabili
 nesting, folding, failures, conditions, callers, which module a call lives in, changes)
 and grades what readers answer, by aspect, against the previous run.
 
+`--script FILE --screenshot DIR` runs a whole session in one window instead: a step a
+line (`key shift+i`, `click UNIT`, `hover UNIT`, `doubleclick UNIT`, `bar 1.2`, `button
+TEXT`, `drag DX DY`, `scroll N`, `wait MS`, `snap LABEL`), each sent as a person's mouse
+and keyboard would send it, the view let settle after each. Every `snap` writes
+`NN-label.png` and `NN-label.json`, which says what is drawn where on screen by name:
+functions with their roles and labels, module spheres, arrows, label overlaps, journey
+bars, buttons and overlays. `session.json` logs how each step went.
+
 The `readability` workflow (`.claude/workflows/readability.js`) does the whole loop with
 agents as readers: render, a Sonnet and a Haiku reader per scenario who see only the
 image, then the report. `mise run readability-render` and `mise run readability-grade` run the two
