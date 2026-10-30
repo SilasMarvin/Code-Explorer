@@ -2266,9 +2266,11 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
         if explorer.aside().is_some() {
             let chip = egui::Button::new(
                 egui::RichText::new("not on this journey · Enter starts one here")
-                    .small()
-                    .color(MUTED),
+                    .size(13.0)
+                    .color(egui::Color32::WHITE),
             )
+            .fill(egui::Color32::from_rgb(70, 52, 104))
+            .stroke(egui::Stroke::new(1.0, CALLER_TEXT))
             .corner_radius(8.0);
             if ui
                 .add(chip)
@@ -2753,8 +2755,8 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
         lengths[shortest] += keys.len() + 2;
     }
     egui::Area::new("key_help".into())
-        .pivot(egui::Align2::CENTER_TOP)
-        .fixed_pos(egui::pos2(area.center().x, area.min.y + margin))
+        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(egui::pos2(area.max.x - margin, area.min.y + margin))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
@@ -2777,34 +2779,36 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                             }
                         });
                     });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        for (color, what) in color_key(view.browsing) {
-                            ui.label(egui::RichText::new("●").color(color));
-                            ui.label(egui::RichText::new(what).size(12.0).color(MUTED));
-                            ui.add_space(8.0);
-                        }
-                    });
-                    ui.label(
-                        egui::RichText::new(if view.browsing {
-                            "Browsing, a click selects a function and moves nothing. Enter \
-                             opens its journey."
-                        } else {
-                            "In a journey, the view gathers round where it starts and shows \
-                             only the journey; a click moves its cursor and nothing else. Esc \
-                             leaves it for browsing."
-                        })
-                        .size(12.0)
-                        .color(egui::Color32::WHITE),
-                    );
-                    for line in reading(view.browsing) {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(*line).size(12.0).color(MUTED))
-                                .wrap(),
+                    let body = |ui: &mut egui::Ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            for (color, what) in color_key(view.browsing) {
+                                ui.label(egui::RichText::new("●").color(color));
+                                ui.label(egui::RichText::new(what).size(12.0).color(MUTED));
+                                ui.add_space(8.0);
+                            }
+                        });
+                        ui.label(
+                            egui::RichText::new(if view.browsing {
+                                "Browsing, a click selects a function and moves nothing. \
+                                 Enter opens its journey."
+                            } else {
+                                "In a journey, the view gathers round where it starts and \
+                                 shows only the journey; a click moves its cursor and nothing \
+                                 else. Esc leaves it for browsing."
+                            })
+                            .size(12.0)
+                            .color(egui::Color32::WHITE),
                         );
-                    }
-                    ui.add_space(6.0);
-                    let keys = |ui: &mut egui::Ui| {
+                        for line in reading(view.browsing) {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(*line).size(12.0).color(MUTED),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        ui.add_space(6.0);
                         ui.columns(columns, |cols| {
                             for (col, indices) in cols.iter_mut().zip(&placed) {
                                 for &index in indices {
@@ -2817,12 +2821,13 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                     // Whole where the window has room, so no section is ever cut off at
                     // a height measured the frame before; scrolling where it has not.
                     if height >= ROOM_FOR_KEYS {
-                        keys(ui);
+                        body(ui);
                     } else {
                         egui::ScrollArea::vertical()
-                            .max_height(height - 70.0)
+                            .max_height(height - 50.0)
+                            .min_scrolled_height(height - 50.0)
                             .auto_shrink([false, true])
-                            .show(ui, keys);
+                            .show(ui, body);
                     }
                 });
         });
