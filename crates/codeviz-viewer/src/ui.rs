@@ -235,14 +235,19 @@ fn draw_ui(
             );
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
-            legend(ctx, clear, beside(graph_area, panel_area), diff.is_some());
+            let showing = Showing::of(&explorer, diff.is_some());
+            legend(ctx, clear, beside(graph_area, panel_area), showing);
         }
         if orbit.free && !chrome.bare {
             camera_free(ctx, graph_area, &explorer, &mut orbit);
         }
         if help.0 {
-            let gathered = explorer.nucleus().is_some();
-            key_help(ctx, graph_area, &mut help.0, gathered, diff.is_some());
+            key_help(
+                ctx,
+                graph_area,
+                &mut help.0,
+                Showing::of(&explorer, diff.is_some()),
+            );
         }
         if let Some(area) = panel_area {
             let tethers =
@@ -2187,8 +2192,8 @@ fn camera_free(
 }
 
 /// In a diff, what a node's fill says. A hint at the keys along `foot`.
-fn legend(ctx: &egui::Context, area: egui::Rect, foot: egui::Rect, diffing: bool) {
-    if diffing {
+fn legend(ctx: &egui::Context, area: egui::Rect, foot: egui::Rect, view: Showing) {
+    if view.diffing {
         egui::Area::new("legend".into())
             .pivot(egui::Align2::LEFT_BOTTOM)
             .fixed_pos(egui::pos2(area.min.x + 12.0, area.max.y - 30.0))
@@ -2221,8 +2226,13 @@ fn legend(ctx: &egui::Context, area: egui::Rect, foot: egui::Rect, diffing: bool
         .text(
             egui::pos2(foot.min.x + 12.0, foot.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
-            "click a node to focus it · Enter follows it · I callers · O calls \
-             · , . less or more of the journey · Backspace back · / search · S panel · H keys",
+            if view.browsing {
+                "Browsing · click a function to select it, nothing moves · Enter opens its \
+                 journey · I callers · O calls · Backspace back · / search · R whole map · H keys"
+            } else {
+                "Journey · click a call to move the cursor there · ] [ ↓ ↑ ← → step · , . \
+                 less or more · I calls in from outside · Esc leaves for browsing · H keys"
+            },
             egui::FontId::proportional(12.0),
             MUTED,
         );
@@ -2235,25 +2245,57 @@ const CLOSED_NAMED: usize = 16;
 /// placed after every other, so it never moves one.
 const POINTED: u8 = 7;
 
+/// What the view open is, for the keys that apply in it.
+#[derive(Debug, Clone, Copy)]
+struct Showing {
+    /// Gathered into spheres (Z), rather than laid flat.
+    gathered: bool,
+    diffing: bool,
+    /// Browsing, rather than in a journey.
+    browsing: bool,
+}
+
 /// Which view a key does something in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum When {
     Always,
     /// The graph laid flat.
     Flat,
-    /// The graph gathered round the focus's module (Z).
+    /// The graph gathered into spheres (Z).
     Nucleus,
     /// A diff open over the graph.
     Diff,
+    /// No journey open.
+    Browse,
+    /// A journey open.
+    Journey,
+    /// A journey open, gathered round its start.
+    JourneyNucleus,
+    /// Browsing, gathered into spheres.
+    BrowseNucleus,
+}
+
+impl Showing {
+    fn of(explorer: &Explorer, diffing: bool) -> Self {
+        Self {
+            gathered: explorer.nucleus().is_some(),
+            diffing,
+            browsing: explorer.browsing(),
+        }
+    }
 }
 
 impl When {
-    fn applies(self, gathered: bool, diffing: bool) -> bool {
+    fn applies(self, view: Showing) -> bool {
         match self {
             Self::Always => true,
-            Self::Flat => !gathered,
-            Self::Nucleus => gathered,
-            Self::Diff => diffing,
+            Self::Flat => !view.gathered,
+            Self::Nucleus => view.gathered,
+            Self::Diff => view.diffing,
+            Self::Browse => view.browsing,
+            Self::Journey => !view.browsing,
+            Self::JourneyNucleus => !view.browsing && view.gathered,
+            Self::BrowseNucleus => view.browsing && view.gathered,
         }
     }
 }
@@ -2265,32 +2307,91 @@ type KeyGroup = (&'static str, &'static [(&'static str, &'static str, When)]);
 /// applies in; H lists those that apply to the view open.
 const KEYS: [KeyGroup; 8] = [
     (
+        "Browse and journey",
+        &[
+            (
+                "click",
+                "select a function where it sits: its callers and calls light up; nothing moves",
+                When::Browse,
+            ),
+            (
+                "click",
+                "a function the journey runs: move the cursor there (the run nearest it); \
+                 nothing moves",
+                When::Journey,
+            ),
+            (
+                "click",
+                "any other function: select it in place, with its calls into the journey",
+                When::Journey,
+            ),
+            (
+                "click a name",
+                "as a click on its function; on the journey, to the call its number names",
+                When::Always,
+            ),
+            (
+                "Enter",
+                "open the journey of the function selected",
+                When::Browse,
+            ),
+            (
+                "Enter",
+                "start a journey at the function selected, or at the cursor",
+                When::Journey,
+            ),
+            (
+                "Shift click",
+                "open the journey of a function at once, as deep as now",
+                When::Always,
+            ),
+            (
+                "Esc",
+                "close search, this list, the spotlight, a function selected off the \
+                 journey; then leave the journey for browsing",
+                When::Journey,
+            ),
+            (
+                "Esc",
+                "close search, this list, the spotlight, the side panel",
+                When::Browse,
+            ),
+            (
+                "Backspace",
+                "back: the selection before, or across into the journey before (← Back)",
+                When::Always,
+            ),
+            ("Shift Backspace", "forward again (Forward →)", When::Always),
+            ("/", "search for a function", When::Always),
+        ],
+    ),
+    (
         "Journey cursor",
         &[
             (
                 "↓  ↑",
                 "into the first call it makes / out to its caller",
-                When::Always,
+                When::Journey,
             ),
             (
                 "←  →",
                 "previous / next call by the same caller",
-                When::Always,
+                When::Journey,
             ),
             (
                 "[  ]",
                 "back / forward one call, in the order they run",
-                When::Always,
+                When::Journey,
             ),
-            ("Shift ]", "step over this call's own calls", When::Always),
+            ("Shift ]", "step over this call's own calls", When::Journey),
             (
                 "Shift ↑",
                 "step out to what runs after its caller",
-                When::Always,
+                When::Journey,
             ),
-            ("1 – 9", "to the call with that number", When::Always),
-            ("click a bar", "to that call", When::Always),
-            ("Space", "play forward through the journey", When::Always),
+            ("1 – 9", "to the call with that number", When::Journey),
+            ("click a bar", "to that call", When::Journey),
+            ("Space", "play forward through the journey", When::Journey),
         ],
     ),
     (
@@ -2299,103 +2400,53 @@ const KEYS: [KeyGroup; 8] = [
             (
                 ",  .",
                 "show a level less / more of the journey",
-                When::Always,
+                When::Journey,
             ),
             (
                 "V",
                 "show calls by level / only as far as the cursor ran",
-                When::Always,
-            ),
-        ],
-    ),
-    (
-        "Focus and going back",
-        &[
-            (
-                "click",
-                "focus a function; the cursor moves there if the journey runs it",
-                When::Flat,
-            ),
-            (
-                "click",
-                "make a function the middle; the cursor moves there if the journey runs it",
-                When::Nucleus,
-            ),
-            ("click a name", "as a click on its function", When::Always),
-            (
-                "Shift click",
-                "start the journey at a function",
-                When::Always,
-            ),
-            ("Enter", "start the journey at the focus", When::Always),
-            (
-                "Backspace",
-                "back before the last click, bar, Enter or walk with the keys (← Back)",
-                When::Always,
-            ),
-            ("Shift Backspace", "forward again (Forward →)", When::Always),
-            ("/", "search for a function", When::Always),
-            (
-                "Esc",
-                "close search, this list, the spotlight, a focus off the journey, the side panel",
-                When::Always,
+                When::Journey,
             ),
         ],
     ),
     (
         "Calls in and out",
         &[
+            ("I", "ring everything that calls the focus", When::Browse),
+            ("I", "ring everything that calls the focus", When::Flat),
             (
                 "I",
-                "ring everything that calls the focus, and frame it",
+                "bring in every function off the journey that calls one on it, pale",
+                When::JourneyNucleus,
+            ),
+            ("O", "ring everything the focus calls", When::Always),
+            (
+                "Shift I",
+                "hide / show the callers (violet); the top bar says when they are hidden",
                 When::Always,
             ),
             (
-                "O",
-                "ring everything the focus calls, and frame it",
+                "Shift O",
+                "hide / show the calls out (blue, amber)",
                 When::Always,
-            ),
-            (
-                "Shift I",
-                "hide / show the callers (violet) and further up",
-                When::Flat,
-            ),
-            (
-                "Shift O",
-                "hide / show the calls out (blue, amber) and further down",
-                When::Flat,
-            ),
-            (
-                "Shift I",
-                "hide / show the calls into the middle (violet)",
-                When::Nucleus,
-            ),
-            (
-                "Shift O",
-                "hide / show the journey (blue, amber)",
-                When::Nucleus,
             ),
         ],
     ),
     (
-        "Nucleus",
+        "Spheres",
         &[
-            ("Z", "gather the graph round the focus's module", When::Flat),
+            ("Z", "gather the graph into module spheres", When::Flat),
             ("Z", "lay the graph flat again", When::Nucleus),
             (
                 "X, dbl-click",
-                "expand the middle's module / shrink it back",
-                When::Always,
+                "expand the start's module / shrink it back; inside, a click centres it",
+                When::Journey,
             ),
-            (
-                "N",
-                "hide / show the unnamed specks in the middle's module",
-                When::Nucleus,
-            ),
+            ("N", "hide / show the unnamed specks", When::Nucleus),
             (
                 "point",
                 "expanded: rest on a function to draw its own calls, pale",
-                When::Nucleus,
+                When::JourneyNucleus,
             ),
         ],
     ),
@@ -2431,20 +2482,29 @@ const KEYS: [KeyGroup; 8] = [
             ),
             ("Q  E", "turn an eighth of the way round", When::Always),
             ("F", "face the journey's start again", When::Flat),
-            ("F", "back to the usual three-quarter view", When::Nucleus),
+            (
+                "F",
+                "back to the usual view, round what is lit",
+                When::Nucleus,
+            ),
             ("R", "frame the whole graph", When::Flat),
             (
                 "R",
-                "frame the middle, open modules and cursor from this angle",
-                When::Nucleus,
+                "frame the whole codebase from this angle",
+                When::BrowseNucleus,
+            ),
+            (
+                "R",
+                "frame the journey from this angle",
+                When::JourneyNucleus,
             ),
         ],
     ),
     (
         "Layout",
         &[
-            ("J", "show / hide the journey", When::Always),
-            ("M", "swap graph and journey", When::Always),
+            ("J", "show / hide the journey", When::Journey),
+            ("M", "swap graph and journey", When::Journey),
             ("S", "show / hide the side panel", When::Always),
             ("H", "this list", When::Always),
         ],
@@ -2452,16 +2512,20 @@ const KEYS: [KeyGroup; 8] = [
 ];
 
 /// What each color means, as the help leads with it.
-fn color_key(gathered: bool) -> [(egui::Color32, &'static str); 5] {
-    [
-        (
-            egui::Color32::WHITE,
-            if gathered { "the middle" } else { "the focus" },
-        ),
+fn color_key(browsing: bool) -> Vec<(egui::Color32, &'static str)> {
+    if browsing {
+        return vec![
+            (egui::Color32::WHITE, "the function selected"),
+            (egui_color(CALLER), "calls into it"),
+            (egui_color(CALLEE), "its own calls out"),
+        ];
+    }
+    vec![
+        (egui::Color32::WHITE, "the journey's start"),
         (egui_color(CALLER), "calls into it"),
-        (egui_color(CALLEE), "its own calls out"),
-        (egui_color(DEEPER), "journey calls further down"),
-        (egui_color(CURSOR), "journey cursor, off the middle"),
+        (egui_color(CALLEE), "its own calls"),
+        (egui_color(DEEPER), "calls further down, darker the deeper"),
+        (egui_color(CURSOR), "the journey's cursor"),
     ]
 }
 
@@ -2470,7 +2534,7 @@ const KEY_WIDTH: f32 = 112.0;
 
 /// The keys that apply to the view open, in as many columns as fit `area`, scrolling
 /// past its height.
-fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, gathered: bool, diffing: bool) {
+fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showing) {
     let margin = 16.0;
     let width = (area.width() - 2.0 * margin).clamp(240.0, 1180.0);
     let height = (area.height() - 2.0 * margin).max(160.0);
@@ -2484,7 +2548,7 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, gathered: bo
         .map(|(title, keys)| {
             let keys = keys
                 .iter()
-                .filter(|(.., when)| when.applies(gathered, diffing))
+                .filter(|(.., when)| when.applies(view))
                 .map(|&(key, what, _)| (key, what))
                 .collect();
             (*title, keys)
@@ -2512,12 +2576,12 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, gathered: bo
                 .show(ui, |ui| {
                     ui.set_width(width - 32.0);
                     ui.horizontal(|ui| {
-                        let view = match (gathered, diffing) {
-                            (true, _) => "Keys in the nucleus",
-                            (false, true) => "Keys in the diff",
-                            (false, false) => "Keys on the flat graph",
+                        let title = match (view.browsing, view.diffing) {
+                            (true, _) => "Keys while browsing: no journey open",
+                            (false, true) => "Keys in a journey, over a diff",
+                            (false, false) => "Keys in a journey",
                         };
-                        ui.label(egui::RichText::new(view).strong().size(14.0));
+                        ui.label(egui::RichText::new(title).strong().size(14.0));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("close (H)").clicked() {
                                 *open = false;
@@ -2526,12 +2590,24 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, gathered: bo
                     });
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        for (color, what) in color_key(gathered) {
+                        for (color, what) in color_key(view.browsing) {
                             ui.label(egui::RichText::new("●").color(color));
                             ui.label(egui::RichText::new(what).size(12.0).color(MUTED));
                             ui.add_space(8.0);
                         }
                     });
+                    ui.label(
+                        egui::RichText::new(if view.browsing {
+                            "Browsing, a click selects a function and moves nothing. Enter \
+                             opens its journey."
+                        } else {
+                            "In a journey, the view gathers round where it starts and shows \
+                             only the journey; a click moves its cursor and nothing else. Esc \
+                             leaves it for browsing."
+                        })
+                        .size(12.0)
+                        .color(egui::Color32::WHITE),
+                    );
                     ui.add_space(6.0);
                     egui::ScrollArea::vertical()
                         .max_height(height - 70.0)
@@ -2708,7 +2784,12 @@ mod tests {
 
     #[test]
     fn the_key_list_fits_a_small_window() {
-        for (gathered, diffing) in [(true, false), (false, false), (false, true)] {
+        for (gathered, diffing, browsing) in [
+            (true, false, false),
+            (true, false, true),
+            (false, false, false),
+            (false, true, false),
+        ] {
             let ctx = egui::Context::default();
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
             // Below the top bar.
@@ -2720,7 +2801,12 @@ mod tests {
                     ..Default::default()
                 };
                 let mut output = ctx.run_ui(input, |ui| {
-                    key_help(ui.ctx(), area, &mut open, gathered, diffing);
+                    let view = Showing {
+                        gathered,
+                        diffing,
+                        browsing,
+                    };
+                    key_help(ui.ctx(), area, &mut open, view);
                 });
                 output.textures_delta.clear();
             }
