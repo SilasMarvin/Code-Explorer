@@ -187,7 +187,8 @@ fn draw_ui(
     } else {
         panel.mode
     };
-    let (graph_area, panel_area) = journey_panel::split(mode, central);
+    let rows = journey_panel::rows(&explorer);
+    let (graph_area, panel_area) = journey_panel::split(mode, central, rows);
     if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
@@ -351,18 +352,6 @@ fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer, diffing: bool) {
     }
 }
 
-/// Where the cursor's node is on screen, for the tether from its bar.
-fn cursor_node(
-    explorer: &Explorer,
-    to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
-) -> Option<egui::Pos2> {
-    explorer
-        .focus()
-        .and_then(|unit| explorer.map().tile_of(unit))
-        .and_then(|tile| explorer.tile_point(tile))
-        .and_then(to_screen)
-}
-
 /// The part of the graph above a docked journey, for what sits at its bottom.
 fn above(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
     panel.map_or(graph, |p| {
@@ -370,58 +359,36 @@ fn above(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
     })
 }
 
-/// The cursor's bar tied to its node, in the cursor's color where its node is drawn in
-/// it, and the bar under the pointer to the node it stands for.
+/// The bar under the pointer tied to the node it stands for.
 fn draw_tethers(
     ctx: &egui::Context,
     tethers: &journey_panel::Tethers,
     explorer: &Explorer,
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
 ) {
-    if let (Some(bar), Some(node)) = (tethers.cursor, cursor_node(explorer, to_screen)) {
-        let color = if explorer.cursor_mark().is_some() {
-            egui_color(CURSOR)
-        } else {
-            egui::Color32::WHITE
-        };
-        tether(ctx, bar, node, color, false);
-    }
     let hovered = explorer
         .hovered_tile
         .and_then(|tile| explorer.tile_point(tile))
         .and_then(to_screen);
     if let (Some(bar), Some(node)) = (tethers.hovered, hovered) {
-        tether(ctx, bar, node, egui::Color32::WHITE, true);
+        tether(ctx, bar, node);
     }
 }
 
-/// A line from a bar in the journey up to its node in the graph, in `color`: faint for
-/// the cursor's, bright for the one under the pointer.
-fn tether(
-    ctx: &egui::Context,
-    bar: egui::Rect,
-    node: egui::Pos2,
-    color: egui::Color32,
-    bright: bool,
-) {
+/// A line from the bar under the pointer up to its node in the graph, ringing it.
+fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::new("tether"),
     ));
-    let from = if bright {
-        egui::pos2(bar.center().x, bar.min.y)
-    } else {
-        egui::pos2(bar.min.x + 2.0, bar.min.y)
-    };
-    let alpha = if bright { 0.86 } else { 0.6 };
+    let from = egui::pos2(bar.center().x, bar.min.y);
+    let color = egui::Color32::WHITE;
     painter.line_segment(
         [from, node],
-        egui::Stroke::new(if bright { 1.5 } else { 1.25 }, color.gamma_multiply(alpha)),
+        egui::Stroke::new(1.5, color.gamma_multiply(0.86)),
     );
     painter.circle_filled(from, 2.5, color);
-    if bright {
-        painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, color));
-    }
+    painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, color));
 }
 
 /// Back and forward through where the view has been, as a browser's: always there,
