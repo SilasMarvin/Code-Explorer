@@ -113,18 +113,14 @@ pub(crate) fn compact(text: &str) -> String {
 }
 
 /// The type whose methods a value of this type dispatches to, looking through
-/// references and smart pointers: `&Arc<Store>` → `["Store"]`.
+/// references, smart pointers and guards: `&Arc<Store>` → `["Store"]`.
 pub(crate) fn receiver_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
-    const POINTERS: [&str; 5] = ["Arc", "Rc", "Box", "Cow", "Pin"];
     match node.kind() {
         "reference_type" => receiver_type_path(node.child_by_field_name("type")?, source),
         "generic_type" => {
             let base = path_segments(node.child_by_field_name("type")?, source)?;
-            if base.last().is_some_and(|b| POINTERS.contains(&b.as_str())) {
-                let arguments = node.child_by_field_name("type_arguments")?;
-                let mut cursor = arguments.walk();
-                let first = arguments.named_children(&mut cursor).next()?;
-                receiver_type_path(first, source)
+            if base.last().is_some_and(|b| DEREFS.contains(&b.as_str())) {
+                wrapped_type_path(node, source)
             } else {
                 Some(base)
             }
@@ -139,6 +135,28 @@ pub(crate) fn receiver_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<St
     }
 }
 
+/// Wrappers whose methods are rarely what is called on them: they deref to their first
+/// type argument. Bevy's system parameters and world refs are among them.
+const DEREFS: [&str; 17] = [
+    "Arc",
+    "Rc",
+    "Box",
+    "Cow",
+    "Pin",
+    "Ref",
+    "RefMut",
+    "MutexGuard",
+    "RwLockReadGuard",
+    "RwLockWriteGuard",
+    "Res",
+    "ResMut",
+    "Mut",
+    "NonSend",
+    "NonSendMut",
+    "Single",
+    "Local",
+];
+
 /// The `T` in `Result<T, E>` or `Option<T>`: what `?` leaves behind.
 pub(crate) fn unwrapped_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
     if node.kind() != "generic_type" {
@@ -148,6 +166,11 @@ pub(crate) fn unwrapped_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<S
     if !base.last().is_some_and(|b| b == "Result" || b == "Option") {
         return None;
     }
+    wrapped_type_path(node, source)
+}
+
+/// The receiver type of a generic type's first argument: `State<Store>` → `["Store"]`.
+pub(crate) fn wrapped_type_path(node: Node<'_>, source: &[u8]) -> Option<Vec<String>> {
     let arguments = node.child_by_field_name("type_arguments")?;
     let mut cursor = arguments.walk();
     let first = arguments.named_children(&mut cursor).next()?;

@@ -162,6 +162,60 @@ fn receivers_resolve_through_declared_types() {
 }
 
 #[test]
+fn receivers_resolve_through_wrappers_patterns_and_closures() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Store; pub struct Explorer; pub struct Track;
+         impl Store { pub fn order(&self) {} }
+         impl Explorer {
+             pub fn track(&self) -> Option<&Track> { None }
+             pub fn tile(&self) {}
+             pub fn settle(&mut self) {}
+         }
+         impl Track { pub fn span(&self) {} }
+         pub async fn reorder(State(store): State<Store>) { store.order(); }
+         pub fn system(explorer: Res<Explorer>, mut moving: ResMut<Explorer>) {
+             let moving = moving.bypass_change_detection();
+             moving.settle();
+             let Some(track) = explorer.track() else { return };
+             if let Some(again) = explorer.track() { again.span(); }
+             let near = |tile: u32| { explorer.tile(); track.span(); };
+             let shadowed = |explorer| explorer.tile();
+             println!(\"{:?}\", explorer.tile());
+         }",
+    )]);
+    let resolved = |id: &str| -> Vec<(String, Vec<String>)> {
+        calls(unit(&document, id))
+            .into_iter()
+            .filter(|(_, targets)| !targets.is_empty())
+            .collect()
+    };
+    let call = |text: &str, target: &str| (text.to_owned(), vec![format!("rust:app::{target}")]);
+
+    // `State(store): State<Store>` binds `store` to the extractor's one field.
+    assert_eq!(resolved("app::reorder"), [call(".order", "Store::order")]);
+    // Through `ResMut`, `bypass_change_detection`, `let .. else`, `if let` and a macro.
+    assert_eq!(
+        resolved("app::system"),
+        [
+            call(".settle", "Explorer::settle"),
+            call(".track", "Explorer::track"),
+            call(".track", "Explorer::track"),
+            call(".span", "Track::span"),
+            call(".tile", "Explorer::tile"),
+        ]
+    );
+    // A closure sees what it captures, a returned value included.
+    assert_eq!(
+        resolved("app::system::{closure#0}"),
+        [
+            call(".tile", "Explorer::tile"),
+            call(".span", "Track::span")
+        ]
+    );
+}
+
+#[test]
 fn control_flow_becomes_steps() {
     let document = analyze_files(&[(
         "lib.rs",

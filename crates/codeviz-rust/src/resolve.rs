@@ -17,6 +17,9 @@ use crate::{
 /// Bound on `use` indirection, so import cycles cannot loop forever.
 const MAX_IMPORT_HOPS: usize = 8;
 pub(crate) const SCHEME: &str = "rust";
+/// Methods from std or a dependency that return the value they are called on, or the
+/// same type: Bevy's `ResMut::bypass_change_detection` gives back the resource.
+const SAME_TYPE: [&str; 3] = ["clone", "to_owned", "bypass_change_detection"];
 
 pub(crate) fn id(path: &[String]) -> UnitId {
     UnitId::from_parts(SCHEME, &path.join("::"))
@@ -48,6 +51,8 @@ struct Index<'a> {
     methods: HashMap<&'a str, Vec<usize>>,
     /// `(type name, method name)` to every method on that type, trait impls included.
     by_type: HashMap<(&'a str, &'a str), Vec<usize>>,
+    /// Id path to unit, for the function a closure is written in.
+    by_id: HashMap<&'a [String], usize>,
     semantic: Option<Semantic<'a>>,
 }
 
@@ -89,7 +94,9 @@ impl<'a> Index<'a> {
         let mut by_path: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
         let mut methods: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut by_type: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+        let mut by_id: HashMap<&[String], usize> = HashMap::new();
         for (index, unit) in extraction.units.iter().enumerate() {
+            by_id.insert(&unit.path, index);
             if !matches!(unit.kind, UnitKind::Function { .. }) {
                 continue;
             }
@@ -114,6 +121,7 @@ impl<'a> Index<'a> {
             by_path,
             methods,
             by_type,
+            by_id,
             semantic: None,
         }
     }
@@ -391,20 +399,35 @@ impl<'a> Index<'a> {
                 };
                 (self.type_path(caller, path.clone())?, certainty)
             }
-            ReceiverRoot::Returned { call, tried } => {
+            ReceiverRoot::Returned { call, tried, up } => {
                 // The receiver is what an earlier call returned: use its declared type.
-                let call = caller.calls.get(*call)?;
-                let (ids, certainty) = self.candidates(caller, call);
-                let [function] = ids.as_slice() else {
-                    return None;
-                };
-                let function = self.extraction.units.get(*function)?;
-                let returned = if *tried {
-                    &function.returns_ok
+                let unit = self.enclosing(caller, *up)?;
+                let call = unit.calls.get(*call)?;
+                let (ids, certainty) = self.candidates(unit, call);
+                if let (
+                    [],
+                    CallTarget::Method {
+                        name,
+                        receiver: Some(inner),
+                    },
+                ) = (ids.as_slice(), &call.target)
+                    && SAME_TYPE.contains(&name.as_str())
+                    && !*tried
+                {
+                    // `explorer.clone()`: a value of the type it was called on.
+                    self.receiver_type(unit, inner)?
                 } else {
-                    &function.returns
-                };
-                (self.type_path(function, returned.clone()?)?, certainty)
+                    let [function] = ids.as_slice() else {
+                        return None;
+                    };
+                    let function = self.extraction.units.get(*function)?;
+                    let returned = if *tried {
+                        &function.returns_ok
+                    } else {
+                        &function.returns
+                    };
+                    (self.type_path(function, returned.clone()?)?, certainty)
+                }
             }
         };
         for field in &receiver.fields {
@@ -414,6 +437,15 @@ impl<'a> Index<'a> {
             ty = self.absolute(module, field_ty.clone(), 0)?;
         }
         Some((ty, certainty))
+    }
+
+    /// The unit `up` closures out from `unit`.
+    fn enclosing<'u>(&'u self, mut unit: &'u RawUnit, up: usize) -> Option<&'u RawUnit> {
+        for _ in 0..up {
+            let parent = self.by_id.get(unit.parent.as_deref()?)?;
+            unit = self.extraction.units.get(*parent)?;
+        }
+        Some(unit)
     }
 
     /// A struct's fields by exact path, or by name when only one struct has it.
