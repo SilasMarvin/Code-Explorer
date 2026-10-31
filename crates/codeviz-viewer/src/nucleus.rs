@@ -1332,19 +1332,12 @@ impl Nucleus {
     }
 
     /// Browsing with nothing selected, how modules depend on each other: an arrow
-    /// from each module to the module it calls most, or to each tied for that, as
-    /// thick as all the calls it carries. Every weaker dependency is left out, so the
-    /// whole map stays readable.
+    /// from each module to every module it calls, as thick and as plain as the calls
+    /// it carries, so a weak dependency shows faint rather than not at all.
     fn map_tubes(&self) -> Vec<Tube> {
-        let mut most: HashMap<usize, usize> = HashMap::new();
-        for (&(from, _), &calls) in &self.flows {
-            let best = most.entry(from).or_insert(0);
-            *best = (*best).max(calls);
-        }
         let mut tubes: Vec<Tube> = self
             .flows
             .iter()
-            .filter(|&(&(from, _), &calls)| most.get(&from) == Some(&calls))
             .map(|(&(from, to), &calls)| Tube {
                 from,
                 to,
@@ -2993,11 +2986,58 @@ pub(crate) struct Looks {
     nucleus: Vec<Handle<StandardMaterial>>,
     open: Vec<Handle<StandardMaterial>>,
     closed: Vec<Handle<StandardMaterial>>,
-    /// Browsing, glass so faint the module only just reads as one.
-    faint: Vec<Handle<StandardMaterial>>,
+    /// Browsing, glass so faint the module only just reads as one, by color, for
+    /// each of [`DEPTH_SHADES`] from the nearest to the furthest back.
+    faint: Vec<Vec<Handle<StandardMaterial>>>,
     /// By [`Flow`]: an arrow's shaft and its head.
     shafts: HashMap<Flow, Handle<StandardMaterial>>,
     heads: HashMap<Flow, Handle<StandardMaterial>>,
+    /// Browsing with nothing selected, an arrow between modules by how many calls it
+    /// carries ([`module_strength`]): its shaft and its head, plainer the more.
+    module_shafts: Vec<Handle<StandardMaterial>>,
+    module_heads: Vec<Handle<StandardMaterial>>,
+}
+
+/// Browsing, how plain a module's glass is, from the nearest module to the furthest
+/// back: further back reads fainter, so the map reads as having depth in a still.
+const DEPTH_SHADES: [f32; 4] = [0.06, 0.038, 0.022, 0.01];
+
+/// Browsing, how far back each module sits among them all, as `camera` sees them:
+/// 0 for the nearest, 1 for the furthest back.
+fn depths(nucleus: &Nucleus, camera: &Transform) -> Vec<f32> {
+    let forward = *camera.forward();
+    let along: Vec<f32> = (0..nucleus.now.balls.len())
+        .map(|c| {
+            nucleus
+                .ball(c)
+                .map_or(0.0, |b| (b.center - camera.translation).dot(forward))
+        })
+        .collect();
+    let (near, far) = along
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &d| {
+            (lo.min(d), hi.max(d))
+        });
+    let span = (far - near).max(1e-3);
+    along
+        .iter()
+        .map(|d| ((d - near) / span).clamp(0.0, 1.0))
+        .collect()
+}
+
+/// How plain an arrow between modules is drawn, browsing with nothing selected, for
+/// each [`module_strength`]: its shaft's and its head's opacity.
+const MODULE_STRENGTHS: [(f32, f32); 4] = [(0.03, 0.06), (0.06, 0.12), (0.11, 0.22), (0.2, 0.38)];
+
+/// Which of [`MODULE_STRENGTHS`] an arrow carrying `calls` calls is drawn with: one
+/// call, a few, up to ten, more.
+fn module_strength(calls: usize) -> usize {
+    match calls {
+        0 | 1 => 0,
+        2..=3 => 1,
+        4..=9 => 2,
+        _ => 3,
+    }
 }
 
 pub(crate) fn create_looks(
@@ -3052,9 +3092,14 @@ pub(crate) fn create_looks(
             .map(|&c| materials.add(glass(c, 0.08)))
             .collect(),
         closed: colors.iter().map(|&c| materials.add(solid(c))).collect(),
-        faint: colors
+        faint: DEPTH_SHADES
             .iter()
-            .map(|&c| materials.add(glass(c, 0.025)))
+            .map(|&alpha| {
+                colors
+                    .iter()
+                    .map(|&c| materials.add(glass(c, alpha)))
+                    .collect()
+            })
             .collect(),
         shafts: flows
             .iter()
@@ -3078,9 +3123,20 @@ pub(crate) fn create_looks(
                 (f, materials.add(see_through(f.color(), alpha)))
             })
             .collect(),
+        module_shafts: MODULE_STRENGTHS
+            .iter()
+            .map(|&(shaft, _)| materials.add(see_through(Flow::Module.color(), shaft)))
+            .collect(),
+        module_heads: MODULE_STRENGTHS
+            .iter()
+            .map(|&(_, head)| materials.add(see_through(Flow::Module.color(), head)))
+            .collect(),
     };
     commands.insert_resource(looks);
 }
+
+/// The orbit camera, apart from the spheres and arrows placed.
+type OnlyTheCamera = (With<OrbitCamera>, Without<ModuleSphere>, Without<Arrow>);
 
 /// Spawns a sphere per module once the nucleus first opens, and an arrow per pair of
 /// modules as many as are needed, then keeps each where the nucleus has it, drawn as
@@ -3107,6 +3163,7 @@ pub(crate) fn place_bodies(
         ),
         Without<ModuleSphere>,
     >,
+    cameras: Query<&Transform, OnlyTheCamera>,
 ) {
     let Some(nucleus) = explorer.nucleus() else {
         for (_, _, mut visibility, _) in &mut spheres {
@@ -3130,13 +3187,22 @@ pub(crate) fn place_bodies(
             ));
         }
     }
+    let depths = cameras
+        .single()
+        .ok()
+        .filter(|_| nucleus.browsing())
+        .map(|camera| depths(nucleus, camera));
     for (sphere, mut transform, mut visibility, mut material) in &mut spheres {
         if let Some(ball) = nucleus.ball(sphere.0) {
             let shown = nucleus.shows_body(ball.body);
             let placed =
                 Transform::from_translation(ball.center).with_scale(Vec3::splat(ball.radius));
             transform.set_if_neq(placed);
-            dress(&looks, sphere.0, ball.body, &mut material);
+            let depth = depths
+                .as_ref()
+                .and_then(|d| d.get(sphere.0).copied())
+                .unwrap_or(0.0);
+            dress(&looks, sphere.0, ball.body, depth, &mut material);
             // A journey shows the modules it runs through, and nothing else.
             visibility.set_if_neq(if shown {
                 Visibility::Inherited
@@ -3234,10 +3300,12 @@ fn place_arrows(
             }
         };
         transform.set_if_neq(placed);
-        let wanted = if arrow.head {
-            &looks.heads[&tube.flow]
-        } else {
-            &looks.shafts[&tube.flow]
+        let strength = module_strength(tube.calls);
+        let wanted = match (tube.flow, arrow.head) {
+            (Flow::Module, true) => &looks.module_heads[strength],
+            (Flow::Module, false) => &looks.module_shafts[strength],
+            (flow, true) => &looks.heads[&flow],
+            (flow, false) => &looks.shafts[&flow],
         };
         if &material.0 != wanted {
             material.0 = wanted.clone();
@@ -3246,19 +3314,28 @@ fn place_arrows(
     }
 }
 
-/// Gives a module's sphere the look its body asks for.
+/// Gives a module's sphere the look its body asks for, `depth` back among them all
+/// (0 nearest, 1 furthest).
 fn dress(
     looks: &Looks,
     cluster: usize,
     body: Body,
+    depth: f32,
     material: &mut MeshMaterial3d<StandardMaterial>,
 ) {
     let color = cluster % PALETTE.len();
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "a share of a short list"
+    )]
+    let shade = ((depth * DEPTH_SHADES.len() as f32) as usize).min(DEPTH_SHADES.len() - 1);
     let wanted = match body {
         Body::Nucleus => &looks.nucleus[color],
         Body::Open => &looks.open[color],
         Body::Closed => &looks.closed[color],
-        Body::Faint => &looks.faint[color],
+        Body::Faint => &looks.faint[shade][color],
     };
     if &material.0 != wanted {
         material.0 = wanted.clone();
@@ -3280,7 +3357,7 @@ pub(crate) fn draw(
     let Ok(camera) = cameras.single() else {
         return;
     };
-    draw_rims(nucleus, camera.rotation, &mut gizmos);
+    draw_rims(nucleus, camera, &mut gizmos);
     let graph = explorer.graph();
     let time = clock.elapsed_secs();
     let zoom = nucleus.zoom();
@@ -3362,9 +3439,15 @@ pub(crate) fn draw(
 }
 
 /// Rings round each sphere drawn, facing the camera, brighter towards the edge as glass
-/// is, with a faint halo outside it.
-fn draw_rims(nucleus: &Nucleus, facing: Quat, gizmos: &mut Gizmos) {
+/// is, with a faint halo outside it; browsing, fainter the further back.
+fn draw_rims(nucleus: &Nucleus, camera: &Transform, gizmos: &mut Gizmos) {
+    let facing = camera.rotation;
+    let depths = nucleus.browsing().then(|| depths(nucleus, camera));
     for (cluster, ball) in nucleus.balls() {
+        let near = depths
+            .as_ref()
+            .and_then(|d| d.get(cluster))
+            .map_or(1.0, |depth| 1.0 - 0.8 * depth);
         let color = lane_color(cluster % PALETTE.len());
         // Brighter towards the edge, as glass is, with a faint halo outside it.
         let rims: &[(f32, f32)] = match ball.body {
@@ -3385,7 +3468,7 @@ fn draw_rims(nucleus: &Nucleus, facing: Quat, gizmos: &mut Gizmos) {
                 .circle(
                     Isometry3d::new(ball.center, facing),
                     ball.radius * grow,
-                    color.with_alpha(alpha),
+                    color.with_alpha(alpha * near),
                 )
                 .resolution(96);
         }
@@ -4413,23 +4496,31 @@ mod tests {
     }
 
     #[test]
-    fn browsing_with_nothing_selected_each_module_points_to_the_one_it_calls_most() {
+    fn browsing_with_nothing_selected_every_module_points_to_each_it_calls() {
         let (graph, map) = codebase();
         let nucleus = Nucleus::gather(&graph, None, Hidden::default(), Trail::default(), true);
         let tubes = nucleus.tubes();
-        assert!(!tubes.is_empty(), "how modules depend on each other shows");
         assert!(tubes.iter().all(|t| t.flow == Flow::Module));
+        let mut pairs: Vec<(usize, usize)> = graph
+            .calls
+            .iter()
+            .filter_map(|&(a, b)| Some((graph.cluster(a)?, graph.cluster(b)?)))
+            .filter(|(a, b)| a != b)
+            .collect();
+        pairs.sort_unstable();
+        pairs.dedup();
+        let mut drawn: Vec<(usize, usize)> = tubes.iter().map(|t| (t.from, t.to)).collect();
+        drawn.sort_unstable();
+        assert_eq!(drawn, pairs, "no dependency between modules is left out");
         let core = module(&graph, &map, "core::run");
         assert_eq!(
             tubes.iter().filter(|t| t.from == core).count(),
             3,
-            "core calls three modules once each, all tied for its strongest"
+            "core calls three modules"
         );
-        let db = module(&graph, &map, "db::put");
-        assert_eq!(
-            tubes.iter().filter(|t| t.from == db).count(),
-            1,
-            "db calls disk alone"
+        assert!(
+            module_strength(1) < module_strength(12),
+            "more calls, plainer"
         );
         let selected = Nucleus::gather(
             &graph,
