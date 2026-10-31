@@ -339,9 +339,10 @@ pub(crate) fn style_nodes(
         // drawn at all, however near the focus it is.
         let named = nucleus.is_some_and(|n| n.lit(tile.0));
         let quiet = speck(&explorer, tile.0);
-        // Brought in from outside the journey: there, but quieter than the journey.
-        let outside =
-            nucleus.is_some_and(|n| n.outside(tile.0)) && explorer.aside() != Some(tile.0);
+        // Brought in from outside the journey, or a caller of the start folded into its
+        // module's count: there, but quieter than the journey.
+        let outside = nucleus.is_some_and(|n| n.outside(tile.0) || n.folded(tile.0))
+            && explorer.aside() != Some(tile.0);
         let gone = quiet && nucleus.is_some_and(nucleus::Nucleus::specks_hidden);
         visibility.set_if_neq(if folded || gone {
             Visibility::Hidden

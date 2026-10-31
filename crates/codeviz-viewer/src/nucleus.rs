@@ -198,6 +198,18 @@ pub(crate) fn badge<'a>(numbers: impl IntoIterator<Item = &'a String>) -> Option
     })
 }
 
+/// The cursor's function's numbers on its badge: the call the cursor is on, which the
+/// panel names too, and how many more times the journey runs it.
+pub(crate) fn badge_at<'a>(numbers: impl IntoIterator<Item = &'a String>, at: &str) -> String {
+    let mut numbers: Vec<&str> = numbers.into_iter().map(String::as_str).collect();
+    numbers.sort_by_key(|n| order(n));
+    numbers.dedup();
+    match numbers.iter().filter(|&&n| n != at).count() {
+        0 => at.to_owned(),
+        more => format!("{at} +{more}"),
+    }
+}
+
 /// Every call from one module to another, drawn as one arrow as thick as there are
 /// calls, whenever it carries a call this view names; colored as the call nearest the
 /// middle it carries.
@@ -292,6 +304,9 @@ const HANG_GAP: f32 = 2.5;
 /// Of a module's callers from outside the journey (I), how many are drawn and named,
 /// those nearest the journey; the rest are a count on the module.
 const OUTSIDE_SHOWN: usize = 2;
+/// In a journey, how many of the start's callers are named; the rest fold into a
+/// count on their module's name, so the journey stays what reads.
+const CALLERS_NAMED: usize = 5;
 
 /// Where everything is, for one focus.
 #[derive(Debug, Clone, Default)]
@@ -324,6 +339,9 @@ struct Arrangement {
     context: HashSet<usize>,
     /// In a journey with I on, every function off it that calls one on it.
     outside: HashSet<usize>,
+    /// In a journey, the start's callers beyond the few nearest it: drawn quietly and
+    /// named only under the pointer, counted on their module's name instead.
+    folded: HashSet<usize>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
 }
@@ -585,6 +603,21 @@ impl Nucleus {
         self.now.outside.contains(&tile)
     }
 
+    /// Whether a function is one of the start's callers folded into its module's
+    /// count: drawn quietly, named only under the pointer.
+    pub(crate) fn folded(&self, tile: usize) -> bool {
+        self.now.folded.contains(&tile)
+    }
+
+    /// How many of a module's functions are the start's callers folded into a count.
+    pub(crate) fn folded_in(&self, cluster: usize) -> usize {
+        self.now
+            .folded
+            .iter()
+            .filter(|&&t| self.module_of.get(t).copied().flatten() == Some(cluster))
+            .count()
+    }
+
     /// Marks the journey's cursor where it sits, without moving anything else.
     /// Returns whether that changed.
     pub(crate) fn mark(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
@@ -808,10 +841,12 @@ impl Nucleus {
 
     /// Whether a named function carries its name without the pointer on it: all do,
     /// unless so many are named that only those within two calls of the middle keep
-    /// theirs.
+    /// theirs; and none of the start's callers folded into a count.
     pub(crate) fn labelled(&self, tile: usize) -> bool {
-        self.level(tile)
-            .is_some_and(|level| self.now.named.len() <= NAMED_ALL || level.abs() <= 2)
+        !self.folded(tile)
+            && self
+                .level(tile)
+                .is_some_and(|level| self.now.named.len() <= NAMED_ALL || level.abs() <= 2)
     }
 
     /// A function's numbers in the open journey from the middle, in order.
@@ -1186,6 +1221,7 @@ impl Nucleus {
         let every = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f, Hidden::default()));
         let mut links = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f, self.hidden));
         let named = distances(&links, focus);
+        let folded = focus.map_or_else(HashSet::new, |f| self.fold_callers(graph, f, &cluster_of));
         let laid = self.reserve(&every, focus, clusters, center, &cluster_of);
         let columns = open_up(&links, focus, clusters, center, &cluster_of);
         let context = if self.trail.aside && !self.hidden.hides(Side::Callees) {
@@ -1263,6 +1299,7 @@ impl Nucleus {
             ring: order,
             context,
             outside,
+            folded,
             tubes,
             links,
         }
@@ -1327,6 +1364,7 @@ impl Nucleus {
             columns,
             context: HashSet::new(),
             outside: HashSet::new(),
+            folded: HashSet::new(),
             tubes,
             links,
         }
@@ -1548,6 +1586,47 @@ impl Nucleus {
             tubes,
             ..modules
         }
+    }
+
+    /// Of the callers of `focus`, the journey's start, those past the few nearest the
+    /// journey: those that call most of the journey's functions, then call the start
+    /// most often, then live in its module, are named; the rest fold into a count on
+    /// their module's name. Worked out from every caller and the journey at every
+    /// depth, so a new depth, a hidden side or the cursor never changes which.
+    fn fold_callers(
+        &self,
+        graph: &ForceGraph,
+        focus: usize,
+        cluster_of: &impl Fn(usize) -> usize,
+    ) -> HashSet<usize> {
+        let mut callers: Vec<usize> = graph.callers(focus).filter(|&t| t != focus).collect();
+        callers.sort_unstable();
+        callers.dedup();
+        // One the journey runs too is named as the journey's.
+        callers.retain(|t| !self.trail.whole.contains_key(t));
+        // Folding one or two away would save nothing.
+        if callers.len() <= CALLERS_NAMED + 2 {
+            return HashSet::new();
+        }
+        let home = cluster_of(focus);
+        callers.sort_by_cached_key(|&caller| {
+            let into_journey: HashSet<usize> = graph
+                .callees(caller)
+                .filter(|t| self.trail.whole.contains_key(t))
+                .collect();
+            let sites = graph
+                .sequence(caller)
+                .iter()
+                .filter(|&&t| t == focus)
+                .count();
+            (
+                Reverse(into_journey.len()),
+                Reverse(sites),
+                cluster_of(caller) != home,
+                caller,
+            )
+        });
+        callers.split_off(CALLERS_NAMED).into_iter().collect()
     }
 
     /// The calls named round `focus`: each of its callers' into it, then each of the
@@ -3398,14 +3477,15 @@ pub(crate) fn draw(
     }
     // The journey's call into the cursor, in the cursor's color, or into the function
     // the pointer is on, and the calls in of a function selected off the journey, or
-    // of an outside caller the pointer is on, are drawn last and brightest, so they
-    // read over the rest.
+    // of an outside caller or a folded caller of the start the pointer is on, are
+    // drawn last and brightest, so they read over the rest.
     let aside = explorer.aside();
     let picked = |link: &Link| {
         let into = link.flow != Flow::Into
             && link.flow != Flow::Outside
             && (nucleus.marks(link.to) || nucleus.hovered() == Some(link.to));
-        let pointed = link.flow == Flow::Outside && nucleus.hovered() == Some(link.from);
+        let pointed = (link.flow == Flow::Outside || nucleus.folded(link.from))
+            && nucleus.hovered() == Some(link.from);
         into || pointed || (aside.is_some() && Some(link.from) == aside)
     };
     let (picked, rest): (Vec<_>, Vec<_>) = nucleus
@@ -3431,7 +3511,7 @@ pub(crate) fn draw(
                 .arrow(*last_but_one + beside, end + beside, color)
                 .with_tip_length(if bright { 1.1 } else { 0.8 } * zoom);
         }
-        if bright || link.flow.rank() <= 1 {
+        if bright || (link.flow.rank() <= 1 && !nucleus.folded(link.from)) {
             for pair in route.windows(2) {
                 flow(&mut gizmos, pair[0], pair[1], color, time, index);
             }
@@ -3483,6 +3563,8 @@ fn link_color(nucleus: &Nucleus, link: &Link, bright: bool) -> Color {
         Flow::Outside if bright => Color::WHITE.with_alpha(0.85),
         // Secondary: there to be found, not read first.
         Flow::Outside => link.flow.color().with_alpha(0.08),
+        // A caller of the start folded into its module's count: there, but quiet.
+        Flow::Into if !bright && nucleus.folded(link.from) => link.flow.color().with_alpha(0.16),
         _ if bright && nucleus.marks(link.to) => CURSOR,
         _ if bright => link.flow.color().mix(&Color::WHITE, 0.45),
         _ => link.flow.color().with_alpha(0.9),
@@ -3618,6 +3700,90 @@ mod tests {
     fn around(graph: &ForceGraph, map: &CodebaseMap, id: &str, depth: u32) -> Nucleus {
         let focus = tile(map, id);
         Nucleus::new(graph, Some(focus), trail(graph, focus, depth))
+    }
+
+    /// `core::start` calls `db::put`, which calls `db::deep`; nine functions call
+    /// `core::start`: `web::c0` to `web::c5`, of which `web::c0` calls `db::put` too,
+    /// and `core::c6` (twice) to `core::c8`.
+    fn crowded() -> (ForceGraph, CodebaseMap) {
+        let module = |name: &str| {
+            format!(
+                r#"{{ "id": "m:{name}", "name": "{name}", "kind": "module", "role": "group" }}"#
+            )
+        };
+        let function = |id: &str, calls: &[&str]| {
+            let (parent, name) = id.split_once("::").expect("module::name");
+            let calls: Vec<String> = calls
+                .iter()
+                .enumerate()
+                .map(|(index, to)| {
+                    format!(
+                        r#"{{ "key": "{to}#{index}", "text": "{to}", "targets": [{{ "unit": "f:{to}", "certainty": "exact" }}] }}"#
+                    )
+                })
+                .collect();
+            format!(
+                r#"{{ "id": "f:{id}", "name": "{name}", "kind": "fn", "role": "invocable", "parent": "m:{parent}", "calls": [{}] }}"#,
+                calls.join(",")
+            )
+        };
+        let mut units: Vec<String> = ["web", "core", "db"].into_iter().map(module).collect();
+        units.push(function("core::start", &["db::put"]));
+        units.push(function("db::put", &["db::deep"]));
+        units.push(function("db::deep", &[]));
+        units.push(function("web::c0", &["core::start", "db::put"]));
+        for caller in ["web::c1", "web::c2", "web::c3", "web::c4", "web::c5"] {
+            units.push(function(caller, &["core::start"]));
+        }
+        units.push(function("core::c6", &["core::start", "core::start"]));
+        units.push(function("core::c7", &["core::start"]));
+        units.push(function("core::c8", &["core::start"]));
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        let system = System::new([Document::from_json(&json).expect("a valid document")]);
+        let map = map(&system, &MapConfig::default());
+        let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
+        for _ in 0..50 {
+            graph.step();
+        }
+        (graph, map)
+    }
+
+    #[test]
+    fn the_start_names_a_handful_of_its_callers_and_counts_the_rest() {
+        let (graph, map) = crowded();
+        let web = module(&graph, &map, "web::c0");
+        for depth in [1, 2] {
+            let nucleus = around(&graph, &map, "core::start", depth);
+            // Calling into the journey, calling it most, and living by it come first.
+            for id in ["web::c0", "core::c6", "core::c7", "core::c8"] {
+                let caller = tile(&map, id);
+                assert!(!nucleus.folded(caller), "{id} is named at depth {depth}");
+                assert!(nucleus.labelled(caller));
+            }
+            let folded: Vec<usize> = (0..graph.positions.len())
+                .filter(|&t| nucleus.folded(t))
+                .collect();
+            assert_eq!(folded.len(), 4, "nine callers, five named");
+            assert_eq!(nucleus.folded_in(web), 4, "counted on their module");
+            for &caller in &folded {
+                assert!(!nucleus.labelled(caller), "unnamed but under the pointer");
+                assert!(nucleus.shows(caller) && nucleus.lit(caller), "still drawn");
+            }
+        }
+        let shallow = around(&graph, &map, "core::start", 1);
+        let deep = around(&graph, &map, "core::start", 2);
+        assert_eq!(shallow.now.folded, deep.now.folded, "a depth changes none");
+    }
+
+    #[test]
+    fn the_cursor_badge_leads_with_the_call_it_is_on() {
+        let numbers: Vec<String> = ["1.1", "3.1.1", "1.1"].map(str::to_owned).to_vec();
+        assert_eq!(badge(&numbers).as_deref(), Some("1.1 +1"));
+        assert_eq!(badge_at(&numbers, "3.1.1"), "3.1.1 +1");
+        assert_eq!(badge_at(&numbers[..1], "1.1"), "1.1");
     }
 
     #[test]

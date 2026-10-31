@@ -564,10 +564,11 @@ fn canvas(
                 egui::StrokeKind::Outside,
             );
         }
-        // Every bar names its function: the whole name where it fits, else the
-        // function's own name without its type, then smaller, then without the number;
-        // only where not even that fits is it cut short with an ellipsis, as measured,
-        // and where not a letter of it fits, the number alone.
+        // Every bar names its function after its number: the whole name and when it
+        // runs where they fit, then smaller, then the function's own name without its
+        // type, still with when it runs; then cut short with an ellipsis, as measured,
+        // so what is left out shows; then without the number; and where not a letter
+        // of it fits, the number alone.
         let free = badge.map_or(bar.rect, |badge| {
             egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x - 2.0, bar.rect.max.y))
         });
@@ -587,19 +588,26 @@ fn canvas(
         let room = free.width() - 10.0;
         let tries = [
             (format!("{}{condition}", numbered(&label)), BAR_TEXT),
-            (numbered(&label), BAR_TEXT),
-            (numbered(&own), BAR_TEXT),
-            (numbered(&own), BAR_TEXT_SMALL),
-            (format!("{sign}{own}"), BAR_TEXT_SMALL),
+            (format!("{}{condition}", numbered(&label)), BAR_TEXT_SMALL),
+            (format!("{}{condition}", numbered(&own)), BAR_TEXT_SMALL),
         ];
         let whole = tries
             .iter()
             .find(|(text, size)| text_width(&painter, text, *size) <= room);
-        let named = whole.cloned().or_else(|| {
-            fit_text(&painter, &numbered(&own), BAR_TEXT_SMALL, room)
-                .filter(|fitted| fitted.chars().count() > number.chars().count() + 3)
+        // Cut short, the number and at least a few letters of the name stay.
+        let cut = |text: &str| {
+            fit_text(&painter, text, BAR_TEXT_SMALL, room)
+                .filter(|fitted| fitted.chars().count() > number.chars().count() + 4)
                 .map(|fitted| (fitted, BAR_TEXT_SMALL))
-        });
+        };
+        let named = whole
+            .cloned()
+            .or_else(|| cut(&format!("{}{condition}", numbered(&own))))
+            .or_else(|| {
+                let unnumbered = format!("{sign}{own}");
+                (text_width(&painter, &unnumbered, BAR_TEXT_SMALL) <= room)
+                    .then_some((unnumbered, BAR_TEXT_SMALL))
+            });
         // The cursor's bar is named come what may, over its neighbours if it must.
         if whole.is_none() && Some(bar.span) == cursor {
             unnamed_cursor = Some((bar.rect, numbered(&own)));

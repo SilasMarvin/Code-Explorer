@@ -510,6 +510,9 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
             roles.push("cursor".to_owned());
         }
         match n.level(tile) {
+            Some(-1) if n.folded(tile) => {
+                roles.push("caller, folded into its module's count".to_owned());
+            }
             Some(-1) => roles.push("caller".to_owned()),
             Some(_) if n.aside() => roles.push("callee".to_owned()),
             Some(level) if level > 0 => roles.push(format!("journey level {level}")),
