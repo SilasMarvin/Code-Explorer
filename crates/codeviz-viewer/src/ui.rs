@@ -1604,9 +1604,10 @@ impl<'a> Placer<'a> {
     }
 
     /// Where a name that must show goes when no place is free: off every other lit
-    /// node and every other name if it can be, wherever it misleads least, over its
-    /// own node if need be, then where it lies over the fewest other names and nodes,
-    /// nearest; and whether it lies over another name there.
+    /// node if it can be, wherever it misleads least, over its own node if need be,
+    /// then where it lies over the fewest other names and nodes, nearest; and whether
+    /// it lies over another name there. Names placed this frame weigh only after
+    /// misreading, as their places may in turn hang on this one's.
     fn least_misleading(
         &self,
         key: Named,
@@ -1635,7 +1636,6 @@ impl<'a> Placer<'a> {
                 let rect = at.rect(node, edge, extent);
                 (
                     self.covers_node(key, rect),
-                    under(names, rect) > 0,
                     self.misread(key, rect, node, edge),
                     !bounds.contains_rect(rect),
                     under(names, rect),
