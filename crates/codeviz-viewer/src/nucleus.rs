@@ -240,9 +240,10 @@ const QUIET_SCALE: f32 = 0.3;
 /// The angle the camera turns to when the nucleus opens.
 pub(crate) const VIEW: (f32, f32) = (-0.45, -0.38);
 /// Browsing, how far the camera may turn off [`VIEW`], in yaw and in pitch: the map
-/// is kept apart for views an eighth of a turn either side, and is flattened along
-/// the view, so further round it would turn edge-on.
-const BROWSE_REACH: (f32, f32) = (std::f32::consts::FRAC_PI_4, 0.4);
+/// is kept apart for views up to an eighth of a turn either side, and is flattened
+/// along the view, so further round it would turn edge-on; turned both ways at once,
+/// names crowd well before that.
+const BROWSE_REACH: (f32, f32) = (0.6, 0.3);
 /// How many times its size the nucleus grows to when expanded.
 const GROWTH: f32 = 3.5;
 /// How far outside the expanded nucleus's wall the modules round it sit, against its
