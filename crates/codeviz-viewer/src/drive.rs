@@ -713,6 +713,12 @@ impl View<'_, '_> {
         Some((transform.translation(), transform.rotation()))
     }
 
+    /// Where the camera stands as the orbit has it: what it looks at, from how far,
+    /// at what yaw and pitch.
+    pub(crate) fn orbit_pose(&self) -> Option<crate::camera::Pose> {
+        self.cameras.iter().next().map(|(_, _, orbit)| orbit.pose())
+    }
+
     /// Whether the camera was panned or zoomed off the journey's start.
     pub(crate) fn camera_free(&self) -> bool {
         self.cameras.iter().any(|(_, _, orbit)| orbit.free)

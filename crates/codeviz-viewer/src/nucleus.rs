@@ -1005,6 +1005,24 @@ impl Nucleus {
             .collect()
     }
 
+    /// Points round the nucleus alone, as it will be once a re-centering ends: what
+    /// the view takes in to fill itself with the expanded module.
+    pub(crate) fn nucleus_points(&self, rotation: Quat) -> Vec<Vec3> {
+        let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+        self.now
+            .balls
+            .get(self.now.center)
+            .map(|b| {
+                vec![
+                    b.center + right * b.radius,
+                    b.center - right * b.radius,
+                    b.center + up * b.radius,
+                    b.center - up * b.radius,
+                ]
+            })
+            .unwrap_or_default()
+    }
+
     /// Points round every sphere browsing shows, the whole codebase.
     pub(crate) fn atlas_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
@@ -2820,7 +2838,13 @@ pub(crate) fn frame(
             } else {
                 camera.aim_rotation()
             };
-            fit(nucleus, cursor, &mut camera, rotation, projection);
+            if opening && now.expanded && !browsing {
+                // Expanding blows the module up to fill the view; shrinking back
+                // returns to where the camera stood before (the explorer's pose).
+                fill(nucleus, &mut camera, rotation, projection);
+            } else {
+                fit(nucleus, cursor, &mut camera, rotation, projection);
+            }
         } else if recentred {
             // Only when the cursor would show off the view, or near its edge.
             let shows = cursor.is_some_and(|at| {
@@ -2874,6 +2898,22 @@ pub(crate) fn fit(
         points = nucleus.atlas_points(rotation);
     }
     points.extend(also);
+    glide(
+        &points,
+        nucleus.frame_center(),
+        camera,
+        rotation,
+        projection,
+    );
+}
+
+/// Expanded in a journey, glides to the function the view centres on from just far
+/// enough back that the expanded module fills the view, turned to `rotation`.
+fn fill(nucleus: &Nucleus, camera: &mut OrbitCamera, rotation: Quat, projection: &Projection) {
+    let points = nucleus.nucleus_points(rotation);
+    if points.is_empty() {
+        return;
+    }
     glide(
         &points,
         nucleus.frame_center(),

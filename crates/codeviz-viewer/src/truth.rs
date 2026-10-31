@@ -164,6 +164,15 @@ pub(crate) fn state(view: &View) -> Value {
         "back": explorer.can_go_back(),
         "forward": explorer.can_go_forward(),
         "camera_free": view.camera_free(),
+        "camera": view.orbit_pose().map(|pose| {
+            let (target, distance, (yaw, pitch)) = pose.parts();
+            json!({
+                "target": [round(target.x), round(target.y), round(target.z)],
+                "distance": round(distance),
+                "yaw": (yaw * 1000.0).round() / 1000.0,
+                "pitch": (pitch * 1000.0).round() / 1000.0,
+            })
+        }),
     })
 }
 

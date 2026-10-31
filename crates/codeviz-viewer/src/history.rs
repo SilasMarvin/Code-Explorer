@@ -49,10 +49,11 @@ pub(crate) struct View {
     pub(crate) pose: Seen,
 }
 
-/// Where the camera stood at a place in the history: put back with it, but never what
-/// makes two places differ, so moving the camera is no move of its own.
+/// Where the camera stood at a place in the history, and whether the nucleus was
+/// expanded then: put back with it, but never what makes two places differ, so moving
+/// the camera is no move of its own.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Seen(pub(crate) Option<Pose>);
+pub(crate) struct Seen(pub(crate) Option<Pose>, pub(crate) bool);
 
 impl PartialEq for Seen {
     fn eq(&self, _: &Self) -> bool {

@@ -187,6 +187,13 @@ pub(crate) struct Pose {
     free: bool,
 }
 
+impl Pose {
+    /// What it looks at, from how far, and its yaw and pitch.
+    pub(crate) fn parts(&self) -> (Vec3, f32, (f32, f32)) {
+        (self.target, self.distance, self.angles)
+    }
+}
+
 const ORBIT_SPEED: f32 = 0.005;
 const PITCH_LIMIT: f32 = 1.5;
 const EASING: f32 = 8.0;

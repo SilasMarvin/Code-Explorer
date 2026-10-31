@@ -364,6 +364,9 @@ pub(crate) struct Explorer {
     pose: Option<Pose>,
     /// Where the camera stood browsing when a journey was last entered from there.
     browse_pose: Option<Pose>,
+    /// Where the camera stood when the nucleus was expanded, to go back to when it
+    /// shrinks back, however the view was turned or moved while it was expanded.
+    expand_pose: Option<Pose>,
     /// Where the camera is to go back to, numbered: a pose it had, or with none, the
     /// whole codebase.
     return_pose: Option<(u64, Option<Pose>)>,
@@ -443,6 +446,7 @@ impl Explorer {
             said: 0,
             pose: None,
             browse_pose: None,
+            expand_pose: None,
             return_pose: None,
         };
         explorer.color_groups();
@@ -530,7 +534,10 @@ impl Explorer {
             mode: self.mode,
             selection: self.selection,
             outside: self.outside,
-            pose: Seen(self.pose),
+            pose: Seen(
+                self.pose,
+                self.nucleus.as_ref().is_some_and(Nucleus::expanded),
+            ),
         }
     }
 
@@ -540,7 +547,14 @@ impl Explorer {
     /// it was, and the camera back to where it stood.
     fn restore(&mut self, view: View) {
         self.leaving_browse(view.mode);
-        if let Some(pose) = view.pose.0 {
+        // Expanding is no place of its own: a camera that framed the nucleus expanded
+        // is not put back on it shrunk, nor the other way round. The camera stays, and
+        // shrinking back still returns to where it stood before X.
+        let expanded =
+            view.mode == ViewMode::Journey && self.nucleus.as_ref().is_some_and(Nucleus::expanded);
+        if let Seen(Some(pose), seen_expanded) = view.pose
+            && seen_expanded == expanded
+        {
             self.return_to(Some(pose));
         }
         let track = &mut self.track;
@@ -726,6 +740,9 @@ impl Explorer {
             explorer.spotlight = None;
         });
         self.aim += 1;
+        // Browsing shrinks the nucleus back; the pose it would have gone back to is
+        // the journey's, not the codebase's.
+        self.expand_pose = None;
         // Back to the codebase as it was seen before the journey, unframed.
         self.return_to(self.browse_pose);
     }
@@ -892,6 +909,9 @@ impl Explorer {
         if on == self.nucleus.is_some() {
             return;
         }
+        if !on {
+            self.expand_pose = None;
+        }
         self.nucleus = if on {
             self.settle_now();
             let focus = self.nucleus_focus();
@@ -922,9 +942,19 @@ impl Explorer {
         if on {
             self.set_nucleus(true);
         }
-        if let Some(nucleus) = &mut self.nucleus {
-            nucleus.expand(&self.graph, on);
-            self.moved += 1;
+        let Some(nucleus) = &mut self.nucleus else {
+            return;
+        };
+        if nucleus.expanded() == on {
+            return;
+        }
+        nucleus.expand(&self.graph, on);
+        self.moved += 1;
+        if on {
+            self.expand_pose = self.pose;
+        } else if let Some(pose) = self.expand_pose.take() {
+            // Back to exactly where the camera stood before it expanded.
+            self.return_to(Some(pose));
         }
     }
 
@@ -2743,6 +2773,38 @@ pub(crate) mod tests {
             explorer.selection(),
             Some(b),
             "with the cursor's function selected"
+        );
+    }
+
+    #[test]
+    fn shrinking_back_returns_the_camera_to_where_it_stood_before_expanding() {
+        use crate::camera::OrbitCamera;
+        let mut camera = OrbitCamera::default();
+        let before = camera.pose();
+        camera.pan_to(Vec3::new(40.0, 0.0, 0.0));
+        let moved = camera.pose();
+        let returned = |explorer: &Explorer| explorer.return_pose().and_then(|(_, p)| p);
+
+        let mut explorer = explorer();
+        let b = tile(&explorer, "b");
+        explorer.see(before);
+        explorer.expand_nucleus(true);
+        assert!(explorer.nucleus().is_some_and(Nucleus::expanded));
+        explorer.see(moved);
+        explorer.focus_tile(b, None);
+        explorer.expand_nucleus(false);
+        assert_eq!(
+            returned(&explorer),
+            Some(before),
+            "however the camera moved while expanded"
+        );
+
+        let asked = explorer.return_pose().map(|(n, _)| n);
+        assert!(explorer.go_back());
+        assert_eq!(
+            explorer.return_pose().map(|(n, _)| n),
+            asked,
+            "Back does not put a camera that framed the nucleus expanded on it shrunk"
         );
     }
 
