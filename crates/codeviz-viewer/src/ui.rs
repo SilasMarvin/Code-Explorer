@@ -1485,7 +1485,9 @@ impl<'a> Placer<'a> {
                 let (at, over_names) = self.least_misleading(key, node, edge, extent);
                 match force {
                     Force::Always => Some(at),
-                    Force::Free if !over_names && close(at) => Some(at),
+                    Force::Free if !over_names && close(at) && !self.covers_node(key, spot(at)) => {
+                        Some(at)
+                    }
                     Force::Free | Force::Never => None,
                 }
             })
@@ -1602,9 +1604,9 @@ impl<'a> Placer<'a> {
     }
 
     /// Where a name that must show goes when no place is free: off every other lit
-    /// node if it can be, wherever it misleads least, over its own node if need be,
-    /// then where it lies over the fewest other names and nodes, nearest; and whether
-    /// it lies over another name there.
+    /// node and every other name if it can be, wherever it misleads least, over its
+    /// own node if need be, then where it lies over the fewest other names and nodes,
+    /// nearest; and whether it lies over another name there.
     fn least_misleading(
         &self,
         key: Named,
@@ -1633,6 +1635,7 @@ impl<'a> Placer<'a> {
                 let rect = at.rect(node, edge, extent);
                 (
                     self.covers_node(key, rect),
+                    under(names, rect) > 0,
                     self.misread(key, rect, node, edge),
                     !bounds.contains_rect(rect),
                     under(names, rect),
@@ -3635,6 +3638,35 @@ mod tests {
         let rect = egui::Rect::from_min_size(a + label.offset, label.galley.size());
         assert!(!rect.contains(b), "off the lit node: {rect:?}");
         assert!(near(rect, a, 5.0), "and still near its own: {rect:?}");
+    }
+
+    #[test]
+    fn a_name_in_a_crowd_of_lit_nodes_goes_unnamed_rather_than_over_one() {
+        let node = egui::pos2(400.0, 300.0);
+        // Lit nodes all round, near enough that every place beside it lies over one.
+        let mut crowd = vec![(0, node, 5.0)];
+        for x in -8_i8..=8 {
+            for y in -8_i8..=8 {
+                if (x, y) != (0, 0) {
+                    let at = node + egui::vec2(f32::from(x) * 12.0, f32::from(y) * 9.0);
+                    crowd.push((crowd.len(), at, 4.0));
+                }
+            }
+        }
+        let (shown, ..) = placing(
+            |placer| placer.blocking.clone_from(&crowd),
+            &[(Named::Node(0), node, Force::Free)],
+        );
+        if let Some(label) = shown.get(&Named::Node(0)) {
+            let rect = egui::Rect::from_min_size(node + label.offset, label.galley.size());
+            let pill = rect.expand2(PILL_PAD);
+            assert!(
+                crowd[1..]
+                    .iter()
+                    .all(|&(_, at, r)| pill.distance_to_pos(at) >= r * 0.5),
+                "over a lit node: {rect:?}"
+            );
+        }
     }
 
     #[test]
