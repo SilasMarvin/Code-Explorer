@@ -29,7 +29,7 @@ use bevy::prelude::*;
 use codeviz_layout::ForceGraph;
 
 use crate::{
-    camera::{ANGLED, OrbitCamera},
+    camera::{ANGLED, Bounds, OrbitCamera},
     disclosure::Disclose,
     explorer::{Explorer, Hidden, Side},
     graph_view::{
@@ -239,6 +239,10 @@ const NODE_SCALE: f32 = 0.8;
 const QUIET_SCALE: f32 = 0.3;
 /// The angle the camera turns to when the nucleus opens.
 pub(crate) const VIEW: (f32, f32) = (-0.45, -0.38);
+/// Browsing, how far the camera may turn off [`VIEW`], in yaw and in pitch: the map
+/// is kept apart for views an eighth of a turn either side, and is flattened along
+/// the view, so further round it would turn edge-on.
+const BROWSE_REACH: (f32, f32) = (std::f32::consts::FRAC_PI_4, 0.4);
 /// How many times its size the nucleus grows to when expanded.
 const GROWTH: f32 = 3.5;
 /// How far outside the expanded nucleus's wall the modules round it sit, against its
@@ -2786,8 +2790,12 @@ pub(crate) struct Framed {
 /// Looks at the nucleus from far enough back to see it, every open module and the
 /// journey's cursor, turning to a three-quarter view from above, whenever the view is
 /// pointed somewhere new: a journey entered or left, a new start, Enter, a Back that
-/// crosses between them, expanding or shrinking back. Browsing, it frames the function
-/// clicked and what it touches only then, so a click moves nothing. Expanded in a
+/// crosses between them. Expanding turns there too and comes in until the expanded
+/// module fills the view; shrinking back, the explorer sends the camera back to where
+/// it stood before expanding (see [`crate::camera::restore_pose`]). Browsing, it holds
+/// the camera's angle near the usual view, so the flattened map never turns edge-on,
+/// and frames the function clicked and what it touches only then, so a click moves
+/// nothing. Expanded in a
 /// journey, it glides across to the cursor wherever the cursor goes, from as far as it
 /// was. A level more or less of the journey moves nothing, unless what it brings in
 /// would show off screen, and then it only pulls back. Turns back to the usual view
@@ -2797,6 +2805,15 @@ pub(crate) fn frame(
     mut last: Local<Option<Framed>>,
     mut cameras: Query<(&mut OrbitCamera, &Projection)>,
 ) {
+    // Browsing, the map is flattened along the usual view: held near it, so no orbit
+    // turns it edge-on.
+    let bounds = explorer.nucleus().filter(|n| n.browsing()).map(|_| Bounds {
+        middle: VIEW,
+        reach: BROWSE_REACH,
+    });
+    for (mut camera, _) in &mut cameras {
+        camera.bound(bounds);
+    }
     let Some(nucleus) = explorer.nucleus() else {
         // Laid flat again: back to the usual angle, round the journey's start.
         if last.take().is_some() {

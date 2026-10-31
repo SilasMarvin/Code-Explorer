@@ -61,6 +61,30 @@ pub(crate) struct OrbitCamera {
     /// Whether the viewer has panned or zoomed away from the focused node, so the
     /// camera stops holding it in the middle.
     pub(crate) free: bool,
+    /// The angles it may turn to, when held near one: browsing, the flattened map
+    /// never turns edge-on.
+    bounds: Option<Bounds>,
+}
+
+/// Angles held near `middle`: yaw and pitch each at most `reach` off it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Bounds {
+    pub(crate) middle: (f32, f32),
+    pub(crate) reach: (f32, f32),
+}
+
+impl Bounds {
+    /// `angles` turned no further than the bounds allow, counting whole turns round
+    /// as the yaw `from` does, so a long drag stops at the edge it went past.
+    fn hold(self, (yaw, pitch): (f32, f32), from: f32) -> (f32, f32) {
+        let tau = std::f32::consts::TAU;
+        let turns = ((from - self.middle.0) / tau).round() * tau;
+        let off = yaw - self.middle.0;
+        (
+            self.middle.0 + turns + (off - turns).clamp(-self.reach.0, self.reach.0),
+            pitch.clamp(self.middle.1 - self.reach.1, self.middle.1 + self.reach.1),
+        )
+    }
 }
 
 impl Default for OrbitCamera {
@@ -74,6 +98,7 @@ impl Default for OrbitCamera {
             goal_distance: None,
             goal_angles: None,
             free: false,
+            bounds: None,
         }
     }
 }
@@ -118,11 +143,34 @@ impl OrbitCamera {
         self.goal_distance = None;
     }
 
-    /// Turns by a drag of `delta` pixels.
+    /// Turns by a drag of `delta` pixels, no further than the bounds allow.
     fn orbit(&mut self, delta: Vec2) {
         self.goal_angles = None;
-        self.yaw -= delta.x * ORBIT_SPEED;
-        self.pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let yaw = self.yaw - delta.x * ORBIT_SPEED;
+        let pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        (self.yaw, self.pitch) = self
+            .bounds
+            .map_or((yaw, pitch), |bounds| bounds.hold((yaw, pitch), self.yaw));
+    }
+
+    /// `angles` within the bounds, when there are any.
+    fn held(&self, angles: (f32, f32)) -> (f32, f32) {
+        self.bounds
+            .map_or(angles, |bounds| bounds.hold(angles, angles.0))
+    }
+
+    /// Holds the angles near one from now on, or lets them go; when it is turned past
+    /// new bounds, eases back inside them.
+    pub(crate) fn bound(&mut self, bounds: Option<Bounds>) {
+        if self.bounds == bounds {
+            return;
+        }
+        self.bounds = bounds;
+        let angles = self.goal_angles.unwrap_or((self.yaw, self.pitch));
+        let held = self.held(angles);
+        if held != angles {
+            self.turn_to(held);
+        }
     }
 
     /// Which way the camera faces once it has turned to where it is turning.
@@ -134,11 +182,12 @@ impl OrbitCamera {
     /// Eases round by `yaw` from wherever it is turning to.
     pub(crate) fn turn_by(&mut self, yaw: f32) {
         let (from, pitch) = self.goal_angles.unwrap_or((self.yaw, self.pitch));
-        self.goal_angles = Some((from + yaw, pitch));
+        self.goal_angles = Some(self.held((from + yaw, pitch)));
     }
 
-    /// Eases round to `(yaw, pitch)`.
-    pub(crate) fn turn_to(&mut self, (yaw, pitch): (f32, f32)) {
+    /// Eases round to `(yaw, pitch)`, or as near it as the bounds allow.
+    pub(crate) fn turn_to(&mut self, angles: (f32, f32)) {
+        let (yaw, pitch) = self.held(angles);
         // The short way round.
         let turns = ((self.yaw - yaw) / std::f32::consts::TAU).round();
         self.yaw -= turns * std::f32::consts::TAU;
@@ -365,5 +414,40 @@ pub(crate) fn restore_pose(
             }
             (None, _) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounds_hold_the_angles_near_the_middle_the_same_way_round() {
+        let bounds = Bounds {
+            middle: (-0.45, -0.38),
+            reach: (0.8, 0.4),
+        };
+        assert_eq!(
+            bounds.hold((-0.3, -0.5), -0.3),
+            (-0.3, -0.5),
+            "inside, as it was"
+        );
+        let (yaw, pitch) = bounds.hold((-2.0, 0.5), -2.0);
+        assert!((yaw - -1.25).abs() < 1e-5 && (pitch - 0.02).abs() < 1e-5);
+        let turned = std::f32::consts::TAU;
+        let (yaw, _) = bounds.hold((turned + 1.0, -0.38), turned + 1.0);
+        assert!(
+            (yaw - (turned + 0.35)).abs() < 1e-4,
+            "a whole turn round stays round"
+        );
+
+        let mut camera = OrbitCamera::default();
+        camera.bound(Some(bounds));
+        camera.orbit(Vec2::new(2_000.0, 0.0));
+        let (yaw, _) = camera.pose().angles;
+        assert!(
+            (yaw - (-0.45 - 0.8)).abs() < 1e-4,
+            "a long drag stops at the edge"
+        );
     }
 }

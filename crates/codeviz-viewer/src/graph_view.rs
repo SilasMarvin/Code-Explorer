@@ -728,8 +728,9 @@ const MIN_ORBIT_DISTANCE: f32 = 25.0;
 /// F turns to face the graph head-on, centered on the journey's start again (or,
 /// gathered into spheres, back to the three-quarter view, framed as it was when the
 /// view was pointed there); R frames that same view from the angle the camera has, or
-/// flat or browsing, pulls back to take in the whole graph; Q and E turn the view an
-/// eighth of the way round, left and right.
+/// flat, pulls back to take in the whole graph, or browsing, turns back to the usual
+/// view of the whole codebase; Q and E turn the view an eighth of the way round, left
+/// and right.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
@@ -761,6 +762,8 @@ pub(crate) fn graph_keys(
         if keys.just_pressed(KeyCode::KeyR) {
             match explorer.nucleus() {
                 Some(gathered) if gathered.browsing() => {
+                    // The whole codebase, as it was first seen: from the front.
+                    camera.turn_to(nucleus::VIEW);
                     let rotation = camera.aim_rotation();
                     nucleus::fit_all(gathered, &mut camera, rotation, projection);
                 }
