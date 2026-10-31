@@ -251,9 +251,15 @@ fn draw_ui(
             camera_free(ctx, graph_area, &explorer, &mut orbit);
         }
         if help.0 {
+            // Down to the window's foot, over the journey panel where it must, so the
+            // whole list fits rather than scrolls.
+            let room = egui::Rect::from_min_max(
+                graph_area.min,
+                egui::pos2(graph_area.max.x, ctx.content_rect().max.y),
+            );
             key_help(
                 ctx,
-                graph_area,
+                room,
                 &mut help.0,
                 Showing::of(&explorer, diff.is_some()),
             );
@@ -261,7 +267,10 @@ fn draw_ui(
         if let Some(area) = panel_area {
             let tethers =
                 journey_panel::draw(ctx, area, &mut explorer, &mut panel, diff.as_deref());
-            draw_tethers(ctx, &tethers, &explorer, &to_screen);
+            // Not over the key help, which would read as crossed out.
+            if !help.0 {
+                draw_tethers(ctx, &tethers, &explorer, &to_screen);
+            }
         }
     }
     Ok(())
@@ -3259,37 +3268,42 @@ fn reading(browsing: bool) -> &'static [&'static str] {
             "Each sphere is a module, in a color of its own, named the same whatever is \
              clicked; a lit one says how many of its functions are named (3 of 39). Two \
              modules of one name are told apart by their crate (layout::graph).",
+            "A name set apart from its function keeps a dotted grey thread to it. A \
+             function with no room for its name near it is named when you point at it, \
+             and counted at the foot.",
         ];
     }
     &[
-        "Each sphere is a module, in a color of its own; it says how many of its functions \
-         the journey names (2 of 23). The middle one holds the start.",
-        "On a name, 2 +1: the function's first call in the journey, numbered as in the \
-         panel, and how many more times the journey runs it; the number, and where the \
-         name sits, stay put as the cursor moves. Two functions of one name show their \
-         types (Explorer.root, Track.root).",
-        "The panel: a bar per call, left to right in the order they run, a row a level \
-         deeper. A dashed bar runs only sometimes, and says when (if …, in a loop), as \
-         the name in the graph does; a triangle and a count on a bar is that many calls \
-         folded under it, a click opens them; a green end returns, a red one fails. \
-         Pointing at a bar draws a line to its function.",
+        "Each sphere is a module, in a color of its own, saying how many of its functions \
+         the journey names (2 of 23); the middle one holds the start. +5 callers: callers \
+         of the start drawn pale and left unnamed; point at one for its name.",
+        "On a name, 2 +1: its first call in the journey, numbered as in the panel, and how \
+         many more times the journey runs it; the cursor's shows the call it is on. A name \
+         set apart keeps a dotted grey thread to its function. Two functions of one name \
+         show their types (Explorer.root, Track.root).",
+        "The panel: a bar per call, left to right as they run, a row a level deeper. \
+         Dashed: runs only sometimes, and says when (if …, in a loop). Dimmed: runs after \
+         the cursor, as you step. Pale: a call only guessed at, or handed off to run \
+         later. A triangle and a count: calls folded under it; a click opens them. A \
+         green end returns, a red one fails.",
     ]
 }
 
-/// Below this height the keys scroll.
-const ROOM_FOR_KEYS: f32 = 900.0;
-
 /// Width of the keys' column in the help.
-const KEY_WIDTH: f32 = 88.0;
+const KEY_WIDTH: f32 = 84.0;
 
 /// Widest the help grows.
-const HELP_WIDTH: f32 = 620.0;
+const HELP_WIDTH: f32 = 820.0;
+
+/// Roughly how wide a character of the help's text is, in points, to balance its
+/// columns before they are laid out.
+const HELP_CHAR: f32 = 5.6;
 
 /// The keys that apply to the view open, on a sheet down the right of `area`, in two
-/// columns where they fit, scrolling past its height: the middle of the graph, where
-/// a journey is framed, stays in view.
+/// columns where they fit: whole at 1600 × 1000, and in a smaller window scrolling,
+/// with a cue at its foot while more lies below.
 fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showing) {
-    let margin = 16.0;
+    let margin = 12.0;
     let width = (area.width() - 2.0 * margin).clamp(240.0, HELP_WIDTH);
     let height = (area.height() - 2.0 * margin).max(160.0);
     let columns = if width >= 560.0 { 2 } else { 1 };
@@ -3305,26 +3319,20 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
         })
         .filter(|(_, keys): &(_, Vec<_>)| !keys.is_empty())
         .collect();
-    // Each section to the shortest column so far, in order.
-    let mut placed: Vec<Vec<usize>> = vec![Vec::new(); columns];
-    let mut lengths = vec![0; columns];
-    for (index, (_, keys)) in sections.iter().enumerate() {
-        let shortest = (0..columns).min_by_key(|&c| lengths[c]).unwrap_or(0);
-        placed[shortest].push(index);
-        lengths[shortest] += keys.len() + 2;
-    }
+    let placed = balance(&sections, columns, width);
     egui::Area::new("key_help".into())
         .pivot(egui::Align2::RIGHT_TOP)
         .fixed_pos(egui::pos2(area.max.x - margin, area.min.y + margin))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 245))
+                .fill(egui::Color32::from_rgb(11, 13, 19))
                 .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
                 .corner_radius(10.0)
-                .inner_margin(egui::Margin::symmetric(16, 12))
+                .inner_margin(egui::Margin::symmetric(14, 10))
                 .show(ui, |ui| {
-                    ui.set_width(width - 32.0);
+                    ui.set_width(width - 28.0);
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     ui.horizontal(|ui| {
                         let title = match (view.browsing, view.diffing) {
                             (true, _) => "Keys while browsing: no journey open",
@@ -3339,11 +3347,12 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                         });
                     });
                     let body = |ui: &mut egui::Ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             for (color, what) in color_key(view.browsing) {
                                 ui.label(egui::RichText::new("●").color(color));
-                                ui.label(egui::RichText::new(what).size(12.0).color(MUTED));
+                                ui.label(egui::RichText::new(what).size(11.5).color(MUTED));
                                 ui.add_space(8.0);
                             }
                         });
@@ -3356,20 +3365,21 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                                  shows only the journey; a click moves its cursor and nothing \
                                  else. Esc leaves it for browsing."
                             })
-                            .size(12.0)
+                            .size(11.5)
                             .color(egui::Color32::WHITE),
                         );
                         for line in reading(view.browsing) {
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(*line).size(12.0).color(MUTED),
+                                    egui::RichText::new(*line).size(11.5).color(MUTED),
                                 )
                                 .wrap(),
                             );
                         }
-                        ui.add_space(6.0);
+                        ui.add_space(4.0);
                         ui.columns(columns, |cols| {
                             for (col, indices) in cols.iter_mut().zip(&placed) {
+                                col.spacing_mut().item_spacing.y = 1.0;
                                 for &index in indices {
                                     let (title, keys) = &sections[index];
                                     key_section(col, title, keys);
@@ -3377,44 +3387,92 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                             }
                         });
                     };
-                    // Whole where the window has room, so no section is ever cut off at
-                    // a height measured the frame before; scrolling where it has not.
-                    if height >= ROOM_FOR_KEYS {
-                        body(ui);
-                    } else {
-                        egui::ScrollArea::vertical()
-                            .max_height(height - 50.0)
-                            .min_scrolled_height(height - 50.0)
-                            .auto_shrink([false, true])
-                            .show(ui, body);
-                    }
+                    // As tall as the window lets it be: a scroll area is otherwise only
+                    // as tall as egui guesses an area's room to be.
+                    let scroll = egui::ScrollArea::vertical()
+                        .max_height(height - 40.0)
+                        .min_scrolled_height(height - 40.0)
+                        .auto_shrink([false, true])
+                        .show(ui, body);
+                    more_below(ui, &scroll);
                 });
         });
 }
 
+/// Which sections of keys go in which of `columns` on a sheet `width` wide: each to
+/// the shortest column so far, in order, by the lines its keys wrap to.
+fn balance(sections: &[(&str, Vec<(&str, &str)>)], columns: usize, width: f32) -> Vec<Vec<usize>> {
+    #[expect(clippy::cast_precision_loss, reason = "a column count")]
+    let column_width = (width - 40.0) / columns as f32 - KEY_WIDTH - 8.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a positive count of characters"
+    )]
+    let per_line = (column_width / HELP_CHAR).max(10.0) as usize;
+    let mut placed: Vec<Vec<usize>> = vec![Vec::new(); columns];
+    let mut lengths = vec![0; columns];
+    for (index, (_, keys)) in sections.iter().enumerate() {
+        let shortest = (0..columns).min_by_key(|&c| lengths[c]).unwrap_or(0);
+        placed[shortest].push(index);
+        lengths[shortest] += 2 + keys
+            .iter()
+            .map(|(_, what)| what.chars().count().div_ceil(per_line))
+            .sum::<usize>();
+    }
+    placed
+}
+
+/// Whether the help had more below its foot last frame.
+fn more_below_id() -> egui::Id {
+    egui::Id::new("key_help_more_below")
+}
+
+/// While more of a scrolled sheet lies below, a cue at its foot, over the sheet.
+fn more_below(ui: &egui::Ui, scroll: &egui::scroll_area::ScrollAreaOutput<()>) {
+    let below = scroll.content_size.y - scroll.state.offset.y - scroll.inner_rect.height();
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(more_below_id(), below > 4.0));
+    if below <= 4.0 {
+        return;
+    }
+    let foot = scroll.inner_rect;
+    let galley = ui.painter().layout_no_wrap(
+        "▼ more below: scroll".to_owned(),
+        egui::FontId::proportional(12.0),
+        CURSOR_TEXT,
+    );
+    let at = egui::pos2(
+        foot.center().x - galley.size().x / 2.0,
+        foot.max.y - galley.size().y - 4.0,
+    );
+    let pill = egui::Rect::from_min_size(at, galley.size()).expand2(PILL_PAD);
+    ui.painter().rect_filled(pill, 4.0, PILL);
+    ui.painter().galley(at, galley, CURSOR_TEXT);
+}
+
 /// One group of keys, each key in a fixed column and what it does wrapping beside it.
 fn key_section(ui: &mut egui::Ui, title: &str, keys: &[(&str, &str)]) {
-    ui.label(egui::RichText::new(title).strong().size(13.0));
-    ui.add_space(2.0);
+    ui.label(egui::RichText::new(title).strong().size(12.5));
     for (key, what) in keys {
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
-                egui::vec2(KEY_WIDTH, 14.0),
+                egui::vec2(KEY_WIDTH, 13.0),
                 egui::Layout::left_to_right(egui::Align::Min),
                 |ui| {
                     ui.set_min_width(KEY_WIDTH);
                     ui.label(
                         egui::RichText::new(*key)
                             .monospace()
-                            .size(11.5)
+                            .size(11.0)
                             .color(egui::Color32::WHITE),
                     );
                 },
             );
-            ui.add(egui::Label::new(egui::RichText::new(*what).size(12.0).color(MUTED)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(*what).size(11.5).color(MUTED)).wrap());
         });
     }
-    ui.add_space(8.0);
+    ui.add_space(6.0);
 }
 
 /// The last two segments of a path: `orders::Order::total` is `Order.total`.
@@ -3592,6 +3650,37 @@ mod tests {
         );
         assert_eq!(shown[&Named::Node(0)].at, nudged, "no jump to its node");
         assert!(!overlaid.contains(&Named::Node(0)));
+    }
+
+    #[test]
+    fn the_key_list_fits_whole_at_1600_by_1000() {
+        for browsing in [false, true] {
+            let ctx = egui::Context::default();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+            let area = egui::Rect::from_min_max(egui::pos2(0.0, 24.0), screen.max);
+            let mut open = true;
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    let view = Showing {
+                        gathered: true,
+                        diffing: false,
+                        browsing,
+                    };
+                    key_help(ui.ctx(), area, &mut open, view);
+                });
+                output.textures_delta.clear();
+            }
+            let more = ctx.data(|d| d.get_temp::<bool>(more_below_id()));
+            assert_eq!(
+                more,
+                Some(false),
+                "nothing left below, browsing: {browsing}"
+            );
+        }
     }
 
     #[test]
