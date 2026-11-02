@@ -9,10 +9,10 @@ use codeviz_core::SpanId;
 use codeviz_ir::ExitKind;
 
 use crate::{
-    colors::{ERROR, MUTED, OK, ON_FILL, egui_color},
+    colors::{CURSOR, ERROR, MUTED, OK, ON_FILL, egui_color},
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
-    graph_view::node_color,
+    graph_view::{look_color, role_look},
     text,
     ui::{journey_title, short},
 };
@@ -20,14 +20,15 @@ use crate::{
 /// How the panel is zoomed and scrolled.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct JourneyPanel {
-    /// Pixels per world unit of time; `None` fits the whole journey across.
+    /// Points per slot; `None` fits the whole journey across, but never so narrow
+    /// that a bar loses its number and the start of its name.
     zoom: Option<f32>,
-    /// The world time at the left edge.
+    /// The slot at the left edge.
     left: f32,
     /// The first row shown.
     top_row: f32,
-    /// The cursor the view last scrolled to.
-    followed: Option<(u64, SpanId)>,
+    /// The cursor the view last scrolled to, in the journey and layout it was in.
+    followed: Option<(u64, SpanId, u32)>,
     /// Whether the panel set the function under the pointer, so it can clear it again.
     lit_node: bool,
 }
@@ -39,6 +40,12 @@ const ROW: f32 = 22.0;
 const ROW_GAP: f32 = 5.0;
 /// Share of a slot left between consecutive bars on a row.
 const BAR_GAP: f32 = 0.06;
+/// The narrowest a slot is drawn unless zoomed out by hand: room for a deep call's
+/// number and the start of its name, or its number and its folded calls' badge. A
+/// journey wider than the panel at this scrolls, following the cursor.
+const MIN_SLOT: f32 = 96.0;
+/// The badge on a bar that opens the calls folded under it.
+const BADGE: f32 = 30.0;
 /// How big a bar's name is drawn, and how small it shrinks to fit.
 const BAR_TEXT: f32 = text::BODY;
 const BAR_TEXT_SMALL: f32 = text::SMALL;
@@ -66,6 +73,15 @@ pub(crate) fn split(area: egui::Rect, rows: usize) -> (egui::Rect, egui::Rect) {
         egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, top)),
         egui::Rect::from_min_max(egui::pos2(area.min.x, top), area.max),
     )
+}
+
+impl JourneyPanel {
+    /// Back to the journey across at its usual scale, the cursor in view.
+    fn fit(&mut self) {
+        self.zoom = None;
+        self.top_row = 0.0;
+        self.followed = None;
+    }
 }
 
 /// One bar on screen.
@@ -168,10 +184,13 @@ fn header_bar(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .small_button("Fit")
-                    .on_hover_text("Fit the whole journey, here and in the graph (double-click)")
+                    .on_hover_text(
+                        "The whole journey, here across as far as every bar keeps its \
+                         number (double-click), and in the graph",
+                    )
                     .clicked()
                 {
-                    panel.zoom = None;
+                    panel.fit();
                     explorer.frame_again();
                 }
                 disclosure(ui, explorer);
@@ -228,16 +247,16 @@ fn canvas(
     // Only what is disclosed is laid out, a slot per call.
     let disclosed = explorer.disclosure();
     let (placed, slots) = disclosed.layout(journey.root());
-    let fit = content.width() / slots.max(1.0);
-    let scale = panel.zoom.unwrap_or(fit);
-    if panel.zoom.is_none() {
-        panel.left = 0.0;
-    }
+    let slots = slots.max(1.0);
+    let fit = content.width() / slots;
+    let usual = fit.max(MIN_SLOT);
+    let scale = panel.zoom.unwrap_or(usual);
     let pitch = ROW + ROW_GAP;
     let visible_rows = (content.height() / pitch).floor().max(1.0);
     let max_top = (disclosed.rows() as f32 - visible_rows).max(0.0);
 
-    // Zoom about the pointer: scroll or pinch. Drag pans; double-click fits.
+    // Zoom about the pointer: scroll or pinch, out as far as the whole journey
+    // across. Drag pans; double-click goes back to the usual scale.
     if response.hovered() {
         let (scroll, spread) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta()));
         let factor = spread * (scroll.y * 0.004).exp();
@@ -245,36 +264,38 @@ fn canvas(
             && let Some(pointer) = response.hover_pos()
         {
             let at = panel.left + (pointer.x - content.min.x) / scale;
-            let zoomed = (scale * factor).clamp(fit.min(0.5), 400.0);
+            let zoomed = (scale * factor).clamp(fit.min(usual), 400.0);
             panel.zoom = Some(zoomed);
             panel.left = at - (pointer.x - content.min.x) / zoomed;
         }
         if scroll.x.abs() > 0.0 {
-            panel.zoom = Some(scale);
             panel.left -= scroll.x / scale;
         }
     }
     if response.dragged() {
         let delta = response.drag_delta();
-        panel.zoom = Some(panel.zoom.unwrap_or(fit));
         panel.left -= delta.x / scale;
         panel.top_row -= delta.y / pitch;
     }
     if response.double_clicked() {
-        panel.zoom = None;
-        panel.left = 0.0;
-        panel.top_row = 0.0;
+        panel.fit();
     }
 
-    // Keep the cursor in view when it moves.
+    // Keep the cursor in view when it moves, or the journey under it changes.
+    let scale = panel.zoom.unwrap_or(usual);
+    let across = content.width() / scale;
     let cursor = explorer.cursor_span();
-    let followed = cursor.map(|c| (explorer.revision(), c));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a count of slots"
+    )]
+    let followed = cursor.map(|c| (explorer.revision(), c, slots as u32));
     if followed != panel.followed {
         panel.followed = followed;
-        if let Some(&(x, _, row)) = cursor.and_then(|c| placed.get(&c)) {
-            let width = content.width() / scale;
-            if x < panel.left || x > panel.left + width * 0.9 {
-                panel.left = x - width * 0.15;
+        if let Some(&(x, width, row)) = cursor.and_then(|c| placed.get(&c)) {
+            if x < panel.left || x + width.min(across * 0.5) > panel.left + across {
+                panel.left = x - across * 0.15;
             }
             let row = row as f32;
             if row < panel.top_row || row > panel.top_row + visible_rows - 1.0 {
@@ -282,8 +303,8 @@ fn canvas(
             }
         }
     }
+    panel.left = panel.left.clamp(0.0, (slots - across).max(0.0));
     panel.top_row = panel.top_row.clamp(0.0, max_top);
-    let scale = panel.zoom.unwrap_or(fit);
     let x_of = |x: f32| content.min.x + (x - panel.left) * scale;
     let y_of = |row: f32| content.min.y + (row - panel.top_row) * pitch;
 
@@ -350,7 +371,6 @@ fn canvas(
     let mut hovered = None;
     let mut fold_hit = None;
     let mut chips = Vec::new();
-    let mut unnamed_cursor = None;
     for bar in &bars {
         let Some(span) = track.span(bar.span) else {
             continue;
@@ -363,8 +383,13 @@ fn canvas(
         }
         let tile = tile_of(bar.span);
         // Its node's color; a call with no node of its own is grey, as everything
-        // that is no module's is.
-        let base = tile.map_or(MUTED, |tile| egui_color(node_color(explorer, tile)));
+        // that is no module's is. Only the cursor's call is pink: another run of the
+        // same function is painted as its node would be were the cursor elsewhere.
+        let base = match tile {
+            _ if Some(bar.span) == cursor => egui_color(CURSOR),
+            Some(tile) => egui_color(look_color(role_look(explorer, tile))),
+            None => MUTED,
+        };
         let faint = Confidence::of(span) == Confidence::Guessed || is_handoff(span);
         let (fill, text) = if faint {
             (base.gamma_multiply(0.22), MUTED)
@@ -396,15 +421,15 @@ fn canvas(
 
         // The same number the graph puts on the node, then the name.
         let number = disclosed.number(bar.span).unwrap_or_default();
-        let number_width = text_width(&painter, number, 11.5);
+        let number_width = text_width(&painter, number, BAR_TEXT_SMALL);
         // What is folded under the bar, as a badge that opens it, where there is room
         // for its number beside it: a number says which call it is, the badge only
         // how much more there is. A triangle, as a fold is drawn anywhere, and the
-        // count: never "+N", which on a name in the graph counts runs.
+        // count.
         let folded = disclosed.folded(bar.span);
-        let badge = (folded > 0 && bar.rect.width() > 30.0 + number_width + 12.0).then(|| {
+        let badge = (folded > 0 && bar.rect.width() > BADGE + number_width + 12.0).then(|| {
             let badge = egui::Rect::from_min_max(
-                egui::pos2(bar.rect.max.x - 30.0, bar.rect.min.y + 3.0),
+                egui::pos2(bar.rect.max.x - BADGE, bar.rect.min.y + 3.0),
                 egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
             );
             let ink = egui::Color32::from_rgb(220, 224, 234);
@@ -440,69 +465,16 @@ fn canvas(
                 egui::StrokeKind::Outside,
             );
         }
-        // Every bar names its function after its number: the whole name and when it
-        // runs where they fit, then smaller, then the function's own name without its
-        // type, still with when it runs; then cut short with an ellipsis, as measured,
-        // so what is left out shows; then without the number; and where not a letter
-        // of it fits, the number alone.
         let free = badge.map_or(bar.rect, |badge| {
             egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x - 2.0, bar.rect.max.y))
         });
-        let painter = painter.with_clip_rect(bar.rect.intersect(content));
-        let label = explorer.label(bar.span);
-        let own = own_name(&label);
-        let numbered = |name: &str| {
-            if number.is_empty() {
-                name.to_owned()
-            } else {
-                format!("{number}  {name}")
-            }
-        };
-        let condition =
-            crate::disclosure::when(span).map_or_else(String::new, |w| format!("  {w}"));
-        let room = free.width() - 10.0;
-        let tries = [
-            (format!("{}{condition}", numbered(&label)), BAR_TEXT),
-            (format!("{}{condition}", numbered(&label)), BAR_TEXT_SMALL),
-            (format!("{}{condition}", numbered(&own)), BAR_TEXT_SMALL),
-        ];
-        let whole = tries
-            .iter()
-            .find(|(text, size)| text_width(&painter, text, *size) <= room);
-        // Cut short, the number and at least a few letters of the name stay.
-        let cut = |text: &str| {
-            fit_text(&painter, text, BAR_TEXT_SMALL, room)
-                .filter(|fitted| fitted.chars().count() > number.chars().count() + 4)
-                .map(|fitted| (fitted, BAR_TEXT_SMALL))
-        };
-        let named = whole
-            .cloned()
-            .or_else(|| cut(&format!("{}{condition}", numbered(&own))))
-            .or_else(|| {
-                (text_width(&painter, &own, BAR_TEXT_SMALL) <= room)
-                    .then(|| (own.clone(), BAR_TEXT_SMALL))
-            });
-        // The cursor's bar is named come what may, over its neighbours if it must.
-        if whole.is_none() && Some(bar.span) == cursor {
-            unnamed_cursor = Some((bar.rect, numbered(&own)));
-        }
-        if let Some((named, size)) = named {
+        let painter = painter.with_clip_rect(free.intersect(content));
+        if let Some((named, size)) = bar_text(&painter, explorer, bar.span, free.width() - 10.0) {
             painter.text(
-                bar.rect.left_center() + egui::vec2(5.0, 0.0),
+                free.left_center() + egui::vec2(5.0, 0.0),
                 egui::Align2::LEFT_CENTER,
                 named,
                 egui::FontId::proportional(size),
-                text,
-            );
-        } else {
-            if free.width() < number_width + 4.0 {
-                continue;
-            }
-            painter.text(
-                free.center(),
-                egui::Align2::CENTER_CENTER,
-                number,
-                egui::FontId::proportional(text::SMALL),
                 text,
             );
         }
@@ -537,25 +509,24 @@ fn canvas(
             egui::StrokeKind::Outside,
         );
     }
-    if let Some((rect, name)) = unnamed_cursor {
-        let galley = painter.layout_no_wrap(
-            name,
-            egui::FontId::proportional(BAR_TEXT_SMALL),
-            egui::Color32::WHITE,
+    // Wider than the panel, a track along its foot shows which part is in view.
+    if slots > across + 1e-3 {
+        let track = egui::Rect::from_min_max(
+            egui::pos2(content.min.x, content.max.y - 3.0),
+            egui::pos2(content.max.x, content.max.y),
         );
-        let at = egui::pos2(
-            rect.min.x.max(content.min.x + 2.0),
-            rect.center().y - galley.size().y / 2.0,
+        let thumb = egui::Rect::from_min_max(
+            egui::pos2(
+                track.min.x + track.width() * panel.left / slots,
+                track.min.y,
+            ),
+            egui::pos2(
+                track.min.x + track.width() * ((panel.left + across) / slots).min(1.0),
+                track.max.y,
+            ),
         );
-        let pill = egui::Rect::from_min_size(at, galley.size()).expand2(egui::vec2(5.0, 2.0));
-        painter.rect(
-            pill,
-            3.0,
-            BACKGROUND,
-            egui::Stroke::new(1.5, egui::Color32::WHITE),
-            egui::StrokeKind::Outside,
-        );
-        painter.galley(at, galley, egui::Color32::WHITE);
+        painter.rect_filled(track, 1.5, egui::Color32::from_white_alpha(18));
+        painter.rect_filled(thumb, 1.5, egui::Color32::from_white_alpha(110));
     }
 
     if let Some(span) = hovered {
@@ -568,6 +539,10 @@ fn canvas(
             );
         }
         let mut tip = explorer.label(span);
+        let number = disclosed.number(span).unwrap_or_default();
+        if !number.is_empty() {
+            tip = format!("{number}  {tip}");
+        }
         if let Some(span) = track.span(span) {
             for condition in &span.conditions {
                 let guard = condition.guard.as_deref().unwrap_or("?");
@@ -620,21 +595,56 @@ fn canvas(
     }
 }
 
-/// A function's own name from its label, without the type before it:
-/// `Explorer.cursor ↻` is `cursor ↻`.
-fn own_name(label: &str) -> String {
-    let mut done = false;
-    label
-        .split(' ')
-        .map(|word| match word.rsplit_once('.') {
-            Some((_, own)) if !done && !own.is_empty() => {
-                done = true;
-                own
-            }
-            _ => word,
+/// What a bar says, in `room` points, and at what size: its number, then its
+/// function's name as the graph has it, with why the journey stops there and when it
+/// runs; then smaller; then without when it runs; then cut short with an ellipsis,
+/// keeping the number and a few letters; then the number alone. `None` where not even
+/// the number fits.
+fn bar_text(
+    painter: &egui::Painter,
+    explorer: &Explorer,
+    span: SpanId,
+    room: f32,
+) -> Option<(String, f32)> {
+    let disclosed = explorer.disclosure();
+    let number = disclosed.number(span).unwrap_or_default();
+    let mut name = explorer.label(span);
+    match explorer.stop_mark(span) {
+        Some(mark @ "→") => name = format!("{mark} {name}"),
+        Some(mark) => name = format!("{name} {mark}"),
+        None => {}
+    }
+    if disclosed.calls_itself(span) {
+        name = format!("{name}  ↺ calls itself");
+    }
+    let named = if number.is_empty() {
+        name
+    } else {
+        format!("{number}  {name}")
+    };
+    let when = explorer
+        .span(span)
+        .and_then(crate::disclosure::when)
+        .map_or_else(String::new, |w| format!("  {w}"));
+    let whole = format!("{named}{when}");
+    let tries = [
+        (whole.as_str(), BAR_TEXT),
+        (whole.as_str(), BAR_TEXT_SMALL),
+        (named.as_str(), BAR_TEXT_SMALL),
+    ];
+    if let Some((text, size)) = tries
+        .into_iter()
+        .find(|(text, size)| text_width(painter, text, *size) <= room)
+    {
+        return Some((text.to_owned(), size));
+    }
+    fit_text(painter, &named, BAR_TEXT_SMALL, room)
+        .filter(|cut| cut.chars().count() > number.chars().count() + 5)
+        .or_else(|| {
+            (text_width(painter, number, BAR_TEXT_SMALL) <= room).then(|| number.to_owned())
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+        .filter(|text| !text.is_empty())
+        .map(|text| (text, BAR_TEXT_SMALL))
 }
 
 /// How wide `text` is drawn at `size`, in points.
@@ -765,6 +775,31 @@ mod tests {
         assert!(
             vertices.iter().all(|p| p.is_finite()),
             "nothing is drawn from a bar the closure does not have"
+        );
+    }
+
+    #[test]
+    fn a_narrow_bar_keeps_its_number() {
+        // main -> (a -> c), b
+        let mut explorer = crate::explorer::tests::explorer();
+        explorer.set_disclose(Disclose(2));
+        let journey = explorer.journey().unwrap();
+        let a = journey.span(journey.root()).unwrap().children[0];
+        let c = journey.span(a).unwrap().children[0];
+        let ctx = egui::Context::default();
+        let mut said = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            let number = text_width(painter, "1.1", BAR_TEXT_SMALL);
+            said = [400.0, number + 1.0, number - 1.0]
+                .map(|room| bar_text(painter, &explorer, c, room).map(|(text, _)| text))
+                .to_vec();
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            said,
+            [Some("1.1  c".to_owned()), Some("1.1".to_owned()), None],
+            "whole, then the number alone, then nothing where not even that fits"
         );
     }
 }

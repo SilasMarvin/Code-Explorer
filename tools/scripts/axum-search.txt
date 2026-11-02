@@ -1,0 +1,33 @@
+#: view demo/out/axum-server.json
+# Search: arrows pick a row, Enter takes the one picked; a route is found by its path
+# and by its function's name, listed once; opened again, the last query is selected,
+# so typing replaces it. Esc from a journey selects its start, whatever the cursor.
+key /
+type place
+snap typed
+key down
+snap down
+key enter
+expect selection handlers::place_order
+expect search false
+key /
+type find_user
+snap retyped
+key enter
+expect selection users::find_user
+key /
+type POST /users/{id}/orders
+snap route
+key enter
+expect selection handlers::place_order
+key enter
+expect start handlers::place_order
+key .
+key down
+key down
+expect mode journey
+snap cursor deep
+key esc
+expect mode browse
+expect selection handlers::place_order
+snap left

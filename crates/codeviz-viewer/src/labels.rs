@@ -1293,6 +1293,8 @@ impl<'a> Naming<'a> {
         let (explorer, nucleus) = (self.explorer, self.nucleus);
         let (cursor, start) = (self.cursor, self.start);
         let name = match explorer.tile_unit(tile) {
+            // On the journey, named as its bars are.
+            Some(unit) if explorer.runs(unit) => explorer.function_name(unit),
             Some(unit) if homonym => explorer.unit_name(unit),
             _ => node_name(explorer, tile),
         };
