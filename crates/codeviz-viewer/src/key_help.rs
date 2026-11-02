@@ -27,11 +27,10 @@ pub(crate) fn key_hint(ctx: &egui::Context, foot: egui::Rect, expanded: bool) {
 pub(crate) fn hint(browsing: bool, expanded: bool) -> String {
     let keys = if browsing {
         "click a function to select it, nothing moves · Enter opens its journey · \
-         Backspace back · / search · R whole map · H keys"
+         Backspace back · / search · R whole map · H help"
     } else {
-        "click a call to move the cursor there · ] [ ↓ ↑ ← → step · ↑ from the start: \
-         its callers · , . less or more · I calls in from outside · Esc leaves for \
-         browsing · H keys"
+        "click a call to go to it · ] [ ↓ ↑ ← → step · ↑ from the start: its callers · \
+         , . less or more · I who else calls it · Esc leaves for browsing · H help"
     };
     match (browsing, expanded) {
         (_, true) => format!("X or Esc: back out · {keys}"),
@@ -71,7 +70,7 @@ const KEYS: [(&str, &str, When); 24] = [
          select it",
         When::Journey,
     ),
-    ("click space", "clear the selection", When::Always),
+    ("click empty space", "clear the selection", When::Always),
     (
         "Enter",
         "open the selected function's journey",
