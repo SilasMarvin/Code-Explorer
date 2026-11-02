@@ -66,10 +66,6 @@ const FRONT_SLACK: f32 = 0.05;
 /// How far what lay under the pointer may drift on a wheel turn: points, plus a
 /// share of its distance from the pointer.
 const ZOOM_DRIFT: (f32, f32) = (4.0, 0.05);
-/// Zoomed out with the whole map within this many times the free area, the camera
-/// holds the map in it ([`crate::camera`]), so a wheel turn out is no zoom about the
-/// pointer alone.
-const HELD_MAP: f32 = 3.0;
 /// Zoomed out, the least share of the free area's smaller side the whole map spans.
 const ZOOM_OUT_LEAST: f32 = 0.4;
 /// Least a function or sphere moves in the world, or a dot or name on screen in
@@ -245,6 +241,8 @@ struct Camera {
     distance: f32,
     yaw: f32,
     pitch: f32,
+    /// The last wheel turn out panned to hold the map in the free area.
+    held: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -972,12 +970,8 @@ fn zoom_to_pointer(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if turns > 1 || others {
         return skip("more than one wheel turn, or other moves, since the last snapshot");
     }
-    let free = s.free();
-    let held = map_extent(s).is_some_and(|map| {
-        map.width() <= free.width() * HELD_MAP && map.height() <= free.height() * HELD_MAP
-    });
-    if since.has(Kind::Zoom { out: true }) && held {
-        return skip("zoomed out this far, the camera holds the map in the free area");
+    if s.state.camera.is_some_and(|c| c.held) {
+        return skip("the wheel turn out panned to hold the map in the free area");
     }
     let (Some(before), Some(pointer)) = (before, s.state.pointer) else {
         return skip("no snapshot before, or no pointer");
@@ -1083,6 +1077,17 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if since.has(Kind::Click) && s.expanded() && s.state.mode == "journey" {
         return skip("a click expanded in a journey may re-centre on what it clicks");
     }
+    let cursor = |snap: &Snap| {
+        snap.nodes
+            .iter()
+            .find(|n| n.is("cursor"))
+            .and_then(|n| n.unit.clone())
+    };
+    if s.expanded() && s.state.mode == "journey" && cursor(before) != cursor(s) {
+        return skip(
+            "the cursor moved expanded in a journey: the camera may pan to keep it in view",
+        );
+    }
     // A depth change may draw the camera back to show what it brought in, when that
     // would be off the free area, and no more.
     let depth = since.has(Kind::Depth);
@@ -1134,7 +1139,13 @@ fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
         .iter()
         .filter(|n| n.unit.as_deref().is_some_and(|u| !old.contains(&u)))
         .collect();
-    let off = came.iter().any(|n| {
+    // What came in, or anything of the journey's the free area, now smaller under a
+    // taller panel, no longer holds.
+    let judged = now
+        .nodes
+        .iter()
+        .filter(|n| n.in_journey() || n.unit.as_deref().is_some_and(|u| !old.contains(&u)));
+    let off = judged.into_iter().any(|n| {
         let was = v2(middle) + (v2(n.at) - v2(middle)) * k;
         circle_out(free, was, n.radius) > EDGE
     });

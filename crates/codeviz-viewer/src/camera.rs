@@ -90,6 +90,9 @@ pub(crate) struct OrbitCamera {
     bounds: Option<Bounds>,
     /// How near and how far the wheel may take it.
     reach: Option<Reach>,
+    /// Whether the last wheel turn panned to hold the map in the free area, beside
+    /// zooming about the pointer.
+    held: bool,
 }
 
 /// Where the camera stands, for a move from one stand to another.
@@ -221,6 +224,7 @@ impl Default for OrbitCamera {
             trip: None,
             bounds: None,
             reach: None,
+            held: false,
         }
     }
 }
@@ -362,6 +366,7 @@ impl OrbitCamera {
     /// ([`Self::hold_map`]). It never jumps to a bound from outside it.
     fn zoom(&mut self, factor: f32, toward: Option<Vec3>) {
         self.halt();
+        self.held = false;
         let point = toward.unwrap_or(self.looking_at);
         let Some(reach) = self.reach.clone() else {
             self.scale_about(point, factor);
@@ -397,6 +402,7 @@ impl OrbitCamera {
         let by = off.clamp(-room, room) - off;
         if by != Vec2::ZERO {
             self.pan(rotation * Vec3::new(-by.x * depth * tan.x, -by.y * depth * tan.y, 0.0));
+            self.held = true;
         }
     }
 
@@ -491,6 +497,11 @@ impl OrbitCamera {
     /// Eases across to look at `target` from as far away as it is going to be.
     pub(crate) fn pan_to(&mut self, target: Vec3) {
         self.target = target;
+    }
+
+    /// Whether the last wheel turn panned to hold the map in the free area.
+    pub(crate) fn held_map(&self) -> bool {
+        self.held
     }
 
     /// The distance it is easing to, or is at.

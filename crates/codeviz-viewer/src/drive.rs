@@ -1064,6 +1064,10 @@ impl View<'_, '_> {
         self.cameras.iter().next().map(|(_, _, orbit)| orbit.pose())
     }
 
+    pub(crate) fn orbit_held(&self) -> bool {
+        self.cameras.iter().any(|(_, _, orbit)| orbit.held_map())
+    }
+
     fn camera_easing(&self) -> bool {
         self.cameras.iter().any(|(_, _, orbit)| orbit.easing())
     }

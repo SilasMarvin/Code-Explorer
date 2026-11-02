@@ -28,13 +28,17 @@ pub(crate) struct GraphView(pub(crate) Option<egui::Rect>);
 struct Views {
     free: Lens,
     named: Vec2,
+    /// The share that leaves [`DOT_ROOM`] round its edges, for a dot to show whole.
+    dots: Vec2,
 }
 
 /// What the nucleus was last framed for: whether it was browsed; in a journey, where
 /// it starts and how much of it showed; the hand that last pointed the view; the
-/// module expanded and, expanded, the journey's cursor.
+/// module expanded and, expanded, the journey's cursor; and the graph's view in the
+/// window, in whole points.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Framed {
+    view: [i32; 4],
     browsing: bool,
     start: Option<usize>,
     aim: u64,
@@ -59,6 +63,9 @@ const ROOM: f32 = 0.72;
 /// and up, in points.
 const NAME_ROOM: egui::Vec2 = egui::vec2(150.0, 24.0);
 
+/// Room left round the free area's edges for a dot to show whole, in points.
+const DOT_ROOM: f32 = 10.0;
+
 /// The share of the free area, about its middle, the cursor is kept in when the view
 /// pans to it.
 const CURSOR_ROOM: f32 = 0.85;
@@ -66,20 +73,22 @@ const CURSOR_ROOM: f32 = 0.85;
 /// Sends the camera where the view asks, into the free area (the graph's view less
 /// the journey panel), in this order, each having the last word over the one before:
 ///
-/// - Whenever the view is pointed somewhere new, it looks at the nucleus from far
-///   enough back to see it, every open module and the journey's cursor, turning to
-///   the usual view. Expanding turns there too and comes in until the expanded module
-///   fills the view. Browsing, it holds the camera's angle near the usual view, so the
-///   flattened map never turns edge-on, and frames the selection and what it touches
-///   only then, so a click moves nothing. Expanded in a journey, it pans just enough
-///   to keep the cursor in view wherever it goes; a level more or less moves nothing.
-///   Otherwise a level more or less of the journey moves nothing, unless what it
-///   brings in would show off the free area, and then it only pulls back.
+/// - Whenever the view is pointed somewhere new, or the window sized anew, it turns
+///   to the usual view and frames it: in a journey, the start, the cursor and every
+///   function the journey lights, with room for their names; browsing, the selection
+///   and every module it touches, or the whole codebase. Expanding turns there too
+///   and comes in until the expanded module fills the view. Browsing, it holds the
+///   camera's angle near the usual view, so the flattened map never turns edge-on,
+///   and frames the selection only then, so a click moves nothing. Expanded in a
+///   journey, it pans just enough to keep the cursor in view wherever it goes, and a
+///   level more or less moves nothing; otherwise a level more or less moves nothing
+///   unless something the journey lights would show off the free area, and then it
+///   only pulls back.
 /// - F frames the focus from the angle the camera has: browsing, the selection and
 ///   what it lights; in a journey, the journey and what the view is on
 ///   ([`Explorer::current`]); expanded, the module, filling the view, and the cursor.
 ///   R shrinks back what is expanded, turns back to the usual three-quarter view and
-///   frames everything shown. Either has the last word over the view pointed anew.
+///   frames everything shown: in a journey, its spheres and what it lights. Either has the last word over the view pointed anew.
 /// - When the explorer asks for the camera back (Back to a place, Esc to browsing,
 ///   shrinking back), it returns to where it stood then, or with no such place,
 ///   browsing, takes in the whole codebase.
@@ -108,10 +117,13 @@ pub(crate) fn frame(
     let Some(lens) = lens(projection, view, free) else {
         return;
     };
-    let named = (Vec2::ONE
-        - Vec2::new(NAME_ROOM.x, NAME_ROOM.y) * 2.0 / Vec2::new(free.width(), free.height()))
-    .max(Vec2::splat(0.5));
-    let views = Views { free: lens, named };
+    let size = Vec2::new(free.width(), free.height());
+    let short_of = |room: Vec2| (Vec2::ONE - room * 2.0 / size).max(Vec2::splat(0.5));
+    let views = Views {
+        free: lens,
+        named: short_of(Vec2::new(NAME_ROOM.x, NAME_ROOM.y)),
+        dots: short_of(Vec2::splat(DOT_ROOM)),
+    };
     let nucleus = explorer.nucleus();
     let browsing = nucleus.browsing();
     let resting = |tile: usize| nucleus.resting_point(tile);
@@ -128,7 +140,9 @@ pub(crate) fn frame(
     }
     let expanded = nucleus.expanded_module();
     let cursor = explorer.cursor();
+    #[expect(clippy::cast_possible_truncation, reason = "window points")]
     let now = Framed {
+        view: [view.min.x, view.min.y, view.max.x, view.max.y].map(|v| v.round() as i32),
         browsing,
         start: nucleus.start().filter(|_| !browsing),
         aim: explorer.aim(),
@@ -210,7 +224,9 @@ fn follow_view(
     // Entering or leaving a journey, expanding or shrinking back, turns to the usual
     // view too, where the ring of modules round the nucleus keeps its order.
     let opening = before.is_none_or(|b| (b.browsing, b.expanded) != (now.browsing, now.expanded));
-    let pointed = opening || before.is_some_and(|b| (b.start, b.aim) != (now.start, now.aim));
+    // A window sized anew, as it is while it opens, frames again too.
+    let pointed = opening
+        || before.is_some_and(|b| (b.start, b.aim, b.view) != (now.start, now.aim, now.view));
     if pointed {
         if opening {
             camera.turn_to(VIEW);
@@ -234,7 +250,7 @@ fn follow_view(
             pan_into_view(at, camera, lens);
         }
     } else {
-        reveal(nucleus, cursor, camera, lens);
+        reveal(nucleus, cursor, camera, views);
     }
 }
 
@@ -256,13 +272,13 @@ fn pan_into_view(at: Vec3, camera: &mut OrbitCamera, lens: Lens) {
 }
 
 /// Pulls back, round wherever the camera looks, just far enough that every function
-/// the journey lights, and `also`, shows in the free area; when they all show
+/// the journey lights, and `also`, shows whole in the free area; when they all show
 /// already, nothing moves.
-fn reveal(nucleus: &Nucleus, also: Option<Vec3>, camera: &mut OrbitCamera, lens: Lens) {
+fn reveal(nucleus: &Nucleus, also: Option<Vec3>, camera: &mut OrbitCamera, views: Views) {
     let rotation = camera.aim_rotation();
     let mut points = nucleus.journey_points();
     points.extend(also);
-    let needed = distance_to_show(&points, camera.target, rotation, lens, Vec2::ONE);
+    let needed = distance_to_show(&points, camera.target, rotation, views.free, views.dots);
     if needed > camera.goal_distance() {
         camera.pull_back(needed);
     }

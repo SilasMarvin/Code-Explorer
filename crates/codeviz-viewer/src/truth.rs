@@ -125,6 +125,8 @@ pub(crate) fn state(view: &View) -> Value {
                 "distance": fine(distance),
                 "yaw": fine(yaw),
                 "pitch": fine(pitch),
+                // The last wheel turn out panned to hold the map in the free area.
+                "held": view.orbit_held(),
             })
         }),
     })

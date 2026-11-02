@@ -160,7 +160,8 @@ scene's units.
   journey), `nucleus`
   (`modules`, `expanded`), `expanded` (the module expanded, by name), `depth`, `outside_callers`, `hovered` (the function the
   pointer has rested on, as drawn) and `under_pointer` (what the pointer is on now),
-  `search`, `help`, `back`, `forward`, `camera` (`target`, `distance`, `yaw`, `pitch`),
+  `search`, `help`, `back`, `forward`, `camera` (`target`, `distance`, `yaw`, `pitch`,
+  `held`: the last wheel turn out panned to hold the map in the free area),
   `pointer`.
 - `nodes`: every function drawn: `name`, `unit`, `module`, `roles` (`start`,
   `selection`, `cursor`, `aside`, `caller`, `journey level N`, `opened`
@@ -221,7 +222,7 @@ constant at the top of that file.
 | `panel-agrees` | each numbered bar's function carries that number on the graph, no other function does; each bar reads the name the graph gives its function (what its label leads with after its numbers); with a cursor on the graph, exactly one cursor bar shows, for that function | journey bars drawn |
 | `expanded-fill` | the expanded module's (`state.expanded`) diameter is 60–90% of the free area's smaller side (the graph less a docked panel), and it lies inside it | after `x` or a double click, when expanded |
 | `framed` | after R: every sphere inside the free area, camera at the usual view the map opens at (yaw and pitch within 0.05 of it); after F: every lit dot (or the expanded module) inside it with a 4-point margin | when F or R is the last step since the snap before that moves the view |
-| `zoom-to-pointer` | the sphere nearest the pointer (else any sphere, else any dot, drawn in both snaps) moved as a zoom about the pointer moves it (within 4 points plus 5% of its distance) | one wheel turn, nothing else that moves, since the snap before; not a turn out with the whole map within 3× the free area, where the camera holds the map in it |
+| `zoom-to-pointer` | the sphere nearest the pointer (else any sphere, else any dot, drawn in both snaps) moved as a zoom about the pointer moves it (within 4 points plus 5% of its distance) | one wheel turn, nothing else that moves, since the snap before; not a turn out that panned to hold the map in the free area (`state.camera.held`) |
 | `zoom-bounds` | some of the map is on screen, and zoomed out it still spans 40% of the free area | after a wheel turn |
 | `nothing-moved` | no dot, sphere or name moved, nor the camera, since the snap before (names matched by function, not by what they say), and no name went while its dot or sphere still shows (unless a click selected another function); after `,` `.` or a badge the camera may only draw back, and only when something that came in would have been off the free area from where it was; the world may not move | every step since is one that must move nothing |
 | `focus-on-screen` | the selection, the start and the cursor, where drawn, lie inside the free area | unless the camera is where the user's hands put it, or an expand since framed a module |
@@ -238,7 +239,7 @@ What a step may move decides which checks judge it:
 
 | kind | steps | may move |
 |---|---|---|
-| still | `hover`, `hover-label`, `key` arrows, `[`, `]`, `i`, `wait`, `expect`, `frames` | nothing |
+| still | `hover`, `hover-label`, `key` arrows, `[`, `]`, `i`, `wait`, `expect`, `frames` | nothing; expanded in a journey, a cursor that moves may pan the camera to keep it in view |
 | click | `click UNIT`, `click-label`, `bar` | nothing; expanded in a journey it may re-centre |
 | depth | `key ,`, `key .`, `chip` | the camera, drawn back to bring new calls on; nothing in the world |
 | expand | `key x`, `doubleclick`, `doubleclick-module` | the view |
