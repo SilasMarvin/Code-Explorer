@@ -1385,7 +1385,6 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
 
 fn spheres_unclipped(s: &Snap) -> Value {
     let graph = rect(s.graph_area);
-    let free = s.free();
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(s.window[0], s.window[1]));
     if !graph.is_positive() {
         return skip("no graph area");
@@ -1401,10 +1400,11 @@ fn spheres_unclipped(s: &Snap) -> Value {
     let bottom = graph.max.y < window.max.y - HIDDEN_EDGE && !panel_below(graph.max.y);
     let left = graph.min.x > window.min.x + HIDDEN_EDGE;
     let right = graph.max.x < window.max.x - HIDDEN_EDGE;
+    let eye = s.camera.map(|e| Vec3::from_array(e.at));
     let mut offenders = Vec::new();
     for m in s.spheres().filter(|m| m.radius > 0.0) {
-        // Zoomed past it: bigger than the free area, it cannot but be cut.
-        if 2.0 * m.radius > free.width().min(free.height()) {
+        // Zoomed past it, the camera inside, it shows as no disc to cut.
+        if eye.is_some_and(|eye| eye.distance(Vec3::from_array(m.world)) < m.world_radius) {
             continue;
         }
         let c = v2(m.at);
@@ -2458,6 +2458,15 @@ mod tests {
         s["overlays"] = json!([{ "name": "journey panel", "rect": [12.0, 890.0, 1588.0, 988.0] }]);
         let result = check(&s, "spheres-unclipped");
         assert_eq!(result["count"], 2, "both cross y = 560: {result}");
+        // However big it shows, while the camera is outside it.
+        s["modules"][0]["radius"] = json!(900.0);
+        assert_eq!(check(&s, "spheres-unclipped")["count"], 2);
+        s["camera"] = json!({ "at": [-10.0, 0.0, 1.0] });
+        assert_eq!(
+            check(&s, "spheres-unclipped")["count"],
+            1,
+            "inside a, it shows no disc"
+        );
         // The panel starts where the graph ends: what it cuts is under the panel.
         s["overlays"][0]["rect"] = json!([12.0, 562.0, 1588.0, 988.0]);
         assert!(passes(&check(&s, "spheres-unclipped")));
