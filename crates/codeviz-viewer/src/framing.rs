@@ -35,10 +35,12 @@ struct Views {
 /// What the nucleus was last framed for: whether it was browsed; in a journey, where
 /// it starts and how much of it showed (its depth and the folds opened by hand); the
 /// hand that last pointed the view; the module expanded and, expanded, the journey's
-/// cursor; and the graph's view in the window, in whole points.
+/// cursor; and the graph's view in the window and the free area in it, in whole
+/// points.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Framed {
     view: [i32; 4],
+    free: [i32; 4],
     browsing: bool,
     start: Option<usize>,
     aim: u64,
@@ -66,6 +68,10 @@ const NAME_ROOM: egui::Vec2 = egui::vec2(150.0, 24.0);
 /// Room left round the free area's edges for a dot to show whole, in points.
 const DOT_ROOM: f32 = 10.0;
 
+/// How much further back than the camera is something must need it to be, as a share
+/// of its distance, for a level more or less to draw it back: rounding, not leeway.
+const REVEAL_SLACK: f32 = 0.005;
+
 /// The share of the free area, about its middle, the cursor is kept in when the view
 /// pans to it.
 const CURSOR_ROOM: f32 = 0.85;
@@ -74,15 +80,17 @@ const CURSOR_ROOM: f32 = 0.85;
 /// the journey panel), in this order, each having the last word over the one before:
 ///
 /// - Whenever the view is pointed somewhere new, or the window sized anew, it turns
-///   to the usual view and frames it: in a journey, the start, the cursor and every
-///   function the journey lights, with room for their names; browsing, the selection
-///   and every module it touches, or the whole codebase. Expanding turns there too
-///   and comes in until the expanded module fills the view. Browsing, it holds the
-///   camera's angle near the usual view, so the flattened map never turns edge-on,
-///   and frames the selection only then, so a click moves nothing. Expanded in a
-///   journey, it pans just enough to keep the cursor in view wherever it goes, and a
-///   level more or less moves nothing; otherwise a level more or less moves nothing
-///   unless something the journey lights would show off the free area, and then it
+///   to the usual view and frames it: in a journey, the start, the cursor, every
+///   function the journey lights and the spheres they lie in, whole, with room for
+///   their names; browsing, the selection and every module it touches, or the whole
+///   codebase. Expanding turns there too and comes in until the expanded module fills
+///   the view, as does a cursor that takes the expansion to another module. Browsing,
+///   it holds the camera's angle near the usual view, so the flattened map never
+///   turns edge-on, and frames the selection only then, so a click moves nothing.
+///   Expanded in a journey, it pans just enough to keep the cursor in view within the
+///   module, and a level more or less moves nothing; otherwise a level more or less
+///   moves nothing unless something the journey lights, or a sphere it comes to run
+///   through (any, when the panel grows), would show off the free area, and then it
 ///   frames the journey afresh, coming no nearer.
 /// - F frames the focus from the angle the camera has: browsing, the selection and
 ///   what it lights; in a journey, the journey and what the view is on
@@ -98,6 +106,7 @@ pub(crate) fn frame(
     view: Res<GraphView>,
     mut explorer: ResMut<Explorer>,
     mut last: Local<Option<Framed>>,
+    mut opened: Local<Vec<usize>>,
     mut cameras: Query<(&mut OrbitCamera, &Projection)>,
 ) {
     let Some(view) = view.0 else {
@@ -141,8 +150,10 @@ pub(crate) fn frame(
     let expanded = nucleus.expanded_module();
     let cursor = explorer.cursor();
     #[expect(clippy::cast_possible_truncation, reason = "window points")]
+    let points = |r: egui::Rect| [r.min.x, r.min.y, r.max.x, r.max.y].map(|v| v.round() as i32);
     let now = Framed {
-        view: [view.min.x, view.min.y, view.max.x, view.max.y].map(|v| v.round() as i32),
+        view: points(view),
+        free: points(free),
         browsing,
         start: nucleus.start().filter(|_| !browsing),
         aim: explorer.aim(),
@@ -151,6 +162,20 @@ pub(crate) fn frame(
         cursor: cursor.filter(|_| expanded.is_some()),
     };
     let before = last.replace(now);
+    // The modules the journey has come to run through since the frame before; all of
+    // them when the panel has grown or shrunk since.
+    let modules = if browsing {
+        Vec::new()
+    } else {
+        nucleus.open_modules()
+    };
+    let resized = before.is_some_and(|b| b.free != now.free);
+    let came: Vec<usize> = modules
+        .iter()
+        .copied()
+        .filter(|m| resized || !opened.contains(m))
+        .collect();
+    *opened = modules;
     let cursor = cursor.and_then(resting);
     if focus {
         let rotation = camera.aim_rotation();
@@ -173,7 +198,7 @@ pub(crate) fn frame(
             glide(&points, &mut camera, view_rotation(), lens);
         }
     } else if before != Some(now) {
-        follow_view(before, now, nucleus, cursor, &mut camera, views);
+        follow_view(before, now, nucleus, cursor, &came, &mut camera, views);
     }
 
     if let Some(pose) = returning {
@@ -211,12 +236,14 @@ fn lens(projection: &Projection, view: egui::Rect, free: egui::Rect) -> Option<L
 }
 
 /// The view pointed somewhere new, the expanded view's cursor moved, or anything
-/// else [`Framed`] holds changed since `before`: see [`frame`].
+/// else [`Framed`] holds changed since `before`, the journey now running through
+/// the modules `came` too: see [`frame`].
 fn follow_view(
     before: Option<Framed>,
     now: Framed,
     nucleus: &Nucleus,
     cursor: Option<Vec3>,
+    came: &[usize],
     camera: &mut OrbitCamera,
     views: Views,
 ) {
@@ -250,7 +277,7 @@ fn follow_view(
             pan_into_view(at, camera, lens);
         }
     } else {
-        reveal(nucleus, cursor, camera, views);
+        reveal(nucleus, cursor, came, camera, views);
     }
 }
 
@@ -272,14 +299,26 @@ fn pan_into_view(at: Vec3, camera: &mut OrbitCamera, lens: Lens) {
 }
 
 /// When something the journey lights, or `also`, would show off the free area, or
-/// not whole, frames the journey afresh, but never nearer than the camera is; when
-/// it all shows already, nothing moves.
-fn reveal(nucleus: &Nucleus, also: Option<Vec3>, camera: &mut OrbitCamera, views: Views) {
+/// not whole, or a sphere of the modules it `came` to run through, or its name,
+/// frames the journey afresh, but never nearer than the camera is; when it all
+/// shows already, nothing moves.
+fn reveal(
+    nucleus: &Nucleus,
+    also: Option<Vec3>,
+    came: &[usize],
+    camera: &mut OrbitCamera,
+    views: Views,
+) {
     let rotation = camera.aim_rotation();
     let mut points = nucleus.journey_points();
     points.extend(also);
-    let needed = distance_to_show(&points, camera.target, rotation, views.free, views.dots);
-    if needed <= camera.goal_distance() {
+    points.extend(nucleus.rims(rotation, came));
+    let show = |points: &[Vec3], share| {
+        distance_to_show(points, camera.target, rotation, views.free, share)
+    };
+    let needed = show(&points, views.dots).max(show(&nucleus.tops(rotation, came), views.named));
+    // What a framing put on the edge of its share stays there.
+    if needed <= camera.goal_distance() * (1.0 + REVEAL_SLACK) {
         return;
     }
     let framed = journey_points(nucleus, also, rotation, views);
@@ -314,21 +353,25 @@ fn fit(
     }
 }
 
-/// In a journey, every function it lights, `also` and the tops of the spheres they
-/// lie in, each with the share of the free area it may use, leaving room for names;
-/// and with them, when they lie so close that framing them alone would come nearer,
-/// the start's module filling [`FILL`] of it.
+/// In a journey, every function it lights, `also` and the spheres they lie in,
+/// whole, each with the share of the free area it may use, leaving room for names
+/// by the functions and above the spheres; and with them, when they lie so close
+/// that framing them alone would come nearer, the start's module filling [`FILL`]
+/// of it.
 fn journey_points(
     nucleus: &Nucleus,
     also: Option<Vec3>,
     rotation: Quat,
     views: Views,
 ) -> Vec<(Vec3, Vec2)> {
+    let modules = nucleus.open_modules();
     let mut lit = nucleus.journey_points();
     lit.extend(also);
     // The modules' names sit above their spheres' tops.
-    lit.extend(nucleus.open_tops(rotation));
+    lit.extend(nucleus.tops(rotation, &modules));
     let mut points: Vec<(Vec3, Vec2)> = lit.into_iter().map(|p| (p, views.named)).collect();
+    let rims = nucleus.rims(rotation, &modules);
+    points.extend(rims.into_iter().map(|p| (p, views.dots)));
     let module = within(&nucleus.nucleus_points(rotation), FILL);
     let least = place(&module, rotation, views.free).map_or(0.0, |(_, d)| d);
     if place(&points, rotation, views.free).is_none_or(|(_, d)| d < least) {

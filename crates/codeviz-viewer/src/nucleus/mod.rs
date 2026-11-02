@@ -686,16 +686,39 @@ impl Nucleus {
             .collect()
     }
 
-    /// The top of every sphere a journey runs through, as it will be once a
-    /// re-centering ends: where the module's name sits above it.
-    pub(crate) fn open_tops(&self, rotation: Quat) -> Vec<Vec3> {
+    /// The modules a journey runs through, by cluster, once a re-centering ends.
+    pub(crate) fn open_modules(&self) -> Vec<usize> {
+        (0..self.now.balls.len())
+            .filter(|&c| matches!(self.now.balls[c].body, Body::Nucleus | Body::Open))
+            .collect()
+    }
+
+    /// The top of each of `modules`' spheres, as it will be once a re-centering
+    /// ends: where the module's name sits above it.
+    pub(crate) fn tops(&self, rotation: Quat, modules: &[usize]) -> Vec<Vec3> {
         let up = rotation * Vec3::Y;
-        self.now
-            .balls
-            .iter()
-            .filter(|b| matches!(b.body, Body::Nucleus | Body::Open))
+        self.balls_of(modules)
             .map(|b| b.center + up * b.radius)
             .collect()
+    }
+
+    /// The sides and foot of each of `modules`' spheres, as it will be once a
+    /// re-centering ends: with [`Self::tops`], what shows it whole.
+    pub(crate) fn rims(&self, rotation: Quat, modules: &[usize]) -> Vec<Vec3> {
+        let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+        self.balls_of(modules)
+            .flat_map(|b| {
+                [
+                    b.center + right * b.radius,
+                    b.center - right * b.radius,
+                    b.center - up * b.radius,
+                ]
+            })
+            .collect()
+    }
+
+    fn balls_of<'a>(&'a self, modules: &'a [usize]) -> impl Iterator<Item = &'a Ball> {
+        modules.iter().filter_map(|&c| self.now.balls.get(c))
     }
 
     /// Points round the expanded module alone, as it will be once a re-centering
