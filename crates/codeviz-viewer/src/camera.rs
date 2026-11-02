@@ -398,7 +398,8 @@ impl OrbitCamera {
     /// Zoomed out from `before` to where it is, with the map seen as `was` says
     /// then, pans just enough that the map's middle is no further off the free
     /// area's than this: once the map fits the free area, across or up, so far that
-    /// it is inside; as it comes to fit, from where it is [`DRAWN_FROM`] times the
+    /// it is inside, and less the nearer the far end, where it is in the middle; as
+    /// it comes to fit, from where it is [`DRAWN_FROM`] times the
     /// free area, half the free area at first, nothing by the time it fits, but never
     /// less than as much of how far off it was as the wheel left of the way, so it
     /// never jumps. Returns whether it panned.
@@ -414,9 +415,17 @@ impl OrbitCamera {
         let lens = reach.lens;
         let tan = lens.tan;
         let size = reach.extent / (depth * tan);
-        // Across or up, where it fits, as far as keeps it inside.
-        let mut room =
-            (lens.half - size).map(|room| if room >= 0.0 { room } else { f32::INFINITY });
+        // Across or up, where it fits, as far as keeps it inside, and less the
+        // nearer the far end, where it is in the middle.
+        let towards_far =
+            ((reach.far - self.distance) / (reach.far - fits).max(1e-3)).clamp(0.0, 1.0);
+        let mut room = (lens.half - size).map(|room| {
+            if room >= 0.0 {
+                room * towards_far
+            } else {
+                f32::INFINITY
+            }
+        });
         let left = |d: f32| ((fits - d) / (fits - fits / DRAWN_FROM)).clamp(0.0, 1.0);
         let (was, now) = (left(before), left(self.distance));
         if now > 0.0 && now < 1.0 {
