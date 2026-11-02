@@ -1,18 +1,12 @@
-//! What the pointer is on, and what a click picks. A function is picked by where it
-//! shows on screen rather than by the first sphere a ray meets: a named function wins
-//! over a faint unnamed speck lying a pixel nearer, a name picks the function it
-//! names, and a speck the nucleus leaves out is never picked.
+//! What the pointer is on, what counts as hovered, and what a click picks. A function
+//! is picked by where it shows on screen rather than by the first sphere a ray meets:
+//! a named function wins over a faint unnamed speck lying a pixel nearer, a name picks
+//! the function it names, and what is not drawn is never picked.
 
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, input::EguiWantsInput};
 
-use crate::{
-    camera::OrbitCamera,
-    explorer::Explorer,
-    graph_view::{hidden_speck, speck},
-    scene::Tile,
-    ui,
-};
+use crate::{camera::OrbitCamera, explorer::Explorer, idle::Awake, scene::Tile, ui};
 
 /// How far past a function's drawn edge, in points, the pointer still counts as on it.
 const SLOP: f32 = 3.0;
@@ -52,11 +46,6 @@ pub(crate) fn pick(spots: &[Spot], pointer: Vec2) -> Option<usize> {
         .map(|(spot, _)| spot.tile)
 }
 
-/// Whether a function can be pointed at: drawn, and not a speck left out.
-fn pointable(explorer: &Explorer, tile: usize) -> bool {
-    explorer.nucleus().shows(tile) && !hidden_speck(explorer, tile)
-}
-
 /// Sets the function under the pointer: the one whose name the pointer is on, else
 /// the one [`pick`] finds. Over the panels and cards it lets go of what it set, so
 /// the journey panel can light a node of its own.
@@ -77,7 +66,7 @@ pub(crate) fn point(
                 .ctx_mut()
                 .ok()
                 .and_then(|ctx| ui::label_at(ctx, egui_pos(pointer)))
-                .filter(|(tile, _)| pointable(&explorer, *tile))
+                .filter(|(tile, _)| explorer.nucleus().drawn(*tile))
                 .map(|(tile, on_label)| {
                     number = on_label;
                     tile
@@ -86,7 +75,7 @@ pub(crate) fn point(
                 let (camera, view) = cameras.single().ok()?;
                 let spots: Vec<Spot> = tiles
                     .iter()
-                    .filter(|(tile, _, seen)| seen.get() && pointable(&explorer, tile.0))
+                    .filter(|(tile, _, seen)| seen.get() && explorer.nucleus().drawn(tile.0))
                     .filter_map(|(tile, placed, _)| spot(&explorer, camera, view, tile.0, placed))
                     .collect();
                 pick(&spots, pointer)
@@ -94,18 +83,18 @@ pub(crate) fn point(
         }
         _ => {
             // Off the graph: only what this set is let go of.
-            if set.is_some() && explorer.hovered_tile == *set {
-                explorer.hovered_tile = None;
+            if set.is_some() && explorer.under_pointer == *set {
+                explorer.under_pointer = None;
             }
             *set = None;
             return;
         }
     };
-    if explorer.hovered_tile != over {
-        explorer.hovered_tile = over;
+    if explorer.under_pointer != over {
+        explorer.under_pointer = over;
     }
-    if explorer.pointed_number != number {
-        explorer.pointed_number = number;
+    if explorer.under_pointer_number != number {
+        explorer.under_pointer_number = number;
     }
     *set = over;
 }
@@ -130,7 +119,7 @@ fn spot(
         at,
         radius: at.distance(edge),
         depth: (middle - view.translation()).dot(*view.forward()),
-        speck: speck(explorer, tile),
+        speck: explorer.nucleus().speck(tile),
     })
 }
 
@@ -138,9 +127,9 @@ fn egui_pos(at: Vec2) -> bevy_egui::egui::Pos2 {
     bevy_egui::egui::pos2(at.x, at.y)
 }
 
-/// A click on a function moves the focus to it: browsing, it is selected; in a
-/// journey, the cursor goes to it when the journey runs it, to the call numbered on
-/// the name clicked, else it is selected alone, for now. Shift-click starts the
+/// A click on a function goes to it: browsing, it is selected; in a journey, the
+/// cursor goes to it when the journey runs it, to the call numbered on the name
+/// clicked, else it is set aside, selected in place. Shift-click starts the
 /// journey there. A press that drags to orbit is no click.
 pub(crate) fn click(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -161,18 +150,166 @@ pub(crate) fn click(
         (pressed.take(), cursor),
         (Some(a), Some(b)) if a.distance(b) < CLICK_TRAVEL
     );
-    let Some(tile) = explorer.hovered_tile.filter(|_| clicked) else {
+    let Some(tile) = explorer.under_pointer.filter(|_| clicked) else {
         return;
     };
-    if !pointable(&explorer, tile) {
+    if !explorer.nucleus().drawn(tile) {
         return;
     }
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     if shift {
         explorer.open_at(tile);
     } else {
-        let number = explorer.pointed_number.clone();
-        explorer.focus_tile(tile, number.as_deref());
+        let number = explorer.under_pointer_number.clone();
+        explorer.click(tile, number.as_deref());
+    }
+}
+
+/// Longest between the two clicks of a double click, in seconds.
+const DOUBLE_CLICK: f32 = 0.4;
+
+/// A double click on the nucleus, off any function, expands it or shrinks it back.
+/// A press that drags to orbit is no click.
+pub(crate) fn double_click(
+    time: Res<Time>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    mut explorer: ResMut<Explorer>,
+    mut pressed: Local<Option<Vec2>>,
+    mut last: Local<Option<f32>>,
+) {
+    let cursor = window.cursor_position();
+    if buttons.just_pressed(MouseButton::Left) {
+        *pressed = cursor;
+    }
+    if !buttons.just_released(MouseButton::Left) {
+        return;
+    }
+    let clicked = matches!(
+        (pressed.take(), cursor),
+        (Some(a), Some(b)) if a.distance(b) < CLICK_TRAVEL
+    );
+    let on_nucleus = || {
+        let nucleus = explorer.nucleus();
+        let ball = nucleus.ball(nucleus.middle())?;
+        let (camera, global) = cameras.single().ok()?;
+        let ray = camera.viewport_to_world(global, cursor?).ok()?;
+        let to_middle = ball.center - ray.origin;
+        let nearest = ray.origin + *ray.direction * to_middle.dot(*ray.direction);
+        Some(nearest.distance(ball.center) <= ball.radius)
+    };
+    if !clicked || explorer.under_pointer.is_some() || on_nucleus() != Some(true) {
+        *last = None;
+        return;
+    }
+    let now = time.elapsed_secs();
+    if last.is_some_and(|at| now - at <= DOUBLE_CLICK) {
+        *last = None;
+        let on = !explorer.nucleus().expanded();
+        explorer.expand_nucleus(on);
+    } else {
+        *last = Some(now);
+    }
+}
+
+/// Seconds the names round the function under the pointer take to settle once the
+/// pointer moves onto it or off it.
+const HOVER_SETTLE: f32 = 0.4;
+
+/// Seconds the pointer rests on a function, or off it, before it counts as hovered
+/// or no longer: passing over one on the way elsewhere draws nothing.
+const HOVER_DELAY: f32 = 0.15;
+
+/// Holds a change of what the pointer is over until it has lasted [`HOVER_DELAY`].
+#[derive(Debug, Default)]
+pub(crate) struct Settle {
+    /// What the pointer moved onto, and since when, in seconds of app time.
+    pending: Option<(Option<usize>, f32)>,
+}
+
+impl Settle {
+    /// Given what the pointer is over, what is taken as pointed at now and the time:
+    /// whether to take what the pointer is over instead, as it has stayed there long
+    /// enough.
+    fn settle(&mut self, over: Option<usize>, taken: Option<usize>, now: f32) -> bool {
+        if over == taken {
+            self.pending = None;
+            return false;
+        }
+        match self.pending {
+            Some((tile, since)) if tile == over => {
+                let landed = now - since >= HOVER_DELAY;
+                if landed {
+                    self.pending = None;
+                }
+                landed
+            }
+            _ => {
+                self.pending = Some((over, now));
+                false
+            }
+        }
+    }
+
+    /// Whether a change is being held, so the frames keep coming until it lands.
+    fn waiting(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
+/// What [`hover`] keeps between frames.
+#[derive(Debug, Default)]
+pub(crate) struct Pointing {
+    held: Settle,
+    /// Seconds left while the names round what is pointed at settle.
+    settling: f32,
+    /// Where the pointer was at the last click or key, while it has not moved since.
+    resting: Option<Vec2>,
+}
+
+/// The one notion of hover: the function under the pointer counts as hovered once
+/// the pointer has rested on it, so passing over a function draws nothing; its name
+/// and ring show, and its bars light, while the names round it settle. What is not
+/// drawn is never hovered, though the pointer was on it when it went. After a click
+/// or a key the view moves under a resting pointer, so nothing counts as hovered
+/// until the pointer itself moves.
+pub(crate) fn hover(
+    time: Res<Time>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut explorer: ResMut<Explorer>,
+    mut awake: ResMut<Awake>,
+    mut pointing: Local<Pointing>,
+) {
+    let pointer = windows.single().ok().and_then(Window::cursor_position);
+    if buttons.get_just_pressed().next().is_some() || keys.get_just_pressed().next().is_some() {
+        pointing.resting = pointer;
+    }
+    if pointing
+        .resting
+        .zip(pointer)
+        .is_none_or(|(at, now)| at.distance(now) > 3.0)
+    {
+        pointing.resting = None;
+    }
+    let taken = explorer.nucleus().hovered();
+    let over = explorer
+        .under_pointer
+        .filter(|&t| pointing.resting.is_none() && explorer.nucleus().drawn(t));
+    if pointing.held.settle(over, taken, time.elapsed_secs())
+        && explorer.bypass_change_detection().hover(over)
+    {
+        explorer.set_changed();
+        pointing.settling = HOVER_SETTLE;
+    }
+    if pointing.held.waiting() {
+        awake.0 = true;
+    }
+    if pointing.settling > 0.0 {
+        pointing.settling -= time.delta_secs();
+        awake.0 = true;
     }
 }
 
@@ -216,5 +353,24 @@ mod tests {
         assert_eq!(pick(&grazed, Vec2::ZERO), Some(2), "held beats grazed");
         let both = [spot(1, 1.0, 8.0, 9.0, false), spot(2, 0.0, 8.0, 3.0, false)];
         assert_eq!(pick(&both, Vec2::ZERO), Some(2), "then the nearer");
+    }
+
+    #[test]
+    fn the_pointer_counts_once_it_rests() {
+        let mut held = Settle::default();
+        assert!(!held.settle(Some(3), None, 0.0), "not at once");
+        assert!(held.waiting());
+        assert!(!held.settle(Some(3), None, 0.1));
+        assert!(held.settle(Some(3), None, 0.16), "after a rest");
+        assert!(!held.waiting());
+        // Passing over one function on the way to another takes neither.
+        assert!(!held.settle(Some(4), Some(3), 1.0));
+        assert!(!held.settle(Some(5), Some(3), 1.1));
+        assert!(!held.settle(Some(5), Some(3), 1.2));
+        assert!(held.settle(Some(5), Some(3), 1.26));
+        // Off and back on before the delay keeps it.
+        assert!(!held.settle(None, Some(5), 2.0));
+        assert!(!held.settle(Some(5), Some(5), 2.05));
+        assert!(!held.waiting());
     }
 }

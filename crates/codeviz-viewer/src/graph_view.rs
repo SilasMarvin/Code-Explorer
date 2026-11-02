@@ -1,8 +1,8 @@
-//! How functions look: each node's color and size, the rings round the focus, the
-//! cursor and what the pointer is on, and the keys that frame the view. The focus is
-//! the center of attention; the pointer only rings the node it is over, so passing
-//! over the graph does not repaint it. A node's fill says where it lives (its module);
-//! what is near the focus is bright, fading with each call further.
+//! How functions look: each node's color and size, and the rings round the start (or
+//! the selection), the function set aside, the cursor and what is hovered. A node's
+//! fill says where it lives, its module; what is near the start is bright, fading with
+//! each call further. Hovering only rings the node, so passing over the graph does not
+//! repaint it.
 
 use std::collections::HashMap;
 
@@ -10,30 +10,27 @@ use bevy::prelude::*;
 use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
-    camera::OrbitCamera,
     colors::{CURSOR, MODULE_SHADES, module_color, module_shade},
     explorer::Explorer,
-    nucleus,
     scene::Tile,
 };
 
-/// Calls away from the focus that still get their own shade; further is drawn as this.
+/// Calls away from the start that still get their own shade; further is drawn as this.
 const FARTHEST_SHADE: u32 = 3;
 
 /// How a node is drawn right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NodeLook {
-    /// The center of attention.
-    Focus,
-    /// Gathered round the focus's module, the journey's cursor where it is not the
-    /// middle.
+    /// The start, or browsing, the selection.
+    Start,
+    /// The journey's cursor.
     Cursor,
-    /// Calls into the focus or called from it, this many calls away (capped at
+    /// Calls into the start or called from it, this many calls away (capped at
     /// [`FARTHEST_SHADE`]), in its module's color.
     Near(usize, u32),
-    /// Unrelated to the focus.
+    /// Unrelated to the start.
     Faded(usize),
-    /// Anything while nothing is focused, in its container's color.
+    /// Anything while nothing is selected, in its module's color.
     Plain(usize),
 }
 
@@ -80,7 +77,7 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
         ..default()
     };
     let mut table = HashMap::new();
-    table.insert(NodeLook::Focus, glow(Color::WHITE, 4.0));
+    table.insert(NodeLook::Start, glow(Color::WHITE, 4.0));
     table.insert(NodeLook::Cursor, glow(CURSOR, 2.6));
     for hops in 1..=FARTHEST_SHADE {
         // Bright and glowing next door, darker and flat further out.
@@ -126,8 +123,8 @@ pub(crate) fn node_size(graph: &ForceGraph, tile: usize) -> f32 {
     1.0 + (1.0 + graph.degree(tile) as f32).ln() * 0.55
 }
 
-/// Which way a node relates to the focus, and how many calls away: upstream wins a
-/// tie, as for a function that both calls the focus and is called by it.
+/// Which way a node relates to the start, and how many calls away: upstream wins a
+/// tie, as for a function that both calls the start and is called by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Relation {
     Upstream(u32),
@@ -143,28 +140,14 @@ pub(crate) fn relation(reach: &Reach, tile: usize) -> Option<Relation> {
     }
 }
 
-/// Whether a function is drawn only as a small, faint speck: shown, but not the
-/// middle and named by nothing.
-pub(crate) fn speck(explorer: &Explorer, tile: usize) -> bool {
-    let n = explorer.nucleus();
-    n.shows(tile) && !n.lit(tile) && n.focus() != Some(tile)
-}
-
-/// Whether a function is a speck the nucleus leaves out altogether, as a journey
-/// does: not drawn, and not pointed at.
-pub(crate) fn hidden_speck(explorer: &Explorer, tile: usize) -> bool {
-    explorer.nucleus().specks_hidden() && speck(explorer, tile)
-}
-
 pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     let color = module_shade(explorer.graph().cluster(tile).unwrap_or_default());
     // The journey's cursor is the one pink node, wherever it is.
-    if explorer.cursor_mark() == Some(tile) {
+    if explorer.cursor() == Some(tile) {
         return NodeLook::Cursor;
     }
-    let center = explorer.lit_focus();
-    if center == Some(tile) {
-        return NodeLook::Focus;
+    if explorer.nucleus().start() == Some(tile) {
+        return NodeLook::Start;
     }
     let Some(reach) = explorer.reach() else {
         return NodeLook::Plain(color);
@@ -172,15 +155,15 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     near(explorer, reach, tile).map_or(NodeLook::Faded(color), |hops| NodeLook::Near(color, hops))
 }
 
-/// How many calls from the focus a node is, when it is near enough to light: with a
-/// journey open, what the focus calls lights as far as the journey is disclosed, and
+/// How many calls from the start a node is, when it is near enough to light: with a
+/// journey open, what the start calls lights as far as the journey is disclosed, and
 /// only its direct callers light above it.
 pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u32> {
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
-    // Whatever the nucleus names lights.
-    let named = explorer.nucleus().names(tile);
+    // Whatever the nucleus lights for what it is to the start lights.
+    let named = explorer.nucleus().level(tile).is_some();
     match relation(reach, tile) {
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Upstream(hops) | Relation::Downstream(hops)) if named => Some(hops),
@@ -192,26 +175,26 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
 }
 
 /// The color a node is filled with, at full strength: the cursor's, else white for
-/// the focus, else its module's. A journey bar is painted the same, so a bar and its
+/// the start, else its module's. A journey bar is painted the same, so a bar and its
 /// node read as one thing.
 pub(crate) fn node_color(explorer: &Explorer, tile: usize) -> Color {
-    if explorer.cursor_mark() == Some(tile) {
+    if explorer.cursor() == Some(tile) {
         return CURSOR;
     }
-    if explorer.lit_focus() == Some(tile) {
+    if explorer.nucleus().start() == Some(tile) {
         return Color::WHITE;
     }
     module_color(explorer.graph().cluster(tile).unwrap_or_default())
 }
 
-/// Keeps what reaches the focus current.
+/// Keeps what reaches the start current.
 pub(crate) fn track_attention(mut explorer: ResMut<Explorer>) {
     if explorer.bypass_change_detection().refresh_reach() {
         explorer.set_changed();
     }
 }
 
-/// Restyles nodes when the focus or the journey changes.
+/// Restyles nodes when the view changes.
 pub(crate) fn style_nodes(
     explorer: Res<Explorer>,
     materials: Res<NodeMaterials>,
@@ -227,28 +210,24 @@ pub(crate) fn style_nodes(
     }
     let nucleus = explorer.nucleus();
     for (tile, mut material, mut transform, mut visibility) in &mut nodes {
-        // What a module folds away is not drawn.
-        let folded = !nucleus.shows(tile.0);
-        let look = (!folded).then(|| node_look(&explorer, tile.0));
-        // What the nucleus names, or what the function under the pointer calls or is
-        // called by, shows plainly though the focus does not reach it; anything else is
-        // a small, faint speck, or with specks left out, not drawn at all, however near
-        // the focus it is.
+        let drawn = nucleus.drawn(tile.0);
+        visibility.set_if_neq(if drawn {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+        if !drawn {
+            continue;
+        }
+        let look = node_look(&explorer, tile.0);
+        // What the nucleus lights shows plainly though the start does not reach it;
+        // anything else is a small, faint speck, however near the start it is.
         let named = nucleus.lit(tile.0);
-        let quiet = speck(&explorer, tile.0);
+        let quiet = nucleus.speck(tile.0);
         // Brought in from outside the journey, or a caller of the start folded into its
         // module's count: there, but quieter than the journey.
         let outside =
             (nucleus.outside(tile.0) || nucleus.folded(tile.0)) && explorer.aside() != Some(tile.0);
-        let gone = quiet && nucleus.specks_hidden();
-        visibility.set_if_neq(if folded || gone {
-            Visibility::Hidden
-        } else {
-            Visibility::Inherited
-        });
-        let Some(look) = look.filter(|_| !gone) else {
-            continue;
-        };
         let look = match look {
             NodeLook::Faded(color) if named => NodeLook::Plain(color),
             NodeLook::Near(color, _) if quiet => NodeLook::Faded(color),
@@ -283,9 +262,10 @@ pub(crate) fn create_node_materials(
     commands.insert_resource(NodeMaterials(node_materials(&mut materials)));
 }
 
-/// One ring per role, nothing else: white round the focus, and in a journey round a
-/// function selected off it; pink round the journey's cursor, whose fill is pink too;
-/// fainter white round the function under the pointer, in the graph or as a bar.
+/// One ring per role, nothing else: white round the start (or the selection), and in
+/// a journey round the function set aside; pink round the journey's cursor, whose
+/// fill is pink too; fainter white round the function hovered, in the graph or as a
+/// bar.
 pub(crate) fn draw_graph(explorer: Res<Explorer>, mut gizmos: Gizmos) {
     let graph = explorer.graph();
     let nucleus = explorer.nucleus();
@@ -297,104 +277,14 @@ pub(crate) fn draw_graph(explorer: Res<Explorer>, mut gizmos: Gizmos) {
             gizmos.sphere(Isometry3d::from_translation(at), size(tile) + grow, color);
         }
     };
-    let focus = explorer.lit_focus();
-    for tile in focus.into_iter().chain(explorer.aside()) {
+    let start = nucleus.start();
+    for tile in start.into_iter().chain(explorer.aside()) {
         ring(tile, 0.35, Color::WHITE);
     }
-    if let Some(tile) = explorer.cursor_mark() {
+    if let Some(tile) = explorer.cursor() {
         ring(tile, 0.35 * zoom, CURSOR);
     }
-    if let Some(tile) = explorer.pointed().filter(|&t| Some(t) != focus) {
+    if let Some(tile) = explorer.hovered().filter(|&t| Some(t) != start) {
         ring(tile, 0.6, Color::srgba(1.0, 1.0, 1.0, 0.55));
-    }
-}
-
-/// The closest the orbit comes to the focused node.
-const MIN_ORBIT_DISTANCE: f32 = 25.0;
-
-/// F turns back to the usual three-quarter view, framed as it was when the view was
-/// pointed there; R frames that same view from the angle the camera has, or browsing,
-/// turns back to the usual view of the whole codebase.
-pub(crate) fn graph_keys(
-    keys: Res<ButtonInput<KeyCode>>,
-    explorer: Res<Explorer>,
-    mut cameras: Query<(&mut OrbitCamera, &Projection)>,
-) {
-    let cursor = explorer.graph_focus().and_then(|t| explorer.tile_point(t));
-    for (mut camera, projection) in &mut cameras {
-        let gathered = explorer.nucleus();
-        if keys.just_pressed(KeyCode::KeyF) {
-            camera.turn_to(nucleus::VIEW);
-            let (yaw, pitch) = nucleus::VIEW;
-            let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
-            nucleus::fit(gathered, cursor, &mut camera, rotation, projection);
-        }
-        if keys.just_pressed(KeyCode::KeyR) {
-            if gathered.browsing() {
-                // The whole codebase, as it was first seen: from the front.
-                camera.turn_to(nucleus::VIEW);
-                let rotation = camera.aim_rotation();
-                nucleus::fit_all(gathered, &mut camera, rotation, projection);
-            } else {
-                let rotation = camera.aim_rotation();
-                nucleus::fit(gathered, cursor, &mut camera, rotation, projection);
-            }
-        }
-    }
-}
-
-/// How far back a camera turned to `rotation` and looking at `center` must be for
-/// every one of `points` to sit inside the middle of its view, clear of the edges.
-pub(crate) fn fit_distance(
-    points: &[Vec3],
-    center: Vec3,
-    rotation: Quat,
-    perspective: &PerspectiveProjection,
-) -> f32 {
-    // The share of the half-view a point may use: the rest is room for its name, and
-    // for the journey docked over the bottom right.
-    const ROOM: f32 = 0.72;
-    let tan_y = (perspective.fov / 2.0).tan() * ROOM;
-    let tan_x = tan_y * perspective.aspect_ratio;
-    let (right, up, back) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
-    points
-        .iter()
-        .map(|&p| {
-            let offset = p - center;
-            // A point this far towards the camera needs the camera that much further.
-            let toward = offset.dot(back);
-            (offset.dot(right).abs() / tan_x).max(offset.dot(up).abs() / tan_y) + toward
-        })
-        .fold(MIN_ORBIT_DISTANCE, f32::max)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pulls_back_only_as_far_as_what_it_must_show() {
-        let view = PerspectiveProjection {
-            aspect_ratio: 1.6,
-            ..default()
-        };
-        let head_on = Quat::IDENTITY;
-        let near = [Vec3::new(3.0, 2.0, 0.0), Vec3::new(-4.0, -1.0, 0.0)];
-        assert!(
-            (fit_distance(&near, Vec3::ZERO, head_on, &view) - MIN_ORBIT_DISTANCE).abs() < 1e-3,
-            "what is close needs no more than the closest orbit"
-        );
-        let far = [Vec3::new(0.0, 40.0, 0.0)];
-        let needed = fit_distance(&far, Vec3::ZERO, head_on, &view);
-        let half_height = needed * (view.fov / 2.0).tan();
-        assert!(
-            needed > MIN_ORBIT_DISTANCE && half_height > 40.0,
-            "far enough back that it shows, with room: {needed}"
-        );
-        let wide = [Vec3::new(40.0, 0.0, 0.0)];
-        assert!(
-            fit_distance(&wide, Vec3::ZERO, head_on, &view) < needed,
-            "the view is wider than it is tall"
-        );
     }
 }

@@ -460,9 +460,9 @@ fn act(
                 }
             }
             Act::Expect(wanted) => {
-                if explorer.hovered_tile != Some(wanted) {
+                if explorer.under_pointer != Some(wanted) {
                     let at = drive.pointer.unwrap_or_default();
-                    let over = match (explorer.hovered_tile, screen.overlay_at(at)) {
+                    let over = match (explorer.under_pointer, screen.overlay_at(at)) {
                         (Some(other), _) => node_name(&explorer, other),
                         (None, Some(overlay)) => format!("the {overlay}"),
                         (None, None) => "nothing".to_owned(),
@@ -478,7 +478,7 @@ fn act(
             }
             Act::ExpectClear => {
                 let at = drive.pointer.unwrap_or_default();
-                let over = match (explorer.hovered_tile, screen.overlay_at(at)) {
+                let over = match (explorer.under_pointer, screen.overlay_at(at)) {
                     (Some(other), _) => Some(node_name(&explorer, other)),
                     (None, Some(overlay)) => Some(format!("the {overlay}")),
                     (None, None) => None,
@@ -927,12 +927,12 @@ impl View<'_, '_> {
         format!(
             "{:?}",
             (
-                e.selected(),
-                e.hovered_tile,
-                e.pointed(),
+                e.cursor_span(),
+                e.under_pointer,
+                e.hovered(),
                 e.disclose(),
                 e.aside(),
-                e.nucleus_focus(),
+                e.nucleus().start(),
                 e.revision(),
                 e.moved(),
                 e.aim(),
@@ -1433,8 +1433,6 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
             Err(format!("the {what} is {}, not {}", name(got), name(want)))
         }
     };
-    let tile_of = |unit: Option<&codeviz_ir::UnitId>| unit.and_then(|u| explorer.map().tile_of(u));
-    let journey = !explorer.browsing();
     match expect {
         Expect::State { field, value } => {
             let state = crate::truth::state(view);
@@ -1450,19 +1448,8 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
             }
         }
         Expect::Selection(unit) => same("selection", explorer.selection(), wanted(unit)?),
-        Expect::Cursor(unit) => {
-            let cursor = explorer.selected().and_then(|span| explorer.unit_id(span));
-            same(
-                "journey's cursor",
-                tile_of(cursor).filter(|_| journey),
-                wanted(unit)?,
-            )
-        }
-        Expect::Start(unit) => same(
-            "journey's start",
-            tile_of(explorer.root()).filter(|_| journey),
-            wanted(unit)?,
-        ),
+        Expect::Cursor(unit) => same("journey's cursor", explorer.cursor(), wanted(unit)?),
+        Expect::Start(unit) => same("journey's start", explorer.start(), wanted(unit)?),
         Expect::Named(unit) => {
             let tile = drive.names.unit(unit)?;
             if view.screen.labels.iter().any(|&(_, t)| t == tile) {

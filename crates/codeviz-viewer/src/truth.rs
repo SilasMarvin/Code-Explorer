@@ -1,7 +1,7 @@
 //! What a view means to show, written beside its screenshot so a reader's account of
-//! the picture can be checked against it: the examined function, every disclosed call
-//! with its number, the module it lives in, and whether it can fail or only sometimes
-//! runs. A scripted session's snapshots say more: what is
+//! the picture can be checked against it: the journey's start or the selection, every
+//! disclosed call with its number, the module it lives in, and whether it can fail or
+//! only sometimes runs. A scripted session's snapshots say more: what is
 //! drawn where on screen, by name, and what can be clicked ([`scene`]).
 
 use bevy::{
@@ -51,19 +51,18 @@ pub(crate) fn of(explorer: &Explorer) -> Value {
     calls.sort_by(|a, b| a.0.cmp(&b.0));
 
     let root = explorer.journey().map(codeviz_core::Journey::root);
-    // Browsing, what the view examines is the function selected.
-    let anchor = explorer.anchor().or_else(|| explorer.selection());
+    let name = |tile: usize| explorer.tile_unit(tile).map(|u| explorer.unit_name(u));
+    // The function examined: the start, or browsing, the selection.
+    let examined = explorer.start().or_else(|| explorer.selection());
     json!({
-        "focus": match explorer.selection() {
-            Some(tile) => explorer.tile_unit(tile).map(|u| explorer.unit_name(u)),
-            None => explorer.root().map(|u| explorer.unit_name(u)),
-        },
-        "focus_fails": root.is_some_and(|r| disclosed.fails(r)),
-        "focus_hidden_calls": root.map_or(0, |r| disclosed.folded(r)),
-        "callers": anchor.map_or_else(Vec::new, |tile| {
+        "start": explorer.start().and_then(name),
+        "selection": explorer.selection().and_then(name),
+        "start_fails": root.is_some_and(|r| disclosed.fails(r)),
+        "start_hidden_calls": root.map_or(0, |r| disclosed.folded(r)),
+        "callers": examined.map_or_else(Vec::new, |tile| {
             explorer
-                .callers_of(tile)
-                .into_iter()
+                .graph()
+                .callers(tile)
                 .map(|caller| node_name(explorer, caller))
                 .collect()
         }),
@@ -71,34 +70,32 @@ pub(crate) fn of(explorer: &Explorer) -> Value {
     })
 }
 
-/// The view's state in words: what is focused and centred, the journey's cursor and
-/// depth, what is hidden, which panels show, and where back and forward lead.
+/// The view's state in words: the selection or the journey's start, cursor and
+/// depth, the function set aside, the expanded centre, what is hovered, which
+/// overlays show, and where back and forward lead.
 pub(crate) fn state(view: &View) -> Value {
     let explorer = &*view.explorer;
     let name = |tile: usize| node_name(explorer, tile);
     let nucleus = explorer.nucleus();
     let disclosed = explorer.disclosure();
-    // Expanded in a journey, the view centres on the cursor; the module in the middle
-    // is the start's still.
-    let centre = nucleus.centre();
-    let middle = nucleus.focus();
     json!({
         "mode": if explorer.browsing() { "browse" } else { "journey" },
         "selection": explorer.selection().map(name),
-        "focus": explorer.graph_focus().map(name),
-        "centre": centre.map(name),
-        "centre_module": middle.and_then(|t| module_of(explorer, t)),
-        "nucleus": if nucleus.expanded() { "expanded" } else { "modules" },
-        "journey_start": explorer.root().map(|u| explorer.unit_name(u)),
-        "cursor": explorer.selected().map(|span| json!({
+        "start": explorer.start().map(name),
+        // The module in the middle: the start's, or browsing, the selection's.
+        "start_module": nucleus.start().and_then(|t| module_of(explorer, t)),
+        "cursor": explorer.cursor_span().filter(|_| !explorer.browsing()).map(|span| json!({
             "number": disclosed.number(span),
             "name": explorer.label(span),
         })),
         "aside": explorer.aside().map(name),
+        // Expanded in a journey, the function the view centres on.
+        "centre": nucleus.centre().map(name),
+        "nucleus": if nucleus.expanded() { "expanded" } else { "modules" },
         "depth": explorer.disclose().0,
         "outside_callers": explorer.outside_shown(),
-        "pointed": explorer.pointed().map(name),
-        "under_pointer": explorer.hovered_tile.map(name),
+        "hovered": explorer.hovered().map(name),
+        "under_pointer": explorer.under_pointer.map(name),
         "search": view.chrome.search,
         "help": view.help.0,
         "back": explorer.can_go_back(),
@@ -339,10 +336,10 @@ fn mislabelled(
 /// naming nothing a reader can see.
 const FAR_LABEL: f32 = 40.0;
 
-/// Whether a function is drawn only as a faint speck.
+/// Whether a function is drawn only as a faint speck, and not hovered.
 fn speck(explorer: &Explorer, tile: usize) -> bool {
     let n = explorer.nucleus();
-    !n.lit(tile) && n.focus() != Some(tile) && n.hovered() != Some(tile)
+    n.speck(tile) && n.hovered() != Some(tile)
 }
 
 /// What a label on the graph names.
@@ -436,34 +433,33 @@ fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
         .map(|cluster| explorer.cluster_name(cluster))
 }
 
-/// What a drawn function is to the view: the centre, the journey's cursor, a caller,
-/// a call of the journey so many levels down, under the pointer, an end of the call
-/// the pointer's function makes or takes; else a speck.
+/// What a drawn function is to the view: the journey's start or the selection, the
+/// expanded view's centre, the journey's cursor, the function set aside, a caller, a
+/// call of the journey so many levels down, hovered; else a speck.
 fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     let mut roles = Vec::new();
     let n = explorer.nucleus();
-    if n.centre() == Some(tile) {
-        roles.push("centre".to_owned());
-    }
-    if n.focus() == Some(tile) && n.centre() != Some(tile) {
-        roles.push("start".to_owned());
-    }
-    if n.marks(tile) {
-        roles.push("cursor".to_owned());
+    let is = |of: Option<usize>| of == Some(tile);
+    for (role, of) in [
+        ("start", explorer.start()),
+        ("selection", explorer.selection()),
+        ("centre", n.centre()),
+        ("cursor", n.cursor()),
+        ("aside", explorer.aside()),
+    ] {
+        if is(of) {
+            roles.push(role.to_owned());
+        }
     }
     match n.level(tile) {
         Some(-1) if n.folded(tile) => {
             roles.push("caller, folded into its module's count".to_owned());
         }
         Some(-1) => roles.push("caller".to_owned()),
-        Some(_) if n.aside() => roles.push("callee".to_owned()),
         Some(level) if level > 0 => roles.push(format!("journey level {level}")),
         _ => {}
     }
-    if n.on_journey(tile) {
-        roles.push("on the open journey".to_owned());
-    }
-    if n.hovered() == Some(tile) {
+    if is(n.hovered()) {
         roles.push("hovered".to_owned());
     }
     if roles.is_empty() {
@@ -480,8 +476,8 @@ fn numbers(explorer: &Explorer, tile: usize) -> Vec<String> {
 /// What an arrow's color says.
 fn flow_role(flow: Flow) -> String {
     match flow {
-        Flow::Into => "calls the centre (violet)".to_owned(),
-        Flow::Journey(1) => "the centre's call (blue)".to_owned(),
+        Flow::Into => "calls the start or the selection (violet)".to_owned(),
+        Flow::Journey(1) => "the start's or the selection's own call (blue)".to_owned(),
         Flow::Journey(level) => format!("journey level {level} (amber, darker the deeper)"),
         Flow::Outside => "calls into the journey from off it (pale)".to_owned(),
         Flow::Module => "calls from one module to another, nothing selected (faint)".to_owned(),
@@ -528,7 +524,7 @@ fn bars(view: &View) -> Vec<Value> {
         return Vec::new();
     };
     let disclosed = explorer.disclosure();
-    let cursor = explorer.selected();
+    let cursor = explorer.cursor_span();
     let track = explorer.track();
     drawn
         .bars
@@ -542,7 +538,7 @@ fn bars(view: &View) -> Vec<Value> {
                 "unit": track.unit_id(span).map(ToString::to_string),
                 "rect": rect(r),
                 "cursor": cursor == Some(span),
-                "lit": tile.is_some() && tile == explorer.hovered_tile,
+                "lit": tile.is_some() && tile == explorer.hovered(),
                 "cut_off": !drawn.content.contains_rect(r),
             })
         })
@@ -583,7 +579,6 @@ fn hex(color: Color) -> String {
 
 #[cfg(test)]
 mod tests {
-    use codeviz_ir::UnitId;
 
     use super::*;
 
@@ -598,11 +593,9 @@ mod tests {
 
     #[test]
     fn lists_the_disclosed_calls_in_order_with_what_is_folded() {
-        let mut explorer = crate::explorer::tests::explorer();
-        let main = explorer.map().tile_of(&UnitId::new("x:main")).unwrap();
-        explorer.open_at(main);
+        let explorer = crate::explorer::tests::explorer();
         let truth = of(&explorer);
-        assert_eq!(truth["focus"], "main");
+        assert_eq!(truth["start"], "main");
         let calls: Vec<(&str, &str, u64)> = truth["calls"]
             .as_array()
             .unwrap()
@@ -654,13 +647,7 @@ mod tests {
     #[test]
     fn a_failure_marks_the_nearest_shown_call_and_conditions_mark_theirs() {
         let system = codeviz_core::System::new([codeviz_ir::Document::from_json(ORDERS).unwrap()]);
-        let mut explorer = Explorer::new(
-            system,
-            Some(UnitId::new("t:place")),
-            codeviz_core::JourneyOptions::default(),
-        );
-        let place = explorer.map().tile_of(&UnitId::new("t:place")).unwrap();
-        explorer.open_at(place);
+        let mut explorer = crate::explorer::tests::opened(system, "t:place");
         let marks = |explorer: &Explorer| -> Vec<(String, bool, bool)> {
             of(explorer)["calls"]
                 .as_array()

@@ -3,9 +3,9 @@
 //! much of it showed, the function clicked, and where the camera stood, so going back
 //! puts all of it back, seen as it was, rather than only the node it was on.
 //!
-//! One rule says what makes an entry: whatever changes the nucleus's middle or where
-//! the journey starts, opens or leaves a journey, selects a function browsing, or
-//! moves the cursor by a click, a bar or Enter. A walk with the arrows or
+//! One rule says what makes an entry: whatever changes where the journey starts, opens
+//! or leaves a journey, selects a function browsing, sets one aside, or moves the
+//! cursor by a click, a bar or Enter. A walk with the arrows or
 //! brackets is one entry however many steps it takes, so Back returns to where the
 //! walk began. Back crosses between browsing and a journey as it crosses anything.
 
@@ -22,11 +22,12 @@ const LIMIT: usize = 200;
 /// Everything that says what the view is looking at.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct View {
-    pub(crate) root: Option<UnitId>,
+    /// Where the journey starts, browsing too: Enter on it opens that journey again.
+    pub(crate) start: Option<UnitId>,
     pub(crate) cursor: Option<SpanId>,
     pub(crate) disclose: Disclose,
     pub(crate) expanded: HashSet<SpanId>,
-    /// A node clicked off the journey, the focus while it was.
+    /// In a journey, the function set aside.
     pub(crate) aside: Option<usize>,
     /// Whether a journey was open, or the view browsed.
     pub(crate) mode: ViewMode,

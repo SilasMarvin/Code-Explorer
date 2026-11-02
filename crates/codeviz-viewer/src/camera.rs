@@ -40,10 +40,11 @@ impl Plugin for OrbitCameraPlugin {
 
 #[derive(Component, Debug)]
 pub(crate) struct OrbitCamera {
-    /// Where the camera is easing its focus towards.
+    /// Where the camera is easing towards looking at.
     pub(crate) target: Vec3,
-    focus: Vec3,
-    /// Distance from the focus.
+    /// Where it looks now.
+    looking_at: Vec3,
+    /// Distance from where it looks.
     pub(crate) distance: f32,
     yaw: f32,
     pitch: f32,
@@ -81,7 +82,7 @@ impl Default for OrbitCamera {
     fn default() -> Self {
         Self {
             target: Vec3::ZERO,
-            focus: Vec3::ZERO,
+            looking_at: Vec3::ZERO,
             distance: 60.0,
             yaw: nucleus::VIEW.0,
             pitch: nucleus::VIEW.1,
@@ -97,7 +98,7 @@ impl OrbitCamera {
     pub(crate) fn easing(&self) -> bool {
         self.goal_distance.is_some()
             || self.goal_angles.is_some()
-            || self.focus.distance(self.target) > self.distance * 1e-4
+            || self.looking_at.distance(self.target) > self.distance * 1e-4
     }
 
     /// Eases towards looking at `target` from `distance` away.
@@ -116,7 +117,7 @@ impl OrbitCamera {
     /// Moves the point orbited by `offset` at once.
     fn pan(&mut self, offset: Vec3) {
         self.target += offset;
-        self.focus += offset;
+        self.looking_at += offset;
     }
 
     /// Zooms by `factor` (below 1 is nearer), towards `toward` when given: the whole
@@ -124,7 +125,7 @@ impl OrbitCamera {
     fn zoom(&mut self, factor: f32, toward: Option<Vec3>) {
         let distance = (self.distance * factor).clamp(2.0, 4_000.0);
         if let Some(point) = toward {
-            self.pan((self.focus - point) * (distance / self.distance - 1.0));
+            self.pan((self.looking_at - point) * (distance / self.distance - 1.0));
         }
         self.distance = distance;
         self.goal_distance = None;
@@ -296,7 +297,7 @@ fn camera_input(
             let ahead = transform.forward();
             let along = ray.direction.dot(*ahead);
             (along.abs() > 1e-4).then(|| {
-                ray.origin + *ray.direction * ((camera.focus - ray.origin).dot(*ahead) / along)
+                ray.origin + *ray.direction * ((camera.looking_at - ray.origin).dot(*ahead) / along)
             })
         });
         let mut zoom = 1.0 - pinch * 1.5;
@@ -337,7 +338,7 @@ fn camera_input(
 fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Transform)>) {
     let ease = 1.0 - (-EASING * time.delta_secs()).exp();
     for (mut camera, mut transform) in &mut cameras {
-        camera.focus = camera.focus.lerp(camera.target, ease);
+        camera.looking_at = camera.looking_at.lerp(camera.target, ease);
         if let Some(goal) = camera.goal_distance {
             camera.distance += (goal - camera.distance) * ease;
             if (goal - camera.distance).abs() < 0.01 {
@@ -352,7 +353,7 @@ fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Tran
             }
         }
         let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
-        transform.translation = camera.focus + rotation * Vec3::Z * camera.distance;
+        transform.translation = camera.looking_at + rotation * Vec3::Z * camera.distance;
         transform.rotation = rotation;
     }
 }
@@ -362,34 +363,6 @@ fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Tran
 fn remember_pose(mut explorer: ResMut<Explorer>, cameras: Query<&OrbitCamera>) {
     if let Ok(camera) = cameras.single() {
         explorer.bypass_change_detection().see(camera.pose());
-    }
-}
-
-/// Sends the camera back where the explorer asks, once each time it asks: to where it
-/// stood at a place gone back to, or browsing again, to where it stood before the
-/// journey was entered, or with no such place, to take in the whole codebase. Runs
-/// after everything else that aims the camera, so this has the last word.
-pub(crate) fn restore_pose(
-    explorer: Res<Explorer>,
-    mut last: Local<Option<u64>>,
-    mut cameras: Query<(&mut OrbitCamera, &Projection)>,
-) {
-    let Some((count, pose)) = explorer.return_pose() else {
-        return;
-    };
-    if last.replace(count) == Some(count) {
-        return;
-    }
-    for (mut camera, projection) in &mut cameras {
-        let gathered = explorer.nucleus();
-        match pose {
-            Some(pose) => camera.return_to(pose),
-            None if gathered.browsing() => {
-                let rotation = camera.aim_rotation();
-                nucleus::fit_all(gathered, &mut camera, rotation, projection);
-            }
-            None => {}
-        }
     }
 }
 

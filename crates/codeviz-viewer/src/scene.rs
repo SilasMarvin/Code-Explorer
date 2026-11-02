@@ -1,5 +1,6 @@
-//! The 3D scene: one glowing sphere per function, placed inside its module's sphere,
-//! with the keys that move the cursor and switch what is shown.
+//! The 3D scene: one sphere per function, placed inside its module's sphere, and the
+//! systems that run each frame in order, from the pointer and the keys to what is
+//! drawn; with the keys that move the cursor and change what is shown.
 
 use bevy::prelude::*;
 use bevy_egui::{
@@ -8,9 +9,9 @@ use bevy_egui::{
 };
 
 use crate::{
-    camera,
     disclosure::Disclose,
     explorer::{Explorer, Step},
+    framing,
     graph_view::{self, NodeMaterials},
     idle::Awake,
     notice, nucleus, pick,
@@ -40,14 +41,12 @@ impl Plugin for ScenePlugin {
                     .chain(),
                 keyboard.run_if(not(egui_wants_any_keyboard_input)),
                 graph_view::track_attention,
-                nucleus::double_click.run_if(not(egui_wants_any_pointer_input)),
+                pick::double_click.run_if(not(egui_wants_any_pointer_input)),
                 nucleus::follow,
-                nucleus::hover,
+                pick::hover,
                 place_nodes,
                 nucleus::place_bodies,
-                graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
-                nucleus::frame,
-                camera::restore_pose,
+                framing::frame,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
                 nucleus::draw,
@@ -152,8 +151,11 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyI) {
         explorer.toggle_outside();
     }
-    if keys.just_pressed(KeyCode::Enter) {
-        explorer.trace_from_focus();
+    // Enter opens a journey at what the view is on.
+    if keys.just_pressed(KeyCode::Enter)
+        && let Some(tile) = explorer.current()
+    {
+        explorer.open_at(tile);
     }
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
@@ -164,9 +166,8 @@ fn keyboard(
     }
 }
 
-/// Escape closes whatever is on top: the search box, the key list, a
-/// function selected off the journey, then the journey itself, for browsing with the
-/// cursor's function selected.
+/// Escape closes whatever is on top: the search box, the key list, the function set
+/// aside, then the journey itself, for browsing with the cursor's function selected.
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
     if chrome.search {
         chrome.search = false;
@@ -179,7 +180,7 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
     }
 }
 
-/// Moves the nodes wherever the nucleus puts them, as it eases round a new middle.
+/// Moves the nodes wherever the nucleus puts them, as it eases round a new start.
 fn place_nodes(
     explorer: Res<Explorer>,
     mut placed: Local<Option<u64>>,

@@ -32,7 +32,8 @@ impl Plugin for IdlePlugin {
 pub(crate) struct Awake(pub(crate) bool);
 
 /// What the view shows that the panel can change after the scene's systems have run
-/// for the frame: the cursor, what is pointed at, the depth and the middle.
+/// for the frame: the cursor, what is under the pointer, the depth, the function set
+/// aside and the start.
 type Shown = (
     Option<SpanId>,
     Option<usize>,
@@ -52,11 +53,11 @@ fn keep_awake(
     // frame, so another one follows to show it.
     let now = explorer.map(|e| {
         (
-            e.selected(),
-            e.hovered_tile,
+            e.cursor_span(),
+            e.under_pointer,
             e.disclose(),
             e.aside(),
-            e.nucleus_focus(),
+            e.nucleus().start(),
         )
     });
     let moved = now != *shown;

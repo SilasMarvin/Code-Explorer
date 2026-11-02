@@ -1,9 +1,10 @@
 //! Interactive 3D viewer for codeviz journeys, built on Bevy.
 //!
-//! The viewer owns a [`System`] and floats it in 3D as a graph of calls, lighting up
-//! what calls into the focused function and what it calls. The
-//! [`Journey`](codeviz_core::Journey) through the focus sits over the graph as a flame
-//! graph, sharing its cursor.
+//! The viewer owns a [`System`] and draws it as module spheres with each module's
+//! functions inside. Browsing, a click selects a function and lights what calls it
+//! and what it calls. A [`Journey`](codeviz_core::Journey) from one function gathers
+//! the view round its start, and docks along the window's foot as a panel of bars
+//! sharing the graph's numbers and cursor.
 
 #![expect(
     clippy::needless_pass_by_value,
@@ -16,6 +17,7 @@ mod colors;
 mod disclosure;
 mod drive;
 mod explorer;
+mod framing;
 mod graph_view;
 mod history;
 mod idle;
@@ -107,7 +109,7 @@ impl Viewer {
         self
     }
 
-    /// Opens with the nucleus expanded, showing how calls run inside the focus's
+    /// Opens with the nucleus expanded, showing how calls run inside the start's
     /// module; X shrinks it back among the others.
     #[must_use]
     pub fn expanded(mut self) -> Self {
@@ -145,18 +147,14 @@ impl Viewer {
     }
 
     fn explorer(&mut self) -> Explorer {
-        let mut explorer =
-            Explorer::new(std::mem::take(&mut self.system), None, self.options.clone());
+        // With no journey asked for, browsing, with nothing selected: the whole map.
+        let mut explorer = Explorer::new(std::mem::take(&mut self.system), self.options.clone());
         let focus = self
             .focus
             .take()
             .and_then(|unit| explorer.map().tile_of(&unit));
         if let Some(tile) = focus {
             explorer.open_at(tile);
-        } else {
-            // With no journey asked for, browsing, with nothing selected: the whole map.
-            explorer.leave_journey();
-            explorer.clear_selection();
         }
         explorer.gather();
         explorer.expand_nucleus(self.expanded);

@@ -1,7 +1,7 @@
-//! The journey as a flame graph docked along the foot of the window: time left to
-//! right, each call on the row below its caller. Each bar is painted the color of its
-//! node, and the cursor, hover and focus are shared with the graph, so a bar and its
-//! node light up together.
+//! The journey as a flame graph docked along the foot of the window: calls left to
+//! right in the order they run, each on the row below its caller. Each bar is painted
+//! the color of its node, and the cursor and what is hovered are shared with the
+//! graph, so a bar and its node light up together.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
@@ -27,7 +27,7 @@ pub(crate) struct JourneyPanel {
     top_row: f32,
     /// The cursor the view last scrolled to.
     followed: Option<(u64, SpanId)>,
-    /// Whether the panel set the graph's hovered node, so it can clear it again.
+    /// Whether the panel set the function under the pointer, so it can clear it again.
     lit_node: bool,
 }
 
@@ -260,7 +260,7 @@ fn canvas(
     }
 
     // Keep the cursor in view when it moves.
-    let cursor = track.selected();
+    let cursor = explorer.cursor_span();
     let followed = cursor.map(|c| (explorer.revision(), c));
     if followed != panel.followed {
         panel.followed = followed;
@@ -281,7 +281,7 @@ fn canvas(
     let y_of = |row: f32| content.min.y + (row - panel.top_row) * pitch;
 
     let map = explorer.map();
-    let graph_focus = explorer.graph_focus();
+    let current = explorer.current();
     let tile_of = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
 
     // A bar per span, in the journey's order, so a span's index finds its bar.
@@ -316,7 +316,7 @@ fn canvas(
     };
 
     // A node hovered in the graph lights its bars here.
-    let graph_hover = explorer.hovered_tile.filter(|_| !panel.lit_node);
+    let graph_hover = explorer.hovered().filter(|_| !panel.lit_node);
     // Caller to callee: a short drop from the caller's row.
     for (callee, span) in journey.spans() {
         let Some(caller) = span.parent.filter(|_| disclosed.shows(callee)) else {
@@ -497,7 +497,7 @@ fn canvas(
                 text,
             );
         }
-        if tile.is_some() && tile == graph_focus && Some(bar.span) != cursor {
+        if tile.is_some() && tile == current && Some(bar.span) != cursor {
             painter.rect_stroke(
                 bar.rect.expand(1.5),
                 3.0,
@@ -507,7 +507,7 @@ fn canvas(
         }
     }
 
-    // With the focus on a node off the journey, the journey steps back behind it; the
+    // With a function set aside, the journey steps back behind it; the
     // cursor still shows where an arrow key returns to.
     if explorer.aside().is_some() {
         painter.rect_filled(content, 0.0, egui::Color32::from_black_alpha(140));
@@ -587,12 +587,12 @@ fn canvas(
     // Hovering a bar lights its node in the graph.
     let hovered_tile = hovered.and_then(tile_of);
     if hovered_tile.is_some() {
-        if explorer.hovered_tile != hovered_tile {
-            explorer.hovered_tile = hovered_tile;
+        if explorer.under_pointer != hovered_tile {
+            explorer.under_pointer = hovered_tile;
         }
         panel.lit_node = true;
     } else if panel.lit_node {
-        explorer.hovered_tile = None;
+        explorer.under_pointer = None;
         panel.lit_node = false;
     }
 
@@ -611,7 +611,7 @@ fn canvas(
 }
 
 /// A function's own name from its label, without the type before it:
-/// `Explorer.graph_focus ↻` is `graph_focus ↻`.
+/// `Explorer.cursor ↻` is `cursor ↻`.
 fn own_name(label: &str) -> String {
     let mut done = false;
     label
@@ -677,8 +677,8 @@ fn dashed_outline(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Strok
 
 #[cfg(test)]
 mod tests {
-    use codeviz_core::{JourneyOptions, System};
-    use codeviz_ir::{Document, UnitId};
+    use codeviz_core::System;
+    use codeviz_ir::Document;
 
     use super::*;
 
@@ -707,11 +707,7 @@ mod tests {
             unit("x:a", None, &[]),
         );
         let system = System::new([Document::from_json(&json).unwrap()]);
-        Explorer::new(
-            system,
-            Some(UnitId::new("x:main")),
-            JourneyOptions::default(),
-        )
+        crate::explorer::tests::opened(system, "x:main")
     }
 
     #[test]
