@@ -98,8 +98,9 @@ const NAME_GAP: f32 = 4.0;
 const NAME_PAD: f32 = 2.0;
 /// A character's width as a share of its font size, when no name drawn says.
 const CHAR_WIDTH: f32 = 0.55;
-/// Least share of the free area's width or height a framed journey's lit dots span.
-const JOURNEY_FILL: f32 = 0.5;
+/// Least share of the free area a framed journey's lit dots and their names span,
+/// along whichever of its width and height they come nearer filling.
+const JOURNEY_FILL: f32 = 0.7;
 /// How far a color's hue may be from its role's, in degrees, and how grey a color
 /// is that carries no role's hue (saturation, 0 to 1).
 const HUE_SLACK: f32 = 25.0;
@@ -1632,14 +1633,17 @@ fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     let free = s.free();
     let span = lit
         .iter()
-        .map(|n| egui::Rect::from_center_size(pos(n.at), egui::Vec2::splat(2.0 * n.radius)))
+        .flat_map(|n| {
+            let dot = egui::Rect::from_center_size(pos(n.at), egui::Vec2::splat(2.0 * n.radius));
+            std::iter::once(dot).chain(n.label_rect.map(rect))
+        })
         .reduce(egui::Rect::union)
         .unwrap_or(egui::Rect::NOTHING);
     let share = (span.width() / free.width()).max(span.height() / free.height());
     let mut offenders = Vec::new();
     if share < JOURNEY_FILL {
         let offender = json!({
-            "why": "the journey's functions take too little of the free area",
+            "why": "the journey's functions and their names take too little of the free area",
             "share": r2(share), "least": JOURNEY_FILL, "span": [r1(span.width()), r1(span.height())],
             "free_area": [r1(free.width()), r1(free.height())],
         });
@@ -2536,11 +2540,11 @@ mod tests {
     fn a_framed_journey_spans_the_free_area() {
         let browse = scene();
         let mut s = journey();
-        // f at 380 and h at 1000: 630 of 1600 across, 0.39.
+        // f at 380 to h's name ending at 1016: 641 of 1600 across, 0.4.
         let result = after(&browse, &s, &[Kind::Moves], "journey-fills");
         assert!(!passes(&result), "{result}");
-        assert_eq!(result["share"], 0.39);
-        s["nodes"][0]["at"] = json!([200.0, 500.0]);
+        assert_eq!(result["share"], 0.4);
+        s["nodes"][0]["at"] = json!([100.0, 500.0]);
         s["nodes"][2]["at"] = json!([1300.0, 500.0]);
         assert!(passes(&after(&browse, &s, &[Kind::Moves], "journey-fills")));
         // Not framed since: a click.
