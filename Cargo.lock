@@ -2468,6 +2468,7 @@ dependencies = [
  "codeviz-core",
  "codeviz-ir",
  "codeviz-layout",
+ "serde",
  "serde_json",
 ]
 

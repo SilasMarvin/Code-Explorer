@@ -1,0 +1,443 @@
+#!/usr/bin/env python3
+"""tools/drive: drive the real codeviz viewer from a script and check what it shows.
+
+  tools/drive run NAME SCRIPT [--wt DIR] [-- VIEW ARGS]
+      Runs SCRIPT in one viewer window and writes $CODEVIZ_SESSIONS/NAME/: a PNG and a
+      JSON per `snap`, with the checks run on it; session.json (every step); checks.json
+      (the checks, `expect` lines and failed steps, summed up). Prints the summary.
+      VIEW ARGS default to the script's `#: view ...` line.
+  tools/drive suite [--wt DIR] [--only TEXT]... [--prefix P]
+      Runs every tools/scripts/*.txt (or those whose name holds TEXT), one window at a
+      time, and prints a pass/fail table and the failing checks and expects.
+  tools/drive read NAME
+      Prints the summary of a session already run.
+  tools/drive shot NAME [--wt DIR] -- VIEW ARGS [--keys "K1 K2"] [--hover UNIT]
+      One picture: $CODEVIZ_SHOTS/NAME.png, NAME.json (the snap) and NAME.truth.json.
+  tools/drive live [DIR] -- VIEW ARGS
+      An interactive window under the memory guard, no time limit.
+  tools/drive WORKTREE NAME SCRIPT -- VIEW ARGS
+      The older form of `run`.
+
+The viewer is DIR/.bin/codeviz (build it with `cx DIR build`), run from DIR; DIR is this
+repo unless --wt says otherwise. Every run is killed past 3000 MB or its time limit, and
+takes a lock so only one viewer window renders at a time across all agents.
+
+Script steps (one per line; `#` comments; `#: view DATA [FLAGS]` gives the view args):
+  key K               x . , up down left right [ ] enter esc space tab backspace /,
+                      a letter or digit; shift+K
+  type TEXT           types into the focused text box (the search box after `key /`)
+  click UNIT          clicks the function's dot      click X Y    clicks a point
+  click-label UNIT    clicks the function's drawn name
+  click-empty         clicks the graph clear of every dot, name and overlay
+  hover UNIT          rests the pointer on the dot   hover-label UNIT   on its name
+  shift+click UNIT    doubleclick UNIT               doubleclick-module MODULE
+  bar N               clicks journey bar N (1.2), or the bar named N
+  button TEXT         clicks the button or chip that says TEXT
+  drag DX DY          orbits by a left drag
+  scroll N | scroll DX DY [at UNIT | at X Y]   wheel notches; positive DY zooms in
+  window W H          resizes the window (points)
+  wait MS             snap [LABEL]
+  expect mode browse|journey   expect nucleus off|modules|expanded   expect depth N
+  expect search|help|back|forward|outside_callers true|false
+  expect selection|cursor|start UNIT|none     expect named|drawn UNIT
+  expect camera-same-as LABEL  expect nothing-moved   expect check NAME [pass|fail]
+UNIT is found as --focus finds it (an id suffix like orders::place, or an entry label);
+a name that matches nothing, or many, stops the script before the window opens, with
+the nearest names. See docs/harness.md for the JSON fields and every check.
+
+Environment: CODEVIZ_SESSIONS (default /Users/silas/Projects/cx-tools/sessions),
+CODEVIZ_SHOTS (default /Users/silas/Projects/cx-tools/shots), CODEVIZ_DATA (default
+/Users/silas/Projects/cx-tools/data; `$CODEVIZ_DATA` in a `#: view` line), CODEVIZ_LOCK.
+"""
+import json
+import os
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+TOOLS = Path("/Users/silas/Projects/cx-tools")
+SESSIONS = Path(os.environ.get("CODEVIZ_SESSIONS", TOOLS / "sessions"))
+SHOTS = Path(os.environ.get("CODEVIZ_SHOTS", TOOLS / "shots"))
+DATA = os.environ.get("CODEVIZ_DATA", str(TOOLS / "data"))
+# The same lock the older cx-tools `shot` took, so old and new never render at once.
+LOCK = Path(os.environ.get("CODEVIZ_LOCK", TOOLS / "shots" / ".lock"))
+SCRIPTS = REPO / "tools" / "scripts"
+
+LIMIT_MB = 3000
+# Seconds a session may take: a base, more per step and per waited millisecond, a cap.
+BASE_SECONDS, STEP_SECONDS, MOST_SECONDS = 60, 12, 480
+# A lock older than this, or whose holder is gone, was left by a killed run.
+STALE_LOCK_SECONDS = 900
+
+
+class Trouble(Exception):
+    """A run that could not be made, with why."""
+
+
+# The guard and the lock.
+
+def tree_mb(pid):
+    """Resident memory of a process and its children, in MB."""
+    rows = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,rss="],
+                          capture_output=True, text=True).stdout.split()
+    table = [tuple(map(int, rows[i:i + 3])) for i in range(0, len(rows) - 2, 3)]
+    tree = {pid}
+    for _ in range(4):
+        tree |= {p for p, parent, _ in table if parent in tree}
+    return sum(r for p, _, r in table if p in tree) // 1024
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def locked(fn):
+    """Runs fn holding the render lock: one viewer window at a time, machine-wide."""
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    said = False
+    while True:
+        try:
+            LOCK.mkdir()
+            (LOCK / "pid").write_text(str(os.getpid()))
+            break
+        except FileExistsError:
+            try:
+                holder = (LOCK / "pid").read_text().strip()
+                age = time.time() - LOCK.stat().st_mtime
+                if (holder and not alive(int(holder))) or age > STALE_LOCK_SECONDS:
+                    shutil.rmtree(LOCK, ignore_errors=True)
+                    continue
+            except (FileNotFoundError, ValueError):
+                pass
+            if not said:
+                print(f"waiting for the render lock ({LOCK})", file=sys.stderr)
+                said = True
+            time.sleep(1)
+    try:
+        return fn()
+    finally:
+        shutil.rmtree(LOCK, ignore_errors=True)
+
+
+def guarded(argv, cwd, log, limit=None):
+    """Runs argv under the memory guard (and a time limit, if given); returns its exit
+    code. Raises Trouble when it had to be killed."""
+    with open(log, "w") as sink:
+        p = subprocess.Popen(argv, cwd=cwd, stdout=sink, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+        start = time.monotonic()
+        try:
+            while p.poll() is None:
+                used = tree_mb(p.pid)
+                spent = time.monotonic() - start
+                if used > LIMIT_MB or (limit and spent > limit):
+                    os.killpg(p.pid, signal.SIGKILL)
+                    p.wait()
+                    why = f"{used} MB" if used > LIMIT_MB else f"{spent:.0f}s (limit {limit}s)"
+                    raise Trouble(f"killed at {why}; see {log}")
+                time.sleep(0.2)
+        except KeyboardInterrupt:
+            os.killpg(p.pid, signal.SIGKILL)
+            raise
+    return p.returncode
+
+
+def binary(wt):
+    path = Path(wt).resolve() / ".bin" / "codeviz"
+    if not path.exists():
+        raise Trouble(f"no viewer at {path}; build it: /Users/silas/Projects/cx-tools/cx {Path(wt).resolve()} build")
+    return path
+
+
+# Scripts.
+
+def header_args(script_text):
+    """The view args a script's `#: view ...` line gives, with $CODEVIZ_DATA filled in."""
+    for line in script_text.splitlines():
+        line = line.strip()
+        if line.startswith("#:"):
+            os.environ.setdefault("CODEVIZ_DATA", DATA)
+            return shlex.split(os.path.expandvars(line[2:].strip()))
+    return []
+
+
+def time_limit(script_text):
+    lines = [l.strip() for l in script_text.splitlines()]
+    steps = [l for l in lines if l and not l.startswith("#")]
+    waited = sum(int(l.split()[1]) for l in steps
+                 if l.startswith("wait ") and l.split()[1].isdigit()) / 1000
+    return min(MOST_SECONDS, BASE_SECONDS + STEP_SECONDS * len(steps) + int(waited))
+
+
+def shot_script(view_args):
+    """Turns the single-shot flags `--keys "K1 K2"` and `--hover UNIT` into a one-snap
+    script. Returns the script and the view args without them."""
+    steps, rest, i = [], [], 0
+    while i < len(view_args):
+        arg = view_args[i]
+        name, eq, value = arg.partition("=")
+        if name in ("--keys", "--hover"):
+            if not eq:
+                i += 1
+                value = view_args[i] if i < len(view_args) else ""
+            if name == "--hover":
+                steps.append(f"hover {value}")
+            else:
+                steps.extend(f"key {k}" for k in value.split())
+        else:
+            rest.append(arg)
+        i += 1
+    # Hover last: keys first, as the old single shot pressed them.
+    steps.sort(key=lambda s: s.startswith("hover"))
+    return "\n".join(steps + ["snap"]) + "\n", rest
+
+
+# Running.
+
+def run_session(name, script, wt=REPO, view_args=None, quiet=False, into=None):
+    """Runs one session into `into`/NAME (by default $CODEVIZ_SESSIONS/NAME); returns
+    its summary (checks.json, with `name` and `dir`)."""
+    script = Path(script).resolve()
+    text = script.read_text()
+    view_args = view_args or header_args(text)
+    if not view_args:
+        raise Trouble(f"{script}: no view args: give them after `--`, or a `#: view DATA [FLAGS]` line")
+    exe = binary(wt)
+    out = Path(into or SESSIONS) / name
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    shutil.copy(script, out / "script.txt")
+    (out / "args.txt").write_text(shlex.join(view_args) + "\n")
+    log = out / "viewer.log"
+    argv = [str(exe), *view_args, "--script", str(script), "--screenshot", str(out)]
+    if not quiet:
+        print(f"running {name}: {shlex.join(view_args)}", file=sys.stderr)
+    code = locked(lambda: guarded(argv, Path(wt).resolve(), log, time_limit(text)))
+    if code != 0:
+        raise Trouble(f"codeviz exited {code}:\n{viewer_errors(log)}")
+    shrink_pngs(out)
+    summary_file = out / "checks.json"
+    if not summary_file.exists():
+        raise Trouble(f"no checks.json in {out}: was {exe} built from this harness?\n{viewer_errors(log)}")
+    summary = json.loads(summary_file.read_text())
+    summary.update(name=name, dir=str(out))
+    return summary
+
+
+def viewer_errors(log):
+    """The lines of a viewer log that say what went wrong, without Bevy's chatter."""
+    lines = Path(log).read_text(errors="replace").splitlines()
+    wanted = [l for l in lines if " INFO " not in l and " WARN " not in l and l.strip()]
+    return "\n".join("  " + l for l in (wanted or lines)[-20:])
+
+
+def shrink_pngs(out):
+    """Scales each snap's PNG to window points, so pixels match the JSON."""
+    for png in sorted(out.glob("[0-9][0-9]-*.png")):
+        meta = png.with_suffix(".json")
+        try:
+            size = max(json.loads(meta.read_text())["window"])
+        except (OSError, ValueError, KeyError):
+            size = 1600
+        subprocess.run(["sips", "-Z", str(int(size)), str(png)], capture_output=True)
+
+
+# Reading a session.
+
+def brief(value, width=150):
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def failing_checks(summary):
+    """Each check that failed on some snap: its name, the snaps, the worst offender."""
+    out = []
+    for name, check in summary.get("checks", {}).items():
+        if check.get("pass"):
+            continue
+        snaps = check.get("failed_in", [])
+        first = next((summary["snaps"][s][name] for s in snaps if s in summary.get("snaps", {})), {})
+        out.append((name, snaps, first))
+    return out
+
+
+def report(summary):
+    """The summary as an agent reads it: verdict, failed steps, expects, checks."""
+    snaps = summary.get("snaps", {})
+    steps = summary.get("failed_steps", [])
+    expects = summary.get("expects", [])
+    lines = [f"{summary.get('dir', '')}: {len(snaps)} snaps, {len(expects)} expects — "
+             + ("PASS" if summary.get("ok") else "FAIL")]
+    for s in steps:
+        if str(s.get("do", "")).startswith("expect "):
+            continue
+        lines.append(f"  step {s.get('step')} (line {s.get('line')}) `{s.get('do')}`: "
+                     + "; ".join(s.get("trouble") or []))
+    for e in expects:
+        if not e.get("ok"):
+            lines.append(f"  expect failed, line {e.get('line')} `{e.get('expect')}`: {e.get('why')}")
+    for name, failed_in, first in failing_checks(summary):
+        count = first.get("count", "")
+        example = (first.get("offenders") or [first.get("why")])[0]
+        lines.append(f"  check {name} failed in {', '.join(failed_in)}"
+                     + (f" ({count} offenders in {failed_in[0]})" if count else "")
+                     + f": {brief(example)}")
+    return "\n".join(lines)
+
+
+def read(name):
+    path = Path(name)
+    if not path.is_dir():
+        path = SESSIONS / name
+    summary = json.loads((path / "checks.json").read_text())
+    summary.update(name=path.name, dir=str(path))
+    return summary
+
+
+# The suite.
+
+def suite(wt, only, prefix):
+    scripts = sorted(p for p in SCRIPTS.glob("*.txt") if not only or any(o in p.stem for o in only))
+    if not scripts:
+        raise Trouble(f"no scripts in {SCRIPTS} match {only}")
+    rows = []
+    for script in scripts:
+        name = prefix + script.stem
+        try:
+            summary = run_session(name, script, wt)
+        except Trouble as error:
+            summary = {"name": name, "ok": False, "error": str(error), "dir": str(SESSIONS / name)}
+        rows.append((script.stem, summary))
+        print(f"  {script.stem}: {'pass' if summary.get('ok') else 'FAIL'}", file=sys.stderr)
+    print(table(rows))
+    (SESSIONS / f"{prefix}suite.json").write_text(json.dumps(
+        {stem: {k: v for k, v in s.items() if k != "snaps"} for stem, s in rows}, indent=2) + "\n")
+    return all(s.get("ok") for _, s in rows)
+
+
+def table(rows):
+    """The pass/fail table, then what failed in each script."""
+    head = ("script", "steps", "expects", "failing checks", "verdict")
+    body = []
+    for stem, s in rows:
+        if "error" in s:
+            body.append((stem, "-", "-", "did not run", "ERROR"))
+            continue
+        steps = [x for x in s.get("failed_steps", []) if not str(x.get("do", "")).startswith("expect ")]
+        expects = s.get("expects", [])
+        bad = [e for e in expects if not e.get("ok")]
+        checks = [n for n, _, _ in failing_checks(s)]
+        body.append((stem, f"{len(steps)} failed", f"{len(expects) - len(bad)}/{len(expects)} ok",
+                     ", ".join(checks) or "none", "pass" if s.get("ok") else "FAIL"))
+    widths = [max(len(str(r[i])) for r in [head] + body) for i in range(len(head) - 1)]
+    fmt = lambda r: "  ".join(str(c).ljust(w) for c, w in zip(r, widths)) + "  " + r[-1]
+    out = [fmt(head), fmt(tuple("-" * w for w in widths) + ("-------",))]
+    out += [fmt(r) for r in body]
+    passed = sum(1 for _, s in rows if s.get("ok"))
+    out.append(f"\n{passed}/{len(rows)} scripts pass")
+    for stem, s in rows:
+        if s.get("ok"):
+            continue
+        out.append("")
+        out.append(s["error"] if "error" in s else report(s))
+    return "\n".join(out)
+
+
+# Command line.
+
+def split_view_args(args):
+    if "--" in args:
+        i = args.index("--")
+        return args[:i], args[i + 1:]
+    return args, []
+
+
+def option(args, flag, default=None, many=False):
+    found, rest, i = [], [], 0
+    while i < len(args):
+        if args[i] == flag and i + 1 < len(args):
+            found.append(args[i + 1])
+            i += 2
+        else:
+            rest.append(args[i])
+            i += 1
+    args[:] = rest
+    return found if many else (found[-1] if found else default)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    command, args = argv[0], argv[1:]
+    if Path(command).is_dir() and len(args) >= 2:
+        # The older form: WORKTREE NAME SCRIPT -- VIEW ARGS.
+        command, args = "run", [*args[:2], "--wt", command, *args[2:]]
+    mine, view_args = split_view_args(args)
+    wt = option(mine, "--wt", str(REPO))
+    if command == "run":
+        if len(mine) != 2:
+            raise Trouble("usage: tools/drive run NAME SCRIPT [--wt DIR] [-- VIEW ARGS]")
+        summary = run_session(mine[0], mine[1], wt, view_args)
+        print(report(summary))
+        return 0 if summary.get("ok") else 1
+    if command == "suite":
+        only = option(mine, "--only", many=True)
+        prefix = option(mine, "--prefix", "suite-")
+        return 0 if suite(wt, only, prefix) else 1
+    if command == "read":
+        if len(mine) != 1:
+            raise Trouble("usage: tools/drive read NAME")
+        summary = read(mine[0])
+        print(report(summary))
+        return 0 if summary.get("ok") else 1
+    if command == "shot":
+        if len(mine) != 1:
+            raise Trouble("usage: tools/drive shot NAME [--wt DIR] -- VIEW ARGS [--keys K] [--hover UNIT]")
+        return shot(mine[0], wt, view_args)
+    if command == "live":
+        target = mine[0] if mine else wt
+        code = guarded([str(binary(target)), *view_args], Path(target).resolve(), os.devnull)
+        return code
+    raise Trouble(f"unknown command `{command}`; see tools/drive --help")
+
+
+def shot(name, wt, view_args):
+    script_text, view_args = shot_script(view_args)
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "shot.txt"
+        script.write_text(script_text)
+        summary = run_session("session", script, wt, view_args, quiet=True, into=tmp)
+        out = Path(summary["dir"])
+        png = next(out.glob("[0-9][0-9]-*.png"), None)
+        meta = next(out.glob("[0-9][0-9]-*.json"), None)
+        if png is None or meta is None:
+            raise Trouble(f"the snap was not taken:\n{viewer_errors(out / 'viewer.log')}")
+        shutil.copy(png, SHOTS / f"{name}.png")
+        snap = json.loads(meta.read_text())
+        (SHOTS / f"{name}.json").write_text(json.dumps(snap, indent=2) + "\n")
+        (SHOTS / f"{name}.truth.json").write_text(json.dumps(snap.get("content"), indent=2) + "\n")
+        for s in summary.get("failed_steps", []):
+            print(f"step `{s.get('do')}`: {'; '.join(s.get('trouble') or [])}", file=sys.stderr)
+    print(SHOTS / f"{name}.png")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Trouble as error:
+        print(error, file=sys.stderr)
+        sys.exit(2)

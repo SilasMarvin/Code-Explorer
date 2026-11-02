@@ -121,6 +121,11 @@ impl Press {
         Some(Self { key, shift })
     }
 
+    /// The key, and whether Shift is held.
+    pub(crate) fn code(self) -> (KeyCode, bool) {
+        (self.key, self.shift)
+    }
+
     /// The modifiers, each with whether it is held.
     fn modifiers(self) -> [(bool, KeyCode, Key); 1] {
         [(self.shift, KeyCode::ShiftLeft, Key::Shift)]

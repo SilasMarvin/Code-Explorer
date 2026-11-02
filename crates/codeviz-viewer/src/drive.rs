@@ -4,17 +4,22 @@
 //! mouse doing so, so picking, egui and the viewer's own handlers all see it, and a
 //! click that lands on the wrong thing lands there. After each step the view settles
 //! before the next. Each `snap` saves `NN-label.png` and `NN-label.json`, what the
-//! picture shows by name and place (see [`crate::truth::scene`]); `session.json` logs
-//! how each step went.
+//! picture shows by name and place (see [`crate::truth::scene`]) with the checks run on
+//! it (see [`crate::checks`]); `session.json` logs how each step went, and
+//! `checks.json` sums up the checks, the `expect` lines and the steps that failed.
 
-use std::{collections::VecDeque, path::PathBuf, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    time::Duration,
+};
 
 use bevy::{
     camera::{ImageRenderTarget, RenderTarget},
     ecs::system::SystemParam,
     input::{
         ButtonState, InputSystems,
-        keyboard::{Key, KeyboardInput},
+        keyboard::{Key, KeyboardInput, NativeKeyCode},
         mouse::{MouseButtonInput, MouseMotion, MouseScrollUnit, MouseWheel},
         touch::TouchPhase,
     },
@@ -32,12 +37,16 @@ use serde_json::{Value, json};
 use crate::{
     camera::OrbitCamera,
     capture::{DRAIN_FRAMES, Press, SETTLE_FRAMES, SETTLE_TIME},
+    checks,
     diff_view::DiffView,
     explorer::Explorer,
     idle::Awake,
     journey_panel::JourneyPanel,
     scene::Tile,
-    script::{Gesture, Step, snap_name},
+    script::{
+        Expect, Gesture, Kind, Line, Name, Spot, Step, close_matches, snap_label, snap_name,
+        unknown,
+    },
     ui::{Chrome, KeyHelp, node_name},
 };
 
@@ -55,11 +64,132 @@ const HOVER_REST: Duration = Duration::from_millis(400);
 const NOTCH: f32 = 1.0;
 /// Pieces a drag is sent in.
 const DRAG_PIECES: u16 = 12;
+/// Least room round the spot a double click on a module or a click on empty space
+/// lands on, clear of every function and name, in points.
+const CLEAR_SPOT: f32 = 6.0;
+/// Room enough round a click on empty space to take the spot nearest the middle.
+const ROOMY_SPOT: f32 = 30.0;
+/// How near the camera must stand to where it stood for `expect camera-same-as`: in
+/// the world (a glide back stops a hair short), and in radians.
+const SAME_PLACE: f64 = 0.05;
+const SAME_ANGLE: f64 = 0.002;
 
 pub(crate) struct DrivePlugin {
     pub(crate) dir: PathBuf,
-    pub(crate) steps: Vec<(String, Step)>,
+    pub(crate) lines: Vec<Line>,
+    pub(crate) names: Names,
 }
+
+/// The functions and modules a script names, as written, with their tiles and
+/// clusters.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Names {
+    units: HashMap<String, usize>,
+    modules: HashMap<String, usize>,
+}
+
+impl Names {
+    fn unit(&self, name: &str) -> Result<usize, String> {
+        self.units
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("`{name}` was not looked up"))
+    }
+
+    fn module(&self, name: &str) -> Result<usize, String> {
+        self.modules
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("`{name}` was not looked up"))
+    }
+}
+
+/// Looks up every function and module a script names, before the window opens.
+///
+/// # Errors
+///
+/// Names each line naming nothing known, or more than one function, with the names
+/// nearest it.
+pub(crate) fn resolve(lines: &[Line], explorer: &Explorer) -> Result<Names, String> {
+    let mut names = Names::default();
+    let mut errors = Vec::new();
+    for line in lines {
+        let found = match line.step.names() {
+            None => continue,
+            Some(Name::Unit(query)) => find_unit(explorer, query).map(|tile| {
+                names.units.insert(query.to_owned(), tile);
+            }),
+            Some(Name::Module(query)) => find_module(explorer, query).map(|cluster| {
+                names.modules.insert(query.to_owned(), cluster);
+            }),
+        };
+        if let Err(error) = found {
+            errors.push(format!("line {}: {error}: `{}`", line.number, line.text));
+        }
+    }
+    if errors.is_empty() {
+        Ok(names)
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+/// A function as `--focus` finds it: by entry label, or by its id or the end of it.
+fn find_unit(explorer: &Explorer, query: &str) -> Result<usize, String> {
+    let system = explorer.system();
+    match system.find(query).as_slice() {
+        [unit] => explorer
+            .map()
+            .tile_of(&unit.id)
+            .ok_or_else(|| format!("{} is not in the graph", unit.id)),
+        [] => {
+            let known = system
+                .units()
+                .map(|u| u.id.as_str())
+                .chain(system.entries().iter().map(|e| e.label.as_str()));
+            Err(unknown("function", query, known))
+        }
+        many => {
+            let ids: Vec<&str> = many.iter().take(6).map(|u| u.id.as_str()).collect();
+            Err(format!(
+                "`{query}` names {} functions, as {}; give more of the path",
+                many.len(),
+                ids.join(", ")
+            ))
+        }
+    }
+}
+
+/// A module by the name its sphere carries, in any case.
+fn find_module(explorer: &Explorer, query: &str) -> Result<usize, String> {
+    let names: Vec<String> = (0..explorer.graph().cluster_count())
+        .map(|cluster| explorer.cluster_name(cluster))
+        .collect();
+    names
+        .iter()
+        .position(|name| name == query)
+        .or_else(|| {
+            let mut alike = names
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| name.eq_ignore_ascii_case(query));
+            match (alike.next(), alike.next()) {
+                (Some((cluster, _)), None) => Some(cluster),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| {
+            let error = unknown("module", query, names.iter().map(String::as_str));
+            if error.contains("did you mean") || names.len() > MODULES_LISTED {
+                error
+            } else {
+                format!("{error}; modules: {}", names.join(", "))
+            }
+        })
+}
+
+/// Most modules an unknown module's error lists.
+const MODULES_LISTED: usize = 40;
 
 impl Plugin for DrivePlugin {
     fn build(&self, app: &mut App) {
@@ -68,7 +198,8 @@ impl Plugin for DrivePlugin {
         }
         app.insert_resource(Drive {
             dir: self.dir.clone(),
-            steps: self.steps.clone(),
+            lines: self.lines.clone(),
+            names: self.names.clone(),
             ..Drive::default()
         })
         .init_resource::<Screen>()
@@ -100,9 +231,13 @@ enum Act {
     /// The pointer moves by this much with the button held: a piece of a drag.
     Nudge(Vec2),
     Mouse(MouseButton, ButtonState),
-    /// A wheel notch, up (nearer) when positive.
-    Wheel(f32),
+    /// A wheel notch across and down, nearer when `y` is positive.
+    Wheel(Vec2),
     Key(Press, ButtonState),
+    /// A character typed, as into the search box.
+    Text(char, ButtonState),
+    /// The window takes this size, in points.
+    Resize(Vec2),
     Shift(ButtonState),
     /// Lets this many frames pass.
     Frames(u32),
@@ -111,6 +246,8 @@ enum Act {
     Until(Duration),
     /// Notes whether the pointer is over this function, by tile, as it should be.
     Expect(usize),
+    /// Notes whether the pointer is over no function and no overlay, as it should be.
+    ExpectClear,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,7 +276,8 @@ enum Phase {
 #[derive(Resource, Default)]
 struct Drive {
     dir: PathBuf,
-    steps: Vec<(String, Step)>,
+    lines: Vec<Line>,
+    names: Names,
     /// The step under way, by index.
     step: Option<usize>,
     phase: Phase,
@@ -167,8 +305,16 @@ struct Drive {
     /// where each camera drew before.
     offscreen: Option<Handle<Image>>,
     targets: Vec<(Entity, RenderTarget)>,
-    /// Where everything was at the last snap, to say what moved since.
-    placed: Option<crate::truth::Places>,
+    /// What the last snap showed, to say what moved since, and what each step since
+    /// may move.
+    last_scene: Option<Value>,
+    kinds: Vec<Kind>,
+    /// Each snap's label, as its file names it, with where the camera stood.
+    cameras: Vec<(String, Value)>,
+    /// Each snap's checks, by its file stem.
+    checked: Vec<(String, Value)>,
+    /// How each `expect` line went.
+    expects: Vec<Value>,
 }
 
 /// The messages a window sends for a mouse and a keyboard.
@@ -203,11 +349,11 @@ impl Hands<'_> {
         self.events.write(message.into());
     }
 
-    fn wheel(&mut self, window: Entity, notch: f32) {
+    fn wheel(&mut self, window: Entity, notch: Vec2) {
         let message = MouseWheel {
             unit: MouseScrollUnit::Line,
-            x: 0.0,
-            y: notch,
+            x: notch.x,
+            y: notch.y,
             window,
             phase: TouchPhase::Moved,
         };
@@ -218,6 +364,20 @@ impl Hands<'_> {
     fn motion(&mut self, delta: Vec2) {
         self.motions.write(MouseMotion { delta });
         self.events.write(MouseMotion { delta }.into());
+    }
+
+    /// A character as a keyboard layout without its key would send it: no key code a
+    /// shortcut answers to, only the text.
+    fn text(&mut self, window: Entity, c: char, state: ButtonState) {
+        let text = c.to_string();
+        self.keys.write(KeyboardInput {
+            key_code: KeyCode::Unidentified(NativeKeyCode::Unidentified),
+            logical_key: Key::Character(text.as_str().into()),
+            state,
+            text: (state == ButtonState::Pressed).then(|| text.as_str().into()),
+            repeat: false,
+            window,
+        });
     }
 
     fn shift(&mut self, window: Entity, state: ButtonState) {
@@ -276,6 +436,8 @@ fn act(
             Act::Key(press, state) => {
                 hands.keys.write_batch(press.messages(state, entity));
             }
+            Act::Text(c, state) => hands.text(entity, c, state),
+            Act::Resize(size) => window.resolution.set(size.x, size.y),
             Act::Shift(state) => hands.shift(entity, state),
             Act::Frames(0) => {}
             Act::Frames(n) => {
@@ -309,6 +471,21 @@ fn act(
                     drive.trouble.push(trouble);
                 }
             }
+            Act::ExpectClear => {
+                let at = drive.pointer.unwrap_or_default();
+                let over = match (explorer.hovered_tile, screen.overlay_at(at)) {
+                    (Some(other), _) => Some(node_name(&explorer, other)),
+                    (None, Some(overlay)) => Some(format!("the {overlay}")),
+                    (None, None) => None,
+                };
+                if let Some(over) = over {
+                    let trouble = format!(
+                        "the pointer at ({:.0}, {:.0}) is over {over}, not a clear spot",
+                        at.x, at.y
+                    );
+                    drive.trouble.push(trouble);
+                }
+            }
         }
     }
 }
@@ -331,6 +508,8 @@ pub(crate) struct Painted {
     /// What it is clipped to.
     pub(crate) clip: egui::Rect,
     pub(crate) opacity: f32,
+    /// Its font size, in points: its largest, where its parts differ.
+    pub(crate) size: f32,
 }
 
 /// Something that takes a click, and what it says.
@@ -409,7 +588,16 @@ fn pick<'a>(widgets: &'a [Widget], text: &str) -> Result<&'a Widget, String> {
         })
         .ok_or_else(|| {
             let all: Vec<&str> = widgets.iter().map(|w| w.text.as_str()).collect();
-            format!("no button says `{text}`; showing: {}", all.join(" | "))
+            let near = close_matches(text, all.iter().copied());
+            let meant = if near.is_empty() {
+                String::new()
+            } else {
+                format!(" (did you mean {}?)", near.join(", "))
+            };
+            format!(
+                "no button says `{text}`{meant}; showing: {}",
+                all.join(" | ")
+            )
         })
 }
 
@@ -559,6 +747,13 @@ fn collect_texts(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<Painted>) 
             rect: text.galley.rect.translate(text.pos.to_vec2()),
             clip,
             opacity: text.opacity_factor,
+            size: text
+                .galley
+                .job
+                .sections
+                .iter()
+                .map(|section| section.format.font_id.size)
+                .fold(0.0, f32::max),
         }),
         egui::Shape::Vec(shapes) => {
             for shape in shapes {
@@ -588,8 +783,9 @@ fn words_of(job: &egui::text::LayoutJob) -> String {
 pub(crate) struct Drawn {
     pub(crate) tile: usize,
     pub(crate) at: Vec2,
-    /// Where it is in the world.
+    /// Where it is in the world, and how big it is there.
     pub(crate) world: Vec3,
+    pub(crate) world_radius: f32,
     pub(crate) radius: f32,
     /// Whether it is inside the graph's part of the window, in front of the camera.
     pub(crate) on_screen: bool,
@@ -655,11 +851,13 @@ impl View<'_, '_> {
             .filter_map(|(tile, transform, _)| {
                 let world = transform.translation();
                 let at = self.to_screen(world)?;
+                let world_radius = transform.scale().x * 0.5;
                 Some(Drawn {
                     tile: tile.0,
                     at,
                     world,
-                    radius: self.screen_radius(world, transform.scale().x * 0.5),
+                    world_radius,
+                    radius: self.screen_radius(world, world_radius),
                     on_screen: self.on_screen(at),
                 })
             })
@@ -698,11 +896,13 @@ impl View<'_, '_> {
                 at.y
             ));
         }
+        let world_radius = transform.scale().x * 0.5;
         Ok(Drawn {
             tile,
             at,
             world,
-            radius: self.screen_radius(world, transform.scale().x * 0.5),
+            world_radius,
+            radius: self.screen_radius(world, world_radius),
             on_screen: true,
         })
     }
@@ -879,6 +1079,7 @@ fn advance(
             if shots.is_empty() && drive.frame >= at + DRAIN_FRAMES {
                 let session = json!({ "snaps": drive.snaps, "steps": drive.log });
                 write(&drive.dir.join("session.json"), &session);
+                write(&drive.dir.join("checks.json"), &summary(&drive));
                 drive.phase = Phase::Done;
                 exit.write(AppExit::Success);
             }
@@ -946,7 +1147,8 @@ fn finish(drive: &mut Drive, view: &View, waited: Option<Duration>) {
     let trouble = std::mem::take(&mut drive.trouble);
     let mut entry = json!({
         "step": index + 1,
-        "do": drive.steps[index].0,
+        "line": drive.lines[index].number,
+        "do": drive.lines[index].text,
         "ok": trouble.is_empty(),
         "then": crate::truth::state(view),
     });
@@ -966,7 +1168,7 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
     loop {
         let index = drive.step.map_or(0, |i| i + 1);
         drive.step = Some(index);
-        let Some((_, step)) = drive.steps.get(index).cloned() else {
+        let Some(step) = drive.lines.get(index).map(|line| line.step.clone()) else {
             drive.phase = Phase::Closing(drive.frame);
             return;
         };
@@ -974,6 +1176,7 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
             snap(commands, drive, view, label.as_deref());
             return;
         }
+        drive.kinds.push(step.kind());
         match plan(drive, view, &step) {
             Ok(acts) => {
                 drive.acts = acts.into();
@@ -992,19 +1195,33 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
     }
 }
 
-/// Saves the window as it shows next, and what it shows beside it.
+/// What the view shows now, as a snap's JSON has it, with where the pointer is.
+fn scene_now(drive: &Drive, view: &View) -> Value {
+    let mut scene = crate::truth::scene(view);
+    scene["state"]["pointer"] = json!(drive.pointer.map(|at| [at.x.round(), at.y.round()]));
+    scene
+}
+
+/// Saves the window as it shows next, and what it shows beside it, with the checks
+/// run on it.
 fn snap(commands: &mut Commands, drive: &mut Drive, view: &View, label: Option<&str>) {
     let name = snap_name(drive.snaps.len() + 1, label);
-    let mut scene = crate::truth::scene(view);
-    let placed = crate::truth::Places::of(view);
-    if let Some((since, before)) = drive.snaps.last().zip(drive.placed.as_ref()) {
-        scene["moved"] = crate::truth::moved(&view.explorer, before, &placed, since);
-    }
-    drive.placed = Some(placed);
+    let mut scene = scene_now(drive, view);
     scene["snap"] = json!(name);
-    scene["state"]["pointer"] = json!(drive.pointer.map(|at| [at.x.round(), at.y.round()]));
-    scene["log"] = json!(drive.log);
-    write(&drive.dir.join(format!("{name}.json")), &scene);
+    if let Some((since, before)) = drive.snaps.last().zip(drive.last_scene.as_ref()) {
+        scene["moved"] = checks::moved(before, &scene, since);
+    }
+    let checked = checks::run(&scene, drive.last_scene.as_ref(), &drive.kinds);
+    drive.kinds.clear();
+    drive.checked.push((name.clone(), checked.clone()));
+    drive
+        .cameras
+        .push((snap_label(label), scene["state"]["camera"].clone()));
+    scene["checks"] = checked;
+    let mut written = scene.clone();
+    drive.last_scene = Some(scene);
+    written["log"] = json!(drive.log);
+    write(&drive.dir.join(format!("{name}.json")), &written);
     if drive.covered {
         // The window draws nothing while covered; the next frames draw offscreen.
         drive.snaps.push(name);
@@ -1050,7 +1267,8 @@ fn write(path: &std::path::Path, value: &Value) {
     }
 }
 
-/// The hands' moves for a step, or why it cannot be taken.
+/// The hands' moves for a step, or why it cannot be taken. An `expect` takes no
+/// moves: it is judged here, on the view as the step before left it.
 fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String> {
     let key = |press| {
         vec![
@@ -1061,53 +1279,45 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
         ]
     };
     let click = |at: Vec2| {
-        vec![
-            Act::Pointer(at),
-            Act::Frames(3),
-            Act::Mouse(MouseButton::Left, ButtonState::Pressed),
-            Act::Frames(1),
-            Act::Mouse(MouseButton::Left, ButtonState::Released),
-            Act::Frames(1),
-        ]
+        let mut acts = vec![Act::Pointer(at), Act::Frames(3)];
+        acts.extend(PRESS);
+        acts
     };
     Ok(match step {
         Step::Key(press) => key(*press),
+        Step::Type(text) => text
+            .chars()
+            .flat_map(|c| {
+                [
+                    Act::Text(c, ButtonState::Pressed),
+                    Act::Frames(1),
+                    Act::Text(c, ButtonState::Released),
+                    Act::Frames(1),
+                ]
+            })
+            .collect(),
         Step::Point { gesture, unit } => {
-            let unit = unit.as_ref().map_err(Clone::clone)?;
-            let tile = view
-                .explorer
-                .map()
-                .tile_of(unit)
-                .ok_or_else(|| format!("{unit} is not in the graph"))?;
-            let at = if *gesture == Gesture::LabelClick {
+            let tile = drive.names.unit(unit)?;
+            let at = if matches!(gesture, Gesture::LabelClick | Gesture::LabelHover) {
                 label_point(view, tile)?
             } else {
                 view.find(tile)?.at
             };
             let mut acts = vec![Act::Pointer(at), Act::Frames(3), Act::Expect(tile)];
-            let press = [
-                Act::Mouse(MouseButton::Left, ButtonState::Pressed),
-                Act::Frames(1),
-                Act::Mouse(MouseButton::Left, ButtonState::Released),
-                Act::Frames(1),
-            ];
-            match gesture {
-                Gesture::Hover => acts.push(Act::Pause(HOVER_REST)),
-                Gesture::Click | Gesture::LabelClick => acts.extend(press),
-                Gesture::ShiftClick => {
-                    acts.push(Act::Shift(ButtonState::Pressed));
-                    acts.push(Act::Frames(1));
-                    acts.extend(press);
-                    // Held a little past the release, as a hand would: picking reads
-                    // the mouse a frame after the keys.
-                    acts.push(Act::Frames(2));
-                    acts.push(Act::Shift(ButtonState::Released));
-                }
-                Gesture::DoubleClick => {
-                    acts.extend(press.clone());
-                    acts.extend(press);
-                }
-            }
+            acts.extend(gesture_acts(*gesture));
+            acts
+        }
+        Step::ClickAt(at) => click(*at),
+        Step::ClickEmpty => {
+            let at = empty_point(view)?;
+            let mut acts = vec![Act::Pointer(at), Act::Frames(3), Act::ExpectClear];
+            acts.extend(PRESS);
+            acts
+        }
+        Step::DoubleClickModule(module) => {
+            let at = module_point(view, drive.names.module(module)?)?;
+            let mut acts = vec![Act::Pointer(at), Act::Frames(3), Act::ExpectClear];
+            acts.extend([PRESS, PRESS].concat());
             acts
         }
         Step::Bar(number) => click(bar_point(view, number)?),
@@ -1120,10 +1330,7 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
             let start = drive
                 .pointer
                 .filter(|&p| view.on_screen(p) && view.screen.overlay_at(p).is_none())
-                .unwrap_or_else(|| {
-                    let c = view.screen.graph.center();
-                    Vec2::new(c.x, c.y)
-                });
+                .unwrap_or_else(|| graph_middle(view));
             let piece = *by / f32::from(DRAG_PIECES);
             let mut acts = vec![
                 Act::Pointer(start),
@@ -1136,23 +1343,358 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
             acts.push(Act::Frames(1));
             acts
         }
-        Step::Scroll(notches) => {
+        Step::Scroll { by, at } => {
+            let to = match at {
+                Some(Spot::Unit(unit)) => Some(view.find(drive.names.unit(unit)?)?.at),
+                Some(Spot::At(point)) => Some(*point),
+                None => drive.pointer.is_none().then(|| graph_middle(view)),
+            };
             let mut acts = Vec::new();
-            if drive.pointer.is_none() {
-                let c = view.screen.graph.center();
-                acts.push(Act::Pointer(Vec2::new(c.x, c.y)));
-                acts.push(Act::Frames(1));
+            if let Some(to) = to {
+                acts.extend([Act::Pointer(to), Act::Frames(3)]);
             }
-            let notch = if *notches > 0 { NOTCH } else { -NOTCH };
-            for _ in 0..notches.unsigned_abs() {
-                acts.push(Act::Wheel(notch));
-                acts.push(Act::Frames(1));
-            }
+            acts.extend(wheel_acts(*by));
             acts
         }
+        Step::Window(size) => vec![Act::Resize(*size), Act::Frames(10)],
         Step::Wait(span) => vec![Act::Pause(*span)],
+        Step::Expect(expect) => {
+            let judged = judge(drive, view, expect);
+            note_expect(drive, judged.as_ref().err());
+            judged?;
+            Vec::new()
+        }
         Step::Snap(_) => Vec::new(),
     })
+}
+
+/// The press and release of the left button.
+const PRESS: [Act; 4] = [
+    Act::Mouse(MouseButton::Left, ButtonState::Pressed),
+    Act::Frames(1),
+    Act::Mouse(MouseButton::Left, ButtonState::Released),
+    Act::Frames(1),
+];
+
+/// What the hands do on a function once the pointer is on it.
+fn gesture_acts(gesture: Gesture) -> Vec<Act> {
+    match gesture {
+        Gesture::Hover | Gesture::LabelHover => vec![Act::Pause(HOVER_REST)],
+        Gesture::Click | Gesture::LabelClick => PRESS.to_vec(),
+        Gesture::ShiftClick => {
+            let mut acts = vec![Act::Shift(ButtonState::Pressed), Act::Frames(1)];
+            acts.extend(PRESS);
+            // Held a little past the release, as a hand would: picking reads the
+            // mouse a frame after the keys.
+            acts.extend([Act::Frames(2), Act::Shift(ButtonState::Released)]);
+            acts
+        }
+        Gesture::DoubleClick => [PRESS, PRESS].concat(),
+    }
+}
+
+/// A wheel turn, a notch a frame, across and down together while both last.
+fn wheel_acts(by: Vec2) -> Vec<Act> {
+    let (across, down) = (by.x.abs(), by.y.abs());
+    let mut acts = Vec::new();
+    let mut turned = 0.0;
+    while turned < across.max(down) {
+        let notch = Vec2::new(
+            if turned < across { by.x.signum() } else { 0.0 },
+            if turned < down { by.y.signum() } else { 0.0 },
+        );
+        acts.extend([Act::Wheel(notch * NOTCH), Act::Frames(1)]);
+        turned += 1.0;
+    }
+    acts
+}
+
+/// Notes how the `expect` line under way went.
+fn note_expect(drive: &mut Drive, failed: Option<&String>) {
+    let index = drive.step.unwrap_or_default();
+    let line = &drive.lines[index];
+    let entry = json!({
+        "step": index + 1,
+        "line": line.number,
+        "expect": line.text,
+        "ok": failed.is_none(),
+        "why": failed,
+    });
+    drive.expects.push(entry);
+}
+
+fn graph_middle(view: &View) -> Vec2 {
+    let c = view.screen.graph.center();
+    Vec2::new(c.x, c.y)
+}
+
+/// Whether the view is as an `expect` line says, or how it is not.
+fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
+    let explorer = &*view.explorer;
+    let name =
+        |tile: Option<usize>| tile.map_or_else(|| "none".to_owned(), |t| node_name(explorer, t));
+    let wanted = |unit: &Option<String>| unit.as_deref().map(|u| drive.names.unit(u)).transpose();
+    let same = |what: &str, got: Option<usize>, want: Option<usize>| {
+        if got == want {
+            Ok(())
+        } else {
+            Err(format!("the {what} is {}, not {}", name(got), name(want)))
+        }
+    };
+    let tile_of = |unit: Option<&codeviz_ir::UnitId>| unit.and_then(|u| explorer.map().tile_of(u));
+    let journey = !explorer.browsing();
+    match expect {
+        Expect::State { field, value } => {
+            let state = crate::truth::state(view);
+            let got = match &state[field.as_str()] {
+                Value::String(text) => text.clone(),
+                Value::Null => "none".to_owned(),
+                other => other.to_string(),
+            };
+            if got == *value {
+                Ok(())
+            } else {
+                Err(format!("{field} is {got}, not {value}"))
+            }
+        }
+        Expect::Selection(unit) => same("selection", explorer.selection(), wanted(unit)?),
+        Expect::Cursor(unit) => {
+            let cursor = explorer.selected().and_then(|span| explorer.unit_id(span));
+            same(
+                "journey's cursor",
+                tile_of(cursor).filter(|_| journey),
+                wanted(unit)?,
+            )
+        }
+        Expect::Start(unit) => same(
+            "journey's start",
+            tile_of(explorer.root()).filter(|_| journey),
+            wanted(unit)?,
+        ),
+        Expect::Named(unit) => {
+            let tile = drive.names.unit(unit)?;
+            if view.screen.labels.iter().any(|&(_, t)| t == tile) {
+                Ok(())
+            } else {
+                Err(format!("{} has no name drawn", name(Some(tile))))
+            }
+        }
+        Expect::Drawn(unit) => view.find(drive.names.unit(unit)?).map(|_| ()),
+        Expect::CameraSameAs(label) => {
+            let Some((_, then)) = drive.cameras.iter().rev().find(|(l, _)| l == label) else {
+                return Err(format!("no snapshot `{label}` was taken"));
+            };
+            let now = &crate::truth::state(view)["camera"];
+            camera_differs(then, now).map_or(Ok(()), |how| {
+                Err(format!(
+                    "the camera is not where it was at `{label}`: {how}"
+                ))
+            })
+        }
+        Expect::NothingMoved => {
+            let Some(before) = &drive.last_scene else {
+                return Err("no snapshot before to compare with".to_owned());
+            };
+            let result = checks::run(&scene_now(drive, view), Some(before), &[Kind::Still]);
+            verdict_of("nothing-moved", &result["nothing-moved"], true)
+        }
+        Expect::Check { name, pass } => {
+            let result = checks::run(
+                &scene_now(drive, view),
+                drive.last_scene.as_ref(),
+                &drive.kinds,
+            );
+            verdict_of(name, &result[name.as_str()], *pass)
+        }
+    }
+}
+
+/// Whether a check came out as expected, or what it said instead.
+fn verdict_of(name: &str, result: &Value, pass: bool) -> Result<(), String> {
+    if result["pass"] == json!(pass) {
+        return Ok(());
+    }
+    let said = match &result["pass"] {
+        Value::Bool(true) => "passed".to_owned(),
+        Value::Bool(false) => format!(
+            "failed ({} offenders; first {})",
+            result["count"],
+            result["offenders"].get(0).unwrap_or(&result["why"])
+        ),
+        _ => format!("did not apply: {}", result["why"].as_str().unwrap_or("")),
+    };
+    Err(format!("check {name} {said}"))
+}
+
+/// How the camera stands apart from where it stood, if it does.
+fn camera_differs(then: &Value, now: &Value) -> Option<String> {
+    let number = |v: &Value| v.as_f64().unwrap_or(f64::NAN);
+    let mut how = Vec::new();
+    for axis in 0..3 {
+        let (a, b) = (number(&then["target"][axis]), number(&now["target"][axis]));
+        if (a - b).abs() > SAME_PLACE || a.is_nan() != b.is_nan() {
+            how.push(format!("target[{axis}] {a} → {b}"));
+        }
+    }
+    for (field, slack) in [
+        ("distance", SAME_PLACE),
+        ("yaw", SAME_ANGLE),
+        ("pitch", SAME_ANGLE),
+    ] {
+        let (a, b) = (number(&then[field]), number(&now[field]));
+        if (a - b).abs() > slack {
+            how.push(format!("{field} {a} → {b}"));
+        }
+    }
+    (!how.is_empty()).then(|| how.join(", "))
+}
+
+/// How the session went: whether it is clean, each check over the snaps, the `expect`
+/// lines, the steps that failed, and each snap's checks.
+fn summary(drive: &Drive) -> Value {
+    let checked = checks::summarise(&drive.checked);
+    let checks_pass = checked
+        .as_object()
+        .is_some_and(|all| all.values().all(|c| c["pass"] == json!(true)));
+    let expects_pass = drive.expects.iter().all(|e| e["ok"] == json!(true));
+    let failed: Vec<&Value> = drive
+        .log
+        .iter()
+        .filter(|s| s["ok"] != json!(true))
+        .collect();
+    let snaps: serde_json::Map<String, Value> = drive
+        .checked
+        .iter()
+        .map(|(name, checks)| (name.clone(), checks.clone()))
+        .collect();
+    json!({
+        "ok": checks_pass && expects_pass && failed.is_empty(),
+        "checks": checked,
+        "expects": drive.expects,
+        "failed_steps": failed.iter().map(|s| json!({
+            "step": s["step"], "line": s["line"], "do": s["do"], "trouble": s["trouble"],
+        })).collect::<Vec<_>>(),
+        "snaps": snaps,
+    })
+}
+
+/// How clear a point is of every function, name, text and button drawn, in points.
+fn clearance(view: &View, drawn: &[Drawn], at: Vec2) -> f32 {
+    let p = egui::pos2(at.x, at.y);
+    let dots = drawn
+        .iter()
+        .filter(|d| d.on_screen)
+        .map(|d| d.at.distance(at) - d.radius);
+    let names = view
+        .screen
+        .labels
+        .iter()
+        .map(|(pill, _)| pill.distance_to_pos(p));
+    let texts = view.screen.texts.iter().map(|t| t.rect.distance_to_pos(p));
+    let buttons = view
+        .screen
+        .widgets
+        .iter()
+        .map(|w| w.rect.distance_to_pos(p));
+    dots.chain(names)
+        .chain(texts)
+        .chain(buttons)
+        .fold(f32::MAX, f32::min)
+}
+
+/// Whether a point is on the graph with nothing over it.
+fn open_ground(view: &View, at: Vec2) -> bool {
+    view.on_screen(at) && view.screen.overlay_at(at).is_none()
+}
+
+/// Where to double-click a module's sphere: the spot inside it farthest from its
+/// functions and names.
+fn module_point(view: &View, cluster: usize) -> Result<Vec2, String> {
+    let module = view.explorer.cluster_name(cluster);
+    let nucleus = view
+        .explorer
+        .nucleus()
+        .ok_or("no module spheres are drawn")?;
+    let ball = nucleus
+        .ball(cluster)
+        .filter(|ball| nucleus.shows_body(ball.body))
+        .ok_or_else(|| format!("module {module} has no sphere drawn"))?;
+    let centre = view
+        .to_screen(ball.center)
+        .ok_or_else(|| format!("module {module} is behind the camera"))?;
+    let radius = view.screen_radius(ball.center, ball.radius);
+    let drawn = view.drawn();
+    let spots = [0.0, 0.25, 0.45, 0.65].into_iter().flat_map(|share| {
+        (0..12).map(move |i| {
+            let angle = std::f32::consts::TAU * (i as f32) / 12.0;
+            centre + Vec2::from_angle(angle) * radius * share
+        })
+    });
+    spots
+        .filter(|&at| open_ground(view, at))
+        .map(|at| (clearance(view, &drawn, at), at))
+        .filter(|(room, _)| *room >= CLEAR_SPOT)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, at)| at)
+        .ok_or_else(|| {
+            format!("no spot on module {module}'s sphere is clear of its functions and names")
+        })
+}
+
+/// Where to click on nothing: of the spots on the graph roomily clear of every
+/// function, name and sphere (else of every function and name), the one nearest the
+/// middle.
+fn empty_point(view: &View) -> Result<Vec2, String> {
+    let drawn = view.drawn();
+    let spheres: Vec<(Vec2, f32)> = view.explorer.nucleus().map_or_else(Vec::new, |n| {
+        n.balls()
+            .filter(|(_, ball)| n.shows_body(ball.body))
+            .filter_map(|(_, ball)| {
+                Some((
+                    view.to_screen(ball.center)?,
+                    view.screen_radius(ball.center, ball.radius),
+                ))
+            })
+            .collect()
+    });
+    let graph = view.screen.graph;
+    let spots = (1..24).flat_map(|i| {
+        (1..16).map(move |j| {
+            Vec2::new(
+                graph.min.x + graph.width() * (i as f32) / 24.0,
+                graph.min.y + graph.height() * (j as f32) / 16.0,
+            )
+        })
+    });
+    let rated: Vec<(f32, f32, Vec2)> = spots
+        .filter(|&at| open_ground(view, at))
+        .map(|at| {
+            let room = clearance(view, &drawn, at);
+            let off_spheres = spheres
+                .iter()
+                .map(|&(c, r)| at.distance(c) - r)
+                .fold(f32::MAX, f32::min);
+            (room.min(off_spheres), room, at)
+        })
+        .collect();
+    let middle = graph_middle(view);
+    let best = |key: fn(&(f32, f32, Vec2)) -> f32| {
+        let roomy = rated
+            .iter()
+            .filter(|r| key(r) >= ROOMY_SPOT)
+            .min_by(|a, b| a.2.distance(middle).total_cmp(&b.2.distance(middle)));
+        roomy
+            .or_else(|| {
+                rated
+                    .iter()
+                    .filter(|r| key(r) >= CLEAR_SPOT)
+                    .max_by(|a, b| key(a).total_cmp(&key(b)))
+            })
+            .map(|r| r.2)
+    };
+    best(|r| r.0)
+        .or_else(|| best(|r| r.1))
+        .ok_or_else(|| "no spot on the graph is clear of every function and name".to_owned())
 }
 
 /// Where to click a function's name: the middle of its pill, the topmost drawn.
@@ -1195,7 +1737,20 @@ fn bar_point(view: &View, number: &str) -> Result<Vec2, String> {
     };
     let span = find(&|id| disclosed.number(id) == Some(number))
         .or_else(|| find(&|id| view.explorer.label(id) == number))
-        .ok_or_else(|| format!("no bar is numbered or named {number} at this depth"))?;
+        .ok_or_else(|| {
+            let numbers: Vec<&str> = view
+                .explorer
+                .journey()
+                .into_iter()
+                .flat_map(|journey| journey.spans().map(|(id, _)| id))
+                .filter_map(|id| disclosed.number(id))
+                .filter(|n| !n.is_empty())
+                .collect();
+            format!(
+                "no bar is numbered or named {number} at this depth; bars: {}",
+                numbers.join(" ")
+            )
+        })?;
     let Some(&(_, rect)) = drawn.bars.iter().find(|(s, _)| *s == span) else {
         return Err(format!("bar {number} is not drawn"));
     };
@@ -1237,6 +1792,7 @@ mod tests {
             rect,
             clip: rect,
             opacity: 1.0,
+            size: 12.0,
         }
     }
 

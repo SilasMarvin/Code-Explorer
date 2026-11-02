@@ -13,6 +13,7 @@ bevy_egui.workspace = true
 codeviz-core.workspace = true
 codeviz-ir.workspace = true
 codeviz-layout.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [lints]

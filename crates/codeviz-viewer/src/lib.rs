@@ -12,6 +12,7 @@
 
 mod camera;
 mod capture;
+mod checks;
 mod depth_meter;
 mod diff_view;
 mod disclosure;
@@ -58,7 +59,7 @@ pub struct Viewer {
     keys: Vec<capture::Press>,
     /// A session's steps, each with its line; with one, the screenshot path is the
     /// directory its snapshots go in.
-    script: Option<Vec<(String, script::Step)>>,
+    script: Option<Vec<script::Line>>,
     scenario: Option<usize>,
     step: usize,
     panel: PanelMode,
@@ -82,24 +83,21 @@ pub struct Viewer {
     diff: Option<Comparison>,
 }
 
-/// A session's steps, read from a script a step per line: `key shift+i`, `click
-/// Explorer::spotlit`, `hover`, `doubleclick`, `bar 1.2`, `button close`, `drag 100 0`,
-/// `scroll 2`, `wait 300`, `snap label`.
+/// A session's steps, read from a script a step per line (`key x`, `click
+/// Explorer::spotlit`, `expect mode journey`, `snap label`; see `docs/harness.md`).
+/// The functions and modules it names are looked up as the viewer opens, before its
+/// window does.
 #[derive(Debug)]
-pub struct Script(Vec<(String, script::Step)>);
+pub struct Script(Vec<script::Line>);
 
 impl Script {
-    /// Reads `text`, looking each function up by name with `find`; one not found
-    /// fails its step when it comes, not the script.
+    /// Reads `text`.
     ///
     /// # Errors
     ///
-    /// Names the first line it cannot read.
-    pub fn parse(
-        text: &str,
-        find: &dyn Fn(&str) -> Result<UnitId, String>,
-    ) -> Result<Self, String> {
-        script::parse(text, find).map(Self)
+    /// Names every line it cannot read, with what was likely meant.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        script::parse(text).map(Self)
     }
 }
 
@@ -438,6 +436,19 @@ impl Viewer {
         }
         // Back starts from the view as it opens.
         explorer.forget_history();
+        // A script naming what is not there stops before the window opens.
+        let names = match self
+            .script
+            .as_deref()
+            .map(|lines| drive::resolve(lines, &explorer))
+        {
+            Some(Err(error)) => {
+                eprintln!("{error}");
+                return AppExit::from_code(2);
+            }
+            Some(Ok(names)) => names,
+            None => drive::Names::default(),
+        };
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -466,11 +477,12 @@ impl Viewer {
         if let Some(diff) = diff {
             app.insert_resource(diff);
         }
-        if let (Some(dir), Some(steps)) = (&self.screenshot, self.script) {
+        if let (Some(dir), Some(lines)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.
             app.add_plugins(drive::DrivePlugin {
                 dir: dir.clone(),
-                steps,
+                lines,
+                names,
             });
         } else if let Some(path) = self.screenshot {
             // A screenshot waits frames out, so it keeps drawing.

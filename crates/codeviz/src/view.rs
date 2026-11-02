@@ -86,9 +86,8 @@ pub(crate) struct Display {
     #[arg(long, value_name = "KEYS", requires = "screenshot")]
     keys: Option<String>,
     /// Run a session from this file in one window, a step per line (`key x`, `click
-    /// UNIT`, `click-label UNIT`, `hover UNIT`, `doubleclick UNIT`, `bar 1.2`, `button
-    /// TEXT`, `drag DX DY`, `scroll N`, `wait MS`, `snap LABEL`); --screenshot names the
-    /// directory each snap's PNG and JSON go in.
+    /// UNIT`, `expect mode journey`, `snap LABEL`; see docs/harness.md); --screenshot
+    /// names the directory each snap's PNG and JSON go in. Run it through tools/drive.
     #[arg(
         long,
         value_name = "FILE",
@@ -229,7 +228,7 @@ pub(crate) fn open(
         .as_ref()
         .map(|query| crate::journey::find_one(&system, query))
         .transpose()?;
-    let script = read_script(args, &system)?;
+    let script = read_script(args)?;
     let title = format!("codeviz — {title}");
 
     let viewer = if before.is_empty() {
@@ -312,16 +311,12 @@ pub(crate) fn open(
     Ok(())
 }
 
-/// The session `--script` names, its functions looked up in `system`.
-fn read_script(args: &Display, system: &System) -> anyhow::Result<Option<Script>> {
+/// The session `--script` names.
+fn read_script(args: &Display) -> anyhow::Result<Option<Script>> {
     let Some(path) = &args.script else {
         return Ok(None);
     };
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let find =
-        |query: &str| crate::journey::find_one(system, query).map_err(|error| format!("{error:#}"));
-    Script::parse(&text, &find)
-        .map(Some)
-        .map_err(anyhow::Error::msg)
+    Script::parse(&text).map(Some).map_err(anyhow::Error::msg)
 }
