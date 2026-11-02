@@ -14,7 +14,6 @@ use codeviz_core::SpanId;
 
 use crate::{
     camera::OrbitCamera,
-    diff_view::DiffView,
     disclosure::Disclose,
     explorer::{Autoplay, Explorer},
 };
@@ -49,7 +48,6 @@ type Shown = (
 fn keep_awake(
     mut awake: ResMut<Awake>,
     autoplay: Res<Autoplay>,
-    diff: Option<Res<DiffView>>,
     cameras: Query<&OrbitCamera>,
     explorer: Option<Res<Explorer>>,
     mut shown: Local<Option<Shown>>,
@@ -71,7 +69,6 @@ fn keep_awake(
     let busy = std::mem::take(&mut awake.0)
         || moved
         || autoplay.playing
-        || diff.is_some_and(|diff| diff.playing)
         || cameras.iter().any(OrbitCamera::easing);
     if busy {
         redraw.write(RequestRedraw);

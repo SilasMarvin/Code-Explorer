@@ -2,8 +2,6 @@
 resolver = "3"
 members = ["crates/*", "demo/axum-server"]
 default-members = ["crates/*"]
-# Fixtures read by codeviz, never built.
-exclude = ["demo/diff"]
 
 [workspace.package]
 version = "0.1.0"

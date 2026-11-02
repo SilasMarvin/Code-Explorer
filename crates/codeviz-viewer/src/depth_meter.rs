@@ -61,7 +61,6 @@ fn origin(explorer: &Explorer) -> String {
         Source::Focus => explorer
             .graph_focus()
             .map_or_else(|| "the focus".to_owned(), |tile| node_name(explorer, tile)),
-        Source::Changes => "the changes".to_owned(),
         Source::Journey => "the journey".to_owned(),
     }
 }

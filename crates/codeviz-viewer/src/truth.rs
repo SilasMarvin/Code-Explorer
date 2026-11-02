@@ -1,7 +1,7 @@
 //! What a view means to show, written beside its screenshot so a reader's account of
 //! the picture can be checked against it: the examined function, every disclosed call
-//! with its number, the module it lives in, whether it can fail or only sometimes
-//! runs, and what a diff changed. A scripted session's snapshots say more: what is
+//! with its number, the module it lives in, and whether it can fail or only sometimes
+//! runs. A scripted session's snapshots say more: what is
 //! drawn where on screen, by name, and what can be clicked ([`scene`]).
 
 use std::collections::HashMap;
@@ -11,11 +11,9 @@ use bevy::{
     math::{Quat, Vec2, Vec3},
 };
 use bevy_egui::egui;
-use codeviz_core::Change;
 use serde_json::{Value, json};
 
 use crate::{
-    diff_view::DiffView,
     disclosure::Disclose,
     drive::{Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
@@ -25,15 +23,10 @@ use crate::{
 };
 
 /// The view's content, as JSON.
-pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
+pub(crate) fn of(explorer: &Explorer) -> Value {
     let disclosed = explorer.disclosure();
     let track = explorer.track();
     let tile_of = |span| track.unit_id(span).and_then(|u| explorer.map().tile_of(u));
-    let change = |tile: Option<usize>| {
-        diff.zip(tile)
-            .and_then(|(diff, tile)| diff.change(tile))
-            .map(name_of)
-    };
     let mut calls: Vec<(Vec<u32>, Value)> = disclosed
         .numbered()
         .filter(|(_, number)| !number.is_empty())
@@ -49,7 +42,6 @@ pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
                 "name": name,
                 "parent": parent,
                 "module": module,
-                "change": change(tile_of(span_id)),
                 "conditional": is_conditional(span),
                 "fails": disclosed.fails(span_id),
                 "hidden_calls": disclosed.folded(span_id),
@@ -65,31 +57,11 @@ pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
     let root = explorer.journey().map(codeviz_core::Journey::root);
     // Browsing, what the view examines is the function selected.
     let anchor = explorer.anchor().or_else(|| explorer.selection());
-    let changes = diff.map(|diff| {
-        let mut by_kind = serde_json::Map::new();
-        for kind in [
-            Change::Added,
-            Change::Removed,
-            Change::Modified,
-            Change::Moved,
-        ] {
-            let mut names: Vec<String> = diff
-                .changed()
-                .filter(|&(_, c)| c == kind)
-                .filter_map(|(tile, _)| explorer.tile_unit(tile))
-                .map(|unit| explorer.unit_name(unit))
-                .collect();
-            names.sort();
-            by_kind.insert(name_of(kind).to_owned(), json!(names));
-        }
-        Value::Object(by_kind)
-    });
     json!({
         "focus": match explorer.selection() {
             Some(tile) => explorer.tile_unit(tile).map(|u| explorer.unit_name(u)),
             None => explorer.root().map(|u| explorer.unit_name(u)),
         },
-        "focus_change": change(anchor),
         "focus_fails": root.is_some_and(|r| disclosed.fails(r)),
         "focus_hidden_calls": root.map_or(0, |r| disclosed.folded(r)),
         "callers": anchor.map_or_else(Vec::new, |tile| {
@@ -102,17 +74,7 @@ pub(crate) fn of(explorer: &Explorer, diff: Option<&DiffView>) -> Value {
                 .collect()
         }),
         "calls": calls.into_iter().map(|(_, call)| call).collect::<Vec<_>>(),
-        "changes": changes,
     })
-}
-
-fn name_of(change: Change) -> &'static str {
-    match change {
-        Change::Added => "added",
-        Change::Removed => "removed",
-        Change::Modified => "modified",
-        Change::Moved => "moved",
-    }
 }
 
 /// The view's state in words: what is focused and centred, the journey's cursor and
@@ -276,7 +238,7 @@ pub(crate) fn scene(view: &View) -> Value {
         "overlays": overlays,
         "help": help.flatten(),
         "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect) })).collect::<Vec<_>>(),
-        "content": of(explorer, view.diff.as_deref()),
+        "content": of(explorer),
     })
 }
 
@@ -814,7 +776,7 @@ mod tests {
         let mut explorer = crate::explorer::tests::explorer();
         let main = explorer.map().tile_of(&UnitId::new("x:main")).unwrap();
         explorer.open_at(main);
-        let truth = of(&explorer, None);
+        let truth = of(&explorer);
         assert_eq!(truth["focus"], "main");
         let calls: Vec<(&str, &str, u64)> = truth["calls"]
             .as_array()
@@ -875,7 +837,7 @@ mod tests {
         let place = explorer.map().tile_of(&UnitId::new("t:place")).unwrap();
         explorer.open_at(place);
         let marks = |explorer: &Explorer| -> Vec<(String, bool, bool)> {
-            of(explorer, None)["calls"]
+            of(explorer)["calls"]
                 .as_array()
                 .unwrap()
                 .iter()

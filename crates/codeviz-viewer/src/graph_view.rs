@@ -3,8 +3,8 @@
 //! attention; the pointer only rings the node it is over, so passing over the graph
 //! does not repaint it. Each channel carries one thing: a link's color says which
 //! way a call runs (violet into the focus, blue out of it, with dots flowing along
-//! it), a node's fill says where it lives (its module) or, under a diff, what
-//! changed. What is near the focus is bright, fading with each call further; the rest
+//! it), a node's fill says where it lives (its module). What is near the focus is
+//! bright, fading with each call further; the rest
 //! of the graph fades so that neighborhood reads on its own.
 
 use std::{
@@ -14,14 +14,10 @@ use std::{
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
-use codeviz_core::Change;
 use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
     camera::{FRONT, OrbitCamera},
-    diff_view::{
-        ADDED, DiffView, MODIFIED, MOVED, REMOVED, change_color, diff_look, draw_diff_graph,
-    },
     disclosure::{Disclose, Disclosed},
     explorer::{Explorer, Side},
     idle::Awake,
@@ -41,8 +37,6 @@ pub(crate) const DEEPER: Color = Color::srgb(1.0, 0.7, 0.22);
 /// The journey's cursor, where it is not the focus: its node, its name and the call
 /// into it. White stays the focus's.
 pub(crate) const CURSOR: Color = Color::srgb(1.0, 0.36, 0.72);
-/// What a diff left alone.
-pub(crate) const UNCHANGED: Color = Color::srgb(0.6, 0.64, 0.72);
 /// Calls further up from the focus, which do not touch it: an arrow, but no color, so
 /// violet only ever means into the focus.
 pub(crate) const FURTHER: Color = Color::srgb(0.82, 0.85, 0.92);
@@ -61,18 +55,12 @@ pub(crate) enum NodeLook {
     /// Calls into the focus or called from it, this many calls away (capped at
     /// [`FARTHEST_SHADE`]), in its module's color.
     Near(usize, u32),
-    /// Left alone by a diff but near the focus, this many calls away.
-    Unchanged(u32),
     /// Left out by quiet mode: a faint speck that keeps the shape of the graph.
     Hidden,
     /// Unrelated to the focus.
     Faded(usize),
     /// Anything while nothing is focused, in its container's color.
     Plain(usize),
-    /// Added, removed or rewritten, when showing a diff.
-    Changed(Change),
-    /// Can reach a change in this many calls (capped at [`FARTHEST_SHADE`]).
-    Impacted(u32),
 }
 
 /// Steps of brightness a node fades through as the lens reveals or hides it.
@@ -144,36 +132,6 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
                 glow(darken(lane_color(color)), strength * 0.3),
             );
         }
-        table.insert(
-            NodeLook::Unchanged(hops),
-            glow(darken(UNCHANGED), strength * 0.4),
-        );
-    }
-    table.insert(NodeLook::Changed(Change::Added), glow(ADDED, 2.4));
-    table.insert(NodeLook::Changed(Change::Modified), glow(MODIFIED, 2.4));
-    table.insert(NodeLook::Changed(Change::Moved), glow(MOVED, 2.4));
-    table.insert(
-        NodeLook::Changed(Change::Removed),
-        StandardMaterial {
-            base_color: REMOVED.with_alpha(0.55),
-            emissive: LinearRgba::from(REMOVED) * 0.8,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        },
-    );
-    for hops in 1..=FARTHEST_SHADE {
-        let (shade, strength) = match hops {
-            1 => (0.8, 1.0),
-            2 => (0.6, 0.45),
-            _ => (0.45, 0.15),
-        };
-        let linear = LinearRgba::from(MODIFIED);
-        let color = Color::from(LinearRgba::rgb(
-            linear.red * shade,
-            linear.green * shade * 0.85,
-            linear.blue * shade * 0.6,
-        ));
-        table.insert(NodeLook::Impacted(hops), glow(color, strength));
     }
     table.insert(
         NodeLook::Hidden,
@@ -287,20 +245,17 @@ pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u3
     .map(|hops| hops.clamp(1, FARTHEST_SHADE))
 }
 
-/// The color a node is filled with, at full strength: white for the focus, else what
-/// changed under a diff, else the cursor's where it is not the focus, else its
-/// module's. A journey bar is painted the same, so a bar and its node read as one thing.
-pub(crate) fn node_color(explorer: &Explorer, diff: Option<&DiffView>, tile: usize) -> Color {
-    if diff.is_none() && explorer.cursor_mark() == Some(tile) {
+/// The color a node is filled with, at full strength: the cursor's, else white for
+/// the focus, else its module's. A journey bar is painted the same, so a bar and its
+/// node read as one thing.
+pub(crate) fn node_color(explorer: &Explorer, tile: usize) -> Color {
+    if explorer.cursor_mark() == Some(tile) {
         return CURSOR;
     }
     if explorer.lit_focus() == Some(tile) {
         return Color::WHITE;
     }
-    match diff {
-        Some(diff) => diff.change(tile).map_or(UNCHANGED, change_color),
-        None => lane_color(explorer.tile_color(tile) % PALETTE.len()),
-    }
+    lane_color(explorer.tile_color(tile) % PALETTE.len())
 }
 
 /// Keeps what reaches the focus current.
@@ -313,7 +268,6 @@ pub(crate) fn track_attention(mut explorer: ResMut<Explorer>) {
 /// Restyles nodes when the focus or the journey changes.
 pub(crate) fn style_nodes(
     explorer: Res<Explorer>,
-    diff: Option<Res<DiffView>>,
     materials: Res<NodeMaterials>,
     mut nodes: Query<(
         &Tile,
@@ -322,17 +276,14 @@ pub(crate) fn style_nodes(
         &mut Visibility,
     )>,
 ) {
-    if !explorer.is_changed() && !diff.as_ref().is_some_and(DetectChanges::is_changed) {
+    if !explorer.is_changed() {
         return;
     }
     let nucleus = explorer.nucleus();
     for (tile, mut material, mut transform, mut visibility) in &mut nodes {
         // Gathered round the focus's module, what a module folds away is not drawn.
         let folded = nucleus.is_some_and(|n| !n.shows(tile.0));
-        let look = (!folded).then(|| match &diff {
-            Some(diff) => diff_look(&explorer, diff, tile.0),
-            None => node_look(&explorer, tile.0),
-        });
+        let look = (!folded).then(|| node_look(&explorer, tile.0));
         // Gathered round the focus's module, what it names, or what the function under
         // the pointer calls or is called by, shows plainly though the focus does not
         // reach it; anything else is a small, faint speck, or with specks left out, not
@@ -412,7 +363,6 @@ fn fade(hops: u32) -> f32 {
 /// Every call as a link, then the spotlight, the focus and the node under the pointer.
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
-    diff: Option<Res<DiffView>>,
     clock: Res<Time>,
     mut gizmos: Gizmos,
     mut marked: Local<Option<(usize, f32)>>,
@@ -423,11 +373,9 @@ pub(crate) fn draw_graph(
         draw_regions(&explorer, &mut gizmos);
     }
     let time = clock.elapsed_secs();
-    match diff {
-        Some(diff) => draw_diff_graph(&explorer, &diff, time, &mut gizmos),
-        // Gathered round the focus's module, the nucleus draws its own calls.
-        None if gathered => {}
-        None => draw_calls(&explorer, time, &mut gizmos),
+    // Gathered round the focus's module, the nucleus draws its own calls.
+    if !gathered {
+        draw_calls(&explorer, time, &mut gizmos);
     }
     draw_spotlight(&explorer, time, &mut gizmos);
     // The cursor pulses for a moment wherever it lands.
@@ -814,7 +762,7 @@ pub(crate) fn frame_reveal(
         return;
     }
     for mut camera in &mut cameras {
-        if lens.source == Source::Focus && !lens.changes_only && explorer.anchor().is_some() {
+        if lens.source == Source::Focus && explorer.anchor().is_some() {
             orbit_anchor(&explorer, &mut camera);
             continue;
         }

@@ -6,11 +6,10 @@
 
 use bevy::prelude::*;
 use bevy_egui::egui;
-use codeviz_core::{Change, SpanId};
+use codeviz_core::SpanId;
 use codeviz_ir::ExitKind;
 
 use crate::{
-    diff_view::{DiffView, change_color, sign},
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
     graph_view::node_color,
@@ -148,7 +147,6 @@ pub(crate) fn draw(
     rect: egui::Rect,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
-    diff: Option<&DiffView>,
 ) -> Tethers {
     let mut tethers = Tethers::default();
     egui::Area::new("journey_panel".into())
@@ -174,7 +172,7 @@ pub(crate) fn draw(
             let content =
                 egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.min.y + HEADER), rect.max)
                     .shrink(PAD);
-            tethers = canvas(ui, content, explorer, panel, diff);
+            tethers = canvas(ui, content, explorer, panel);
         });
     tethers
 }
@@ -296,7 +294,6 @@ fn canvas(
     content: egui::Rect,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
-    diff: Option<&DiffView>,
 ) -> Tethers {
     let response = ui.interact(
         content,
@@ -465,7 +462,7 @@ fn canvas(
         let tile = tile_of(bar.span);
         let base = egui_color(tile.map_or_else(
             || lane_color(track.color(bar.span) % PALETTE.len()),
-            |tile| node_color(explorer, diff, tile),
+            |tile| node_color(explorer, tile),
         ));
         let faint = Confidence::of(span) == Confidence::Guessed || is_handoff(span);
         // What runs after the cursor dims once you step through it; at the start,
@@ -483,25 +480,10 @@ fn canvas(
         };
         painter.rect_filled(bar.rect, 3.0, fill);
 
-        // Under a diff, what changed is outlined too; a call that is new, though what
-        // it calls is not, counts as added.
-        let new_call = diff
-            .zip(span.parent.and_then(tile_of))
-            .zip(tile)
-            .is_some_and(|((diff, from), to)| diff.call_change(from, to) == Some(Change::Added));
-        let change = diff
-            .zip(tile)
-            .and_then(|(diff, tile)| diff.change(tile))
-            .or(new_call.then_some(Change::Added));
-        // A call that only sometimes runs is outlined in dashes, in its change's color
-        // under a diff.
-        let outline = change.map(|c| egui::Stroke::new(1.5, egui_color(change_color(c))));
+        // A call that only sometimes runs is outlined in dashes.
         if is_conditional(span) {
-            let stroke =
-                outline.unwrap_or(egui::Stroke::new(1.2, egui::Color32::from_white_alpha(190)));
+            let stroke = egui::Stroke::new(1.2, egui::Color32::from_white_alpha(190));
             dashed_outline(&painter, bar.rect.shrink(0.75), stroke);
-        } else if let Some(stroke) = outline {
-            painter.rect_stroke(bar.rect, 3.0, stroke, egui::StrokeKind::Inside);
         }
 
         // How it can end, marked at its right end: green returns, red fails.
@@ -519,7 +501,7 @@ fn canvas(
             painter.rect_filled(mark.intersect(bar.rect), 0.0, color);
         }
 
-        // The same number the graph puts on the node, then what changed and the name.
+        // The same number the graph puts on the node, then the name.
         let number = disclosed.number(bar.span).unwrap_or_default();
         let number_width = text_width(&painter, number, 11.5);
         // What is folded under the bar, as a badge that opens it, where there is room
@@ -573,14 +555,13 @@ fn canvas(
             egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x - 2.0, bar.rect.max.y))
         });
         let painter = painter.with_clip_rect(bar.rect.intersect(content));
-        let sign = change.map_or_else(String::new, |c| format!("{} ", sign(c)));
         let label = explorer.label(bar.span);
         let own = own_name(&label);
         let numbered = |name: &str| {
             if number.is_empty() {
-                format!("{sign}{name}")
+                name.to_owned()
             } else {
-                format!("{number}  {sign}{name}")
+                format!("{number}  {name}")
             }
         };
         let condition =
@@ -604,9 +585,8 @@ fn canvas(
             .cloned()
             .or_else(|| cut(&format!("{}{condition}", numbered(&own))))
             .or_else(|| {
-                let unnumbered = format!("{sign}{own}");
-                (text_width(&painter, &unnumbered, BAR_TEXT_SMALL) <= room)
-                    .then_some((unnumbered, BAR_TEXT_SMALL))
+                (text_width(&painter, &own, BAR_TEXT_SMALL) <= room)
+                    .then(|| (own.clone(), BAR_TEXT_SMALL))
             });
         // The cursor's bar is named come what may, over its neighbours if it must.
         if whole.is_none() && Some(bar.span) == cursor {
@@ -893,7 +873,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    draw(ui.ctx(), screen, &mut explorer, &mut panel, None);
+                    draw(ui.ctx(), screen, &mut explorer, &mut panel);
                 },
             );
             output.textures_delta.clear();

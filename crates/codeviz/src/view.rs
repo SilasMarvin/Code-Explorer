@@ -12,17 +12,13 @@ pub(crate) struct ViewArgs {
     /// IR documents to load; later documents override earlier ones.
     #[arg(required = true)]
     documents: Vec<PathBuf>,
-    /// Compare against these documents, an older version of the same system, and draw
-    /// what changed over the graph.
-    #[arg(long, value_name = "PATH", num_args = 1..)]
-    before: Vec<PathBuf>,
     #[command(flatten)]
     display: Display,
 }
 
 /// What the viewer opens on and how it shows it.
 #[derive(Debug, clap::Args)]
-pub(crate) struct Display {
+struct Display {
     /// Entry label (`POST /users`) or unit id suffix to start from.
     #[arg(short, long)]
     entry: Option<String>,
@@ -44,22 +40,13 @@ pub(crate) struct Display {
     /// What pulls the graph's nodes together.
     #[arg(long, value_enum, default_value_t = ClusterArg::Modules)]
     cluster: ClusterArg,
-    /// How to draw the diff.
-    #[arg(long, value_enum, default_value_t = DiffStyleArg::Status)]
-    diff_style: DiffStyleArg,
-    /// Hold the morph at this point, from 0 (before) to 1 (after), instead of playing it.
-    #[arg(long, value_name = "T")]
-    morph: Option<f32>,
     /// Show only what is within this many steps of where the reveal starts; the rest
     /// dims, then shrinks to specks. Everything shows without it.
     #[arg(long, value_name = "STEPS")]
     reveal: Option<u32>,
-    /// What the reveal starts from; by default a diff's changes, else the focus.
+    /// What the reveal starts from; by default the focus.
     #[arg(long, value_enum)]
     reveal_around: Option<AroundArg>,
-    /// Open a diff with what did not change showing too, not only the changes.
-    #[arg(long)]
-    show_unchanged: bool,
     /// How the reveal measures nearness.
     #[arg(long, value_enum, default_value_t = NearArg::Calls)]
     reveal_by: NearArg,
@@ -148,21 +135,9 @@ enum ZArg {
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum DiffStyleArg {
-    /// What changed, and the calls that came and went.
-    Status,
-    /// Everything that can reach a change, out to the entry points.
-    Impact,
-    /// The graph before, then after.
-    Morph,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum AroundArg {
     /// The focused function.
     Focus,
-    /// A diff's changes, counting only towards their callers.
-    Changes,
     /// The functions the active journey runs.
     Journey,
 }
@@ -191,11 +166,6 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .iter()
         .map(crate::ir::read)
         .collect::<anyhow::Result<Vec<_>>>()?;
-    let before = args
-        .before
-        .iter()
-        .map(crate::ir::read)
-        .collect::<anyhow::Result<Vec<_>>>()?;
     let title = args
         .documents
         .iter()
@@ -203,18 +173,12 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .map(|s| s.to_string_lossy())
         .collect::<Vec<_>>()
         .join(" + ");
-    open(documents, before, &args.display, &title)
+    open(documents, &args.display, &title)
 }
 
-/// Opens `documents`, diffed against `before` unless it is empty, and blocks until the
-/// window closes.
-pub(crate) fn open(
-    documents: Vec<Document>,
-    before: Vec<Document>,
-    args: &Display,
-    title: &str,
-) -> anyhow::Result<()> {
-    let system = System::new(documents.clone());
+/// Opens `documents` and blocks until the window closes.
+fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result<()> {
+    let system = System::new(documents);
     let root = match &args.entry {
         Some(query) => Some(crate::journey::find_one(&system, query)?),
         None => None,
@@ -232,25 +196,13 @@ pub(crate) fn open(
     let script = read_script(args, &system)?;
     let title = format!("codeviz — {title}");
 
-    let viewer = if before.is_empty() {
-        Viewer::new(system)
-    } else {
-        let mut viewer =
-            Viewer::compare(before, documents).with_diff_style(match args.diff_style {
-                DiffStyleArg::Status => "status",
-                DiffStyleArg::Impact => "impact",
-                DiffStyleArg::Morph => "morph",
-            });
-        if let Some(t) = args.morph {
-            viewer = viewer.with_morph(t);
-        }
-        viewer
-    };
-    let mut viewer = viewer.with_title(title).with_options(JourneyOptions {
-        include_unresolved: args.unresolved,
-        zoom: args.zoom.into(),
-        ..JourneyOptions::default()
-    });
+    let mut viewer = Viewer::new(system)
+        .with_title(title)
+        .with_options(JourneyOptions {
+            include_unresolved: args.unresolved,
+            zoom: args.zoom.into(),
+            ..JourneyOptions::default()
+        });
     if let Some(root) = root {
         viewer = viewer.with_root(root);
     }
@@ -277,7 +229,6 @@ pub(crate) fn open(
         .with_reveal(
             args.reveal_around.map(|around| match around {
                 AroundArg::Focus => "focus",
-                AroundArg::Changes => "changes",
                 AroundArg::Journey => "journey",
             }),
             match args.reveal_by {
@@ -287,9 +238,6 @@ pub(crate) fn open(
             },
             args.reveal,
         );
-    if args.show_unchanged {
-        viewer = viewer.with_unchanged();
-    }
     if let Some(depth) = args.depth {
         viewer = viewer.with_depth(depth);
     }

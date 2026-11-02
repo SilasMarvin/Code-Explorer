@@ -39,8 +39,8 @@ type DisclosureKey = (u64, Disclose, u64, Option<SpanId>);
 type TrailKey = (u64, Disclose, u64, Option<SpanId>, Option<usize>, bool);
 
 /// What the lens's distances were worked out for: where it starts, how it measures,
-/// and how often calls were retired and, when measuring in space, nodes moved.
-type DistanceKey = (Vec<usize>, lens::Source, lens::Measure, u64, u64);
+/// and, when measuring in space, how often nodes moved.
+type DistanceKey = (Vec<usize>, lens::Source, lens::Measure, u64);
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,8 +283,6 @@ impl Hidden {
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
     system: System,
-    /// What the graph lays out, when wider than `system`.
-    layout_system: Option<System>,
     pub(crate) options: JourneyOptions,
     pub(crate) layout: LayoutConfig,
     /// The journey the cursor keys, the panel and the outline follow.
@@ -308,12 +306,8 @@ pub(crate) struct Explorer {
     distance_cache: Mutex<Option<(DistanceKey, Option<Arc<Distances>>)>>,
     /// Bumped whenever nodes move.
     moved: u64,
-    /// Bumped whenever calls are retired.
-    rewired: u64,
     /// How fully each node shows, by tile, eased towards what the lens says.
     visibility: Vec<f32>,
-    /// A diff's changed nodes, for a lens that starts from them.
-    changed_tiles: Vec<usize>,
     /// How much of the journey shows.
     disclose: Disclose,
     /// Bumped whenever the journey's opened spans change.
@@ -373,24 +367,11 @@ pub(crate) struct Explorer {
 }
 
 impl Explorer {
-    #[cfg(test)]
     pub(crate) fn new(system: System, root: Option<UnitId>, options: JourneyOptions) -> Self {
-        Self::with_layout(system, None, root, options)
-    }
-
-    /// Journeys run over `system`; the graph lays out `layout` when given, a wider
-    /// system such as both sides of a diff, so it can place units `system` lacks.
-    pub(crate) fn with_layout(
-        system: System,
-        layout: Option<System>,
-        root: Option<UnitId>,
-        options: JourneyOptions,
-    ) -> Self {
         let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
-        let placed = layout.as_ref().unwrap_or(&system);
-        let map = codeviz_layout::map(placed, &MapConfig::default());
+        let map = codeviz_layout::map(&system, &MapConfig::default());
         let clustering = Clustering::default();
-        let mut graph = ForceGraph::new(placed, &map, clustering.forces());
+        let mut graph = ForceGraph::new(&system, &map, clustering.forces());
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
         }
@@ -399,7 +380,7 @@ impl Explorer {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
                 .map(|cluster| {
                     let id = graph.cluster_unit(cluster)?;
-                    let unit = system.unit(id).or_else(|| layout.as_ref()?.unit(id))?;
+                    let unit = system.unit(id)?;
                     Some((id.as_str(), unit.name.as_str()))
                 })
                 .collect();
@@ -407,7 +388,6 @@ impl Explorer {
         };
         let mut explorer = Self {
             system,
-            layout_system: layout,
             options,
             layout: LayoutConfig::default(),
             track: Track::default(),
@@ -421,9 +401,7 @@ impl Explorer {
             lens: Lens::default(),
             distance_cache: Mutex::new(None),
             moved: 0,
-            rewired: 0,
             visibility: vec![1.0; tiles],
-            changed_tiles: Vec::new(),
             history: History::default(),
             aim: 0,
             walking: false,
@@ -461,28 +439,6 @@ impl Explorer {
 
     pub(crate) fn system(&self) -> &System {
         &self.system
-    }
-
-    /// A unit of the journey's system, or else of the wider one the graph lays out.
-    pub(crate) fn any_unit(&self, id: &UnitId) -> Option<&Unit> {
-        self.system
-            .unit(id)
-            .or_else(|| self.layout_system.as_ref()?.unit(id))
-    }
-
-    /// Moves every node to a given place, and stops the simulation moving them.
-    pub(crate) fn place_nodes(&mut self, positions: &[[f32; 3]]) {
-        self.graph.positions.clone_from_slice(positions);
-        self.settling = false;
-        self.moved += 1;
-    }
-
-    /// Calls the graph still lays out but that no longer run, as a diff's removed
-    /// calls: they stop counting as callers and callees.
-    pub(crate) fn retire_calls(&mut self, gone: &HashSet<(usize, usize)>) {
-        self.graph.retire(gone);
-        self.reach = None;
-        self.rewired += 1;
     }
 
     /// The journey.
@@ -1455,16 +1411,10 @@ impl Explorer {
         self.lens = lens;
     }
 
-    /// The nodes a diff changed, for a lens that starts from them.
-    pub(crate) fn set_changed_tiles(&mut self, tiles: Vec<usize>) {
-        self.changed_tiles = tiles;
-    }
-
     /// Where the lens starts: the focus, the changes, or the journey.
     fn seeds(&self) -> Vec<usize> {
         let mut seeds: Vec<usize> = match self.lens.source {
             lens::Source::Focus => self.graph_focus().into_iter().collect(),
-            lens::Source::Changes => self.changed_tiles.clone(),
             lens::Source::Journey => self.disclosed_tiles().into_keys().collect(),
         };
         seeds.sort_unstable();
@@ -1481,7 +1431,7 @@ impl Explorer {
         } else {
             self.moved
         };
-        let key = (self.seeds(), self.lens.source, measure, self.rewired, moved);
+        let key = (self.seeds(), self.lens.source, measure, moved);
         let mut cache = self
             .distance_cache
             .lock()
@@ -1505,25 +1455,7 @@ impl Explorer {
     /// How fully the lens would show each node, by tile, once eased there; `None`
     /// when it shows everything. The journey's cursor always shows.
     pub(crate) fn reveal_targets(&self) -> Option<Vec<f32>> {
-        let mut targets = if self.lens.changes_only && !self.changed_tiles.is_empty() {
-            // What changed, and where you stand: the focus and the journey's root.
-            let mut targets = vec![0.0; self.map.tiles.len()];
-            let root = self.root().and_then(|u| self.map.tile_of(u));
-            for tile in self
-                .changed_tiles
-                .iter()
-                .copied()
-                .chain(self.graph_focus())
-                .chain(root)
-            {
-                if let Some(target) = targets.get_mut(tile) {
-                    *target = 1.0;
-                }
-            }
-            targets
-        } else {
-            self.lens.targets(&*self.distances()?)?
-        };
+        let mut targets = self.lens.targets(&*self.distances()?)?;
         // The disclosed journey always shows: it is what you opened. So does what the
         // spotlight picks out.
         for tile in self.disclosed_tiles().into_keys().chain(self.spotlit()) {
@@ -1677,10 +1609,7 @@ impl Explorer {
     }
 
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
-        match &self.layout_system {
-            Some(layout) if self.system.unit(id).is_none() => display_name(layout, id),
-            _ => display_name(&self.system, id),
-        }
+        display_name(&self.system, id)
     }
 
     /// The call stack at a span of the journey, outermost first.
@@ -1898,7 +1827,6 @@ pub(crate) mod tests {
     use codeviz_ir::Document;
 
     use super::*;
-    use crate::lens::Measure;
 
     /// `main -> (a -> c), b`
     pub(crate) fn explorer() -> Explorer {
@@ -2011,69 +1939,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_lens_measures_in_calls_space_or_both() {
-        let mut explorer = explorer();
-        let tile = |explorer: &Explorer, name: &str| {
-            explorer
-                .map()
-                .tile_of(&UnitId::new(format!("x:{name}")))
-                .unwrap()
-        };
-        let (main, a, b, c) = (
-            tile(&explorer, "main"),
-            tile(&explorer, "a"),
-            tile(&explorer, "b"),
-            tile(&explorer, "c"),
-        );
-        // b sits right next to a but only meets it through main.
-        let mut positions = vec![[0.0; 3]; explorer.map().tiles.len()];
-        positions[main] = [0.0, 0.0, 0.0];
-        positions[a] = [1.0, 0.0, 0.0];
-        positions[b] = [1.5, 0.0, 0.0];
-        positions[c] = [2.0, 0.0, 0.0];
-        explorer.place_nodes(&positions);
-        explorer.open_at(a);
-        let shown = |explorer: &mut Explorer, lens: Lens| {
-            explorer.set_lens(lens);
-            explorer.settle_visibility();
-            [main, a, b, c].map(|t| explorer.visibility(t))
-        };
-        let lens = |measure, reach| Lens {
-            measure,
-            reach: Some(reach),
-            ..Lens::default()
-        };
-
-        assert_eq!(
-            shown(&mut explorer, lens(Measure::Calls, 0)),
-            [0.3, 1.0, 0.0, 1.0],
-            "c is what a calls, disclosed by a's journey"
-        );
-        assert_eq!(
-            shown(&mut explorer, lens(Measure::Space, 0))[2],
-            1.0,
-            "in space, b is as near as anything"
-        );
-        assert_eq!(
-            shown(&mut explorer, lens(Measure::Blend, 0)),
-            [1.0, 1.0, 0.0, 1.0],
-            "a blend shows direct calls, and holds b back for the calls between"
-        );
-        assert_eq!(shown(&mut explorer, lens(Measure::Blend, 3))[2], 1.0);
-
-        explorer.set_changed_tiles(vec![c]);
-        let changes = Lens {
-            source: lens::Source::Changes,
-            ..lens(Measure::Calls, 1)
-        };
-        assert_eq!(
-            shown(&mut explorer, changes),
-            [0.3, 1.0, 0.0, 1.0],
-            "from changes, only what calls them counts"
-        );
-    }
-
-    #[test]
     fn the_dial_fits_the_graph() {
         let mut explorer = explorer();
         assert_eq!(explorer.lens_top(), 2, "c is two calls from main");
@@ -2097,36 +1962,6 @@ pub(crate) mod tests {
             explorer.lens().narrower(explorer.lens_top()).reach,
             Some(1),
             "a reach past the top narrows from the top"
-        );
-    }
-
-    #[test]
-    fn only_changes_hides_the_rest_but_where_you_stand() {
-        let mut explorer = explorer();
-        let tile = |explorer: &Explorer, name: &str| {
-            explorer
-                .map()
-                .tile_of(&UnitId::new(format!("x:{name}")))
-                .unwrap()
-        };
-        let (main, a, b, c) = (
-            tile(&explorer, "main"),
-            tile(&explorer, "a"),
-            tile(&explorer, "b"),
-            tile(&explorer, "c"),
-        );
-        explorer.set_changed_tiles(vec![c]);
-        explorer.open_at(b);
-        explorer.set_lens(Lens {
-            changes_only: true,
-            ..Lens::default()
-        });
-        explorer.settle_visibility();
-        assert!(explorer.shown(c), "what changed");
-        assert!(explorer.shown(b), "the node opened");
-        assert!(
-            !explorer.shown(a) && !explorer.shown(main),
-            "and nothing else"
         );
     }
 

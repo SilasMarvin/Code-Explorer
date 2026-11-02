@@ -32,7 +32,6 @@ use serde_json::{Value, json};
 use crate::{
     camera::OrbitCamera,
     capture::{DRAIN_FRAMES, Press, SETTLE_FRAMES, SETTLE_TIME},
-    diff_view::DiffView,
     explorer::Explorer,
     idle::Awake,
     journey_panel::JourneyPanel,
@@ -486,13 +485,11 @@ pub(crate) fn note_bars(ctx: &egui::Context, content: egui::Rect, bars: Vec<(Spa
 }
 
 /// egui areas that sit over the graph, by id.
-const OVERLAYS: [(&str, &str); 8] = [
+const OVERLAYS: [(&str, &str); 6] = [
     ("journey_panel", "journey panel"),
     ("key_help", "key help (H)"),
     ("search", "search box"),
     ("camera_free", "camera-free chip"),
-    ("legend", "legend"),
-    ("diff_card", "diff card"),
     ("depth_meter", "depth meter"),
     ("source", "side panel"),
 ];
@@ -599,7 +596,6 @@ pub(crate) struct Drawn {
 #[derive(SystemParam)]
 pub(crate) struct View<'w, 's> {
     pub(crate) explorer: Res<'w, Explorer>,
-    pub(crate) diff: Option<Res<'w, DiffView>>,
     pub(crate) help: Res<'w, KeyHelp>,
     pub(crate) panel: Res<'w, JourneyPanel>,
     pub(crate) chrome: Res<'w, Chrome>,

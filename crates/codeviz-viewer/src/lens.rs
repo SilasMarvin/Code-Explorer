@@ -1,5 +1,5 @@
-//! How much of the graph shows. A reveal starts from something, the focused function,
-//! a diff's changes or the journey's functions, and shows what is near it,
+//! How much of the graph shows. A reveal starts from something, the focused function
+//! or the journey's functions, and shows what is near it,
 //! out to a distance the dial sets. Nearness is counted in calls, in space, or both:
 //! space with each call between counting against it. What is in reach shows in full,
 //! what is just past it dims, and the rest shrinks to specks that keep the shape of
@@ -16,8 +16,6 @@ pub(crate) enum Source {
     /// The focused function.
     #[default]
     Focus,
-    /// A diff's changes; nearness counts only towards callers, as Impact does.
-    Changes,
     /// The functions the journey runs.
     Journey,
 }
@@ -25,8 +23,7 @@ pub(crate) enum Source {
 impl Source {
     pub(crate) fn next(self) -> Self {
         match self {
-            Self::Focus => Self::Changes,
-            Self::Changes => Self::Journey,
+            Self::Focus => Self::Journey,
             Self::Journey => Self::Focus,
         }
     }
@@ -34,7 +31,6 @@ impl Source {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Focus => "focus",
-            Self::Changes => "changes",
             Self::Journey => "journey",
         }
     }
@@ -82,8 +78,6 @@ pub(crate) struct Lens {
     pub(crate) measure: Measure,
     /// Steps out from the start that show in full; `None` shows everything.
     pub(crate) reach: Option<u32>,
-    /// Under a diff, show only what changed, whatever the reach.
-    pub(crate) changes_only: bool,
 }
 
 impl Lens {
@@ -117,7 +111,7 @@ impl Lens {
         if seeds.is_empty() {
             return None;
         }
-        let calls = call_distances(graph, seeds, self.source == Source::Changes);
+        let calls = call_distances(graph, seeds, false);
         let steps = match self.measure {
             Measure::Calls => calls
                 .iter()
