@@ -594,6 +594,20 @@ impl Nucleus {
         })
     }
 
+    /// In a journey, where its start, its cursor and every function it lights but
+    /// the callers folded into their module's count are going to rest: what framing
+    /// it takes in.
+    pub(crate) fn journey_points(&self) -> Vec<Vec3> {
+        let lit = self.now.named.keys().copied().filter(|&t| !self.folded(t));
+        self.now
+            .start
+            .into_iter()
+            .chain(self.cursor)
+            .chain(lit)
+            .filter_map(|tile| self.resting_point(tile))
+            .collect()
+    }
+
     /// Where a function is going to be drawn once a re-centering ends: what the
     /// camera frames, rather than where it passes on the way.
     pub(crate) fn resting_point(&self, tile: usize) -> Option<Vec3> {

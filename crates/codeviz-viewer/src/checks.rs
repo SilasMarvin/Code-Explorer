@@ -66,6 +66,10 @@ const FRONT_SLACK: f32 = 0.05;
 /// How far what lay under the pointer may drift on a wheel turn: points, plus a
 /// share of its distance from the pointer.
 const ZOOM_DRIFT: (f32, f32) = (4.0, 0.05);
+/// Zoomed out with the whole map within this many times the free area, the camera
+/// holds the map in it ([`crate::camera`]), so a wheel turn out is no zoom about the
+/// pointer alone.
+const HELD_MAP: f32 = 3.0;
 /// Zoomed out, the least share of the free area's smaller side the whole map spans.
 const ZOOM_OUT_LEAST: f32 = 0.4;
 /// Least a function or sphere moves in the world, or a dot or name on screen in
@@ -968,6 +972,13 @@ fn zoom_to_pointer(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if turns > 1 || others {
         return skip("more than one wheel turn, or other moves, since the last snapshot");
     }
+    let free = s.free();
+    let held = map_extent(s).is_some_and(|map| {
+        map.width() <= free.width() * HELD_MAP && map.height() <= free.height() * HELD_MAP
+    });
+    if since.has(Kind::Zoom { out: true }) && held {
+        return skip("zoomed out this far, the camera holds the map in the free area");
+    }
     let (Some(before), Some(pointer)) = (before, s.state.pointer) else {
         return skip("no snapshot before, or no pointer");
     };
@@ -1348,11 +1359,7 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
     }
     let free = s.free();
     let spheres: Vec<&Module> = s.spheres().filter(|m| m.radius > 0.0).collect();
-    let Some(extent) = spheres
-        .iter()
-        .map(|m| egui::Rect::from_center_size(pos(m.at), egui::Vec2::splat(2.0 * m.radius)))
-        .reduce(egui::Rect::union)
-    else {
+    let Some(extent) = map_extent(s) else {
         return skip("no module spheres drawn");
     };
     if extent.width() > free.width() || extent.height() > free.height() {
@@ -1381,6 +1388,14 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
         offenders.push((MAP_SHOWN - share, offender));
     }
     with(verdict(offenders), "inside", json!(r2(share)))
+}
+
+/// Where every sphere shown lies on screen, together.
+fn map_extent(s: &Snap) -> Option<egui::Rect> {
+    s.spheres()
+        .filter(|m| m.radius > 0.0)
+        .map(|m| egui::Rect::from_center_size(pos(m.at), egui::Vec2::splat(2.0 * m.radius)))
+        .reduce(egui::Rect::union)
 }
 
 fn spheres_unclipped(s: &Snap) -> Value {
