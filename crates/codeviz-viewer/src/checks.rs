@@ -190,6 +190,7 @@ struct Snap {
 struct State {
     mode: String,
     nucleus: String,
+    selection: Option<String>,
     start: Option<String>,
     /// The module expanded, by name.
     expanded: Option<String>,
@@ -1078,7 +1079,11 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if depth {
         offenders.extend(depth_camera(before, s));
     }
-    offenders.extend(gone_labels(before, s));
+    // A click that selects another function lights others, and names them instead;
+    // any other step here only reads, and takes no name away.
+    if before.state.selection == s.state.selection {
+        offenders.extend(gone_labels(before, s));
+    }
     verdict(offenders)
 }
 
@@ -2310,6 +2315,11 @@ mod tests {
         assert_eq!(result["count"], 1, "{result}");
         assert_eq!(result["offenders"][0]["gone"], true);
         assert_eq!(result["offenders"][0]["label"], "h");
+        // A click that selects another function names what that lights instead.
+        let mut selected = now.clone();
+        selected["state"]["selection"] = json!("g");
+        let result = after(&before, &selected, &[Kind::Click], "nothing-moved");
+        assert!(passes(&result), "{result}");
         // Its dot gone with it, as a depth change hides a call: nothing moved.
         now["nodes"].as_array_mut().unwrap().pop();
         let result = after(&before, &now, &[Kind::Click], "nothing-moved");
