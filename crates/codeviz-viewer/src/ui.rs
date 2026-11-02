@@ -2,10 +2,10 @@
 //! canvas, names beside nodes ([`labels`]), the keys ([`key_help`]) and a search box
 //! on `/`.
 
-use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
+use bevy::{camera::Viewport, prelude::*, transform::TransformSystems, window::PrimaryWindow};
 use bevy_egui::{
-    EguiContext, EguiContexts, EguiInput, EguiPreUpdateSet, EguiPrimaryContextPass,
-    PrimaryEguiContext, egui,
+    EguiContext, EguiContexts, EguiInput, EguiPostUpdateSet, EguiPreUpdateSet,
+    EguiPrimaryContextPass, PrimaryEguiContext, egui,
 };
 use codeviz_ir::UnitId;
 
@@ -36,6 +36,12 @@ impl Plugin for UiPlugin {
                 keys_to_the_graph
                     .after(EguiPreUpdateSet::ProcessInput)
                     .before(EguiPreUpdateSet::BeginPass),
+            )
+            // Names and arrows are drawn where the camera stands this frame, once it
+            // has moved, not where it stood the frame before.
+            .configure_sets(
+                PostUpdate,
+                EguiPostUpdateSet::EndPass.after(TransformSystems::Propagate),
             )
             .add_systems(EguiPrimaryContextPass, (fallback_fonts, draw_ui).chain());
     }
@@ -169,20 +175,20 @@ fn draw_ui(
     let (graph_area, panel_area) = areas(central, &explorer);
     if let Ok((mut camera, transform, _)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, central);
-        let to_screen = |position: Vec3| {
+        let project = |position: Vec3| {
             camera
                 .world_to_viewport(transform, position)
                 .ok()
                 .map(|p| egui::pos2(p.x, p.y))
-                .filter(|p| graph_area.contains(*p))
         };
+        let to_screen = |position: Vec3| project(position).filter(|p| graph_area.contains(*p));
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
         // The calls under the names, on under the journey panel as the spheres are.
         let under = painter.with_clip_rect(central);
         arrows::draw(&under, &explorer, (&camera, transform), &mut marks);
-        draw_graph_labels(&painter, &to_screen, &explorer, transform.up().into());
+        draw_graph_labels(&painter, &project, &explorer, transform.up().into());
         let opening = chrome.search && !search.was_open;
         search.was_open = chrome.search;
         if chrome.search {

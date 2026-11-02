@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::{
     drive::{ArrowShape, Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
-    labels::node_name,
+    labels::{Named, node_name},
     nucleus::Flow,
 };
 
@@ -140,15 +140,7 @@ pub(crate) fn scene(view: &View) -> Value {
     let explorer = &*view.explorer;
     let screen = &*view.screen;
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, screen.window);
-    let near = |a: egui::Rect, b: egui::Rect| {
-        (a.min - b.min).length() < 1.5 && (a.max - b.max).length() < 1.5
-    };
-    // Graph labels are clipped to the graph; the rest is chrome.
-    let (labels, chrome): (Vec<&Painted>, Vec<&Painted>) = screen
-        .texts
-        .iter()
-        .filter(|t| t.opacity > 0.05)
-        .partition(|t| near(t.clip, screen.graph));
+    let (labels, chrome) = graph_labels(screen);
     let drawn = view.drawn();
     let nucleus = explorer.nucleus();
     let balls: Vec<(usize, Vec2, f32)> = nucleus
@@ -178,6 +170,7 @@ pub(crate) fn scene(view: &View) -> Value {
                 "on_screen": d.on_screen,
                 "label": label.map(|i| labels[i].text.clone()),
                 "label_rect": label.map(|i| rect(labels[i].rect)),
+                "name_size": name_size(screen, Named::Node(d.tile)),
                 "crowded_by": crowding(explorer, &drawn, d),
                 "color": d.color.map(hex),
                 "rings": rings(view, d),
@@ -203,6 +196,7 @@ pub(crate) fn scene(view: &View) -> Value {
                 "on_screen": view.on_screen(at),
                 "label": label.map(|i| labels[i].text.clone()),
                 "label_rect": label.map(|i| rect(labels[i].rect)),
+                "name_size": name_size(screen, Named::Group(cluster)),
             }))
         })
         .collect();
@@ -254,6 +248,26 @@ fn camera(view: &View) -> Value {
         // Where what the camera looks at shows: a dolly in or out leaves it there.
         "target_at": target.and_then(|t| view.to_screen(t)).map(point),
     })
+}
+
+/// How big the name of `what` was laid out, room found for it or not.
+fn name_size(screen: &Screen, what: Named) -> Option<[f64; 2]> {
+    let size = screen.name_sizes.get(&what)?;
+    Some([round(size.x), round(size.y)])
+}
+
+/// The text drawn on the graph, its names among it, and the rest: the chrome. Names
+/// are clipped to the graph, or with a journey open to the part of it above the
+/// panel.
+fn graph_labels(screen: &Screen) -> (Vec<&Painted>, Vec<&Painted>) {
+    let near = |a: egui::Rect, b: egui::Rect| {
+        (a.min - b.min).length() < 1.5 && (a.max - b.max).length() < 1.5
+    };
+    screen
+        .texts
+        .iter()
+        .filter(|t| t.opacity > 0.05)
+        .partition(|t| near(t.clip, screen.graph) || near(t.clip, screen.names))
 }
 
 /// Every label on the graph: what it says and names, where, which others it

@@ -622,6 +622,12 @@ impl Nucleus {
         self.is_cursor(tile) || self.now.shown.get(tile).copied().unwrap_or(false)
     }
 
+    /// Every function the open journey could light at some depth: what it runs below
+    /// the start, wherever it shows.
+    pub(crate) fn could_light(&self) -> impl Iterator<Item = usize> + '_ {
+        self.trail.whole.keys().copied().filter(|_| !self.browse)
+    }
+
     /// How many calls a lit function is from the start: -1 for a caller, else its
     /// shallowest level in the journey.
     pub(crate) fn level(&self, tile: usize) -> Option<i32> {

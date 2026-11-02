@@ -11,6 +11,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 
@@ -636,6 +637,10 @@ pub(crate) struct Screen {
     pub(crate) window: egui::Vec2,
     /// Where the graph is drawn: the 3D camera's viewport.
     pub(crate) graph: egui::Rect,
+    /// Where names on the graph are drawn: the graph less a docked panel.
+    pub(crate) names: egui::Rect,
+    /// How big each name on the graph was laid out, room found for it or not.
+    pub(crate) name_sizes: Arc<HashMap<crate::labels::Named, egui::Vec2>>,
     pub(crate) texts: Vec<Painted>,
     pub(crate) widgets: Vec<Widget>,
     pub(crate) bars: Option<DrawnBars>,
@@ -653,6 +658,8 @@ impl Default for Screen {
         Self {
             window: egui::Vec2::ZERO,
             graph: egui::Rect::NOTHING,
+            names: egui::Rect::NOTHING,
+            name_sizes: Arc::default(),
             texts: Vec::new(),
             widgets: Vec::new(),
             bars: None,
@@ -853,6 +860,8 @@ fn record(
     *screen = Screen {
         window: egui::vec2(window.width(), window.height()),
         graph,
+        names: crate::labels::names_area(&ctx).unwrap_or(graph),
+        name_sizes: crate::labels::name_sizes(&ctx),
         texts,
         widgets: clickable,
         bars,
@@ -1351,6 +1360,7 @@ fn since(drive: &Drive) -> Since {
     Since {
         kinds: drive.kinds.clone(),
         by_hand: drive.by_hand,
+        playing: false,
     }
 }
 
@@ -1444,7 +1454,11 @@ fn film(commands: &mut Commands, drive: &mut Drive, view: &View) {
     let mut scene = scene_now(drive, view);
     scene["snap"] = json!(name);
     scene["frame"] = json!(drive.filmed);
-    scene["checks"] = checks::run(&scene, None, &Since::default());
+    let playing = Since {
+        playing: true,
+        ..Since::default()
+    };
+    scene["checks"] = checks::run(&scene, None, &playing);
     write(&drive.dir.join(format!("{name}.json")), &scene);
     if drive.covered {
         drive.trouble.push(format!(
@@ -1759,9 +1773,22 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
             let Some(before) = &drive.last_scene else {
                 return Err("no snapshot before to compare with".to_owned());
             };
+            // Judged as the steps since may move things: a click expanded in a
+            // journey may re-centre, a depth change draw the camera back; any other
+            // step is held to moving nothing.
+            let kinds = drive
+                .kinds
+                .iter()
+                .map(|&k| match k {
+                    Kind::Click | Kind::Depth => k,
+                    _ => Kind::Still,
+                })
+                .chain([Kind::Still])
+                .collect();
             let still = Since {
-                kinds: vec![Kind::Still],
+                kinds,
                 by_hand: drive.by_hand,
+                playing: false,
             };
             let result = checks::run(&scene_now(drive, view), Some(before), &still);
             verdict_of("nothing-moved", &result["nothing-moved"], true)

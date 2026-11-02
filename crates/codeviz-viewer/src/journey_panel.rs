@@ -614,8 +614,13 @@ fn bar_text(
         Some(mark) => name = format!("{name} {mark}"),
         None => {}
     }
-    if disclosed.calls_itself(span) {
-        name = format!("{name}  ↺ calls itself");
+    // What the graph's name says of it calling round, the same words.
+    if let Some(note) = explorer
+        .track()
+        .tile(span, explorer.map())
+        .and_then(|tile| crate::labels::round_note(explorer, tile))
+    {
+        name = format!("{name}  {note}");
     }
     let named = if number.is_empty() {
         name

@@ -97,12 +97,16 @@ const HEAD_SIZE: (f32, f32) = (5.0, 12.0);
 /// above its top edge, in points.
 const NAME_CENTRED: f32 = 3.0;
 const NAME_ABOVE: f32 = 8.0;
-/// How far from its dot a name would be put to see whether it fits, and the pad
-/// round its text, in points.
+/// How far from its dot a name's pill would be put to see whether it fits, the pill
+/// round its text, and the room kept clear round a pill, in points: as the label
+/// placer has them.
 const NAME_GAP: f32 = 4.0;
-const NAME_PAD: f32 = 2.0;
-/// A character's width as a share of its font size, when no name drawn says.
+const NAME_PILL: egui::Vec2 = egui::vec2(5.0, 2.0);
+const NAME_CLEAR: f32 = 1.0;
+/// A character's width as a share of its font size, when no name drawn says: a
+/// function's, and a module's in capitals, at their widest.
 const CHAR_WIDTH: f32 = 0.55;
+const CAPITAL_WIDTH: f32 = 0.75;
 /// Least share of the free area a framed journey's lit dots and their names span,
 /// along whichever of its width and height they come nearer filling.
 const JOURNEY_FILL: f32 = 0.7;
@@ -110,6 +114,8 @@ const JOURNEY_FILL: f32 = 0.7;
 /// is that carries no role's hue (saturation, 0 to 1).
 const HUE_SLACK: f32 = 25.0;
 const GREY: f32 = 0.3;
+/// The most alpha a faint call is drawn with.
+const FAINT: f32 = 0.5;
 /// A color this near white, in every channel (0 to 1), reads as the selection's.
 const WHITE: f32 = 0.85;
 /// Room the framing leaves round a lit dot for it to show whole, in points: a depth
@@ -153,6 +159,8 @@ pub(crate) const NAMES: [&str; 24] = [
 pub(crate) struct Since {
     pub(crate) kinds: Vec<Kind>,
     pub(crate) by_hand: bool,
+    /// A frame snapped as a transition plays (`frames N`), not the view at rest.
+    pub(crate) playing: bool,
 }
 
 impl Since {
@@ -266,6 +274,8 @@ struct Node {
     on_screen: bool,
     label: Option<String>,
     label_rect: Option<[f32; 4]>,
+    /// How big its name was laid out, room found for it or not.
+    name_size: Option<[f32; 2]>,
     color: Option<String>,
     rings: Vec<Ring>,
 }
@@ -284,6 +294,8 @@ struct Module {
     on_screen: bool,
     label: Option<String>,
     label_rect: Option<[f32; 4]>,
+    /// How big its name was laid out, room found for it or not.
+    name_size: Option<[f32; 2]>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -345,12 +357,50 @@ impl Node {
         !self.lit() && self.label.is_none()
     }
 
+    /// Where its name comes in the order names are placed, first 0: the start or the
+    /// selection, the cursor, the function set aside, (the modules,) the start's own
+    /// calls, its callers, the calls further down, whatever else is lit, (the modules
+    /// brought in from off the journey,) then the rest.
+    fn rank(&self) -> u8 {
+        let level = self
+            .roles
+            .iter()
+            .find_map(|r| r.strip_prefix("journey level ")?.parse::<u32>().ok());
+        if self.is("start") || self.is("selection") {
+            0
+        } else if self.is("cursor") {
+            1
+        } else if self.is("aside") {
+            2
+        } else if self.is("caller") {
+            5
+        } else {
+            match (level, self.numbers.is_empty()) {
+                (Some(1), false) => 4,
+                (Some(_), false) => 6,
+                (Some(_), true) => 7,
+                (None, _) => 9,
+            }
+        }
+    }
+
     /// Lit in a journey: the start, a call or a caller of it (not one folded into
     /// its module's count).
     fn in_journey(&self) -> bool {
         self.roles.iter().any(|r| {
             matches!(r.as_str(), "start" | "cursor" | "caller") || r.starts_with("journey level")
         })
+    }
+}
+
+impl Module {
+    /// Where its name comes in the order names are placed (see [`Node::rank`]).
+    fn rank(&self, journey: bool) -> u8 {
+        if journey && self.body == "faint" {
+            8
+        } else {
+            3
+        }
     }
 }
 
@@ -746,8 +796,14 @@ fn named_on_screen(s: &Snap) -> Value {
             let offender = json!({ "label": label.text, "of": label.of, "rect": rect_json(label.rect), "why": "cut off by the graph's edge" });
             offenders.push((2.0, offender));
         }
-        if !label.under.is_empty() {
-            let offender = json!({ "label": label.text, "of": label.of, "rect": rect_json(label.rect), "under": label.under });
+        // The search box opens over the graph for a moment, as the key help does.
+        let under: Vec<&String> = label
+            .under
+            .iter()
+            .filter(|o| o.as_str() != "search box")
+            .collect();
+        if !under.is_empty() {
+            let offender = json!({ "label": label.text, "of": label.of, "rect": rect_json(label.rect), "under": under });
             offenders.push((1.0, offender));
         }
     }
@@ -1585,48 +1641,37 @@ fn module_names(s: &Snap) -> Value {
 
 fn named_when_room(s: &Snap) -> Value {
     let free = s.free();
-    // How wide a character shows, by the names drawn.
-    let mut widths: Vec<f32> = s
-        .labels
-        .iter()
-        .filter(|l| l.names == "function" && l.size > 0.0)
-        .map(|l| rect(l.rect).width() / (l.text.trim().chars().count().max(1) as f32 * l.size))
-        .collect();
-    widths.sort_by(f32::total_cmp);
-    let per_size = widths.get(widths.len() / 2).copied().unwrap_or(CHAR_WIDTH);
-    let size_of = |kind: &str, fallback: f32| {
-        s.labels
-            .iter()
-            .find(|l| l.names == kind && l.size > 0.0)
-            .map_or(fallback, |l| l.size)
-    };
-    let (function_size, module_size) = (size_of("function", 12.5), size_of("module", 13.5));
-    let measure = |text: &str, size: f32| {
-        egui::vec2(text.chars().count() as f32 * size * per_size, size * 1.2)
-    };
-    let taken: Vec<egui::Rect> = s
-        .labels
-        .iter()
-        .map(|l| rect(l.rect).expand(NAME_PAD))
-        .collect();
+    let journey = s.state.mode == "journey";
+    let taken = names_by_rank(s, journey);
+    let guess =
+        |text: &str, kind: &str, size: f32, width: f32| guess_size(s, text, kind, (size, width));
     let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen && n.lit()).collect();
     let spheres: Vec<&Module> = s.spheres().filter(|m| m.radius > 0.0).collect();
-    let clear = |r: egui::Rect, own_dot: Option<&str>, module: Option<&str>| {
-        let padded = r.expand(NAME_PAD);
-        free.contains_rect(padded)
-            && !s.under_overlay(padded)
-            && !taken.iter().any(|t| t.intersects(padded))
-            && !lit.iter().any(|n| {
-                n.unit.as_deref() != own_dot && padded.distance_to_pos(pos(n.at)) < n.radius
-            })
+    // Whether a pill at `r` would fit: in the free area, under no overlay, over no
+    // name placed as early, off every other lit dot and nearer none of them than its
+    // own; a module's off every other sphere and its own dots.
+    let clear = |r: egui::Rect, rank: u8, own: Option<&Node>, module: Option<&str>| {
+        // Over a dot judged by the pill, nearer one by the text, as labels-near does.
+        let text = r.shrink2(NAME_PILL);
+        let gap = |at: [f32; 2], radius: f32| text.distance_to_pos(pos(at)) - radius;
+        let mine = own.map_or(0.0, |n| gap(n.at, n.radius));
+        let near = |at: [f32; 2], radius: f32| {
+            r.distance_to_pos(pos(at)) - radius < NAME_CLEAR || gap(at, radius) < mine - NEARER
+        };
+        free.contains_rect(r)
+            && !s.under_overlay(r)
+            && !taken
+                .iter()
+                .any(|&(t, by)| by <= rank && t.intersects(r.expand(NAME_CLEAR)))
+            && !lit
+                .iter()
+                .any(|n| n.unit != own.and_then(|o| o.unit.clone()) && near(n.at, n.radius))
             && module.is_none_or(|module| {
                 !spheres
                     .iter()
-                    .any(|m| m.name != module && padded.distance_to_pos(pos(m.at)) < m.radius)
+                    .any(|m| m.name != module && r.distance_to_pos(pos(m.at)) < m.radius - 0.5)
                     && !s.nodes.iter().any(|n| {
-                        n.on_screen
-                            && n.module.as_deref() == Some(module)
-                            && padded.distance_to_pos(pos(n.at)) < n.radius
+                        n.on_screen && n.module.as_deref() == Some(module) && near(n.at, n.radius)
                     })
             })
     };
@@ -1635,11 +1680,17 @@ fn named_when_room(s: &Snap) -> Value {
         if n.label.is_some() || n.unit.is_none() {
             continue;
         }
-        let text = match n.numbers.first() {
-            Some(number) => format!("{number}  {}", n.name),
-            None => n.name.clone(),
-        };
-        let size = measure(&text, function_size);
+        let size = n.name_size.map_or_else(
+            || {
+                let text = match n.numbers.first() {
+                    Some(number) => format!("{number}  {}", n.name),
+                    None => n.name.clone(),
+                };
+                guess(&text, "function", 12.5, CHAR_WIDTH)
+            },
+            |[w, h]| egui::vec2(w, h),
+        );
+        let size = size + 2.0 * NAME_PILL;
         let at = pos(n.at);
         let reach = n.radius + NAME_GAP;
         let spots = [
@@ -1648,7 +1699,8 @@ fn named_when_room(s: &Snap) -> Value {
             egui::Rect::from_min_size(egui::pos2(at.x - size.x / 2.0, at.y - reach - size.y), size),
             egui::Rect::from_min_size(egui::pos2(at.x - size.x / 2.0, at.y + reach), size),
         ];
-        if let Some(spot) = spots.iter().find(|r| clear(**r, n.unit.as_deref(), None)) {
+        let rank = n.rank();
+        if let Some(spot) = spots.iter().find(|r| clear(**r, rank, Some(n), None)) {
             let offender = json!({ "function": n.name, "roles": n.roles, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
             offenders.push((1.0 + f32::from(u8::from(n.focus())), offender));
         }
@@ -1657,16 +1709,59 @@ fn named_when_room(s: &Snap) -> Value {
         .spheres()
         .filter(|m| m.on_screen && m.radius > 0.0 && m.label.is_none())
     {
-        let size = measure(&m.name.to_uppercase(), module_size);
+        let size = m.name_size.map_or_else(
+            || guess(&m.name.to_uppercase(), "module", 13.5, CAPITAL_WIDTH),
+            |[w, h]| egui::vec2(w, h),
+        );
+        let size = size + 2.0 * NAME_PILL;
         let top = m.at[1] - m.radius - 2.0;
         let spot =
             egui::Rect::from_min_size(egui::pos2(m.at[0] - size.x / 2.0, top - size.y), size);
-        if clear(spot, None, Some(&m.name)) {
+        if clear(spot, m.rank(journey), None, Some(&m.name)) {
             let offender = json!({ "module": m.name, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
             offenders.push((0.5, offender));
         }
     }
     verdict(offenders)
+}
+
+/// Each name drawn, its pill round it, with the rank of what it names: only those
+/// placed before what is left out, or as early, could have taken its room.
+fn names_by_rank(s: &Snap, journey: bool) -> Vec<(egui::Rect, u8)> {
+    s.labels
+        .iter()
+        .map(|l| {
+            let rank = match l.names.as_str() {
+                "function" => l
+                    .unit
+                    .as_deref()
+                    .and_then(|u| s.node(u))
+                    .map_or(0, Node::rank),
+                "module" => s
+                    .modules
+                    .iter()
+                    .find(|m| Some(&m.name) == l.of.as_ref())
+                    .map_or(0, |m| m.rank(journey)),
+                _ => 0,
+            };
+            (rect(l.rect).expand2(NAME_PILL), rank)
+        })
+        .collect()
+}
+
+/// How big a name of `kind` saying `text` would show, for one the snapshot gives no
+/// size of: as wide a character as the widest of the names drawn of that kind, else
+/// `fallback`'s width, at their size, else its size.
+fn guess_size(s: &Snap, text: &str, kind: &str, fallback: (f32, f32)) -> egui::Vec2 {
+    let drawn = || s.labels.iter().filter(|l| l.names == kind && l.size > 0.0);
+    let size = drawn().next().map_or(fallback.0, |l| l.size);
+    let width = drawn()
+        .map(|l| rect(l.rect).width() / (l.text.trim().chars().count().max(1) as f32 * l.size))
+        .fold(None, |most: Option<f32>, w| {
+            Some(most.map_or(w, |m| m.max(w)))
+        })
+        .unwrap_or(fallback.1);
+    egui::vec2(text.chars().count() as f32 * size * width, size * 1.2)
 }
 
 fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
@@ -1678,6 +1773,9 @@ fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     }
     if since.by_hand {
         return skip("the camera is where the user's hands put it");
+    }
+    if since.playing {
+        return skip("a frame of a transition still playing");
     }
     let opened = before.is_none_or(|b| b.state.mode != "journey" || b.state.start != s.state.start);
     let framed = matches!(
@@ -1763,10 +1861,23 @@ fn colours(s: &Snap) -> Value {
             offenders.push((1.0, offender));
         }
     }
+    let hovered = s
+        .nodes
+        .iter()
+        .find(|n| n.is("hovered"))
+        .and_then(|n| n.unit.clone());
     for a in &s.arrows {
         let Some(got) = a.color.as_deref().and_then(rgb) else {
             continue;
         };
+        // A call among the expanded module's functions that the journey does not
+        // make stays faint, into the cursor too; only pointing at one lights it.
+        let alpha = a.color.as_deref().and_then(alpha).unwrap_or(1.0);
+        if a.flow == "inner" && alpha > FAINT && (hovered.is_none() || a.to_unit != hovered) {
+            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": "a call off the journey drawn bright", "most_alpha": FAINT });
+            offenders.push((1.0, offender));
+            continue;
+        }
         let want = flow_color(&a.flow, a.level);
         let into_cursor = cursor.is_some() && a.to_unit == cursor && like(got, srgb(CURSOR));
         if !like(got, want) && !into_cursor {
@@ -1812,6 +1923,14 @@ fn srgb(color: bevy::color::Color) -> [f32; 3] {
 }
 
 /// A color from `#rrggbb` or `#rrggbbaa`, alpha left out.
+/// A `#rrggbbaa` color's alpha, 0 to 1.
+fn alpha(hex: &str) -> Option<f32> {
+    let hex = hex.trim_start_matches('#');
+    u8::from_str_radix(hex.get(6..8)?, 16)
+        .ok()
+        .map(|a| f32::from(a) / 255.0)
+}
+
 fn rgb(hex: &str) -> Option<[f32; 3]> {
     let hex = hex.trim_start_matches('#');
     let channel = |at: usize| {
@@ -2028,7 +2147,7 @@ mod tests {
     fn after(before: &Value, now: &Value, kinds: &[Kind], name: &str) -> Value {
         let since = Since {
             kinds: kinds.to_vec(),
-            by_hand: false,
+            ..Since::default()
         };
         run(now, Some(before), &since)[name].clone()
     }
@@ -2472,6 +2591,7 @@ mod tests {
         let by_hand = Since {
             kinds: vec![Kind::Pan],
             by_hand: true,
+            ..Since::default()
         };
         assert_eq!(
             run(&s, None, &by_hand)["focus-on-screen"]["pass"],
@@ -2614,6 +2734,69 @@ mod tests {
         s["labels"].as_array_mut().unwrap().remove(3);
         let result = check(&s, "named-when-room");
         assert_eq!(result["offenders"][0]["module"], "b", "{result}");
+    }
+
+    #[test]
+    fn only_names_placed_as_early_excuse_one_left_out() {
+        let mut s = journey();
+        s["nodes"][2]["label"] = Value::Null;
+        s["nodes"][2]["label_rect"] = Value::Null;
+        s["labels"].as_array_mut().unwrap().remove(2);
+        // Hemmed in by the names of g, plain, placed after the cursor: still room.
+        let blocks = [
+            [1004.0, 480.0, 1100.0, 520.0],
+            [900.0, 480.0, 996.0, 520.0],
+            [950.0, 440.0, 1050.0, 496.0],
+            [950.0, 504.0, 1050.0, 560.0],
+        ];
+        for r in blocks {
+            s["labels"].as_array_mut().unwrap().push(
+                json!({ "text": "g", "rect": r, "names": "function", "unit": "x:a::g", "size": 12.0 }),
+            );
+        }
+        let result = check(&s, "named-when-room");
+        assert_eq!(result["offenders"][0]["function"], "h", "{result}");
+        // The size the placer laid its name out at, too wide for any side.
+        s["nodes"][2]["name_size"] = json!([2000.0, 14.0]);
+        assert!(passes(&check(&s, "named-when-room")));
+    }
+
+    #[test]
+    fn a_frame_of_a_transition_is_not_judged_for_filling() {
+        let s = journey();
+        let playing = Since {
+            playing: true,
+            ..Since::default()
+        };
+        assert_eq!(
+            run(&s, None, &playing)["journey-fills"]["pass"],
+            Value::Null
+        );
+        assert_eq!(check(&s, "journey-fills")["pass"], json!(false));
+    }
+
+    #[test]
+    fn a_name_under_the_open_search_box_is_left_alone() {
+        let mut s = scene();
+        s["labels"][1]["under"] = json!(["search box"]);
+        assert!(passes(&check(&s, "named-on-screen")));
+        s["labels"][1]["under"] = json!(["search box", "journey panel"]);
+        assert_eq!(check(&s, "named-on-screen")["count"], 1);
+    }
+
+    #[test]
+    fn a_call_off_the_journey_inside_the_expanded_module_stays_faint() {
+        let mut s = journey();
+        s["arrows"] = json!([
+            { "from": "g", "to": "h", "to_unit": "x:b::h", "flow": "inner", "color": "#ff5cb8" },
+            { "from": "f", "to": "g", "to_unit": "x:a::g", "flow": "inner", "color": "#8c94a547" },
+        ]);
+        let result = check(&s, "colours");
+        assert_eq!(result["count"], 1, "{result}");
+        assert_eq!(result["offenders"][0]["arrow"], json!(["g", "h"]));
+        // Pointed at, it may light.
+        s["nodes"][2]["roles"] = json!(["journey level 1", "cursor", "hovered"]);
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
     }
 
     #[test]

@@ -9,17 +9,41 @@ use crate::{
     text,
 };
 
-/// A hint at the keys along `foot`.
+/// A hint at the keys along `foot`, on a backing of its own so no name drawn under
+/// it shows through.
 pub(crate) fn key_hint(ctx: &egui::Context, foot: egui::Rect) {
-    ctx.layer_painter(egui::LayerId::background())
-        .with_clip_rect(foot)
-        .text(
-            egui::pos2(foot.min.x + 12.0, foot.max.y - 10.0),
-            egui::Align2::LEFT_BOTTOM,
-            hint(true),
-            egui::FontId::proportional(text::SMALL),
-            MUTED,
-        );
+    let painter = ctx
+        .layer_painter(egui::LayerId::background())
+        .with_clip_rect(foot);
+    let galley = hint_galley(&painter);
+    let at = hint_at(foot, galley.size());
+    painter.rect_filled(
+        egui::Rect::from_min_size(at, galley.size()).expand2(PILL_PAD),
+        4.0,
+        PILL,
+    );
+    painter.galley(at, galley, MUTED);
+}
+
+/// Where the browsing hint at the keys lies along `foot`, its backing included: names
+/// on the graph keep off it.
+pub(crate) fn hint_rect(painter: &egui::Painter, foot: egui::Rect) -> egui::Rect {
+    let size = hint_galley(painter).size();
+    egui::Rect::from_min_size(hint_at(foot, size), size).expand2(PILL_PAD)
+}
+
+fn hint_galley(painter: &egui::Painter) -> std::sync::Arc<egui::Galley> {
+    painter.layout_no_wrap(
+        hint(true).to_owned(),
+        egui::FontId::proportional(text::SMALL),
+        MUTED,
+    )
+}
+
+/// The hint's top left: at the foot's left, its text's foot 10 points above the
+/// foot's.
+fn hint_at(foot: egui::Rect, size: egui::Vec2) -> egui::Pos2 {
+    egui::pos2(foot.min.x + 12.0, foot.max.y - 10.0 - size.y)
 }
 
 /// The line on the keys that matter most, browsing or in a journey.
@@ -228,22 +252,21 @@ fn color_key(browsing: bool) -> Vec<(egui::Color32, &'static str)> {
 fn reading(browsing: bool) -> &'static [&'static str] {
     if browsing {
         return &[
-            "Each sphere is a module, in a color of its own, named the same whatever is \
-             clicked; a lit one says how many of its functions are named (3 of 39). Two \
-             modules of one name are told apart by their crate (layout::graph).",
-            "A name set apart from its function keeps a dotted grey thread to it. A \
-             function with no room for its name near it is named when you point at it, \
-             and counted at the foot.",
+            "Each sphere is a module, in a color of its own, named above it where its \
+             name fits; point at one for its name. Two modules of one name are told \
+             apart by their crate (layout::graph).",
+            "A function is named beside its own dot where its name fits, the most \
+             important first; one left out is named when you point at it, and the lit \
+             ones left out are counted at the foot. Zoom in to name more.",
         ];
     }
     &[
-        "Each sphere is a module, in a color of its own, saying how many of its functions \
-         the journey names (2 of 23); the middle one holds the start. +5 callers: callers \
-         of the start drawn pale and left unnamed; point at one for its name.",
+        "Each sphere is a module, in a color of its own; the middle one holds the start. \
+         Callers of the start past the few named show small and unnamed; point at one for \
+         its name.",
         "On a name, 2 +1: its first call in the journey, numbered as in the panel, and how \
-         many more times the journey runs it; the cursor's shows the call it is on. A name \
-         set apart keeps a dotted grey thread to its function. Two functions of one name \
-         show their types (Explorer.root, Track.root).",
+         many more times the journey runs it; the cursor's shows the call it is on. Two \
+         functions of one name show their types (Explorer.root, Track.root).",
         "The panel: a bar per call, left to right as they run, a row a level deeper. \
          Dashed: runs only sometimes, and says when (if …, in a loop). Pale: a call only \
          guessed at, or handed off to run later. A triangle and a count: calls folded \

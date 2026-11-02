@@ -78,6 +78,21 @@ impl Nucleus {
         let order = self.ring_order(&every, middle, &cluster_of);
         place_ring(&mut balls, &order, middle);
         let (mut points, mut shown) = self.place_functions(&balls, &laid, middle, &cluster_of);
+        // The start's own module names what the journey runs in it at any depth in
+        // columns round the start, as an open module does, so they show apart; the
+        // rest of it stays where the map has it, faint.
+        if let Some(start) = start {
+            let mut named: Vec<usize> = Vec::new();
+            for tile in self.naming_order(&every) {
+                if tile != start && cluster_of(tile) == middle && !named.contains(&tile) {
+                    named.push(tile);
+                }
+            }
+            let center = balls[middle].center;
+            for (tile, at) in core_grid(&named, start, balls[middle].radius) {
+                points[tile] = center + at;
+            }
+        }
         // What only a deeper level names keeps its place, undrawn.
         for (cluster, column) in laid.iter().enumerate() {
             for tile in column.iter().filter(|t| !columns[cluster].contains(t)) {
@@ -210,6 +225,19 @@ impl Nucleus {
         cluster_of: &impl Fn(usize) -> usize,
     ) -> Vec<Vec<usize>> {
         let mut columns: Vec<Vec<usize>> = vec![Vec::new(); clusters];
+        for tile in self.naming_order(links) {
+            let cluster = cluster_of(tile);
+            if Some(tile) != start && cluster != middle && !columns[cluster].contains(&tile) {
+                columns[cluster].push(tile);
+            }
+        }
+        columns
+    }
+
+    /// The callers of the start in `links`, then everything the journey runs below
+    /// it at any depth, the shallowest first and, level by level, in the order the
+    /// journey first runs them: the order a module names them in.
+    fn naming_order(&self, links: &[Link]) -> Vec<usize> {
         let callers = links
             .iter()
             .filter(|l| l.flow == Flow::Into)
@@ -222,13 +250,7 @@ impl Nucleus {
         }
         // A stable sort: level by level, in the journey's order within each.
         journey.sort_by_key(|t| self.trail.whole.get(t).copied().unwrap_or(u32::MAX));
-        for tile in callers.chain(journey) {
-            let cluster = cluster_of(tile);
-            if Some(tile) != start && cluster != middle && !columns[cluster].contains(&tile) {
-                columns[cluster].push(tile);
-            }
-        }
-        columns
+        callers.chain(journey).collect()
     }
 
     /// The modules round the nucleus, in order: those the journey enters at any
@@ -522,6 +544,24 @@ pub(super) fn grid(count: usize, radius: f32) -> Vec<Vec3> {
             let y = ((rows as f32 - 1.0) / 2.0 - row as f32) * SPACING;
             (right * x + Vec3::Y * y) * fit
         })
+        .collect()
+}
+
+/// Where the nucleus's `named` functions and its `start` sit about its middle, in a
+/// sphere of `radius`: by [`grid`], the start in the place nearest the middle, the
+/// rest in order round it.
+fn core_grid(named: &[usize], start: usize, radius: f32) -> Vec<(usize, Vec3)> {
+    let places = grid(named.len() + 1, radius);
+    let middle = places
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.length().total_cmp(&b.1.length()))
+        .map_or(0, |(i, _)| i);
+    let mut rest = named.iter().copied();
+    places
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, at)| Some((if i == middle { start } else { rest.next()? }, at)))
         .collect()
 }
 

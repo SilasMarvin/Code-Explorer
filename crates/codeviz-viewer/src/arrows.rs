@@ -338,9 +338,11 @@ fn draw_map(painter: &egui::Painter, screen: &Screen, nucleus: &Nucleus, marks: 
 fn followed(explorer: &Explorer, link: &Link) -> bool {
     let nucleus = explorer.nucleus();
     let hovered = explorer.hovered();
-    let into = link.flow != Flow::Into
-        && link.flow != Flow::Outside
-        && (explorer.cursor() == Some(link.to) || hovered == Some(link.to));
+    // Into the cursor, the journey's calls; a call among the expanded module's
+    // functions the journey does not make stays faint unless pointed at.
+    let journey = matches!(link.flow, Flow::Journey(_));
+    let into = (journey && explorer.cursor() == Some(link.to))
+        || (link.flow != Flow::Into && link.flow != Flow::Outside && hovered == Some(link.to));
     let pointed =
         (link.flow == Flow::Outside || nucleus.folded(link.from)) && hovered == Some(link.from);
     let aside = explorer.aside();

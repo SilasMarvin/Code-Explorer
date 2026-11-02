@@ -33,11 +33,11 @@ pub(crate) const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 pub(crate) const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
 
 /// Module colors: a module's sphere, its rim and its name. Six hues far enough apart
-/// to tell neighbouring modules by, all muted and none near a role's color: teal,
+/// to tell neighbouring modules by, all muted and none near a role's color: jade,
 /// lime, brick, green, stone and sand read as none of white, violet, blue, amber or
 /// pink.
 const MODULES: [Color; 6] = [
-    Color::srgb(0.36, 0.74, 0.76),
+    Color::srgb(0.38, 0.74, 0.58),
     Color::srgb(0.66, 0.80, 0.34),
     Color::srgb(0.84, 0.50, 0.42),
     Color::srgb(0.44, 0.78, 0.44),
