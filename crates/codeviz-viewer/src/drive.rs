@@ -336,6 +336,12 @@ struct Drive {
     /// the view last framed itself; and what the view was on when it last did.
     by_hand: bool,
     framed_on: (bool, Option<usize>),
+    /// Whether a module was expanded, and the camera where the hands put it, as the
+    /// step under way began; and while a module is expanded, whether the camera was
+    /// where the hands put it before the first expand, which shrinking back returns
+    /// it to.
+    began: (bool, bool),
+    expanded_by_hand: Option<bool>,
     /// What is worth knowing of the step under way that is no failure.
     notes: Vec<String>,
     /// Where the pointer was as the step under way began.
@@ -1063,10 +1069,13 @@ impl View<'_, '_> {
         Some((transform.translation(), transform.rotation()))
     }
 
-    /// Where the camera stands as the orbit has it: what it looks at, from how far,
-    /// at what yaw and pitch.
+    /// Where the camera stands this frame as the orbit has it, on its way or not:
+    /// what it looks at, from how far, at what yaw and pitch.
     pub(crate) fn orbit_pose(&self) -> Option<crate::camera::Pose> {
-        self.cameras.iter().next().map(|(_, _, orbit)| orbit.pose())
+        self.cameras
+            .iter()
+            .next()
+            .map(|(_, _, orbit)| orbit.pose_now())
     }
 
     pub(crate) fn orbit_held(&self) -> bool {
@@ -1339,6 +1348,20 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
         entry["settled_ms"] = json!(settled.as_millis());
         entry["waited_ms"] = json!(waited.as_millis());
     }
+    // Shrinking back returns the camera to where it stood before the first expand,
+    // where the hands may have put it; R and F frame it anew.
+    let expanded = view.explorer.nucleus().expanded();
+    match (drive.began.0, expanded) {
+        (false, true) => drive.expanded_by_hand = Some(drive.began.1),
+        (true, false) => {
+            let saved = drive.expanded_by_hand.take();
+            let kind = drive.lines[index].step.kind();
+            if !matches!(kind, Kind::FrameAll | Kind::FrameFocus) {
+                drive.by_hand = saved.unwrap_or(false);
+            }
+        }
+        _ => {}
+    }
     // Opening or leaving a journey, or another, frames the view anew.
     let on = (view.explorer.browsing(), view.explorer.start());
     if on != drive.framed_on {
@@ -1389,6 +1412,7 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
             return;
         }
         drive.kinds.push(step.kind());
+        drive.began = (view.explorer.nucleus().expanded(), drive.by_hand);
         if let Some(hand) = by_hand(step.kind()) {
             drive.by_hand = hand;
         }
