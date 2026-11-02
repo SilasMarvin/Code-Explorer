@@ -26,12 +26,12 @@ expect mode journey
 snap journey
 
 key .
-expect nothing-moved
+expect check nothing-moved
 expect check named-when-room pass
 snap depth 2
 
 key .
-expect nothing-moved
+expect check nothing-moved
 snap depth 3
 
 key down

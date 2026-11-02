@@ -33,9 +33,9 @@ struct Views {
 }
 
 /// What the nucleus was last framed for: whether it was browsed; in a journey, where
-/// it starts and how much of it showed; the hand that last pointed the view; the
-/// module expanded and, expanded, the journey's cursor; and the graph's view in the
-/// window, in whole points.
+/// it starts and how much of it showed (its depth and the folds opened by hand); the
+/// hand that last pointed the view; the module expanded and, expanded, the journey's
+/// cursor; and the graph's view in the window, in whole points.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Framed {
     view: [i32; 4],
@@ -43,7 +43,7 @@ pub(crate) struct Framed {
     start: Option<usize>,
     aim: u64,
     expanded: Option<usize>,
-    disclose: Option<Disclose>,
+    disclose: Option<(Disclose, usize)>,
     cursor: Option<usize>,
 }
 
@@ -83,7 +83,7 @@ const CURSOR_ROOM: f32 = 0.85;
 ///   journey, it pans just enough to keep the cursor in view wherever it goes, and a
 ///   level more or less moves nothing; otherwise a level more or less moves nothing
 ///   unless something the journey lights would show off the free area, and then it
-///   only pulls back.
+///   frames the journey afresh, coming no nearer.
 /// - F frames the focus from the angle the camera has: browsing, the selection and
 ///   what it lights; in a journey, the journey and what the view is on
 ///   ([`Explorer::current`]); expanded, the module, filling the view, and the cursor.
@@ -147,7 +147,7 @@ pub(crate) fn frame(
         start: nucleus.start().filter(|_| !browsing),
         aim: explorer.aim(),
         expanded,
-        disclose: (!browsing).then(|| explorer.disclose()),
+        disclose: (!browsing).then(|| (explorer.disclose(), explorer.folds_opened())),
         cursor: cursor.filter(|_| expanded.is_some()),
     };
     let before = last.replace(now);
@@ -271,16 +271,21 @@ fn pan_into_view(at: Vec3, camera: &mut OrbitCamera, lens: Lens) {
     }
 }
 
-/// Pulls back, round wherever the camera looks, just far enough that every function
-/// the journey lights, and `also`, shows whole in the free area; when they all show
-/// already, nothing moves.
+/// When something the journey lights, or `also`, would show off the free area, or
+/// not whole, frames the journey afresh, but never nearer than the camera is; when
+/// it all shows already, nothing moves.
 fn reveal(nucleus: &Nucleus, also: Option<Vec3>, camera: &mut OrbitCamera, views: Views) {
     let rotation = camera.aim_rotation();
     let mut points = nucleus.journey_points();
     points.extend(also);
     let needed = distance_to_show(&points, camera.target, rotation, views.free, views.dots);
-    if needed > camera.goal_distance() {
-        camera.pull_back(needed);
+    if needed <= camera.goal_distance() {
+        return;
+    }
+    let framed = journey_points(nucleus, also, rotation, views);
+    if let Some((middle, distance)) = place(&framed, rotation, views.free) {
+        let distance = distance.max(camera.goal_distance());
+        camera.glide_to(middle - views.free.shift(rotation) * distance, distance);
     }
 }
 

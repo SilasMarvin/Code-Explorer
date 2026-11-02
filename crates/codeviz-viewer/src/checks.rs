@@ -1104,7 +1104,8 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
 }
 
 /// How the camera moved on a depth change, when it should not have: anything but
-/// drawing back, or drawing back when all that came in would have shown anyway.
+/// drawing back (and framing the journey afresh as it does), or drawing back when
+/// all that came in would have shown anyway.
 fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
     let (Some(a), Some(b)) = (before.state.camera, now.state.camera) else {
         return Vec::new();
@@ -1116,7 +1117,8 @@ fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
         return Vec::new();
     }
     let camera = json!({ "target_by": r3(by), "distance_by": r3(back), "turned": r3(turned) });
-    if by > MOVED_WORLD || turned > MOVED_ANGLE || back < 0.0 {
+    // Drawing back, it may frame the journey afresh, and so look somewhere else.
+    if turned > MOVED_ANGLE || back < -MOVED_WORLD || back <= MOVED_WORLD && by > MOVED_WORLD {
         let why = "a depth change may only draw the camera back";
         return vec![(f32::MAX, json!({ "camera": camera, "why": why }))];
     }

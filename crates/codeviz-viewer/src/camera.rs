@@ -306,13 +306,6 @@ impl OrbitCamera {
         self.goal_distance = Some(distance);
     }
 
-    /// Eases back to `distance`, around wherever it is looking: a panned or zoomed
-    /// view stays where it was put.
-    pub(crate) fn pull_back(&mut self, distance: f32) {
-        let goal = self.goal_distance.unwrap_or(self.distance);
-        self.goal_distance = Some(goal.max(distance));
-    }
-
     /// Moves the point orbited by `offset` at once.
     fn pan(&mut self, offset: Vec3) {
         self.halt();

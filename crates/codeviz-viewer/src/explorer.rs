@@ -946,6 +946,11 @@ impl Explorer {
         ));
     }
 
+    /// How many folded calls are opened by hand, beside the depth.
+    pub(crate) fn folds_opened(&self) -> usize {
+        self.track.expanded.len()
+    }
+
     /// What the journey discloses; browsing, nothing.
     pub(crate) fn disclosure(&self) -> Arc<Disclosed> {
         if self.browsing() {

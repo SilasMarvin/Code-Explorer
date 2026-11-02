@@ -37,7 +37,7 @@ expect check zoom-to-pointer
 snap wheel in
 
 scroll -3 at Explorer::spotlit
-expect check zoom-to-pointer
+expect check map-on-screen
 snap wheel out
 
 click-empty

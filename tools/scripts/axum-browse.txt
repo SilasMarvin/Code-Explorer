@@ -43,7 +43,7 @@ expect check zoom-to-pointer
 snap wheel in
 
 scroll -3 at pricing::quote
-expect check zoom-to-pointer
+expect check map-on-screen
 snap wheel out
 
 scroll -40

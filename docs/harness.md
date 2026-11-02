@@ -241,7 +241,7 @@ What a step may move decides which checks judge it:
 |---|---|---|
 | still | `hover`, `hover-label`, `key` arrows, `[`, `]`, `i`, `wait`, `expect`, `frames` | nothing; expanded in a journey, a cursor that moves may pan the camera to keep it in view |
 | click | `click UNIT`, `click-label`, `bar` | nothing; expanded in a journey it may re-centre |
-| depth | `key ,`, `key .`, `chip` | the camera, drawn back to bring new calls on; nothing in the world |
+| depth | `key ,`, `key .`, `chip` | the camera, drawn back (framing the journey afresh) to bring on what would show off the free area; nothing in the world |
 | expand | `key x`, `doubleclick`, `doubleclick-module` | the view |
 | zoom, orbit, pan | `scroll`, `drag`, `pan` | the camera, by hand |
 | frame | `key f`, `key r`, `button Fit` | the camera |
