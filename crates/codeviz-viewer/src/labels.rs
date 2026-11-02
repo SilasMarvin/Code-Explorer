@@ -104,6 +104,9 @@ struct Disc {
     tile: usize,
     at: egui::Pos2,
     radius: f32,
+    /// As big as it is drawn, or as a lit one when that is bigger: the same whatever
+    /// is selected.
+    steady: f32,
     /// Lit, the start or the cursor: no name ever covers it.
     lit: bool,
 }
@@ -250,7 +253,7 @@ impl Placer {
     }
 
     /// The first spot round a dot at `node` where a pill of `size` lies on the graph
-    /// and off every dot, else off the lit ones, whatever names are there.
+    /// and off every dot, each as big as it shows lit, whatever is selected or named.
     fn find_by_dots(
         &self,
         own: usize,
@@ -258,13 +261,16 @@ impl Placer {
         reach: f32,
         size: egui::Vec2,
     ) -> Option<(usize, egui::Rect)> {
-        [Keep::EveryDot, Keep::LitDots].iter().find_map(|&keep| {
-            (0..SPOTS.len())
-                .map(|i| (i, spot(i, node, reach, size)))
-                .find(|&(_, pill)| {
-                    self.bounds.contains_rect(pill) && self.over_dots(pill, own, keep) == 0
-                })
-        })
+        (0..SPOTS.len())
+            .map(|i| (i, spot(i, node, reach, size)))
+            .find(|&(_, pill)| {
+                let near = pill.expand(reach + CLEAR);
+                self.bounds.contains_rect(pill)
+                    && !self.dot_grid.near(near).into_iter().any(|i| {
+                        let d = self.dots[i];
+                        d.tile != own && pill.distance_to_pos(d.at) < d.steady + CLEAR
+                    })
+            })
     }
 
     /// Where a name that must show goes when no spot fits: on the graph, over the
@@ -497,15 +503,12 @@ impl<'a> Naming<'a> {
                     .map_or(2.0, |p| p.distance(at));
                 let lit_edge = (self.to_screen)(world + self.up * nucleus.dot_radius(Dot::Lit))
                     .map_or(2.0, |p| p.distance(at));
-                let radius = if neutral {
-                    dot.clamp(edge).max(Dot::Lit.clamp(lit_edge))
-                } else {
-                    dot.clamp(edge)
-                };
+                let steady = dot.clamp(edge).max(Dot::Lit.clamp(lit_edge));
                 Some(Disc {
                     tile,
                     at,
-                    radius,
+                    radius: if neutral { steady } else { dot.clamp(edge) },
+                    steady,
                     lit: dot != Dot::Speck,
                 })
             })
@@ -797,10 +800,14 @@ impl<'a> Naming<'a> {
             } else if !tier.always() {
                 // Lit with no side of its own: the first side its dot's neighbours
                 // leave, whatever else is named, so what else is lit never moves it;
-                // unnamed where a name is there already.
+                // unnamed where a name is there already. In a crowd, where any
+                // side is free.
                 let (galley, size) = pill_of(painter, job);
-                let (free, pill) = placer.find_by_dots(tile, node, reach, size)?;
-                return (placer.over_names(pill) == 0).then_some(Label {
+                let (free, pill) = placer
+                    .find_by_dots(tile, node, reach, size)
+                    .filter(|&(_, pill)| placer.over_names(pill) == 0)
+                    .or_else(|| placer.find(tile, node, reach, size, true))?;
+                return Some(Label {
                     named: Named::Node(tile),
                     side: Some(free),
                     pill,
@@ -872,13 +879,10 @@ impl<'a> Naming<'a> {
             && let Some((middle, edge)) = self.sphere_on_screen(cluster)
         {
             let (galley, size) = pill_of(painter, self.module_label(cluster));
-            // Kept on the graph, however big the sphere shows.
             let pill = above(middle, edge, size);
-            let bounds = placer.bounds;
-            let pill = pill.translate(egui::vec2(
-                (bounds.min.x - pill.min.x).max(0.0) + (bounds.max.x - pill.max.x).min(0.0),
-                (bounds.min.y - pill.min.y).max(0.0) + (bounds.max.y - pill.max.y).min(0.0),
-            ));
+            if !placer.bounds.contains_rect(pill) {
+                return over;
+            }
             over.push(Label {
                 named: Named::Group(cluster),
                 side: None,
@@ -1056,6 +1060,7 @@ mod tests {
             tile,
             at: egui::pos2(x, y),
             radius: 4.0,
+            steady: 4.0,
             lit,
         }
     }
