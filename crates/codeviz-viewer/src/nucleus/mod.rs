@@ -634,6 +634,16 @@ impl Nucleus {
         self.trail.whole.keys().copied().filter(|_| !self.browse)
     }
 
+    /// How many calls below the start the open journey first runs a function, at
+    /// any depth.
+    pub(crate) fn journey_level(&self, tile: usize) -> Option<u32> {
+        self.trail
+            .whole
+            .get(&tile)
+            .copied()
+            .filter(|_| !self.browse)
+    }
+
     /// How many calls a lit function is from the start: -1 for a caller, else its
     /// shallowest level in the journey.
     pub(crate) fn level(&self, tile: usize) -> Option<i32> {

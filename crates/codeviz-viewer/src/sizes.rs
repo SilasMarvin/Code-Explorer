@@ -32,8 +32,8 @@ impl Dot {
     const fn bounds(self) -> (f32, f32) {
         match self {
             Self::Speck => (1.5, 4.0),
-            Self::Lit => (3.0, 7.0),
-            Self::Focus => (4.0, 9.0),
+            Self::Lit => (2.5, 7.0),
+            Self::Focus => (3.5, 9.0),
         }
     }
 

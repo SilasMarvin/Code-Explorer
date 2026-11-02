@@ -85,10 +85,26 @@ const SPOTS: [((f32, f32), (f32, f32)); 8] = [
     ((0.0, 1.0), (0.0, 1.0)),
 ];
 
-/// How far a lit name with no spot of [`SPOTS`] free slides along its side, in its
-/// height beside its dot or at a corner, or in halves of its width above or below,
-/// nearest first.
-const SLIDES: [f32; 4] = [0.5, -0.5, 1.0, -1.0];
+/// How far a lit name with no spot of [`SPOTS`] free, nudged or not, slides along
+/// its side, in its height beside its dot or at a corner, or in halves of its width
+/// above or below.
+const SLIDES: [f32; 2] = [1.0, -1.0];
+
+/// How far a lit name is nudged along its side when its spot is just taken, in its
+/// height (or half its width, above or below).
+const NUDGE: f32 = 0.5;
+
+/// Spot `index` slid `by` along its side: beside its dot or at a corner, by `by` of
+/// its height; above or below, by `by` of half its width.
+fn slid(index: usize, node: egui::Pos2, reach: f32, size: egui::Vec2, by: f32) -> egui::Rect {
+    let ((rx, _), _) = SPOTS[index];
+    let along = if rx == 0.0 {
+        egui::vec2(by * size.x / 2.0, 0.0)
+    } else {
+        egui::vec2(0.0, by * size.y)
+    };
+    spot(index, node, reach, size).translate(along)
+}
 
 /// A pill of `size` at spot `index` round a dot at `node`, its name kept `reach`
 /// from the dot's middle.
@@ -279,17 +295,19 @@ impl Placer {
         })
     }
 
-    /// The first spot round a dot at `node` where a pill of `size` fits as names keep
-    /// off lit dots, taking the spots in order of how few dots they would cover, every
-    /// dot as big as it shows lit, whatever is selected: the order hangs only on where
-    /// the dots are, so what else lights moves a name only where it takes its spot.
+    /// The first spot round a dot at `node`, and how far it is nudged along its side,
+    /// where a pill of `size` fits as names keep
+    /// off lit dots, taking the spots in order of how few dots a pill of `bare`, the
+    /// name alone, would cover, every dot as big as it shows lit, whatever is selected:
+    /// the order hangs only on where the dots are, not on what is lit or the numbers a
+    /// depth gives the name, so those move a name only where they take its spot.
     fn find_by_dots(
         &self,
         own: usize,
         node: egui::Pos2,
         reach: f32,
-        size: egui::Vec2,
-    ) -> Option<(usize, egui::Rect)> {
+        (size, bare): (egui::Vec2, egui::Vec2),
+    ) -> Option<(usize, f32)> {
         let covered = |pill: egui::Rect| {
             self.dot_grid
                 .near(pill.expand(reach + CLEAR))
@@ -302,21 +320,27 @@ impl Placer {
         };
         let mut spots: Vec<(usize, usize, egui::Rect)> = (0..SPOTS.len())
             .map(|i| {
-                let pill = spot(i, node, reach, size);
-                (covered(pill), i, pill)
+                (
+                    covered(spot(i, node, reach, bare)),
+                    i,
+                    spot(i, node, reach, size),
+                )
             })
             .collect();
         spots.sort_by_key(|&(covers, i, _)| (covers, i));
-        spots
-            .into_iter()
-            .find(|&(_, _, pill)| self.fits(pill, own, Keep::LitDots))
-            .map(|(_, i, pill)| (i, pill))
+        // Each spot as it is, else nudged half its height along its side, before the
+        // next: a name a little off level beside its dot reads better than one moved
+        // round it.
+        spots.into_iter().find_map(|(_, i, _)| {
+            [0.0, NUDGE, -NUDGE]
+                .into_iter()
+                .find(|&by| self.fits(slid(i, node, reach, size, by), own, Keep::LitDots))
+                .map(|by| (i, by))
+        })
     }
 
     /// For a lit name with no spot that fits: the first of the spots slid along
-    /// their side of the dot (beside it or at a corner, up or down by half its height
-    /// or all of it; above or below, along by a quarter of its width or half) that
-    /// does, so it stays by its dot.
+    /// their side of the dot by [`SLIDES`] that does, so it stays by its dot.
     fn find_slid(
         &self,
         own: usize,
@@ -326,15 +350,7 @@ impl Placer {
     ) -> Option<egui::Rect> {
         SLIDES.iter().find_map(|&by| {
             (0..SPOTS.len())
-                .map(|i| {
-                    let ((rx, _), _) = SPOTS[i];
-                    let along = if rx == 0.0 {
-                        egui::vec2(by * size.x / 2.0, 0.0)
-                    } else {
-                        egui::vec2(0.0, by * size.y)
-                    };
-                    spot(i, node, reach, size).translate(along)
-                })
+                .map(|i| slid(i, node, reach, size, by))
                 .find(|&pill| self.fits(pill, own, Keep::LitDots))
         })
     }
@@ -673,7 +689,8 @@ impl<'a> Naming<'a> {
     }
 
     /// The tier a function's name is placed in; in the `neutral` view, as though
-    /// browsing selected nothing and the journey's cursor and selection were on none.
+    /// browsing selected nothing, the journey's cursor and selection were on none and
+    /// every level of it were shown.
     fn tier(&self, tile: usize, neutral: bool) -> Tier {
         let nucleus = self.nucleus;
         if neutral && nucleus.browsing() {
@@ -696,6 +713,14 @@ impl<'a> Naming<'a> {
             }
         } else if nucleus.level(tile) == Some(-1) {
             Tier::Caller
+        } else if let Some(level) = nucleus.journey_level(tile).filter(|_| neutral) {
+            // In the neutral view, what a deeper level would light is placed as it
+            // would be then, so the sides names take are the same at every depth.
+            if level > 1 {
+                Tier::Deeper
+            } else {
+                Tier::Numbered
+            }
         } else if nucleus.outside(tile) {
             Tier::Beyond
         } else if nucleus.level(tile).is_some() {
@@ -938,7 +963,11 @@ impl<'a> Naming<'a> {
         let ranked = lit || self.nucleus.opened_up(tile);
         if let Some(sides) = sides {
             if let Some(&side) = sides.get(&tile) {
-                let keep = if lit { Keep::LitDots } else { Keep::EveryDot };
+                let keep = if ranked {
+                    Keep::LitDots
+                } else {
+                    Keep::EveryDot
+                };
                 let (galley, size) = self.pill(painter, Named::Node(tile), job.clone());
                 let pill = spot(side, node, reach, size);
                 if placer.fits(pill, tile, keep) {
@@ -958,13 +987,38 @@ impl<'a> Naming<'a> {
         }
         if ranked {
             // Lit, with its side taken or none of its own: the side its dot's
-            // neighbours, at every depth, leave most room on, that is free.
+            // neighbours, at every depth, leave most room on, that is free. One a
+            // deeper level numbers, shown unnumbered, keeps room for its number, so a
+            // level more or less leaves it where it is.
             let (galley, size) = self.pill(painter, Named::Node(tile), job.clone());
-            if let Some((free, pill)) = placer.find_by_dots(tile, node, reach, size) {
+            let name = node_name(self.explorer, tile);
+            let bare = pill_of(
+                painter,
+                label_job(None, &name, None, PLAIN_TEXT, text::BODY),
+            )
+            .1;
+            let numbered = self
+                .nucleus
+                .journey_level(tile)
+                .filter(|_| number.is_none())
+                .map(|level| {
+                    let digits = vec!["0"; level as usize].join(".");
+                    let lead = (format!(" {digits} "), ON_FILL, Some(PILL));
+                    pill_of(
+                        painter,
+                        label_job(Some(lead), &name, None, PLAIN_TEXT, text::BODY),
+                    )
+                    .1
+                });
+            let found = numbered
+                .map(|room| room.max(size))
+                .and_then(|room| placer.find_by_dots(tile, node, reach, (room, bare)))
+                .or_else(|| placer.find_by_dots(tile, node, reach, (size, bare)));
+            if let Some((free, by)) = found {
                 return Some(Label {
                     named: Named::Node(tile),
                     side: Some(free),
-                    pill,
+                    pill: slid(free, node, reach, size, by),
                     galley,
                     stroke,
                     number,

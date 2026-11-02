@@ -14,8 +14,10 @@ expect named Explorer::spotlit
 expect nothing-moved
 snap searched
 
-click-label Explorer::graph_focus
-expect selection Explorer::graph_focus
+# A name drawn at the whole map: callers are named before calls, so the crowd
+# round spotlit leaves graph_focus, a call, unnamed there.
+click-label Explorer::reveal_targets
+expect selection Explorer::reveal_targets
 expect nothing-moved
 snap select by name
 
