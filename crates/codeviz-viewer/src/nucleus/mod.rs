@@ -39,7 +39,7 @@ pub(crate) use journey::rank_callers;
 
 use crate::{
     camera::{ease, transition_step},
-    colors::{CALLEE, CALLER, DEEPER, FURTHER},
+    colors::{CALLEE, CALLER, FURTHER, deeper},
     disclosure::number_order,
     sizes::module_radius,
 };
@@ -95,11 +95,7 @@ impl Flow {
         match self {
             Self::Into => CALLER,
             Self::Journey(1) => CALLEE,
-            Self::Journey(level) => {
-                #[expect(clippy::cast_precision_loss, reason = "a small level")]
-                let deeper = (level.min(SHADES) - 2) as f32;
-                DEEPER.mix(&Color::BLACK, 0.2 * deeper)
-            }
+            Self::Journey(level) => deeper(level, SHADES),
             Self::Outside | Self::Inner => FURTHER,
         }
     }
@@ -208,6 +204,9 @@ struct Arrangement {
     ring: Vec<usize>,
     /// In a journey with I on, every function off it that calls one on it.
     outside: HashSet<usize>,
+    /// In a journey, the function set aside, when it is drawn only for that: picked
+    /// by a search where the journey draws nothing of it.
+    aside: Option<usize>,
     /// In a journey, the start's callers beyond the few nearest it: drawn quietly and
     /// named only under the pointer, counted on their module's name instead.
     folded: HashSet<usize>,
@@ -249,9 +248,10 @@ pub(crate) struct Nucleus {
     hovered: Option<usize>,
     /// The open journey from the start.
     trail: Trail,
-    /// The journey's cursor: marked where it sits, and drawn there though the
-    /// arrangement folds it away.
+    /// The journey's cursor: marked where it sits.
     cursor: Option<usize>,
+    /// In a journey, the function set aside: drawn, wherever it is.
+    aside: Option<usize>,
     /// Whether the graph is browsed, laid out as the atlas has it, rather than
     /// gathered round a journey.
     browse: bool,
@@ -317,6 +317,7 @@ impl Nucleus {
             hovered: None,
             trail,
             cursor: None,
+            aside: None,
             browse,
             atlas,
             outside: false,
@@ -458,6 +459,21 @@ impl Nucleus {
         true
     }
 
+    /// Sets a function aside in a journey: drawn where it is, or where the journey
+    /// draws nothing of it, put where it shows moving nothing else. Returns whether
+    /// that changed.
+    pub(crate) fn set_aside(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
+        if tile == self.aside {
+            return false;
+        }
+        self.aside = tile;
+        let placing = tile.is_some_and(|t| !self.placed(t)) || self.now.aside.is_some();
+        if placing && !self.browse {
+            self.recenter(graph, self.now.start);
+        }
+        true
+    }
+
     /// The journey's cursor, marked where it sits.
     pub(crate) fn cursor(&self) -> Option<usize> {
         self.cursor
@@ -482,11 +498,12 @@ impl Nucleus {
     }
 
     /// Whether a function is drawn full size: a caller or a call of the journey's
-    /// (it has a [`Self::level`]), the journey's cursor, or an outside caller into
-    /// the journey.
+    /// (it has a [`Self::level`]), the journey's cursor, the function set aside, or
+    /// an outside caller into the journey.
     pub(crate) fn lit(&self, tile: usize) -> bool {
         self.level(tile).is_some()
             || self.is_cursor(tile)
+            || (!self.browse && self.aside == Some(tile))
             || self.outside(tile)
             || self.opened_up(tile)
     }
@@ -522,11 +539,8 @@ impl Nucleus {
     }
 
     /// Where a function is drawn: inside its module's sphere, or at its middle when
-    /// it is folded away; the journey's cursor, folded away, just under its module.
+    /// it is folded away. The cursor only ever rests on a call drawn.
     pub(crate) fn point(&self, tile: usize) -> Option<Vec3> {
-        if self.is_cursor(tile) && !self.now.shown.get(tile).copied().unwrap_or(false) {
-            return self.under(tile);
-        }
         let to = *self.now.points.get(tile)?;
         Some(match &self.from {
             Some((_, points)) => points.get(tile).map_or(to, |&p| p.lerp(to, self.eased())),
@@ -551,29 +565,7 @@ impl Nucleus {
     /// Where a function is going to be drawn once a re-centering ends: what the
     /// camera frames, rather than where it passes on the way.
     pub(crate) fn resting_point(&self, tile: usize) -> Option<Vec3> {
-        if self.is_cursor(tile) && !self.now.shown.get(tile).copied().unwrap_or(false) {
-            let ball = *self
-                .now
-                .balls
-                .get(self.module_of.get(tile).copied().flatten()?)?;
-            return Some(Self::below(ball));
-        }
         self.now.points.get(tile).copied()
-    }
-
-    /// Just under a function's module as the usual view sees it, where a function
-    /// the arrangement folds away shows without moving anything: clear of the
-    /// module's name on top and of the arrows leaving its sides.
-    fn under(&self, tile: usize) -> Option<Vec3> {
-        Some(Self::below(
-            self.ball(self.module_of.get(tile).copied().flatten()?)?,
-        ))
-    }
-
-    /// Just under `ball`, as [`Self::under`] says.
-    fn below(ball: Ball) -> Vec3 {
-        let down = view_rotation() * Vec3::NEG_Y;
-        ball.center + down * (ball.radius + 0.8)
     }
 
     /// A module's sphere as drawn now.
@@ -601,9 +593,9 @@ impl Nucleus {
     }
 
     /// Whether a function is placed where it shows, rather than folded away inside
-    /// its module: what the arrangement shows, and the cursor wherever it is.
+    /// its module.
     pub(crate) fn placed(&self, tile: usize) -> bool {
-        self.is_cursor(tile) || self.now.shown.get(tile).copied().unwrap_or(false)
+        self.now.shown.get(tile).copied().unwrap_or(false)
     }
 
     /// Every function the open journey could light at some depth: what it runs below
@@ -626,6 +618,17 @@ impl Nucleus {
     /// shallowest level in the journey.
     pub(crate) fn level(&self, tile: usize) -> Option<i32> {
         self.now.named.get(&tile).copied()
+    }
+
+    /// Whether a function both calls the start (or the selection) and is called on
+    /// its journey: colored as the call, and ringed in the caller's violet besides.
+    pub(crate) fn calls_back(&self, tile: usize) -> bool {
+        self.level(tile).is_some_and(|level| level > 0)
+            && self
+                .now
+                .links
+                .iter()
+                .any(|l| l.flow == Flow::Into && l.from == tile)
     }
 
     /// How many functions a module holds.

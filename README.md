@@ -33,7 +33,10 @@ Violet: calls into it. Blue: its own calls. Amber, darker the deeper: the journe
 calls further down. Pink: the journey's cursor. Everything else is grey, and each
 module's sphere has a muted hue of its own, only to tell modules apart. Each role gets
 one treatment: the selection and the start a white ring, the cursor a pink fill and one
-pink ring, the function under the pointer one faint ring.
+pink ring. A call that also calls back into the start keeps its call's fill and gets a
+violet ring, and its two arrows run side by side. What the pointer rests on gets one grey
+treatment wherever it is: a thin ring round its dot, an outline round its bar, and from
+a bar a grey line to its dot.
 
 ### Browse
 
@@ -42,8 +45,10 @@ and a faint arrow runs from each module to every module it calls. A click on a
 function selects it where it sits: its callers light violet and its calls blue, each
 named, with arrows; their modules open where they are; nothing moves, not a function,
 not a module, not the camera. `Enter`, or a
-`Shift`-click on a function, opens a journey there. `/` searches; a result is selected
-in place.
+`Shift`-click on a function, opens a journey there. `/` searches; picking a result is a
+click on it. `Esc` clears the selection. The journey keys (arrows, `[ ]`, `, .`, `I`)
+say "Open a journey first (Enter)". Two functions of the same name in view, the
+selection's callers or calls, are named with their type or module before them.
 
 ### Journey
 
@@ -52,7 +57,8 @@ it is the one time the view moves for you: it gathers round the journey and fram
 Only the journey shows: its start in the middle of its module's sphere, what calls the
 start, and its calls down to the depth disclosed, every module they enter on a ring
 round the middle, clockwise in the order the journey first enters them. `,` and `.`
-(or the panel's `−` and `+`) show a level less or more, and nothing else moves; a bar's
+(or the panel's `−` and `+`) show a level less or more, from the start's own calls down
+to the journey's deepest, saying so at either end, and nothing else moves; a bar's
 triangle opens the calls folded under it. A closure counts as part of the function
 around it.
 
@@ -66,16 +72,20 @@ the start's bar, a row of violet bars lists the functions that call the start.
 The cursor is one call of the journey. `↓`/`↑` go into a call and out to its caller,
 `←`/`→` move between the calls one caller makes, `[`/`]` step through them in the order
 they run; a click on a bar, or on a function the journey runs, moves it there. Nothing
-on screen moves but the highlight. A click on any other function selects it in place,
+on screen moves but the highlight. A search picks a function the same way. A click on
+any other function selects it in place,
 with `not on this journey · Enter starts one here` in the top bar; an arrow or `Esc` goes
 back to the cursor. `↑` from the start goes up into the row of its callers, selecting
 the first in place (`calls … · Enter starts a journey here`); `←`/`→` move along the
 row, `Enter` opens that caller's journey and `↓` comes back to the start. A click on a
 caller's bar selects it the same way. `I` brings in every function off the journey that
 calls the cursor's, faint, without moving anything already there, and `I` again takes
-them out; with none, it says so. `Esc`
-leaves the journey for browsing, with the cursor's function selected, and puts the
-camera back where it stood before the journey.
+them out; with none, it says so. Every caller `I` could bring in, for any call of the
+journey, has its place worked out once, so moving the cursor with `I` on shows some and
+hides others and moves none. `Esc` steps out one level at a time: the function selected
+off the journey, then the module expanded, then the journey, for browsing with its start
+selected and the camera back where it stood before the journey. `Shift`-click on a
+journey's bar opens that function's journey, as anywhere.
 
 `Backspace` (or `← Back`) goes back to the view before: a selection, a journey, a
 cursor position, with the camera each had; `Shift+Backspace` (or `Forward →`) goes
@@ -85,9 +95,9 @@ began. Changing the depth is not a move of its own.
 ### Expand
 
 `X` flies into a module (the top bar then reads `· inside` it): that of the selection,
-the cursor or the start, else the one in the middle of the view (`--expand` opens
-straight into it). A double click on a module, on one of its functions or anywhere on
-its sphere, does the same for that module. The camera saves where it is and comes in
+the cursor or the start, else the one in the middle of the view (`--expand` with
+`--focus` opens straight into the start's). A double click on a module, on one of its
+functions or anywhere on its sphere, does the same for that module. The camera saves where it is and comes in
 until the module fills the view. The module opens where it stands, browsing or in a
 journey alike: every one of its functions drawn and named where they fit, with the
 calls among them, and nothing moves but the camera. In a journey, when the cursor

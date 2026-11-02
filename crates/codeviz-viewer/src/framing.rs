@@ -47,6 +47,9 @@ pub(crate) struct Framed {
     expanded: Option<usize>,
     disclose: Option<(Disclose, usize)>,
     cursor: Option<usize>,
+    /// In a journey, the function set aside: one a search put off the journey's
+    /// spheres draws the camera back to show it.
+    aside: Option<usize>,
 }
 
 /// How much of the free area the expanded module's diameter fills, of its smaller
@@ -163,6 +166,7 @@ pub(crate) fn frame(
         expanded,
         disclose: (!browsing).then(|| (explorer.disclose(), explorer.folds_opened())),
         cursor: cursor.filter(|_| expanded.is_some()),
+        aside: explorer.aside(),
     };
     let before = last.replace(now);
     // The modules the journey has come to run through since the frame before; all of
@@ -195,24 +199,38 @@ pub(crate) fn frame(
         if browsing {
             fit_all(nucleus, &mut camera, view_rotation(), lens);
         } else {
-            let mut points = journey_points(nucleus, cursor, view_rotation(), views);
+            let mut points = journey_points(nucleus, &[cursor], view_rotation(), views);
             let spheres = nucleus.atlas_points(view_rotation());
             points.extend(spheres.into_iter().map(|p| (p, Vec2::ONE)));
             glide(&points, &mut camera, view_rotation(), lens);
         }
     } else if before != Some(now) {
-        follow_view(before, now, nucleus, cursor, &came, &mut camera, views);
+        let aside = explorer.aside().and_then(resting);
+        follow_view(
+            (before, now),
+            nucleus,
+            (cursor, aside),
+            &came,
+            &mut camera,
+            views,
+        );
     }
 
     if let Some(pose) = returning {
-        match pose {
-            Return::To(pose) => camera.return_to(pose),
-            Return::Whole if browsing => {
-                let rotation = camera.aim_rotation();
-                fit_all(nucleus, &mut camera, rotation, lens);
-            }
-            Return::Whole => {}
+        return_to(pose, nucleus, &mut camera, lens);
+    }
+}
+
+/// Sends the camera back to where the explorer asks: a pose it had, or browsing,
+/// the whole codebase.
+fn return_to(pose: Return, nucleus: &Nucleus, camera: &mut OrbitCamera, lens: Lens) {
+    match pose {
+        Return::To(pose) => camera.return_to(pose),
+        Return::Whole if nucleus.browsing() => {
+            let rotation = camera.aim_rotation();
+            fit_all(nucleus, camera, rotation, lens);
         }
+        Return::Whole => {}
     }
 }
 
@@ -242,10 +260,9 @@ fn lens(projection: &Projection, view: egui::Rect, free: egui::Rect) -> Option<L
 /// else [`Framed`] holds changed since `before`, the journey now running through
 /// the modules `came` too: see [`frame`].
 fn follow_view(
-    before: Option<Framed>,
-    now: Framed,
+    (before, now): (Option<Framed>, Framed),
     nucleus: &Nucleus,
-    cursor: Option<Vec3>,
+    (cursor, aside): (Option<Vec3>, Option<Vec3>),
     came: &[usize],
     camera: &mut OrbitCamera,
     views: Views,
@@ -280,7 +297,7 @@ fn follow_view(
             pan_into_view(at, camera, lens);
         }
     } else {
-        reveal(nucleus, cursor, came, camera, views);
+        reveal(nucleus, &[cursor, aside], came, camera, views);
     }
 }
 
@@ -301,20 +318,20 @@ fn pan_into_view(at: Vec3, camera: &mut OrbitCamera, lens: Lens) {
     }
 }
 
-/// When something the journey lights, or `also`, would show off the free area, or
-/// not whole, or a sphere of the modules it `came` to run through, or its name,
-/// frames the journey afresh, but never nearer than the camera is; when it all
-/// shows already, nothing moves.
+/// When something the journey lights, or `also` (its cursor, the function set
+/// aside), would show off the free area, or not whole, or a sphere of the modules it
+/// `came` to run through, or its name, frames the journey afresh, but never nearer
+/// than the camera is; when it all shows already, nothing moves.
 fn reveal(
     nucleus: &Nucleus,
-    also: Option<Vec3>,
+    also: &[Option<Vec3>],
     came: &[usize],
     camera: &mut OrbitCamera,
     views: Views,
 ) {
     let rotation = camera.aim_rotation();
     let mut points = nucleus.journey_points();
-    points.extend(also);
+    points.extend(also.iter().flatten());
     points.extend(nucleus.rims(rotation, came));
     let show = |points: &[Vec3], share| {
         distance_to_show(points, camera.target, rotation, views.free, share)
@@ -351,7 +368,7 @@ fn fit(
         points.extend(also);
         glide(&within(&points, ROOM), camera, rotation, views.free);
     } else {
-        let points = journey_points(nucleus, also, rotation, views);
+        let points = journey_points(nucleus, &[also], rotation, views);
         glide(&points, camera, rotation, views.free);
     }
 }
@@ -363,13 +380,13 @@ fn fit(
 /// of it.
 fn journey_points(
     nucleus: &Nucleus,
-    also: Option<Vec3>,
+    also: &[Option<Vec3>],
     rotation: Quat,
     views: Views,
 ) -> Vec<(Vec3, Vec2)> {
     let modules = nucleus.open_modules();
     let mut lit = nucleus.journey_points();
-    lit.extend(also);
+    lit.extend(also.iter().flatten());
     // The modules' names sit above their spheres' tops.
     lit.extend(nucleus.tops(rotation, &modules));
     let mut points: Vec<(Vec3, Vec2)> = lit.into_iter().map(|p| (p, views.named)).collect();

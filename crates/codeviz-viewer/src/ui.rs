@@ -12,7 +12,9 @@ use codeviz_ir::UnitId;
 use crate::{
     arrows,
     camera::OrbitCamera,
-    colors::{CALLER_TEXT, MUTED},
+    colors::{
+        CALLER_CHIP, CALLER_TEXT, CHIP, EDGE, HOVER, MUTED, SELECTED, SURFACE, TEXT, egui_color,
+    },
     drive::Marks,
     explorer::Explorer,
     framing::GraphView,
@@ -271,20 +273,17 @@ fn draw_tethers(
     }
 }
 
-/// A line from the bar under the pointer up to its node in the graph, ringing it.
+/// A line from the bar under the pointer up to its node in the graph, in the hover's
+/// grey; the node's own hover ring marks where it ends.
 fn tether(ctx: &egui::Context, bar: egui::Rect, node: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::new("tether"),
     ));
     let from = egui::pos2(bar.center().x, bar.min.y);
-    let color = egui::Color32::WHITE;
-    painter.line_segment(
-        [from, node],
-        egui::Stroke::new(1.5, color.gamma_multiply(0.86)),
-    );
+    let color = egui_color(HOVER);
+    painter.line_segment([from, node], egui::Stroke::new(1.5, color));
     painter.circle_filled(from, 2.5, color);
-    painter.circle_stroke(node, 9.0, egui::Stroke::new(1.5, color));
 }
 
 /// Back and forward through where the view has been, as a browser's: always there,
@@ -331,16 +330,12 @@ fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
         hint = format!("Zoomed into {module}, showing all its functions. X or Esc: back out");
     }
     egui::Frame::new()
-        .fill(egui::Color32::from_rgba_premultiplied(30, 34, 46, 255))
+        .fill(CHIP)
         .corner_radius(6.0)
         .inner_margin(egui::Margin::symmetric(8, 2))
         .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(text)
-                    .strong()
-                    .color(egui::Color32::WHITE),
-            )
-            .on_hover_text(hint);
+            ui.label(egui::RichText::new(text).strong().color(TEXT))
+                .on_hover_text(hint);
         });
     ui.separator();
 }
@@ -370,8 +365,8 @@ fn search_box(
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 240))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                .fill(SURFACE)
+                .stroke(egui::Stroke::new(1.0, EDGE))
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::symmetric(10, 8))
                 .show(ui, |ui| {
@@ -441,13 +436,12 @@ fn search_box(
                     }
                 });
         });
-    // Browsing, the function found is selected where it sits, as a click selects it;
-    // in a journey, a journey opens there.
+    // The function found is picked where it sits, as a click picks it: browsing,
+    // selected; in a journey, the cursor goes to it, or off the journey it is set
+    // aside. Enter then opens its journey.
     if let Some(id) = chosen {
-        match explorer.map().tile_of(&id) {
-            Some(tile) if explorer.browsing() => explorer.click(tile, None),
-            Some(tile) => explorer.open_at(tile),
-            None => {}
+        if let Some(tile) = explorer.map().tile_of(&id) {
+            explorer.click(tile, None);
         }
         *open = false;
     }
@@ -486,9 +480,9 @@ fn highlight_keys(ui: &egui::Ui, search: &mut Search) -> bool {
 
 /// The functions `query` finds, one row each, best first, as many as are listed, and
 /// how many it finds in all. With no query, the entry points. A function is found by
-/// its name, its path, or its route, and listed as the graph names it, with its type,
-/// and its module (as its sphere is named, so two modules of one name are told apart
-/// by their crate).
+/// its name, its path, or its route, and listed as the graph names it
+/// ([`Explorer::function_name`]), with its type and its module (as its sphere is
+/// named, so two modules of one name are told apart by their crate).
 fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
     let system = explorer.system();
     let map = explorer.map();
@@ -497,7 +491,7 @@ fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
         let entry = route(unit);
         Row {
             unit: unit.clone(),
-            name: entry.map_or_else(|| explorer.unit_name(unit), |e| e.label.clone()),
+            name: explorer.function_name(unit),
             module: explorer
                 .graph()
                 .cluster(tile)
@@ -587,29 +581,34 @@ fn search_rank(query: &str, id: &str, names: &[&str], qualified: &str) -> Option
     Some(4)
 }
 
-/// With a function set aside, a chip that says what it is to the journey; a click on
-/// it, as Enter does, starts a journey there.
+/// With a function set aside, a chip that says what it is to the journey, violet when
+/// it calls the start, else edged white as its dot is ringed; a click on it, as Enter
+/// does, starts a journey there.
 fn aside_chip(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if explorer.aside().is_none() {
         return;
     }
-    let said = if explorer.aside_caller().is_some() {
+    let (said, fill, edge) = if explorer.aside_caller().is_some() {
         let start = explorer
             .start_unit()
             .map(|unit| explorer.function_name(unit))
             .unwrap_or_default();
-        format!("calls {start} · Enter starts a journey here")
+        (
+            format!("calls {start} · Enter starts a journey here"),
+            CALLER_CHIP,
+            CALLER_TEXT,
+        )
     } else {
-        "not on this journey · Enter starts one here".to_owned()
+        (
+            "not on this journey · Enter starts one here".to_owned(),
+            CHIP,
+            egui_color(SELECTED),
+        )
     };
-    let chip = egui::Button::new(
-        egui::RichText::new(said)
-            .size(text::BODY)
-            .color(egui::Color32::WHITE),
-    )
-    .fill(egui::Color32::from_rgb(70, 52, 104))
-    .stroke(egui::Stroke::new(1.0, CALLER_TEXT))
-    .corner_radius(8.0);
+    let chip = egui::Button::new(egui::RichText::new(said).size(text::BODY).color(TEXT))
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, edge))
+        .corner_radius(8.0);
     if ui
         .add(chip)
         .on_hover_text(
@@ -670,17 +669,12 @@ pub(crate) fn inside(explorer: &Explorer) -> Option<String> {
         .map(|module| explorer.cluster_name(module).to_uppercase())
 }
 
-/// The journey's entry route when it starts at one, else its start's name.
+/// The journey's start, as the graph names it: its entry route when it is one.
 pub(crate) fn journey_title(explorer: &Explorer) -> String {
-    let Some(start) = explorer.start_unit() else {
-        return String::new();
-    };
     explorer
-        .system()
-        .entries()
-        .iter()
-        .find(|e| &e.unit == start)
-        .map_or_else(|| explorer.unit_name(start), |e| e.label.clone())
+        .start_unit()
+        .map(|start| explorer.function_name(start))
+        .unwrap_or_default()
 }
 
 pub(crate) fn short(text: &str, max: usize) -> String {
@@ -733,10 +727,14 @@ mod tests {
             ["POST /users/{id}/orders"],
             "found by its name too, and listed once, by its route"
         );
-        assert_eq!(names("orders.place"), ["orders.place"]);
+        assert_eq!(
+            names("orders.place"),
+            ["place"],
+            "named as the graph names it"
+        );
         assert_eq!(
             names("order")[..2],
-            ["POST /users/{id}/orders", "orders.place"],
+            ["POST /users/{id}/orders", "place"],
             "a function whose name holds the word before one whose module does"
         );
         let (rows, found) = find(&explorer, "helper");

@@ -3,9 +3,11 @@
 //! calls, amber the journey's calls further down, pink the journey's cursor, grey
 //! everything else; and a muted hue per module, for telling modules apart alone.
 
-use bevy::color::{Color, ColorToPacked};
+use bevy::color::{Color, ColorToPacked, Mix};
 use bevy_egui::egui;
 
+/// The selection, the journey's start, and a function set aside in a journey.
+pub(crate) const SELECTED: Color = Color::WHITE;
 /// Calls into the selection or the journey's start.
 pub(crate) const CALLER: Color = Color::srgb(0.74, 0.52, 1.0);
 /// Its own calls out.
@@ -17,6 +19,36 @@ pub(crate) const DEEPER: Color = Color::srgb(1.0, 0.7, 0.22);
 pub(crate) const CURSOR: Color = Color::srgb(1.0, 0.36, 0.72);
 /// Calls that touch neither the selection nor the start: an arrow, but no color.
 pub(crate) const FURTHER: Color = Color::srgb(0.82, 0.85, 0.92);
+/// What the pointer rests on, the one way everywhere: a thin ring round its dot, an
+/// outline round its bar, a line from its bar to its dot. Grey, never the
+/// selection's white.
+pub(crate) const HOVER: Color = Color::srgb(0.5, 0.53, 0.6);
+
+/// [`DEEPER`] at a level of the journey, 2 and down: darker a level at a time, as dark
+/// as `last` at most.
+pub(crate) fn deeper(level: u32, last: u32) -> Color {
+    #[expect(clippy::cast_precision_loss, reason = "a small level")]
+    let darker = (level.clamp(2, last) - 2) as f32;
+    DEEPER.mix(&Color::BLACK, 0.2 * darker)
+}
+
+/// How much of its color a call's line keeps, by what it is: a call the view names;
+/// one among the expanded module's functions no role names; a caller of the start
+/// folded into its module's count; a call in from off the journey (I); a line
+/// between modules on the whole map. A call being followed keeps all of it.
+pub(crate) const CALL_STRENGTH: f32 = 0.85;
+pub(crate) const INNER_STRENGTH: f32 = 0.28;
+pub(crate) const FOLDED_STRENGTH: f32 = 0.25;
+pub(crate) const OUTSIDE_STRENGTH: f32 = 0.35;
+pub(crate) const MAP_STRENGTH: f32 = 0.16;
+
+/// A call being followed: its role's color, lighter.
+pub(crate) fn followed(color: Color) -> Color {
+    color.mix(&Color::WHITE, 0.35)
+}
+
+/// Behind the scene.
+pub(crate) const GROUND: Color = Color::srgb(0.06, 0.07, 0.09);
 
 /// [`CALLER`], [`CALLEE`], [`DEEPER`] and [`CURSOR`] as a name's text: lighter, to
 /// read on a dark pill.
@@ -31,6 +63,33 @@ pub(crate) const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 pub(crate) const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 /// Text on a bar or a badge filled with a node's color.
 pub(crate) const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
+/// Text that is only text, and a name in the top bar.
+pub(crate) const TEXT: egui::Color32 = egui::Color32::WHITE;
+/// What sits over the graph: the journey panel, the search box, the help, a notice;
+/// and the edge round it.
+pub(crate) const SURFACE: egui::Color32 = egui::Color32::from_rgb(11, 13, 19);
+pub(crate) const EDGE: egui::Color32 = egui::Color32::from_gray(60);
+/// A chip in the top bar: where the view is, and a function set aside.
+pub(crate) const CHIP: egui::Color32 = egui::Color32::from_rgb(30, 34, 46);
+/// The chip for a function set aside that calls the journey's start: violet, as
+/// calling it is.
+pub(crate) const CALLER_CHIP: egui::Color32 = egui::Color32::from_rgb(70, 52, 104);
+/// Quiet marks in the panel: the line from a call to its caller's row, the track
+/// along a row that scrolls and its thumb, the panel's edge, the line under the cursor.
+pub(crate) const FAINT_LINE: egui::Color32 = egui::Color32::from_rgba_premultiplied(70, 70, 70, 70);
+pub(crate) const TRACK: egui::Color32 = egui::Color32::from_rgba_premultiplied(18, 18, 18, 18);
+pub(crate) const THUMB: egui::Color32 = egui::Color32::from_rgba_premultiplied(110, 110, 110, 110);
+pub(crate) const PANEL_EDGE: egui::Color32 = egui::Color32::from_rgba_premultiplied(28, 28, 28, 28);
+pub(crate) const CURSOR_LINE: egui::Color32 =
+    egui::Color32::from_rgba_premultiplied(60, 60, 60, 60);
+/// A call that only sometimes runs, outlined in dashes; a badge of calls folded
+/// under a bar, and its ink.
+pub(crate) const SOMETIMES: egui::Color32 =
+    egui::Color32::from_rgba_premultiplied(190, 190, 190, 190);
+pub(crate) const BADGE_FILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 120);
+pub(crate) const BADGE_INK: egui::Color32 = egui::Color32::from_rgb(220, 224, 234);
+/// How much of its color a bar keeps for a call only guessed, or handed off.
+pub(crate) const GUESSED: f32 = 0.22;
 
 /// Module colors: a module's sphere, its rim and its name. Six hues far enough apart
 /// to tell neighbouring modules by, all muted and none near a role's color: jade,

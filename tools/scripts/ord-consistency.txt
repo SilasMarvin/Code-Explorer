@@ -1,0 +1,64 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json
+# On this repo: Finder::walk calls Finder::escapes, which calls walk back. Browsing and
+# in walk's journey, escapes keeps its call's blue and wears a violet ring, its two
+# arrows side by side (colours). The depth keys stop at walk's deepest level; with I
+# on, a cursor step moves nothing; a search off the journey sets the function aside,
+# drawn; Esc steps out one level at a time, browsing last of all the selection.
+key /
+type walk
+search-pick Finder::walk
+expect selection Finder::walk
+key f
+scroll 6 at Finder::walk
+expect check colours
+snap browse calls back
+
+key enter
+expect mode journey
+expect check colours
+snap journey calls back
+
+key .
+key .
+key .
+key .
+key .
+key .
+expect depth 3
+snap deepest
+key ,
+key ,
+key ,
+expect depth 1
+
+bar 2
+key i
+expect outside_callers true
+snap outside
+key ]
+expect nothing-moved
+snap outside step
+key [
+expect cursor System::unit
+expect nothing-moved
+snap outside step back
+
+key /
+type spotlit
+search-pick Explorer::spotlit
+expect mode journey
+expect start Finder::walk
+expect aside Explorer::spotlit
+expect drawn Explorer::spotlit
+snap search aside
+
+key esc
+expect aside none
+key esc
+expect mode browse
+expect selection Finder::walk
+snap left the journey
+key esc
+expect selection none
+expect nothing-moved
+snap esc deselects

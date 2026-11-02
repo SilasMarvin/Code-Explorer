@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use crate::{
     drive::{ArrowShape, Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
+    journey_panel::{bar_fill, caller_fill, guessed},
     labels::{Named, node_name},
     nucleus::Flow,
 };
@@ -28,7 +29,7 @@ pub(crate) fn of(explorer: &Explorer) -> Value {
         .filter(|(_, number)| !number.is_empty())
         .filter_map(|(span_id, number)| {
             let span = track.span(span_id)?;
-            let name = track.unit_id(span_id).map(|u| explorer.unit_name(u))?;
+            let name = track.unit_id(span_id).map(|u| explorer.function_name(u))?;
             let parent = number.rsplit_once('.').map_or("", |(parent, _)| parent);
             let module = tile_of(span_id)
                 .and_then(|tile| explorer.graph().cluster(tile))
@@ -51,7 +52,7 @@ pub(crate) fn of(explorer: &Explorer) -> Value {
     calls.sort_by(|a, b| a.0.cmp(&b.0));
 
     let root = explorer.journey().map(codeviz_core::Journey::root);
-    let name = |tile: usize| explorer.tile_unit(tile).map(|u| explorer.unit_name(u));
+    let name = |tile: usize| Some(node_name(explorer, tile));
     // The function examined: the start, or browsing, the selection.
     let examined = explorer.start().or_else(|| explorer.selection());
     // Browsing, the selection's own calls, unnumbered.
@@ -424,9 +425,9 @@ fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
 }
 
 /// What a drawn function is to the view: the journey's start or the selection, the
-/// journey's cursor, the function set aside, a caller, a
-/// call of the journey so many levels down, one of the functions of a module expanded
-/// while browsing, hovered; else a speck.
+/// journey's cursor, the function set aside, a caller, a call of the journey so many
+/// levels down (and one that calls back besides), one of the functions of a module
+/// expanded while browsing, hovered; else a speck.
 fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     let mut roles = Vec::new();
     let n = explorer.nucleus();
@@ -448,6 +449,9 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
         Some(-1) => roles.push("caller".to_owned()),
         Some(level) if level > 0 => roles.push(format!("journey level {level}")),
         _ => {}
+    }
+    if n.calls_back(tile) {
+        roles.push("calls back".to_owned());
     }
     if n.opened_up(tile) && n.level(tile).is_none() && !is(n.start()) {
         roles.push("opened".to_owned());
@@ -631,6 +635,8 @@ fn bars(view: &View) -> Vec<Value> {
                 "folded": disclosed.folded(span),
                 "chip": chip,
                 "cursor": cursor == Some(span),
+                "color": hex32(bar_fill(explorer, span)),
+                "guessed": guessed(explorer, span),
                 "lit": tile.is_some() && tile == explorer.hovered(),
                 "cut_off": !drawn.content.contains_rect(r),
             })
@@ -645,6 +651,7 @@ fn bars(view: &View) -> Vec<Value> {
                 "caller": true,
                 "aside": explorer.aside() == Some(tile),
                 "cursor": false,
+                "color": hex32(caller_fill(explorer, tile)),
                 "lit": explorer.hovered() == Some(tile),
                 "cut_off": false,
             })
@@ -678,6 +685,12 @@ fn rect(r: egui::Rect) -> Value {
         round(r.max.x),
         round(r.max.y)
     ])
+}
+
+/// A panel color as [`hex`] writes a scene's.
+fn hex32(color: egui::Color32) -> String {
+    let [r, g, b, _] = color.to_srgba_unmultiplied();
+    format!("#{r:02X}{g:02X}{b:02X}")
 }
 
 fn hex(color: Color) -> String {

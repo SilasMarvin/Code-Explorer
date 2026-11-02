@@ -400,30 +400,6 @@ fn an_opened_module_spreads_in_rows_wider_along_than_between() {
 }
 
 #[test]
-fn the_cursor_shows_where_it_sits_without_moving_anything() {
-    let (graph, map) = codebase();
-    let mut nucleus = around(&graph, &map, "core::run", 1);
-    let other = tile(&map, "db::other");
-    let db = module(&graph, &map, "db::put");
-    assert!(!nucleus.placed(other));
-    let before: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
-    assert!(nucleus.set_cursor(&graph, Some(other)));
-    assert!(nucleus.placed(other) && nucleus.lit(other));
-    let after: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
-    assert_eq!(before, after, "nothing moves");
-    let ball = nucleus.ball(db).expect("a sphere");
-    let at = nucleus.point(other).expect("a point");
-    assert!(
-        at.distance(ball.center) > ball.radius,
-        "just outside its module"
-    );
-    assert!(at.distance(ball.center) < ball.radius + 2.0);
-    assert!(!nucleus.set_cursor(&graph, Some(other)), "no change");
-    assert!(nucleus.set_cursor(&graph, None));
-    assert!(!nucleus.placed(other));
-}
-
-#[test]
 fn specks_hide_in_a_journey_and_show_browsing() {
     let (graph, map) = codebase();
     // Two calls down from the start, past the depth shown: a speck in its module.
@@ -528,6 +504,145 @@ fn an_outside_caller_hangs_beyond_what_was_there() {
             "the rest stays where it was"
         );
     }
+}
+
+/// `core::run` calls `db::put` and `log::say`; from off its journey, `db::other`
+/// calls `db::put`, `log::tail` calls `log::say`, and in a module the journey never
+/// enters, `ext::poke` calls `db::put` and `ext::nudge` calls `log::say`.
+fn called_from_outside() -> (ForceGraph, CodebaseMap) {
+    let module = |name: &str| {
+        format!(r#"{{ "id": "m:{name}", "name": "{name}", "kind": "module", "role": "group" }}"#)
+    };
+    let function = |id: &str, calls: &[&str]| {
+        let (parent, name) = id.split_once("::").expect("module::name");
+        let calls: Vec<String> = calls
+            .iter()
+            .map(|to| {
+                format!(
+                    r#"{{ "key": "{to}#0", "text": "{to}", "targets": [{{ "unit": "f:{to}", "certainty": "exact" }}] }}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{ "id": "f:{id}", "name": "{name}", "kind": "fn", "role": "invocable", "parent": "m:{parent}", "calls": [{}] }}"#,
+            calls.join(",")
+        )
+    };
+    let units: Vec<String> = ["core", "db", "log", "ext"]
+        .into_iter()
+        .map(module)
+        .chain([
+            function("core::run", &["db::put", "log::say"]),
+            function("db::put", &[]),
+            function("db::other", &["db::put"]),
+            function("log::say", &[]),
+            function("log::tail", &["log::say"]),
+            function("ext::poke", &["db::put"]),
+            function("ext::nudge", &["log::say"]),
+        ])
+        .collect();
+    let json = format!(
+        r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+        units.join(",")
+    );
+    let system = System::new([Document::from_json(&json).expect("a valid document")]);
+    let map = map(&system);
+    let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
+    for _ in 0..50 {
+        graph.step();
+    }
+    (graph, map)
+}
+
+#[test]
+fn with_i_on_a_step_of_the_cursor_moves_nothing() {
+    let (graph, map) = called_from_outside();
+    let mut nucleus = around(&graph, &map, "core::run", 1);
+    nucleus.set_outside(&graph, true);
+    // Where every sphere and dot shown rests, with the cursor on `at`.
+    let mut seen = |at: &str| {
+        nucleus.set_cursor(&graph, Some(tile(&map, at)));
+        while nucleus.advance(0.1) {}
+        let balls: HashMap<usize, Vec3> = nucleus
+            .balls()
+            .filter(|(_, b)| nucleus.shows_body(b.body))
+            .map(|(c, b)| (c, b.center))
+            .collect();
+        let dots: HashMap<usize, Vec3> = (0..map.tiles.len())
+            .filter(|&t| nucleus.drawn(t))
+            .filter_map(|t| Some((t, nucleus.point(t)?)))
+            .collect();
+        (balls, dots)
+    };
+    let put = seen("db::put");
+    let say = seen("log::say");
+    let again = seen("db::put");
+    let (poke, nudge) = (tile(&map, "ext::poke"), tile(&map, "ext::nudge"));
+    assert!(put.1.contains_key(&poke) && !put.1.contains_key(&nudge));
+    assert!(say.1.contains_key(&nudge) && !say.1.contains_key(&poke));
+    assert_eq!(put, again, "back where it was, all of it");
+    for (a, b) in [(&put, &say), (&say, &again)] {
+        for (cluster, center) in &a.0 {
+            if let Some(other) = b.0.get(cluster) {
+                assert!(center.distance(*other) < 1e-4, "a sphere stays put");
+            }
+        }
+        for (tile, at) in &a.1 {
+            if let Some(other) = b.1.get(tile) {
+                assert!(at.distance(*other) < 1e-4, "a dot stays put");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_function_set_aside_off_the_journey_is_drawn_and_moves_nothing() {
+    let (graph, map) = called_from_outside();
+    let mut nucleus = around(&graph, &map, "core::run", 1);
+    let resting = |nucleus: &Nucleus| -> (Vec<Option<Ball>>, Vec<Option<Vec3>>) {
+        let balls = (0..graph.cluster_count())
+            .map(|c| nucleus.ball(c).filter(|b| nucleus.shows_body(b.body)))
+            .collect();
+        let dots = (0..map.tiles.len())
+            .map(|t| nucleus.drawn(t).then(|| nucleus.point(t)).flatten())
+            .collect();
+        (balls, dots)
+    };
+    let before = resting(&nucleus);
+    // In a module round the nucleus, and in one the journey never enters.
+    for id in ["db::other", "ext::poke"] {
+        let aside = tile(&map, id);
+        assert!(
+            !nucleus.drawn(aside),
+            "{id}: the journey draws nothing of it"
+        );
+        nucleus.set_aside(&graph, Some(aside));
+        while nucleus.advance(0.1) {}
+        assert!(nucleus.drawn(aside), "{id}: set aside, it is drawn");
+        let (balls, dots) = resting(&nucleus);
+        let ball = nucleus.ball(graph.cluster(aside).unwrap()).unwrap();
+        let at = nucleus.point(aside).unwrap();
+        assert!(
+            at.distance(ball.center) < ball.radius,
+            "{id}: in its sphere"
+        );
+        for (was, now) in before.0.iter().zip(&balls) {
+            if let (Some(was), Some(now)) = (was, now) {
+                assert!(
+                    was.center.distance(now.center) < 1e-4,
+                    "{id}: a sphere stays"
+                );
+            }
+        }
+        for (tile, (was, now)) in before.1.iter().zip(&dots).enumerate() {
+            if tile != aside {
+                assert_eq!(was, now, "{id}: nothing else shows, hides or moves");
+            }
+        }
+    }
+    nucleus.set_aside(&graph, None);
+    while nucleus.advance(0.1) {}
+    assert_eq!(resting(&nucleus), before, "let go, as it was");
 }
 
 #[test]

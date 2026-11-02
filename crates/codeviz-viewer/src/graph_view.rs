@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use crate::{
     camera::OrbitCamera,
-    colors::{CURSOR, FURTHER},
+    colors::{CALLER, CURSOR, FURTHER, HOVER, SELECTED},
     drive::{Marks, RingMark},
     explorer::Explorer,
     nucleus::{Flow, SHADES},
@@ -82,7 +82,7 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
     };
     let grey = FURTHER.mix(&Color::BLACK, 0.35);
     let mut table = HashMap::new();
-    table.insert(NodeLook::Start, flat(Color::WHITE));
+    table.insert(NodeLook::Start, flat(SELECTED));
     table.insert(NodeLook::Cursor, flat(CURSOR));
     for flow in [Flow::Into]
         .into_iter()
@@ -168,7 +168,7 @@ pub(crate) fn node_color(explorer: &Explorer, tile: usize) -> Color {
 /// The color a look fills with, at full strength.
 pub(crate) fn look_color(look: NodeLook) -> Color {
     match look {
-        NodeLook::Start => Color::WHITE,
+        NodeLook::Start => SELECTED,
         NodeLook::Cursor => CURSOR,
         NodeLook::Role(flow) => flow.color(),
         NodeLook::Plain | NodeLook::Faded => FURTHER,
@@ -251,8 +251,9 @@ pub(crate) fn size_nodes(
 
 /// At most one thin ring per function, facing the camera, nothing else: white round
 /// the start (or the selection), and in a journey round the function set aside; pink
-/// round the journey's cursor, whose fill is pink too; grey round the function
-/// hovered, in the graph or as a bar, so pointing never looks like selecting.
+/// round the journey's cursor, whose fill is pink too; violet round a call that also
+/// calls the start back, so it reads as both; grey round the function hovered, in the
+/// graph or as a bar, so pointing never looks like selecting.
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
@@ -277,17 +278,30 @@ pub(crate) fn draw_graph(
             });
         }
     };
-    let start = explorer.nucleus().start();
+    let nucleus = explorer.nucleus();
+    let start = nucleus.start();
     for tile in start.into_iter().chain(explorer.aside()) {
-        ring(tile, Color::WHITE);
+        ring(tile, SELECTED);
     }
     let cursor = explorer.cursor();
     if let Some(tile) = cursor {
         ring(tile, CURSOR);
     }
+    let ringed = |t: usize| [start, cursor, explorer.aside()].contains(&Some(t));
+    let mut both: Vec<usize> = nucleus
+        .links()
+        .iter()
+        .map(|l| l.from)
+        .filter(|&t| !ringed(t) && nucleus.drawn(t) && nucleus.calls_back(t))
+        .collect();
+    both.sort_unstable();
+    both.dedup();
+    for &tile in &both {
+        ring(tile, CALLER);
+    }
     if let Some(tile) = explorer
         .hovered()
-        .filter(|&t| Some(t) != start && Some(t) != cursor && Some(t) != explorer.aside())
+        .filter(|&t| !ringed(t) && !both.contains(&t))
     {
         ring(tile, HOVER);
     }
@@ -295,5 +309,3 @@ pub(crate) fn draw_graph(
 
 /// How far out a ring sits, against its function's radius.
 const RING: f32 = 1.6;
-/// The ring round what the pointer is on: grey, never the selection's white.
-const HOVER: Color = Color::srgb(0.5, 0.53, 0.6);

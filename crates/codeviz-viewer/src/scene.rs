@@ -10,7 +10,6 @@ use bevy_egui::{
 
 use crate::{
     camera::{self, OrbitCamera},
-    disclosure::Disclose,
     explorer::{Explorer, Step},
     framing::{self, GraphView},
     graph_view::{self, NodeMaterials},
@@ -125,16 +124,10 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
         }
     }
     // , and . disclose a level less or more of the journey.
-    let Disclose(depth) = explorer.disclose();
-    let disclose = if keys.just_pressed(KeyCode::Comma) {
-        Disclose(depth.saturating_sub(1).max(1))
+    if keys.just_pressed(KeyCode::Comma) {
+        explorer.shallower();
     } else if keys.just_pressed(KeyCode::Period) {
-        Disclose(depth + 1)
-    } else {
-        Disclose(depth)
-    };
-    if disclose != explorer.disclose() {
-        explorer.set_disclose(disclose);
+        explorer.deeper();
     }
 }
 
@@ -188,9 +181,9 @@ fn keyboard(
     }
 }
 
-/// Escape closes whatever is on top: the search box, the key list, the function set
-/// aside, the expanded module, then the journey itself, for browsing with the
-/// cursor's function selected.
+/// Escape steps out one level, closing whatever is on top: the search box, the key
+/// list, the function set aside, the expanded module, the journey, for browsing with
+/// its start selected, and then the selection.
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
     if chrome.search {
         chrome.search = false;
@@ -202,6 +195,8 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         explorer.toggle_expand(None);
     } else if !explorer.browsing() {
         explorer.leave_journey();
+    } else {
+        explorer.deselect();
     }
 }
 

@@ -5,7 +5,11 @@
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 
-use crate::{explorer::Explorer, text};
+use crate::{
+    colors::{SURFACE, TEXT},
+    explorer::Explorer,
+    text,
+};
 
 /// Seconds a notice shows for, at most. It keeps nothing drawing: it goes with the
 /// first frame drawn after, which the window draws within a second when idle.
@@ -67,17 +71,13 @@ pub(crate) fn draw(
     let galley = painter.layout_no_wrap(
         text.to_owned(),
         egui::FontId::proportional(text::TITLE),
-        egui::Color32::WHITE,
+        TEXT,
     );
     let at = egui::pos2(
         screen.center().x - galley.size().x / 2.0,
         screen.min.y + TOP,
     );
     let backing = egui::Rect::from_min_size(at, galley.size()).expand2(egui::vec2(10.0, 5.0));
-    painter.rect_filled(
-        backing,
-        6.0,
-        egui::Color32::from_rgba_premultiplied(11, 13, 19, 225),
-    );
-    painter.galley(at, galley, egui::Color32::WHITE);
+    painter.rect_filled(backing, 6.0, SURFACE);
+    painter.galley(at, galley, TEXT);
 }

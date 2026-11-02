@@ -614,10 +614,9 @@ impl Explorer {
 
     /// In a journey, shows every function off it that calls the one the cursor is on,
     /// or leaves them out again (I); nothing already there moves. With none to show,
-    /// says so instead. Browsing, the selection's callers already show, so it does
-    /// nothing.
+    /// says so instead. Browsing, it says a journey must be open first.
     pub(crate) fn toggle_outside(&mut self) {
-        if self.browsing() {
+        if self.no_journey() {
             return;
         }
         self.outside = !self.outside;
@@ -771,6 +770,14 @@ impl Explorer {
         self.expand_pose = None;
     }
 
+    /// Esc browsing with nothing above it: the selection goes, remembering it, and
+    /// the camera stays.
+    pub(crate) fn deselect(&mut self) {
+        if self.selection().is_some() {
+            self.navigate(|explorer| explorer.selection = None);
+        }
+    }
+
     /// A click on the graph clear of every function: browsing, the selection goes;
     /// in a journey, the function set aside. The camera stays.
     pub(crate) fn click_empty(&mut self) {
@@ -809,14 +816,15 @@ impl Explorer {
     }
 
     /// Tells the nucleus what it gathers round now: whether the view browses, the
-    /// function in the middle, the journey from it, its outside callers and its
-    /// cursor. It eases there from wherever things are. Every change to any of them
+    /// function in the middle, the journey from it, its outside callers, its cursor
+    /// and the function set aside. It eases there from wherever things are. Every change to any of them
     /// ends here. Expanded in a journey, a cursor that moves to another module's
     /// function takes the expansion with it: that module expands instead, and
     /// shrinking back still returns to where the camera stood before the first.
     fn sync_nucleus(&mut self) {
         let start = self.nucleus_start();
         let cursor = self.cursor();
+        let aside = self.aside();
         let browsing = self.browsing();
         let outside = self.outside;
         let graph = &self.graph;
@@ -840,28 +848,39 @@ impl Explorer {
             nucleus.expand(graph, Some(module));
         }
         let marked = nucleus.set_cursor(graph, cursor);
-        if recentered || marked {
+        let set_aside = nucleus.set_aside(graph, aside);
+        if recentered || marked || set_aside {
             self.moved += 1;
         }
         self.rename();
     }
 
     /// Works out again the names two or more functions in view share, so each is
-    /// named with its type or module before it: of the functions the journey runs at
-    /// any depth, so a level more or less never renames anything, its start's callers,
-    /// and the outside callers shown. An entry point goes by its route.
+    /// named with its type or module before it. In a journey: of the functions it
+    /// runs at any depth, so a level more or less never renames anything, its start's
+    /// callers, and the outside callers shown. Browsing: of the selection, its
+    /// callers and its calls. An entry point goes by its route.
     fn rename(&mut self) {
         let system = &self.system;
         let entries: HashSet<&UnitId> = system.entries().iter().map(|e| &e.unit).collect();
+        let graph = &self.graph;
+        let selected = self.selection().into_iter().flat_map(|tile| {
+            [tile]
+                .into_iter()
+                .chain(graph.callers(tile))
+                .chain(graph.callees(tile))
+        });
         let callers = self
             .start()
             .into_iter()
-            .flat_map(|start| self.graph.callers(start))
+            .flat_map(|start| graph.callers(start))
             .chain(self.nucleus.outside_callers())
+            .chain(selected)
             .filter_map(|tile| self.tile_unit(tile));
+        let journey = self.track.units.iter().filter(|_| !self.browsing());
         let mut seen: HashMap<&str, &UnitId> = HashMap::new();
         let mut shared = HashSet::new();
-        for id in self.track.units.iter().chain(callers) {
+        for id in journey.chain(callers) {
             let Some(unit) = system.unit(id).filter(|_| !entries.contains(id)) else {
                 continue;
             };
@@ -889,7 +908,11 @@ impl Explorer {
     /// Lets go of the function set aside, back to the journey's cursor. Returns
     /// whether there was one.
     pub(crate) fn clear_aside(&mut self) -> bool {
-        self.aside.take().is_some()
+        let cleared = self.aside.take().is_some();
+        if cleared {
+            self.sync_nucleus();
+        }
+        cleared
     }
 
     /// In a journey, the functions that call its start, as the row above the start's
@@ -940,6 +963,7 @@ impl Explorer {
     /// cursor, opening what folds it; off the journey, it is set aside, selected in
     /// place, and the journey stays as it was. Nothing moves, but expanded, where the
     /// view keeps the cursor in sight, flying to its module when it moves to another.
+    /// A search picks a function this way too.
     pub(crate) fn click(&mut self, tile: usize, number: Option<&str>) {
         self.navigate(|explorer| {
             if explorer.browsing() {
@@ -947,7 +971,7 @@ impl Explorer {
             } else if let Some(span) = explorer.span_at(tile, number) {
                 explorer.move_cursor(Some(span));
             } else {
-                explorer.aside = Some(tile);
+                explorer.set_aside(tile);
             }
         });
     }
@@ -984,6 +1008,41 @@ impl Explorer {
 
     pub(crate) fn disclose(&self) -> Disclose {
         self.disclose
+    }
+
+    /// `.` and the panel's +: a level more of the journey, down to its deepest call.
+    pub(crate) fn deeper(&mut self) {
+        if self.no_journey() {
+            return;
+        }
+        let Disclose(depth) = self.disclose;
+        if depth >= self.disclosed.deepest() {
+            self.say("No deeper calls: every level shows");
+        } else {
+            self.set_disclose(Disclose(depth + 1));
+        }
+    }
+
+    /// `,` and the panel's −: a level less of the journey, down to the start's own
+    /// calls.
+    pub(crate) fn shallower(&mut self) {
+        if self.no_journey() {
+            return;
+        }
+        let Disclose(depth) = self.disclose;
+        if depth <= 1 {
+            self.say("Only the start's own calls show: no fewer levels");
+        } else {
+            self.set_disclose(Disclose(depth - 1));
+        }
+    }
+
+    /// Browsing, says that a journey key needs a journey open, and returns true.
+    fn no_journey(&mut self) -> bool {
+        if self.browsing() {
+            self.say(NO_JOURNEY);
+        }
+        self.browsing()
     }
 
     /// Shows the journey to another depth. A cursor a level less folds away goes up
@@ -1097,17 +1156,16 @@ impl Explorer {
         }
     }
 
-    /// A function's name, the same on the graph and on the panel's bars: an entry
-    /// point's route, else its own name; in a journey with two functions of that name,
-    /// with its type or module before it (`Track.root`, `Explorer.root`).
+    /// A function's name, the same wherever it shows (the graph, the panel's bars,
+    /// the top bar, the search): an entry point's route, else its own name; with two
+    /// functions of that name in view, with its type or module before it
+    /// (`Track.root`, `Explorer.root`).
     pub(crate) fn function_name(&self, id: &UnitId) -> String {
         if let Some(entry) = self.system.entries().iter().find(|e| &e.unit == id) {
             return entry.label.clone();
         }
         match self.system.unit(id) {
-            Some(unit) if self.browsing() || !self.track.homonyms.contains(&unit.name) => {
-                unit.name.clone()
-            }
+            Some(unit) if !self.track.homonyms.contains(&unit.name) => unit.name.clone(),
             Some(_) => self.unit_name(id),
             None => id.to_string(),
         }
@@ -1140,7 +1198,7 @@ impl Explorer {
     }
 
     fn walk(&mut self, step: Step) -> Option<SpanId> {
-        if self.browsing() {
+        if self.no_journey() {
             return None;
         }
         if let Some(index) = self.aside_caller() {
@@ -1265,6 +1323,9 @@ impl Explorer {
         self.notice.as_ref().map(|(n, text)| (*n, text.as_str()))
     }
 }
+
+/// What a journey key says browsing.
+const NO_JOURNEY: &str = "Open a journey first (Enter)";
 
 /// What a key that cannot move the cursor says: why not, and what would. `first` is
 /// whether the cursor is on the journey's start, `folded` whether calls under it are
@@ -2259,6 +2320,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_depth_keys_stop_at_either_end_and_say_so() {
+        let mut explorer = explorer();
+        let said = |explorer: &Explorer| explorer.notice().map(|(_, text)| text.to_owned());
+        explorer.shallower();
+        assert_eq!(explorer.disclose(), Disclose(1));
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Only the start's own calls show: no fewer levels")
+        );
+        explorer.deeper();
+        assert_eq!(explorer.disclose(), Disclose(2), "c, under a");
+        explorer.deeper();
+        assert_eq!(explorer.disclose(), Disclose(2), "and no deeper than c");
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("No deeper calls: every level shows")
+        );
+        explorer.leave_journey();
+        for key in [
+            Explorer::deeper as fn(&mut Explorer),
+            Explorer::shallower,
+            Explorer::toggle_outside,
+            |e: &mut Explorer| {
+                e.step(Step::Into);
+            },
+        ] {
+            explorer.notice = None;
+            key(&mut explorer);
+            assert_eq!(said(&explorer).as_deref(), Some(NO_JOURNEY));
+        }
+        assert_eq!(
+            explorer.disclose(),
+            Disclose(2),
+            "browsing, none of them do more"
+        );
+    }
+
+    #[test]
+    fn esc_browsing_clears_the_selection_and_back_brings_it_back() {
+        let mut explorer = explorer();
+        explorer.leave_journey();
+        let main = tile(&explorer, "main");
+        assert_eq!(explorer.selection(), Some(main));
+        explorer.deselect();
+        assert_eq!(explorer.selection(), None);
+        explorer.go_back();
+        assert_eq!(explorer.selection(), Some(main));
+    }
+
+    #[test]
     fn a_name_two_functions_on_the_journey_share_says_whose() {
         // main calls Store::root and Track::root, and find.
         let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
@@ -2283,8 +2394,14 @@ pub(crate) mod tests {
         explorer.leave_journey();
         assert_eq!(
             explorer.function_name(&UnitId::new("x:Track::root")),
+            "Track.root",
+            "browsing main, both its calls named root show: the same rule"
+        );
+        explorer.click(tile(&explorer, "Track::find"), None);
+        assert_eq!(
+            explorer.function_name(&UnitId::new("x:Track::root")),
             "root",
-            "browsing, the graph tells them apart by what it names"
+            "browsing find, only one root is in view"
         );
     }
 

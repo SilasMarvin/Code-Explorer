@@ -14,6 +14,8 @@ snap walk depth 4
 key /
 type spotlit
 key enter
+expect aside Explorer::spotlit
+key enter
 expect start Explorer::spotlit
 expect check journey-fills
 expect check spheres-unclipped
