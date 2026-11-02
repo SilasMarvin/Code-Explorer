@@ -686,6 +686,18 @@ impl Nucleus {
             .collect()
     }
 
+    /// The top of every sphere a journey runs through, as it will be once a
+    /// re-centering ends: where the module's name sits above it.
+    pub(crate) fn open_tops(&self, rotation: Quat) -> Vec<Vec3> {
+        let up = rotation * Vec3::Y;
+        self.now
+            .balls
+            .iter()
+            .filter(|b| matches!(b.body, Body::Nucleus | Body::Open))
+            .map(|b| b.center + up * b.radius)
+            .collect()
+    }
+
     /// Points round the expanded module alone, as it will be once a re-centering
     /// ends: what the view takes in to fill itself with it.
     pub(crate) fn nucleus_points(&self, rotation: Quat) -> Vec<Vec3> {

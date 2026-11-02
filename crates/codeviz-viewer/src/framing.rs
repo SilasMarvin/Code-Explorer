@@ -314,10 +314,10 @@ fn fit(
     }
 }
 
-/// In a journey, every function it lights and `also`, each with the share of the
-/// free area it may use, leaving room for names; and with them, when they lie so
-/// close that framing them alone would come nearer, the start's module filling
-/// [`FILL`] of it.
+/// In a journey, every function it lights, `also` and the tops of the spheres they
+/// lie in, each with the share of the free area it may use, leaving room for names;
+/// and with them, when they lie so close that framing them alone would come nearer,
+/// the start's module filling [`FILL`] of it.
 fn journey_points(
     nucleus: &Nucleus,
     also: Option<Vec3>,
@@ -326,6 +326,8 @@ fn journey_points(
 ) -> Vec<(Vec3, Vec2)> {
     let mut lit = nucleus.journey_points();
     lit.extend(also);
+    // The modules' names sit above their spheres' tops.
+    lit.extend(nucleus.open_tops(rotation));
     let mut points: Vec<(Vec3, Vec2)> = lit.into_iter().map(|p| (p, views.named)).collect();
     let module = within(&nucleus.nucleus_points(rotation), FILL);
     let least = place(&module, rotation, views.free).map_or(0.0, |(_, d)| d);
