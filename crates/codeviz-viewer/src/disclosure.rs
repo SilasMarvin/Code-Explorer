@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use codeviz_core::{Journey, Span, SpanId};
+use codeviz_core::{Journey, Span, SpanId, StopReason};
 use codeviz_layout::CodebaseMap;
 
 use crate::{
@@ -49,6 +49,9 @@ pub(crate) struct Disclosed {
     /// For a node every shown run of which is conditional, when it runs, where every
     /// run says the same.
     whens: HashMap<usize, Option<String>>,
+    /// Calls whose function calls itself straight back, which draws as no call of
+    /// its own: it runs on the same node.
+    calls_itself: HashSet<SpanId>,
     /// The journey as the nucleus draws it.
     trail: Trail,
 }
@@ -86,6 +89,14 @@ impl Disclosed {
                 stack.push(child);
             }
             disclosed.calls.insert(span, children);
+            // A call back to itself is drawn on its own node, as a closure is.
+            if closures.iter().any(|&c| {
+                journey
+                    .span(c)
+                    .is_some_and(|s| s.stopped == Some(StopReason::Recursion))
+            }) {
+                disclosed.calls_itself.insert(span);
+            }
             inside.insert(span, closures);
         }
         // What shows: down to the depth from the root, and a level more under each
@@ -245,6 +256,11 @@ impl Disclosed {
             .filter_map(|&span| Some((span, self.numbers.get(&span)?.as_str())))
     }
 
+    /// Whether the function a call runs calls itself straight back.
+    pub(crate) fn calls_itself(&self, span: SpanId) -> bool {
+        self.calls_itself.contains(&span)
+    }
+
     /// Whether a shown span can fail: where another outcome splits off from it, or from
     /// something folded under it.
     pub(crate) fn fails(&self, span: SpanId) -> bool {
@@ -381,4 +397,42 @@ pub(crate) fn is_closure(
 pub(crate) fn number_order(number: &str) -> (usize, Vec<u32>) {
     let parts: Vec<u32> = number.split('.').filter_map(|p| p.parse().ok()).collect();
     (parts.len(), parts)
+}
+
+#[cfg(test)]
+mod tests {
+    use codeviz_core::System;
+    use codeviz_ir::Document;
+
+    use crate::explorer::tests::opened;
+
+    #[test]
+    fn a_function_that_calls_itself_says_so_on_its_own_bar() {
+        // walk calls itself, and visit, which calls walk.
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
+            { "id": "x:walk", "name": "walk", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "w#0", "text": "walk", "targets": [ { "unit": "x:walk", "certainty": "exact" } ] },
+                { "key": "v#0", "text": "visit", "targets": [ { "unit": "x:visit", "certainty": "exact" } ] } ] },
+            { "id": "x:visit", "name": "visit", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "w#0", "text": "walk", "targets": [ { "unit": "x:walk", "certainty": "exact" } ] } ] } ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let explorer = opened(system, "x:walk");
+        let journey = explorer.journey().unwrap();
+        let disclosed = explorer.disclosure();
+        let root = journey.root();
+        assert!(
+            disclosed.calls_itself(root),
+            "walk calls walk straight back"
+        );
+        assert_eq!(
+            disclosed.children(root).len(),
+            1,
+            "with no bar for it: visit only"
+        );
+        let visit = disclosed.children(root)[0];
+        assert!(
+            !disclosed.calls_itself(visit),
+            "visit calls walk, not itself"
+        );
+    }
 }

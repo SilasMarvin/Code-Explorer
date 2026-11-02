@@ -11,7 +11,10 @@
 //! the `selection` browsing, the function set `aside` in a journey, and, expanded, the
 //! `centre` the view is on (see [`Nucleus::centre`]).
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use bevy::prelude::*;
 use codeviz_core::{
@@ -61,6 +64,11 @@ pub(crate) struct Track {
     cursor: Option<SpanId>,
     /// Spans opened one level past the disclosed depth, by hand or by the cursor.
     expanded: HashSet<SpanId>,
+    /// Every function the journey runs, at any depth.
+    units: HashSet<UnitId>,
+    /// Names two or more functions on the journey share, so each is named with its
+    /// type or module before it.
+    homonyms: HashSet<String>,
 }
 
 impl Track {
@@ -105,8 +113,35 @@ impl Track {
             .and_then(|start| Journey::unroll(system, start, self.scenarios.first(), options));
         self.divergences = self.find_divergences();
         self.cursor = self.journey.as_ref().map(Journey::root);
+        self.units = self
+            .journey
+            .iter()
+            .flat_map(Journey::spans)
+            .filter_map(|(_, span)| match &span.target {
+                SpanTarget::Unit(unit) => Some(unit.clone()),
+                _ => None,
+            })
+            .collect();
+        self.homonyms = self.find_homonyms(system);
         // A rebuilt journey numbers its spans afresh.
         self.expanded.clear();
+    }
+
+    /// The names two or more functions the journey runs share, at any depth, so a
+    /// level more or less never renames anything. An entry point goes by its route.
+    fn find_homonyms(&self, system: &System) -> HashSet<String> {
+        let entries: HashSet<&UnitId> = system.entries().iter().map(|e| &e.unit).collect();
+        let mut seen: HashMap<&str, &UnitId> = HashMap::new();
+        let mut shared = HashSet::new();
+        for id in &self.units {
+            let Some(unit) = system.unit(id).filter(|_| !entries.contains(id)) else {
+                continue;
+            };
+            if *seen.entry(unit.name.as_str()).or_insert(id) != id {
+                shared.insert(unit.name.clone());
+            }
+        }
+        shared
     }
 
     /// On the happy path, where each failing outcome splits off: the deepest unit on
@@ -519,14 +554,14 @@ impl Explorer {
             .or_else(|| self.start())
     }
 
-    /// Leaves the journey for browsing, with the function its cursor is on selected,
+    /// Leaves the journey for browsing, with the journey's start selected,
     /// remembering where it was.
     pub(crate) fn leave_journey(&mut self) {
         if self.browsing() {
             return;
         }
         self.navigate(|explorer| {
-            explorer.selection = explorer.current();
+            explorer.selection = explorer.start();
             explorer.mode = ViewMode::Browse;
             explorer.aside = None;
             // Browsing shrinks back what is expanded; the pose it would have gone
@@ -817,10 +852,34 @@ impl Explorer {
         self.disclose
     }
 
+    /// Shows the journey to another depth. A cursor a level less folds away goes up
+    /// to the nearest call above it still drawn, in the graph and the panel alike.
     pub(crate) fn set_disclose(&mut self, disclose: Disclose) {
         self.disclose = disclose;
         self.disclose_again();
+        if let Some(cursor) = self.cursor_span()
+            && !self.drawn(cursor)
+        {
+            let above = self
+                .stack(cursor)
+                .into_iter()
+                .rev()
+                .find(|&s| self.drawn(s));
+            self.track.cursor = above.or_else(|| self.journey().map(Journey::root));
+        }
         self.sync_nucleus();
+    }
+
+    /// Whether a call is drawn: disclosed, with a node of its own (not a closure,
+    /// nor a call to one of several functions). The cursor only ever rests on one.
+    fn drawn(&self, span: SpanId) -> bool {
+        let Some(journey) = self.journey() else {
+            return false;
+        };
+        let tile = |span: SpanId| self.track.tile(span, &self.map);
+        tile(span).is_some()
+            && !disclosure::is_closure(journey, &tile, span)
+            && self.disclosed.number(span).is_some()
     }
 
     /// Opens or folds the calls under one span, past the disclosed depth.
@@ -871,25 +930,53 @@ impl Explorer {
         self.track.span(id)
     }
 
+    /// The name of what a span calls: the function's, as [`Self::function_name`] has
+    /// it, so a bar says what its node's label says.
     pub(crate) fn label(&self, id: SpanId) -> String {
         let Some(span) = self.span(id) else {
             return String::new();
         };
-        let name = match &span.target {
-            SpanTarget::Unit(unit) => self.unit_name(unit),
+        match &span.target {
+            SpanTarget::Unit(unit) => self.function_name(unit),
             SpanTarget::Ambiguous(ids) => format!(
                 "{} → one of {}",
                 span.text.as_deref().unwrap_or("?"),
                 ids.len()
             ),
             SpanTarget::Unresolved(text) => text.clone(),
-        };
-        match span.stopped {
-            Some(StopReason::Recursion) => format!("{name} ↻"),
-            Some(StopReason::DepthLimit) => format!("{name} …"),
-            Some(StopReason::Registered) => format!("→ {name}"),
-            Some(StopReason::NotLoaded) | None => name,
         }
+    }
+
+    /// Why the journey stops at a span, as a bar marks it: `↻` it is already running
+    /// further up, `…` the journey goes no deeper, `→` handed off to run later.
+    pub(crate) fn stop_mark(&self, id: SpanId) -> Option<&'static str> {
+        match self.span(id)?.stopped? {
+            StopReason::Recursion => Some("↻"),
+            StopReason::DepthLimit => Some("…"),
+            StopReason::Registered => Some("→"),
+            StopReason::NotLoaded => None,
+        }
+    }
+
+    /// A function's name, the same on the graph and on the panel's bars: an entry
+    /// point's route, else its own name; in a journey with two functions of that name,
+    /// with its type or module before it (`Track.root`, `Explorer.root`).
+    pub(crate) fn function_name(&self, id: &UnitId) -> String {
+        if let Some(entry) = self.system.entries().iter().find(|e| &e.unit == id) {
+            return entry.label.clone();
+        }
+        match self.system.unit(id) {
+            Some(unit) if self.browsing() || !self.track.homonyms.contains(&unit.name) => {
+                unit.name.clone()
+            }
+            Some(_) => self.unit_name(id),
+            None => id.to_string(),
+        }
+    }
+
+    /// Whether the open journey runs a function, at any depth.
+    pub(crate) fn runs(&self, id: &UnitId) -> bool {
+        !self.browsing() && self.track.units.contains(id)
     }
 
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
@@ -932,13 +1019,10 @@ impl Explorer {
         // its own: the cursor never stops on one, and the calls made inside it are its
         // caller's.
         let closure = |span: SpanId| disclosure::is_closure(journey, &tile, span);
-        // The keys read the picture as it is: they stop only on a call drawn, one with
-        // a node of its own (not a closure, nor a call to one of several functions)
-        // and disclosed, so they never open a level or reach past the depth shown.
+        // The keys read the picture as it is: they stop only on a call drawn, so they
+        // never open a level or reach past the depth shown.
         let disclosed = &self.disclosed;
-        let drawn = |span: SpanId| {
-            tile(span).is_some() && !closure(span) && disclosed.number(span).is_some()
-        };
+        let drawn = |span: SpanId| self.drawn(span);
         let parent = |span: SpanId| {
             std::iter::successors(journey.span(span)?.parent, |&p| journey.span(p)?.parent)
                 .find(|&p| drawn(p))
@@ -1839,18 +1923,83 @@ pub(crate) mod tests {
     fn enter_opens_the_selection_s_journey_and_esc_and_back_cross_the_modes() {
         let mut explorer = explorer();
         let a = tile(&explorer, "a");
+        let main = tile(&explorer, "main");
         explorer.step(Step::Into);
         explorer.leave_journey();
-        assert_eq!(explorer.selection(), Some(a), "the cursor's function");
+        assert_eq!(explorer.selection(), Some(main), "the journey's start");
+        explorer.click(a, None);
         enter(&mut explorer);
         assert!(!explorer.browsing());
         assert_eq!(explorer.start_unit().map(UnitId::as_str), Some("x:a"));
         assert!(explorer.go_back(), "back to browsing");
         assert!(explorer.browsing());
         assert_eq!(explorer.selection(), Some(a));
+        assert!(explorer.go_back(), "to the selection before");
+        assert_eq!(explorer.selection(), Some(main));
         assert!(explorer.go_back(), "and into the journey before");
         assert!(!explorer.browsing());
         assert_eq!(at(&explorer), "a");
+    }
+
+    #[test]
+    fn a_level_less_takes_the_cursor_up_to_the_call_still_drawn() {
+        let mut explorer = explorer();
+        explorer.set_disclose(Disclose(2));
+        explorer.step(Step::Child);
+        explorer.step(Step::Child);
+        assert_eq!(at(&explorer), "c");
+        explorer.set_disclose(Disclose(1));
+        assert_eq!(
+            at(&explorer),
+            "a",
+            "c folds away, so the cursor goes up to a"
+        );
+        assert_eq!(
+            explorer
+                .disclosure()
+                .number(explorer.cursor_span().unwrap()),
+            Some("1")
+        );
+        explorer.set_disclose(Disclose(2));
+        assert_eq!(at(&explorer), "a", "and stays there a level more");
+
+        // A call opened by hand, as a click on c opens a, stays open a level less,
+        // and so the cursor on it.
+        explorer.set_disclose(Disclose(1));
+        explorer.click(tile(&explorer, "c"), None);
+        explorer.set_disclose(Disclose(2));
+        explorer.set_disclose(Disclose(1));
+        assert_eq!(at(&explorer), "c");
+    }
+
+    #[test]
+    fn a_name_two_functions_on_the_journey_share_says_whose() {
+        // main calls Store::root and Track::root, and find.
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
+            { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "a#0", "text": "a", "targets": [ { "unit": "x:Store::root", "certainty": "exact" } ] },
+                { "key": "b#0", "text": "b", "targets": [ { "unit": "x:Track::root", "certainty": "exact" } ] },
+                { "key": "c#0", "text": "c", "targets": [ { "unit": "x:Track::find", "certainty": "exact" } ] } ] },
+            { "id": "x:Store", "name": "Store", "kind": "struct", "role": "group" },
+            { "id": "x:Track", "name": "Track", "kind": "struct", "role": "group" },
+            { "id": "x:Store::root", "name": "root", "kind": "method", "role": "invocable", "parent": "x:Store" },
+            { "id": "x:Track::root", "name": "root", "kind": "method", "role": "invocable", "parent": "x:Track" },
+            { "id": "x:Track::find", "name": "find", "kind": "method", "role": "invocable", "parent": "x:Track" } ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let mut explorer = opened(system, "x:main");
+        let names: Vec<String> = explorer
+            .journey()
+            .unwrap()
+            .spans()
+            .map(|(id, _)| explorer.label(id))
+            .collect();
+        assert_eq!(names, ["main", "Store.root", "Track.root", "find"]);
+        explorer.leave_journey();
+        assert_eq!(
+            explorer.function_name(&UnitId::new("x:Track::root")),
+            "root",
+            "browsing, the graph tells them apart by what it names"
+        );
     }
 
     #[test]
