@@ -1126,7 +1126,8 @@ fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
         .iter()
         .filter_map(|n| n.unit.as_deref())
         .collect();
-    let free = before.free();
+    // The free area as the depth change left it: a taller panel takes more of it.
+    let free = now.free();
     let k = b.distance / a.distance.max(f32::EPSILON);
     let came: Vec<&Node> = now
         .nodes

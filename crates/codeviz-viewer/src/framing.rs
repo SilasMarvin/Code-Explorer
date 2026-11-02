@@ -234,7 +234,7 @@ fn follow_view(
             pan_into_view(at, camera, lens);
         }
     } else {
-        reveal(nucleus, cursor, camera, views);
+        reveal(nucleus, cursor, camera, lens);
     }
 }
 
@@ -256,13 +256,13 @@ fn pan_into_view(at: Vec3, camera: &mut OrbitCamera, lens: Lens) {
 }
 
 /// Pulls back, round wherever the camera looks, just far enough that every function
-/// the journey lights, and `also`, shows in `named` (the free area with room for
-/// names); when they all show already, nothing moves.
-fn reveal(nucleus: &Nucleus, also: Option<Vec3>, camera: &mut OrbitCamera, views: Views) {
+/// the journey lights, and `also`, shows in the free area; when they all show
+/// already, nothing moves.
+fn reveal(nucleus: &Nucleus, also: Option<Vec3>, camera: &mut OrbitCamera, lens: Lens) {
     let rotation = camera.aim_rotation();
     let mut points = nucleus.journey_points();
     points.extend(also);
-    let needed = distance_to_show(&points, camera.target, rotation, views.free, views.named);
+    let needed = distance_to_show(&points, camera.target, rotation, lens, Vec2::ONE);
     if needed > camera.goal_distance() {
         camera.pull_back(needed);
     }
