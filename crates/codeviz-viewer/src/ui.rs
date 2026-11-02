@@ -19,11 +19,11 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 use crate::{
     camera::OrbitCamera,
     depth_meter,
-    explorer::{Clustering, Confidence, Explorer, Hidden, Side},
-    graph_view::{self, CALLEE, CALLER, CURSOR, DEEPER, Relation},
+    explorer::{Confidence, Explorer, Hidden, Side},
+    graph_view::{self, CALLEE, CALLER, CURSOR, DEEPER},
     journey_panel::{self, JourneyPanel, PanelMode},
     lens::{Measure, Source},
-    nucleus::{self, Body, End, Flow, Nucleus},
+    nucleus::{self, Body, End, Flow},
     scene::{PALETTE, lane_color},
 };
 
@@ -186,7 +186,7 @@ fn draw_ui(
     };
     let rows = journey_panel::rows(&explorer);
     let (graph_area, panel_area) = journey_panel::split(mode, central, rows);
-    if let Ok((mut camera, transform, mut orbit)) = cameras.single_mut() {
+    if let Ok((mut camera, transform, orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
             camera
@@ -233,9 +233,6 @@ fn draw_ui(
         }
         if panel.mode != PanelMode::Full && !chrome.bare {
             legend(ctx, graph_area, Showing::of(&explorer));
-        }
-        if orbit.free && !chrome.bare {
-            camera_free(ctx, graph_area, &explorer, &mut orbit);
         }
         if help.0 {
             // Down to the window's foot, over the journey panel where it must, so the
@@ -328,23 +325,10 @@ fn panels(
     [top, 0.0, 0.0, right]
 }
 
-/// How the graph is drawn: what the lens shows, and what pulls nodes together.
+/// How the graph is drawn: what the lens shows.
 fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer) {
     ui.heading("View");
     reveal_controls(ui, explorer);
-    let mut clustering = explorer.clustering();
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Cluster by").small().color(MUTED));
-        ui.selectable_value(&mut clustering, Clustering::Modules, "Modules")
-            .on_hover_text("Functions in the same container pull together (K)");
-        ui.selectable_value(&mut clustering, Clustering::Calls, "Calls")
-            .on_hover_text(
-                "Only calls pull; containers that hold together mostly call themselves (K)",
-            );
-    });
-    if clustering != explorer.clustering() {
-        explorer.set_clustering(clustering);
-    }
 }
 
 /// The part of the graph above a docked journey, for what sits at its bottom.
@@ -906,27 +890,6 @@ const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
 const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
 /// The dotted thread from a name to its node: grey, as no call is drawn.
 const THREAD: egui::Color32 = egui::Color32::from_rgba_premultiplied(120, 124, 134, 190);
-
-/// The 1-based places in `caller`'s calls, in written order, where it calls `callee`.
-fn call_steps(explorer: &Explorer, from: usize, to_tile: usize) -> Vec<usize> {
-    explorer
-        .graph()
-        .sequence(from)
-        .iter()
-        .enumerate()
-        .filter(|&(_, &to)| to == to_tile)
-        .map(|(index, _)| index + 1)
-        .collect()
-}
-
-/// `#2` or `#2, #5`.
-fn numbered(steps: &[usize]) -> String {
-    steps
-        .iter()
-        .map(|s| format!("#{s}"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
 
 /// A function's name, or the route of an entry point.
 pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
@@ -1794,11 +1757,6 @@ fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer) {
     }
 }
 
-/// Whether the graph is gathered into spheres.
-fn nucleus_open(explorer: &Explorer) -> bool {
-    explorer.nucleus().is_some()
-}
-
 /// Names beside graph nodes, most important first, each on a dark pill so it reads
 /// over links and glow. The focus's callees lead with the order it calls them in, and
 /// its callers note where in their own calls they call it. A name tries each side of
@@ -1817,15 +1775,12 @@ fn draw_graph_labels(
     // Gathered round the focus's module, the journey's cursor is named where it sits.
     let cursor = explorer.cursor_mark();
     // In a journey, a function selected off it, named as the focus is.
-    let aside = explorer.aside().filter(|_| nucleus_open(explorer));
+    let aside = explorer.aside();
     let aside_tile = aside;
     let hovered = explorer.pointed();
-    let reach = explorer.reach();
-    let related = |tile: usize| reach.and_then(|r| graph_view::shown_relation(explorer, r, tile));
     let spotlit = explorer.spotlit();
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
-    let opened = disclosed.opened();
     // The number of the call the cursor is on.
     let cursor_number = explorer
         .selected()
@@ -1837,37 +1792,24 @@ fn draw_graph_labels(
         .and_then(|unit| map.tile_of(unit))
         .filter(|_| !explorer.browsing());
     let nucleus = explorer.nucleus();
-    let stack: Vec<usize> = explorer
-        .selected()
-        .map(|s| explorer.stack(s))
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|span| explorer.unit_id(span).and_then(|u| map.tile_of(u)))
-        .collect();
     // Where each shown node sits on screen, and how far its edge is from its middle.
     let discs: Vec<Option<(egui::Pos2, f32)>> = (0..map.tiles.len())
         .map(|tile| {
-            // Only what the lens shows at least half way gets a name. Gathered round
-            // the focus's module, only the middle, what it names and what the pointer
-            // is on or draws the calls of, however faint.
-            let named = |n: &Nucleus| {
-                n.shows(tile) && (n.lit(tile) || center == Some(tile) || hovered == Some(tile))
-            };
-            let world = explorer.tile_point(tile).filter(|_| match nucleus {
-                Some(n) => named(n),
-                None => explorer.visibility(tile) >= 0.5,
-            })?;
+            // Only the middle, what the nucleus names and what the pointer is on or
+            // draws the calls of, however faint.
+            let named = nucleus.shows(tile)
+                && (nucleus.lit(tile) || center == Some(tile) || hovered == Some(tile));
+            let world = explorer.tile_point(tile).filter(|_| named)?;
             let node = to_screen(world)?;
-            let scale = nucleus.map_or(1.0, |n| n.node_scale(false));
-            let radius = graph_view::node_size(graph, tile) * scale / 2.0;
+            let radius = graph_view::node_size(graph, tile) * nucleus.node_scale(false) / 2.0;
             let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
             Some((node, edge))
         })
         .collect();
 
-    // Gathered round a journey, its functions are named level by level in the panel's
-    // order, the start first, so a call's caller has room before the call does.
-    let ladder: Vec<usize> = if nucleus.is_some() {
+    // A journey's functions are named level by level in the panel's order, the start
+    // first, so a call's caller has room before the call does.
+    let ladder: Vec<usize> = {
         let mut ladder: Vec<(NumberOrder, usize)> = journey
             .iter()
             .filter(|&(&tile, _)| start != Some(tile))
@@ -1881,8 +1823,6 @@ fn draw_graph_labels(
             .collect();
         ladder.sort();
         ladder.into_iter().map(|(_, tile)| tile).collect()
-    } else {
-        Vec::new()
     };
     let rungs: HashMap<usize, usize> = start
         .into_iter()
@@ -1897,46 +1837,23 @@ fn draw_graph_labels(
         if disc.is_none() {
             continue;
         }
-        // Gathered round the focus's module, one rule: the middle and the cursor,
-        // then what the nucleus names, the journey's first calls before its callers,
-        // so the journey has room first, then the open journey round a middle off it;
-        // what the pointer is on and its calls' ends come last, so pointing never
-        // moves another name.
+        // One rule: the middle and the cursor, then what the nucleus names, the
+        // journey's first calls before its callers, so the journey has room first,
+        // then the open journey round a middle off it; what the pointer is on and its
+        // calls' ends come last, so pointing never moves another name.
         // The cursor is named where it would be anyway, so where it is never decides
         // what else is: it is only drawn over the rest.
-        let gathered = nucleus.map(|n| match () {
-            () if center == Some(tile) || aside == Some(tile) => Some(0),
-            () if n.labelled(tile) && n.level(tile) == Some(1) => Some(1),
-            () if n.labelled(tile) => Some(2),
-            () if n.context(tile) => Some(3),
-            () if cursor == Some(tile) => Some(4),
+        let tier = match () {
+            () if center == Some(tile) || aside == Some(tile) => 0,
+            () if nucleus.labelled(tile) && nucleus.level(tile) == Some(1) => 1,
+            () if nucleus.labelled(tile) => 2,
+            () if nucleus.context(tile) => 3,
+            () if cursor == Some(tile) => 4,
             // The few calls in from outside the journey drawn for each module, those
             // nearest it, are named after all the journey's own names.
-            () if n.outside(tile) => Some(6),
-            () if hovered == Some(tile) || n.touched(tile) => Some(POINTED),
-            () => None,
-        });
-        let tier = match related(tile) {
-            _ if gathered.is_some() => match gathered.flatten() {
-                Some(tier) => tier,
-                None => continue,
-            },
-            _ if center == Some(tile) || cursor == Some(tile) => 0,
-            // What the pointer is over, and what the spotlight picks out, is named,
-            // whatever else would be.
-            _ if hovered == Some(tile) || spotlit.contains(&tile) => 1,
-            // What the open journey discloses is named first, with its numbers; with
-            // a journey open, what it folds away and callers further up go unnamed.
-            _ if journey.contains_key(&tile) => 1,
-            Some(Relation::Downstream(_)) if opened => continue,
-            Some(Relation::Upstream(hops)) if opened && hops > 1 => continue,
-            Some(Relation::Upstream(1) | Relation::Downstream(1)) => 1,
-            _ if stack.contains(&tile) => 2,
-            Some(Relation::Upstream(2) | Relation::Downstream(2)) => 3,
-            _ if explorer.journey_lane(tile).is_some() => 5,
-            Some(_) => 6,
-            None if center.is_none() => 6,
-            None => continue,
+            () if nucleus.outside(tile) => 6,
+            () if hovered == Some(tile) || nucleus.touched(tile) => POINTED,
+            () => continue,
         };
         let rung = rungs.get(&tile).copied().unwrap_or(usize::MAX);
         order.push((
@@ -1944,54 +1861,45 @@ fn draw_graph_labels(
             Named::Node(tile),
         ));
     }
-    // Modules are named at the top of their rings, ahead of most function names.
-    let regions = graph_view::regions(explorer);
-    // Gathered round the focus's module, at the top of their spheres.
+    // Modules are named at the top of their spheres, ahead of most function names.
     let ring_top = |cluster: usize| {
-        if let Some(nucleus) = nucleus {
-            let ball = nucleus.ball(cluster)?;
-            let top = to_screen(ball.center + up * ball.radius);
-            if top.is_some() || !nucleus.browsing() {
-                return top;
-            }
-            // Browsing, a sphere cut by the window's edge is named on what of it
-            // shows.
-            let (middle, reach) = (ball.center, ball.radius * 0.7);
-            return [
-                middle,
-                middle + right * reach,
-                middle - right * reach,
-                middle - up * reach,
-            ]
-            .into_iter()
-            .find_map(to_screen);
+        let ball = nucleus.ball(cluster)?;
+        let top = to_screen(ball.center + up * ball.radius);
+        if top.is_some() || !nucleus.browsing() {
+            return top;
         }
-        let &(_, middle, radius) = regions.iter().find(|r| r.0 == cluster)?;
-        to_screen(middle + up * radius)
+        // Browsing, a sphere cut by the window's edge is named on what of it shows.
+        let (middle, reach) = (ball.center, ball.radius * 0.7);
+        [
+            middle,
+            middle + right * reach,
+            middle - right * reach,
+            middle - up * reach,
+        ]
+        .into_iter()
+        .find_map(to_screen)
     };
-    let wall = |cluster: usize| to_screen(nucleus?.wall(cluster)?);
+    let wall = |cluster: usize| to_screen(nucleus.wall(cluster)?);
     // A sphere's middle on screen and how far its edge is from it.
     let sphere_on_screen = |ball: nucleus::Ball| {
         let middle = to_screen(ball.center)?;
         let edge = to_screen(ball.center + up * ball.radius)?;
         Some((middle, middle.distance(edge)))
     };
-    let left_out = nucleus
-        .map(|n| n.outside_left_out(graph))
-        .unwrap_or_default();
+    let left_out = nucleus.outside_left_out(graph);
     // Browsing, the module the pointer is over, its name shown however small: the
     // smallest whose sphere holds the pointer.
     let mouse = painter.ctx().input(|i| i.pointer.hover_pos());
-    let pointed_module = nucleus.filter(|n| n.browsing()).and_then(|n| {
-        n.balls()
-            .filter_map(|(cluster, ball)| {
-                let (middle, edge) = sphere_on_screen(ball)?;
-                (mouse?.distance(middle) <= edge).then_some((edge, cluster))
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, cluster)| cluster)
-    });
-    if let Some(nucleus) = nucleus {
+    let pointed_module = nucleus
+        .balls()
+        .filter(|_| nucleus.browsing())
+        .filter_map(|(cluster, ball)| {
+            let (middle, edge) = sphere_on_screen(ball)?;
+            (mouse?.distance(middle) <= edge).then_some((edge, cluster))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, cluster)| cluster);
+    {
         // The nucleus and the open modules are named first, and of the rest only the
         // biggest, where there is room.
         let mut closed: Vec<(usize, usize)> = nucleus
@@ -2094,41 +2002,24 @@ fn draw_graph_labels(
             };
             order.push((rank, Named::Group(cluster)));
         }
-    } else if explorer.lens().reach.is_none() {
-        for &(cluster, _, radius) in &regions {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a rough size for ordering"
-            )]
-            let size = radius as usize;
-            let tier = if center.is_some() { 4 } else { 1 };
-            order.push((
-                (tier, 0, std::cmp::Reverse(size), cluster),
-                Named::Group(cluster),
-            ));
-        }
     }
-    // Gathered, a label keeps the place it took when it first showed for as long as
-    // the scene lasts, and is placed before any new one, which keeps off it.
-    let scene = nucleus.map(|n| {
-        if n.browsing() {
-            Scene::Browse
-        } else {
-            Scene::Journey {
-                start,
-                expanded: n.expanded(),
-                strip: framing.strip,
-            }
+    // A label keeps the place it took when it first showed for as long as the scene
+    // lasts, and is placed before any new one, which keeps off it.
+    let scene = if nucleus.browsing() {
+        Scene::Browse
+    } else {
+        Scene::Journey {
+            start,
+            expanded: nucleus.expanded(),
+            strip: framing.strip,
         }
-    });
-    let held = scene
-        .and_then(|scene| {
-            painter.ctx().data_mut(|d| {
-                d.get_temp_mut_or_default::<SpotBook>(spot_book_id())
-                    .get(&scene)
-                    .cloned()
-            })
+    };
+    let held = painter
+        .ctx()
+        .data_mut(|d| {
+            d.get_temp_mut_or_default::<SpotBook>(spot_book_id())
+                .get(&scene)
+                .cloned()
         })
         .unwrap_or_default();
     order.sort_by_key(|&(key, named)| (!held.contains_key(&named), key));
@@ -2151,7 +2042,7 @@ fn draw_graph_labels(
 
     // Labels keep off the cards over the graph, as last laid out; the search box,
     // which comes and goes, last, as landmarks do not move for it.
-    let cards: Vec<egui::Rect> = ["camera_free", "search"]
+    let cards: Vec<egui::Rect> = ["search"]
         .into_iter()
         .filter_map(|id| painter.ctx().memory(|m| m.area_rect(egui::Id::new(id))))
         .collect();
@@ -2162,29 +2053,19 @@ fn draw_graph_labels(
                 .memory(|m| m.area_rect(egui::Id::new("search")))
                 .is_some(),
         );
-    // And off the nodes that matter, so they never hide a neighbor: gathered, every
-    // lit one, the journey's, its callers and those brought in from outside; what only
-    // the pointer names is no reason for another name to move.
-    let blocking: Vec<(usize, egui::Pos2, f32)> = match nucleus {
-        Some(n) => (0..discs.len())
-            .filter(|&tile| {
-                n.names(tile)
-                    || n.marks(tile)
-                    || n.context(tile)
-                    || n.outside(tile)
-                    || center == Some(tile)
-            })
-            .filter_map(|tile| discs[tile].map(|(node, edge)| (tile, node, edge)))
-            .collect(),
-        None => order
-            .iter()
-            .filter(|((tier, ..), _)| *tier <= 3)
-            .filter_map(|&(_, named)| match named {
-                Named::Node(tile) => discs[tile].map(|(node, edge)| (tile, node, edge)),
-                Named::Group(_) | Named::Wall(_) => None,
-            })
-            .collect(),
-    };
+    // And off the nodes that matter, so they never hide a neighbor: every lit one, the
+    // journey's, its callers and those brought in from outside; what only the pointer
+    // names is no reason for another name to move.
+    let blocking: Vec<(usize, egui::Pos2, f32)> = (0..discs.len())
+        .filter(|&tile| {
+            nucleus.names(tile)
+                || nucleus.marks(tile)
+                || nucleus.context(tile)
+                || nucleus.outside(tile)
+                || center == Some(tile)
+        })
+        .filter_map(|tile| discs[tile].map(|(node, edge)| (tile, node, edge)))
+        .collect();
     let mut placer = Placer::new(
         painter,
         cards
@@ -2203,10 +2084,10 @@ fn draw_graph_labels(
     );
     placer.cards = lasting;
     placer.blocking = blocking;
-    placer.landmarks = nucleus.is_some_and(Nucleus::browsing);
+    placer.landmarks = nucleus.browsing();
     let held_keys: HashSet<Named> = held.keys().copied().collect();
     placer.held = held;
-    placer.keep = framing.settled && scene.is_some();
+    placer.keep = framing.settled;
     placer.beside = [cursor, center, aside]
         .into_iter()
         .flatten()
@@ -2235,14 +2116,12 @@ fn draw_graph_labels(
                 let Some(at) = ring_top(group) else {
                     continue;
                 };
-                let body = nucleus.and_then(|n| n.ball(group)).map(|b| b.body);
+                let body = nucleus.ball(group).map(|b| b.body);
                 let color =
                     egui_color(lane_color(group % PALETTE.len())).gamma_multiply(match body {
-                        Some(Body::Nucleus | Body::Open) => 1.0,
+                        Some(Body::Nucleus | Body::Open) | None => 1.0,
                         Some(Body::Faint) => 0.5,
                         Some(Body::Closed) => 0.35,
-                        None if center.is_some() => 0.6,
-                        None => 0.9,
                     });
                 let label = explorer.cluster_name(group);
                 // An open module says how much of it is named, and how many callers
@@ -2251,11 +2130,17 @@ fn draw_graph_labels(
                 // another module's out.
                 // The start's callers folded into a count are counted apart from what
                 // it names.
-                let folded = nucleus.map_or(0, |n| n.folded_in(group));
-                let named_note = nucleus
-                    .filter(|n| body == Some(Body::Open) && n.opened(group) > folded)
-                    .filter(|n| !n.browsing() || pointed_module == Some(group))
-                    .map(|n| format!("{} of {}", n.opened(group) - folded, n.count(group)));
+                let folded = nucleus.folded_in(group);
+                let named_note = (body == Some(Body::Open)
+                    && nucleus.opened(group) > folded
+                    && (!nucleus.browsing() || pointed_module == Some(group)))
+                .then(|| {
+                    format!(
+                        "{} of {}",
+                        nucleus.opened(group) - folded,
+                        nucleus.count(group)
+                    )
+                });
                 let plural = |count: usize| if count == 1 { "" } else { "s" };
                 let folded_note =
                     (folded > 0).then(|| format!("+{folded} caller{}", plural(folded)));
@@ -2265,11 +2150,11 @@ fn draw_graph_labels(
                     .into_iter()
                     .flatten()
                     .reduce(|a, b| format!("{a} · {b}"));
-                let browsing = nucleus.is_some_and(Nucleus::browsing);
+                let browsing = nucleus.browsing();
                 // Browsing, as big as the module, whatever is clicked, so a name
                 // opening or closing its module keeps its place.
                 let size = match body {
-                    _ if browsing => browse_name_size(nucleus.map_or(0, |n| n.count(group))),
+                    _ if browsing => browse_name_size(nucleus.count(group)),
                     Some(Body::Nucleus) => 15.0,
                     Some(Body::Closed | Body::Faint) => 10.5,
                     _ => 12.0,
@@ -2280,7 +2165,7 @@ fn draw_graph_labels(
                 // the one the pointer is over is named come what may.
                 let force = (browsing && tier == POINTED)
                     || body == Some(Body::Nucleus)
-                    || (body == Some(Body::Open) && nucleus.is_some_and(Nucleus::expanded));
+                    || (body == Some(Body::Open) && nucleus.expanded());
                 let force = if force {
                     Force::Always
                 } else if more > 0 || folded > 0 || browsing {
@@ -2307,65 +2192,35 @@ fn draw_graph_labels(
                     Some(unit) if homonyms.contains(&tile) => explorer.unit_name(unit),
                     _ => node_name(explorer, tile),
                 };
-                let relation = related(tile);
-                // Gathered round the focus's module, colored as its call is drawn; a
-                // faint speck named only under the pointer, and the open journey round
-                // a middle off it, quietly.
-                let level = nucleus.and_then(|n| n.level(tile));
-                let speck = nucleus.is_some() && graph_view::speck(explorer, tile);
-                let quiet = speck
-                    || nucleus.is_some_and(|n| {
-                        n.context(tile) || (n.outside(tile) && aside != Some(tile))
-                    });
-                let color = match (tier, relation) {
+                // Colored as its call is drawn; a faint speck named only under the
+                // pointer, and the open journey round a middle off it, quietly.
+                let level = nucleus.level(tile);
+                let quiet = graph_view::speck(explorer, tile)
+                    || nucleus.context(tile)
+                    || (nucleus.outside(tile) && aside != Some(tile));
+                let color = match tier {
                     _ if cursor == Some(tile) => CURSOR_TEXT,
-                    (0, _) => egui::Color32::WHITE,
+                    0 => egui::Color32::WHITE,
                     _ if quiet => MUTED,
-                    _ if nucleus.is_some() => match level {
+                    _ => match level {
                         Some(-1) => CALLER_TEXT,
                         Some(1) => CALLEE_TEXT,
                         Some(2..) => DEEPER_TEXT,
                         _ => egui::Color32::from_rgb(200, 205, 216),
                     },
-                    (_, Some(Relation::Upstream(1))) => CALLER_TEXT,
-                    (_, Some(Relation::Downstream(1))) => CALLEE_TEXT,
-                    (_, Some(Relation::Downstream(_))) => DEEPER_TEXT,
-                    // Only what touches the focus is colored, as its links are.
-                    (_, Some(_)) => egui::Color32::from_rgb(200, 205, 216),
-                    (2 | 5, None) => egui::Color32::from_rgb(225, 229, 238),
-                    _ => egui::Color32::from_rgb(160, 167, 182),
                 };
-                let (lead, aside) = match (relation, center) {
+                let aside = if start == Some(tile) {
                     // A start the journey calls again says so, after saying it is the
                     // start, so the call back is not read as its own.
-                    _ if nucleus.is_some() && start == Some(tile) => {
-                        let panel = journey.get(&tile).map_or(&[][..], Vec::as_slice);
-                        let again = nucleus
-                            .and_then(|n| nucleus::badge(n.numbers(tile).iter().chain(panel)));
-                        (None, again.map(|again| format!("start · again at {again}")))
-                    }
-                    // Gathered round the focus's module, the journey's number says it;
-                    // round a middle off the journey, which of its calls the journey
+                    let panel = journey.get(&tile).map_or(&[][..], Vec::as_slice);
+                    let again = nucleus::badge(nucleus.numbers(tile).iter().chain(panel));
+                    again.map(|again| format!("start · again at {again}"))
+                } else if nucleus.on_journey(tile) && nucleus.names(tile) {
+                    // Round a middle off the journey, which of its calls the journey
                     // runs too.
-                    _ if nucleus.is_some_and(|n| n.on_journey(tile) && n.names(tile)) => {
-                        (None, Some("on the journey".to_owned()))
-                    }
-                    _ if nucleus.is_some() => (None, None),
-                    (Some(Relation::Downstream(1)), Some(focus)) => {
-                        let steps = call_steps(explorer, focus, tile);
-                        (Some((numbered(&steps), color, None)), None)
-                    }
-                    // With the spotlight on, names alone, so more of them fit.
-                    (Some(Relation::Upstream(1)), Some(_)) if !spotlit.is_empty() => (None, None),
-                    (Some(Relation::Upstream(1)), Some(focus)) => {
-                        let steps = call_steps(explorer, tile, focus);
-                        let total = graph.sequence(tile).len();
-                        (
-                            None,
-                            Some(format!("calls it {} of {total}", numbered(&steps))),
-                        )
-                    }
-                    _ => (None, None),
+                    Some("on the journey".to_owned())
+                } else {
+                    None
                 };
                 // How the journey runs it, after anything else said of it.
                 // When it runs in the panel's words; where its runs differ, only that it
@@ -2383,33 +2238,20 @@ fn draw_graph_labels(
                     .into_iter()
                     .flatten()
                     .reduce(|a, b| format!("{a} · {b}"));
-                // A node the journey runs leads with its place in it, as its bar does.
-                // Gathered, a function keeps one number for the journey, wherever the
-                // cursor is: its first call in the panel's order, and how many more it
-                // runs; but the cursor's own shows the call the cursor is on, as the
-                // panel does. The start is the start, however often the journey comes
-                // back to it.
-                let order = match nucleus {
-                    Some(_) if start == Some(tile) => None,
-                    // The cursor's own function shows the call the cursor is on, as
-                    // the panel does.
-                    Some(n) => {
-                        let panel = journey.get(&tile).map_or(&[][..], Vec::as_slice);
-                        let numbers = n.numbers(tile).iter().chain(panel);
-                        match cursor_number.filter(|_| cursor == Some(tile)) {
-                            Some(at) => Some(nucleus::badge_at(numbers, at)),
-                            None => nucleus::badge(numbers),
-                        }
+                // A node the journey runs leads with its place in it, as its bar does:
+                // one number for the journey, wherever the cursor is, its first call
+                // in the panel's order, and how many more it runs; but the cursor's
+                // own shows the call the cursor is on, as the panel does. The start is
+                // the start, however often the journey comes back to it.
+                let order = if start == Some(tile) {
+                    None
+                } else {
+                    let panel = journey.get(&tile).map_or(&[][..], Vec::as_slice);
+                    let numbers = nucleus.numbers(tile).iter().chain(panel);
+                    match cursor_number.filter(|_| cursor == Some(tile)) {
+                        Some(at) => Some(nucleus::badge_at(numbers, at)),
+                        None => nucleus::badge(numbers),
                     }
-                    None => journey
-                        .get(&tile)
-                        .filter(|numbers| !numbers.is_empty())
-                        .map(|numbers| match numbers.as_slice() {
-                            [one] => one.clone(),
-                            [first, second] => format!("{first}, {second}"),
-                            [first, .., last] => format!("{first} … {last}"),
-                            [] => String::new(),
-                        }),
                 };
                 // A click on the name goes to the call it leads with; on the start's,
                 // to the start.
@@ -2425,54 +2267,35 @@ fn draw_graph_labels(
                 // The number on a badge filled like the node and its bar, so the two
                 // read as one.
                 let fill = egui_color(graph_view::node_color(explorer, tile));
-                let lead = match order {
-                    Some(order) => Some((format!(" {order} "), ON_FILL, Some(fill))),
-                    None => lead,
-                };
+                let lead = order.map(|order| (format!(" {order} "), ON_FILL, Some(fill)));
                 // The cursor's name keeps the size it had before the cursor came, and a
                 // name clicked off the journey the size it had before the click, so
                 // each keeps its place too.
                 let size = match tier {
-                    _ if aside_tile == Some(tile) && nucleus.is_some_and(|n| n.outside(tile)) => {
-                        10.0
-                    }
-                    _ if aside_tile == Some(tile) && nucleus.is_some() => 11.0,
+                    _ if aside_tile == Some(tile) && nucleus.outside(tile) => 10.0,
+                    _ if aside_tile == Some(tile) => 11.0,
                     0 => 14.0,
                     _ if quiet => 10.0,
                     1 => 12.0,
                     _ => 11.0,
                 };
-                // The pill's border says which way it relates to the focus, as its link
+                // The pill's border says which way it relates to the focus, as its call
                 // does; the cursor's is its own color.
-                let stroke = match relation {
+                let stroke = match level {
                     _ if cursor == Some(tile) => Some(egui_color(CURSOR)),
                     _ if tier == 0 => Some(egui::Color32::from_white_alpha(140)),
                     _ if quiet => None,
-                    _ if nucleus.is_some() => match level {
-                        Some(-1) => Some(egui_color(CALLER)),
-                        Some(1) => Some(egui_color(CALLEE)),
-                        Some(2..) => Some(egui_color(DEEPER)),
-                        _ => None,
-                    },
-                    Some(Relation::Upstream(1)) => Some(egui_color(CALLER)),
-                    Some(Relation::Downstream(1)) => Some(egui_color(CALLEE)),
-                    _ if spotlit.contains(&tile) => Some(egui_color(match explorer.spotlight() {
-                        Some((Side::Callers, _)) => CALLER,
-                        _ => CALLEE,
-                    })),
-                    Some(Relation::Downstream(_)) => Some(egui_color(DEEPER).gamma_multiply(0.7)),
+                    Some(-1) => Some(egui_color(CALLER)),
+                    Some(1) => Some(egui_color(CALLEE)),
+                    Some(2..) => Some(egui_color(DEEPER)),
                     _ => None,
                 };
                 let job = label_job(lead, &name, aside, color, size);
                 // The focus and what the pointer is over are named come what may;
-                // what the spotlight picks out, and gathered round the focus's module
-                // everything it names, wherever there is room.
+                // everything the nucleus names, wherever there is room.
                 let force = if tier == 0 || hovered == Some(tile) {
                     Force::Always
-                } else if spotlit.contains(&tile)
-                    || (nucleus.is_some() && tier <= 2)
-                    || nucleus.is_some_and(|n| n.outside(tile))
-                {
+                } else if spotlit.contains(&tile) || tier <= 2 || nucleus.outside(tile) {
                     Force::Free
                 } else {
                     Force::Never
@@ -2511,11 +2334,9 @@ fn draw_graph_labels(
         }
     }
     // Every function lit and on screen is named, or counted here as not.
-    let lit: Vec<usize> = nucleus.map_or_else(Vec::new, |n| {
-        (0..discs.len())
-            .filter(|&tile| discs[tile].is_some() && n.names(tile) && !n.folded(tile))
-            .collect()
-    });
+    let lit: Vec<usize> = (0..discs.len())
+        .filter(|&tile| discs[tile].is_some() && nucleus.names(tile) && !nucleus.folded(tile))
+        .collect();
     let unnamed = lit
         .iter()
         .filter(|&&tile| !placer.next.contains_key(&Named::Node(tile)))
@@ -2526,9 +2347,7 @@ fn draw_graph_labels(
         Named::Group(group) => ring_top(group),
         Named::Wall(group) => wall(group),
     });
-    if let Some(scene) = scene
-        && !chosen.is_empty()
-    {
+    if !chosen.is_empty() {
         painter.ctx().data_mut(|d| {
             let book = d.get_temp_mut_or_default::<SpotBook>(spot_book_id());
             if book.len() >= SCENES_KEPT && !book.contains_key(&scene) {
@@ -2540,14 +2359,18 @@ fn draw_graph_labels(
     // The call in of an outside caller, or of a caller of the start folded into a
     // count, the pointer rests on, or of a function clicked off the journey, is what
     // is being traced: drawn again over the names, so none hides where it lands.
-    if let Some(n) = nucleus.filter(|n| !n.browsing()) {
-        let traced = n.links().iter().filter(|link| {
-            let pointed =
-                Some(link.from) == hovered && (link.flow == Flow::Outside || n.folded(link.from));
+    if !nucleus.browsing() {
+        let traced = nucleus.links().iter().filter(|link| {
+            let pointed = Some(link.from) == hovered
+                && (link.flow == Flow::Outside || nucleus.folded(link.from));
             pointed || (aside_tile.is_some() && Some(link.from) == aside_tile)
         });
         for link in traced {
-            let route: Vec<egui::Pos2> = n.route(link).into_iter().filter_map(to_screen).collect();
+            let route: Vec<egui::Pos2> = nucleus
+                .route(link)
+                .into_iter()
+                .filter_map(to_screen)
+                .collect();
             let edge = discs
                 .get(link.to)
                 .copied()
@@ -2628,7 +2451,7 @@ fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
     let lit = explorer.spotlight().map(|(side, _)| side);
     let hidden = explorer.hidden();
     let outside = explorer.outside_shown();
-    let gathered_journey = explorer.nucleus().is_some() && !explorer.browsing();
+    let gathered_journey = !explorer.browsing();
     let mut pressed = None;
     let mut follow = false;
     let mut unhide = None;
@@ -2735,38 +2558,6 @@ fn hidden_chips(ui: &mut egui::Ui, hidden: Hidden) -> Option<Side> {
     unhide
 }
 
-/// Says the camera has been panned or zoomed away and no longer follows the journey,
-/// top left of the graph; a click, like F, brings it back.
-fn camera_free(
-    ctx: &egui::Context,
-    area: egui::Rect,
-    explorer: &Explorer,
-    camera: &mut OrbitCamera,
-) {
-    egui::Area::new("camera_free".into())
-        .fixed_pos(area.min + egui::vec2(12.0, 10.0))
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            let chip = egui::Button::new(
-                egui::RichText::new("camera free · F to follow")
-                    .size(12.5)
-                    .color(MUTED),
-            )
-            .fill(egui::Color32::from_rgba_premultiplied(11, 13, 19, 215))
-            .corner_radius(8.0);
-            if ui
-                .add(chip)
-                .on_hover_text(
-                    "The camera stays where you put it. F, or a click here, \
-                     brings it back round the journey's start",
-                )
-                .clicked()
-            {
-                graph_view::orbit_anchor(explorer, camera);
-            }
-        });
-}
-
 /// A hint at the keys along `foot`.
 fn legend(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
     ctx.layer_painter(egui::LayerId::background())
@@ -2796,8 +2587,6 @@ const POINTED: u8 = 7;
 /// What the view open is, for the keys that apply in it.
 #[derive(Debug, Clone, Copy)]
 struct Showing {
-    /// Gathered into spheres (Z), rather than laid flat.
-    gathered: bool,
     /// Browsing, rather than in a journey.
     browsing: bool,
 }
@@ -2806,24 +2595,15 @@ struct Showing {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum When {
     Always,
-    /// The graph laid flat.
-    Flat,
-    /// The graph gathered into spheres (Z).
-    Nucleus,
     /// No journey open.
     Browse,
     /// A journey open.
     Journey,
-    /// A journey open, gathered round its start.
-    JourneyNucleus,
-    /// Browsing, gathered into spheres.
-    BrowseNucleus,
 }
 
 impl Showing {
     fn of(explorer: &Explorer) -> Self {
         Self {
-            gathered: explorer.nucleus().is_some(),
             browsing: explorer.browsing(),
         }
     }
@@ -2833,12 +2613,8 @@ impl When {
     fn applies(self, view: Showing) -> bool {
         match self {
             Self::Always => true,
-            Self::Flat => !view.gathered,
-            Self::Nucleus => view.gathered,
             Self::Browse => view.browsing,
             Self::Journey => !view.browsing,
-            Self::JourneyNucleus => !view.browsing && view.gathered,
-            Self::BrowseNucleus => view.browsing && view.gathered,
         }
     }
 }
@@ -2956,11 +2732,10 @@ const KEYS: [KeyGroup; 8] = [
         "Calls in and out",
         &[
             ("I", "ring everything that calls the focus", When::Browse),
-            ("I", "ring everything that calls the focus", When::Flat),
             (
                 "I",
                 "bring in every function off the journey that calls one on it, pale",
-                When::JourneyNucleus,
+                When::Journey,
             ),
             ("O", "ring everything the focus calls", When::Always),
             (
@@ -2978,34 +2753,20 @@ const KEYS: [KeyGroup; 8] = [
     (
         "Spheres",
         &[
-            ("Z", "gather the graph into module spheres", When::Flat),
-            ("Z", "lay the graph flat again", When::Nucleus),
             (
                 "X, dbl-click",
                 "expand the start's module / shrink it back; inside, a click centres it",
                 When::Journey,
             ),
-            ("N", "hide / show the unnamed specks", When::Nucleus),
+            ("N", "hide / show the unnamed specks", When::Always),
             (
                 "point",
                 "expanded: rest on a function to draw its own calls, pale",
-                When::JourneyNucleus,
+                When::Journey,
             ),
         ],
     ),
-    (
-        "Graph",
-        &[
-            (
-                "-  =",
-                "reveal a ring less / more round the start",
-                When::Flat,
-            ),
-            ("L", "reveal round: focus → changes → journey", When::Flat),
-            ("G", "nearness by: calls → space → blend", When::Flat),
-            ("K", "cluster by modules / calls", When::Flat),
-        ],
-    ),
+    ("Graph", &[]),
     (
         "Camera",
         &[
@@ -3021,23 +2782,17 @@ const KEYS: [KeyGroup; 8] = [
                 When::Always,
             ),
             ("Q  E", "turn an eighth of the way round", When::Always),
-            ("F", "face the journey's start again", When::Flat),
             (
                 "F",
                 "back to the usual view, round what is lit",
-                When::Nucleus,
+                When::Always,
             ),
-            ("R", "frame the whole graph", When::Flat),
             (
                 "R",
                 "frame the whole codebase from this angle",
-                When::BrowseNucleus,
+                When::Browse,
             ),
-            (
-                "R",
-                "frame the journey from this angle",
-                When::JourneyNucleus,
-            ),
+            ("R", "frame the journey from this angle", When::Journey),
         ],
     ),
     (
@@ -3496,10 +3251,7 @@ mod tests {
                     ..Default::default()
                 };
                 let mut output = ctx.run_ui(input, |ui| {
-                    let view = Showing {
-                        gathered: true,
-                        browsing,
-                    };
+                    let view = Showing { browsing };
                     key_help(ui.ctx(), area, &mut open, view);
                 });
                 output.textures_delta.clear();
@@ -3593,7 +3345,7 @@ mod tests {
 
     #[test]
     fn the_key_list_fits_a_small_window() {
-        for (gathered, browsing) in [(true, false), (true, true), (false, false)] {
+        for browsing in [false, true] {
             let ctx = egui::Context::default();
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
             // Below the top bar.
@@ -3605,7 +3357,7 @@ mod tests {
                     ..Default::default()
                 };
                 let mut output = ctx.run_ui(input, |ui| {
-                    let view = Showing { gathered, browsing };
+                    let view = Showing { browsing };
                     key_help(ui.ctx(), area, &mut open, view);
                 });
                 output.textures_delta.clear();
@@ -3613,7 +3365,7 @@ mod tests {
             let shown = ctx
                 .memory(|m| m.area_rect(egui::Id::new("key_help")))
                 .expect("the list shows");
-            eprintln!("{gathered} {browsing}: {shown:?}");
+            eprintln!("{browsing}: {shown:?}");
             assert!(
                 area.contains_rect(shown),
                 "inside the window: {shown:?} in {area:?}"

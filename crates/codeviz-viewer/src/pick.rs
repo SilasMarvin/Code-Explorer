@@ -55,8 +55,7 @@ pub(crate) fn pick(spots: &[Spot], pointer: Vec2) -> Option<usize> {
 
 /// Whether a function can be pointed at: drawn, and not a speck left out.
 fn pointable(explorer: &Explorer, tile: usize) -> bool {
-    (explorer.shown(tile) || explorer.nucleus().is_some_and(|n| n.shows(tile)))
-        && !hidden_speck(explorer, tile)
+    (explorer.shown(tile) || explorer.nucleus().shows(tile)) && !hidden_speck(explorer, tile)
 }
 
 /// Sets the function under the pointer: the one whose name the pointer is on, else

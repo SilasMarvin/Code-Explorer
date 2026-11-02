@@ -38,7 +38,7 @@ use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::UnitId;
 
 use crate::{
-    explorer::{Autoplay, Clustering, Explorer, ViewMode},
+    explorer::{Autoplay, Explorer, ViewMode},
     journey_panel::{JourneyPanel, PanelMode},
     lens::{Lens, Measure, Source},
 };
@@ -59,7 +59,6 @@ pub struct Viewer {
     scenario: Option<usize>,
     step: usize,
     panel: PanelMode,
-    clustering: Clustering,
     lens: Lens,
     focus: Option<UnitId>,
     /// The function a screenshot puts the pointer over.
@@ -68,8 +67,8 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
-    /// What the third dimension shows at first.
-    z: ZView,
+    /// Whether the nucleus opens expanded.
+    expanded: bool,
     /// Whether it opens in the focus's journey or browsing.
     mode: ViewMode,
 }
@@ -95,17 +94,6 @@ impl Script {
     }
 }
 
-/// What the third dimension shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ZView {
-    /// Whatever the graph's layout puts there.
-    Free,
-    /// The focus's module a sphere in the middle, the others around it.
-    Nucleus,
-    /// That sphere expanded to show how calls run inside it.
-    Expanded,
-}
-
 impl Viewer {
     #[must_use]
     pub fn new(system: System) -> Self {
@@ -120,13 +108,12 @@ impl Viewer {
             scenario: None,
             step: 0,
             panel: PanelMode::default(),
-            clustering: Clustering::default(),
             lens: Lens::default(),
             focus: None,
             hover: None,
             depth: None,
             bare: false,
-            z: ZView::Free,
+            expanded: false,
             mode: ViewMode::Journey,
         }
     }
@@ -159,17 +146,6 @@ impl Viewer {
             "hidden" => PanelMode::Hidden,
             "full" => PanelMode::Full,
             _ => PanelMode::Docked,
-        };
-        self
-    }
-
-    /// Clusters the graph by `modules` (functions in a container pull together) or
-    /// by `calls` alone.
-    #[must_use]
-    pub fn with_clustering(mut self, name: &str) -> Self {
-        self.clustering = match name {
-            "calls" => Clustering::Calls,
-            _ => Clustering::Modules,
         };
         self
     }
@@ -223,19 +199,11 @@ impl Viewer {
         self
     }
 
-    /// Opens with the graph gathered round the focus's module: that module a glass
-    /// sphere in the middle, the others around it; Z lays it flat again.
-    #[must_use]
-    pub fn with_nucleus(mut self) -> Self {
-        self.z = ZView::Nucleus;
-        self
-    }
-
     /// Opens with the nucleus expanded, showing how calls run inside the focus's
     /// module; X shrinks it back among the others.
     #[must_use]
     pub fn expanded(mut self) -> Self {
-        self.z = ZView::Expanded;
+        self.expanded = true;
         self
     }
 
@@ -306,7 +274,6 @@ impl Viewer {
                 explorer.step(explorer::Step::Into);
             }
         }
-        explorer.set_clustering(self.clustering);
         explorer.set_lens(self.lens);
         let focus = self
             .focus
@@ -322,8 +289,8 @@ impl Viewer {
                 explorer.clear_selection();
             }
         }
-        explorer.set_nucleus(self.z != ZView::Free);
-        explorer.expand_nucleus(self.z == ZView::Expanded);
+        explorer.gather();
+        explorer.expand_nucleus(self.expanded);
         explorer.hovered_tile = self
             .hover
             .take()

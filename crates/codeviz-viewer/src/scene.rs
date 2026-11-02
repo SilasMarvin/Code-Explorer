@@ -1,5 +1,5 @@
-//! The 3D scene: one glowing sphere per function, placed by the graph simulation, with
-//! the keys that move the cursor and switch what is shown.
+//! The 3D scene: one glowing sphere per function, placed inside its module's sphere,
+//! with the keys that move the cursor and switch what is shown.
 
 use bevy::prelude::*;
 use bevy_egui::{
@@ -10,7 +10,7 @@ use bevy_egui::{
 use crate::{
     camera,
     disclosure::Disclose,
-    explorer::{Autoplay, Clustering, Explorer, Side, Step},
+    explorer::{Autoplay, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
     idle::Awake,
     journey_panel::{JourneyPanel, PanelMode},
@@ -47,15 +47,12 @@ impl Plugin for ScenePlugin {
                 nucleus::double_click.run_if(not(egui_wants_any_pointer_input)),
                 nucleus::follow,
                 nucleus::hover,
-                simulate,
+                place_nodes,
                 reveal,
                 nucleus::place_bodies,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
-                graph_view::follow_focus,
                 nucleus::frame,
-                graph_view::frame_reveal,
-                graph_view::frame_spotlight,
-                (graph_view::reveal_cursor, camera::restore_pose).chain(),
+                camera::restore_pose,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
                 nucleus::draw,
@@ -231,13 +228,6 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
     }
-    if keys.just_pressed(KeyCode::KeyK) {
-        let next = match explorer.clustering() {
-            Clustering::Modules => Clustering::Calls,
-            Clustering::Calls => Clustering::Modules,
-        };
-        explorer.set_clustering(next);
-    }
     dialed
 }
 
@@ -354,15 +344,13 @@ fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake: ResMut<Awa
     }
 }
 
-/// Lets the graph settle, moving its nodes as it does, and moves them wherever else
-/// they go, as when the graph gathers round the focus's module.
-fn simulate(
-    mut explorer: ResMut<Explorer>,
+/// Moves the nodes wherever the nucleus puts them, as it eases round a new middle.
+fn place_nodes(
+    explorer: Res<Explorer>,
     mut placed: Local<Option<u64>>,
     mut nodes: Query<(&Tile, &mut Transform)>,
     mut awake: ResMut<Awake>,
 ) {
-    explorer.bypass_change_detection().simulate(2);
     if *placed == Some(explorer.moved()) {
         return;
     }

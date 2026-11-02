@@ -17,7 +17,7 @@ use crate::{
     disclosure::Disclose,
     drive::{Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
-    graph_view::{CALLEE, CALLER, FURTHER, Relation, shown_relation},
+    graph_view::FURTHER,
     nucleus::{End, Flow, Nucleus},
     ui::node_name,
 };
@@ -87,19 +87,15 @@ pub(crate) fn state(view: &View) -> Value {
     let hidden = explorer.hidden();
     // Expanded in a journey, the view centres on the cursor; the module in the middle
     // is the start's still.
-    let centre = nucleus.and_then(Nucleus::centre);
-    let middle = nucleus.and_then(Nucleus::focus);
+    let centre = nucleus.centre();
+    let middle = nucleus.focus();
     json!({
         "mode": if explorer.browsing() { "browse" } else { "journey" },
         "selection": explorer.selection().map(name),
         "focus": explorer.graph_focus().map(name),
         "centre": centre.map(name),
         "centre_module": middle.and_then(|t| module_of(explorer, t)),
-        "nucleus": match nucleus {
-            None => "off",
-            Some(n) if n.expanded() => "expanded",
-            Some(_) => "modules",
-        },
+        "nucleus": if nucleus.expanded() { "expanded" } else { "modules" },
         "journey_start": explorer.root().map(|u| explorer.unit_name(u)),
         "cursor": explorer.selected().map(|span| json!({
             "number": disclosed.number(span),
@@ -113,7 +109,7 @@ pub(crate) fn state(view: &View) -> Value {
         "hidden": {
             "callers": hidden.callers,
             "journey": hidden.callees,
-            "specks": nucleus.is_some_and(Nucleus::specks_hidden),
+            "specks": nucleus.specks_hidden(),
         },
         "outside_callers": explorer.outside_shown(),
         "spotlight": explorer.spotlight().map(|(side, _)| format!("{side:?}").to_lowercase()),
@@ -125,7 +121,6 @@ pub(crate) fn state(view: &View) -> Value {
         "help": view.help.0,
         "back": explorer.can_go_back(),
         "forward": explorer.can_go_forward(),
-        "camera_free": view.camera_free(),
         "camera": view.orbit_pose().map(|pose| {
             let (target, distance, (yaw, pitch)) = pose.parts();
             json!({
@@ -157,14 +152,13 @@ pub(crate) fn scene(view: &View) -> Value {
         .partition(|t| near(t.clip, screen.graph));
     let drawn = view.drawn();
     let nucleus = explorer.nucleus();
-    let balls: Vec<(usize, Vec2, f32)> = nucleus.map_or_else(Vec::new, |n| {
-        n.balls()
-            .filter_map(|(cluster, ball)| {
-                let at = view.to_screen(ball.center)?;
-                Some((cluster, at, view.screen_radius(ball.center, ball.radius)))
-            })
-            .collect()
-    });
+    let balls: Vec<(usize, Vec2, f32)> = nucleus
+        .balls()
+        .filter_map(|(cluster, ball)| {
+            let at = view.to_screen(ball.center)?;
+            Some((cluster, at, view.screen_radius(ball.center, ball.radius)))
+        })
+        .collect();
     let named = match_labels(explorer, &labels, &drawn, &balls);
     let label_of = |what: Named| named.iter().position(|&n| n == Some(what));
 
@@ -190,7 +184,7 @@ pub(crate) fn scene(view: &View) -> Value {
     let modules: Vec<Value> = balls
         .iter()
         .filter_map(|&(cluster, at, radius)| {
-            let n = nucleus?;
+            let n = nucleus;
             let ball = n.ball(cluster)?;
             let label = label_of(Named::Module(cluster));
             Some(json!({
@@ -227,8 +221,8 @@ pub(crate) fn scene(view: &View) -> Value {
         "state": state(view),
         "nodes": nodes,
         "modules": modules,
-        "arrows": arrows(view, &drawn),
-        "module_arrows": nucleus.map_or_else(Vec::new, |n| module_arrows(explorer, n)),
+        "arrows": arrows(view),
+        "module_arrows": module_arrows(explorer, nucleus),
         "labels": label_list,
         "mislabelled": mislabelled,
         "bars": bars(view),
@@ -317,11 +311,6 @@ fn mislabelled(
     let nodes: Vec<&Drawn> = drawn
         .iter()
         .filter(|d| d.on_screen && !speck(explorer, d.tile))
-        .filter(|d| {
-            explorer.nucleus().is_some()
-                || !roles(explorer, d.tile).is_empty()
-                || named.contains(&Some(Named::Node(d.tile)))
-        })
         .collect();
     labels
         .iter()
@@ -363,11 +352,10 @@ fn mislabelled(
 /// naming nothing a reader can see.
 const FAR_LABEL: f32 = 40.0;
 
-/// Gathered round a module, whether a function is drawn only as a faint speck.
+/// Whether a function is drawn only as a faint speck.
 fn speck(explorer: &Explorer, tile: usize) -> bool {
-    explorer
-        .nucleus()
-        .is_some_and(|n| !n.lit(tile) && n.focus() != Some(tile) && n.hovered() != Some(tile))
+    let n = explorer.nucleus();
+    !n.lit(tile) && n.focus() != Some(tile) && n.hovered() != Some(tile)
 }
 
 /// What a label on the graph names.
@@ -458,73 +446,46 @@ fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
 
 /// What a drawn function is to the view: the centre, the journey's cursor, a caller,
 /// a call of the journey so many levels down, under the pointer, an end of the call
-/// the pointer's function makes or takes; else, gathered round a module, a speck.
+/// the pointer's function makes or takes; else a speck.
 fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     let mut roles = Vec::new();
-    if let Some(n) = explorer.nucleus() {
-        if n.centre() == Some(tile) {
-            roles.push("centre".to_owned());
-        }
-        if n.focus() == Some(tile) && n.centre() != Some(tile) {
-            roles.push("start".to_owned());
-        }
-        if n.marks(tile) {
-            roles.push("cursor".to_owned());
-        }
-        match n.level(tile) {
-            Some(-1) if n.folded(tile) => {
-                roles.push("caller, folded into its module's count".to_owned());
-            }
-            Some(-1) => roles.push("caller".to_owned()),
-            Some(_) if n.aside() => roles.push("callee".to_owned()),
-            Some(level) if level > 0 => roles.push(format!("journey level {level}")),
-            _ => {}
-        }
-        if n.on_journey(tile) {
-            roles.push("on the open journey".to_owned());
-        }
-        if n.hovered() == Some(tile) {
-            roles.push("hovered".to_owned());
-        }
-        if n.touched(tile) {
-            roles.push("end of hovered's call".to_owned());
-        }
-        if roles.is_empty() {
-            roles.push("speck".to_owned());
-        }
-        return roles;
-    }
-    if explorer.lit_focus() == Some(tile) {
+    let n = explorer.nucleus();
+    if n.centre() == Some(tile) {
         roles.push("centre".to_owned());
     }
-    match explorer
-        .reach()
-        .and_then(|r| shown_relation(explorer, r, tile))
-    {
-        Some(Relation::Upstream(hops)) => roles.push(format!("caller, {hops} up")),
-        Some(Relation::Downstream(hops)) => roles.push(format!("callee, {hops} down")),
-        None => {}
+    if n.focus() == Some(tile) && n.centre() != Some(tile) {
+        roles.push("start".to_owned());
     }
-    if explorer.disclosure().tiles().contains_key(&tile) {
-        roles.push("journey".to_owned());
+    if n.marks(tile) {
+        roles.push("cursor".to_owned());
     }
-    if explorer.hovered_tile == Some(tile) {
+    match n.level(tile) {
+        Some(-1) if n.folded(tile) => {
+            roles.push("caller, folded into its module's count".to_owned());
+        }
+        Some(-1) => roles.push("caller".to_owned()),
+        Some(_) if n.aside() => roles.push("callee".to_owned()),
+        Some(level) if level > 0 => roles.push(format!("journey level {level}")),
+        _ => {}
+    }
+    if n.on_journey(tile) {
+        roles.push("on the open journey".to_owned());
+    }
+    if n.hovered() == Some(tile) {
         roles.push("hovered".to_owned());
+    }
+    if n.touched(tile) {
+        roles.push("end of hovered's call".to_owned());
+    }
+    if roles.is_empty() {
+        roles.push("speck".to_owned());
     }
     roles
 }
 
 /// A function's numbers in the open journey.
 fn numbers(explorer: &Explorer, tile: usize) -> Vec<String> {
-    match explorer.nucleus() {
-        Some(n) => n.numbers(tile).to_vec(),
-        None => explorer
-            .disclosure()
-            .tiles()
-            .get(&tile)
-            .cloned()
-            .unwrap_or_default(),
-    }
+    explorer.nucleus().numbers(tile).to_vec()
 }
 
 /// What an arrow's color says.
@@ -538,35 +499,12 @@ fn flow_role(flow: Flow) -> String {
     }
 }
 
-/// Every call drawn as an arrow, function to function: gathered round a module, those
-/// it names and those of the function under the pointer; laid flat, the calls into and
-/// out of the focus between functions drawn.
-fn arrows(view: &View, drawn: &[Drawn]) -> Vec<Value> {
+/// Every call drawn as an arrow, function to function: those the nucleus names and
+/// those of the function under the pointer.
+fn arrows(view: &View) -> Vec<Value> {
     let explorer = &*view.explorer;
     let name = |tile: usize| node_name(explorer, tile);
-    let Some(n) = explorer.nucleus() else {
-        let Some(focus) = explorer.lit_focus() else {
-            return Vec::new();
-        };
-        let hidden = explorer.hidden();
-        let shown = |tile: usize| drawn.iter().any(|d| d.tile == tile);
-        return explorer
-            .graph()
-            .calls
-            .iter()
-            .filter(|&&(from, to)| from != to && shown(from) && shown(to))
-            .filter_map(|&(from, to)| {
-                let (role, color) = if to == focus && !hidden.callers {
-                    ("calls the focus (violet)", CALLER)
-                } else if from == focus && !hidden.callees {
-                    ("the focus's call (blue)", CALLEE)
-                } else {
-                    return None;
-                };
-                Some(json!({ "from": name(from), "to": name(to), "role": role, "color": hex(color) }))
-            })
-            .collect();
-    };
+    let n = explorer.nucleus();
     let end = |end: End| match end {
         End::Function(tile) => name(tile),
         End::Module(cluster) => format!("module {}", explorer.cluster_name(cluster)),
@@ -647,12 +585,12 @@ pub(crate) struct Places {
 impl Places {
     pub(crate) fn of(view: &View) -> Self {
         let explorer = &*view.explorer;
-        let modules = explorer.nucleus().map_or_else(HashMap::new, |n| {
-            n.balls()
-                .filter(|(_, ball)| n.shows_body(ball.body))
-                .map(|(cluster, ball)| (cluster, (ball.center, ball.radius)))
-                .collect()
-        });
+        let n = explorer.nucleus();
+        let modules = n
+            .balls()
+            .filter(|(_, ball)| n.shows_body(ball.body))
+            .map(|(cluster, ball)| (cluster, (ball.center, ball.radius)))
+            .collect();
         Self {
             nodes: view
                 .drawn()

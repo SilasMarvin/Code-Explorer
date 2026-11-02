@@ -37,9 +37,6 @@ struct Display {
     /// How the journey shows over the graph.
     #[arg(long, value_enum, default_value_t = JourneyArg::Docked)]
     journey: JourneyArg,
-    /// What pulls the graph's nodes together.
-    #[arg(long, value_enum, default_value_t = ClusterArg::Modules)]
-    cluster: ClusterArg,
     /// Show only what is within this many steps of where the reveal starts; the rest
     /// dims, then shrinks to specks. Everything shows without it.
     #[arg(long, value_name = "STEPS")]
@@ -85,15 +82,12 @@ struct Display {
     script: Option<PathBuf>,
 }
 
-/// What the third dimension shows at first.
+/// How the view opens.
 #[derive(Debug, clap::Args)]
 struct Third {
-    /// Open with the third dimension showing this (Z toggles it).
-    #[arg(long, value_enum, value_name = "VIEW")]
-    z: Option<ZArg>,
-    /// With `--z nucleus`, open with the nucleus expanded to show how calls run inside
-    /// the focus's module (X toggles it).
-    #[arg(long, requires = "z")]
+    /// Open with the journey's start module expanded to show how calls run inside it
+    /// (X toggles it).
+    #[arg(long)]
     expand: bool,
     /// Open browsing, with no journey open and the focus selected, or without
     /// --focus, nothing: a click selects a function and moves nothing; Enter opens the
@@ -104,9 +98,6 @@ struct Third {
 
 impl Third {
     fn apply(&self, mut viewer: Viewer) -> Viewer {
-        if let Some(ZArg::Nucleus) = self.z {
-            viewer = viewer.with_nucleus();
-        }
         if self.expand {
             viewer = viewer.expanded();
         }
@@ -128,13 +119,6 @@ enum JourneyArg {
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum ZArg {
-    /// The focus's module a glass sphere in the middle, every other module a sphere
-    /// around it; those holding its callers and callees near, opened to name them.
-    Nucleus,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum AroundArg {
     /// The focused function.
     Focus,
@@ -150,14 +134,6 @@ enum NearArg {
     Space,
     /// Distance in the graph, with each call between counting against it.
     Blend,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum ClusterArg {
-    /// Functions in the same container pull together.
-    Modules,
-    /// Only calls pull.
-    Calls,
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
@@ -221,10 +197,6 @@ fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result
             JourneyArg::Hidden => "hidden",
             JourneyArg::Docked => "docked",
             JourneyArg::Full => "full",
-        })
-        .with_clustering(match args.cluster {
-            ClusterArg::Modules => "modules",
-            ClusterArg::Calls => "calls",
         })
         .with_reveal(
             args.reveal_around.map(|around| match around {
