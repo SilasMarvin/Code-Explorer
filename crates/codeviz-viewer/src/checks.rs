@@ -15,7 +15,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use bevy::math::{Vec2, Vec3};
+use bevy::{
+    camera::PerspectiveProjection,
+    math::{EulerRot, Quat, Vec2, Vec3},
+};
 use bevy_egui::egui;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -109,6 +112,9 @@ const HUE_SLACK: f32 = 25.0;
 const GREY: f32 = 0.3;
 /// A color this near white, in every channel (0 to 1), reads as the selection's.
 const WHITE: f32 = 0.85;
+/// Room the framing leaves round a lit dot for it to show whole, in points: a depth
+/// change draws the camera back for a dot nearer the free area's edge than this.
+const SHOWN_WHOLE: f32 = 10.0;
 /// Offenders listed per check; `count` says how many in all.
 const LISTED: usize = 12;
 
@@ -1122,34 +1128,30 @@ fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
         let why = "a depth change may only draw the camera back";
         return vec![(f32::MAX, json!({ "camera": camera, "why": why }))];
     }
-    // Where what came in would have shown from where the camera was: drawn back
-    // about what it looks at, a point there shows as much further out from it as
-    // the camera is further.
-    let Some(middle) = now.camera.and_then(|c| c.target_at) else {
-        return Vec::new();
-    };
     let old: Vec<&str> = before
         .nodes
         .iter()
         .filter_map(|n| n.unit.as_deref())
         .collect();
     // The free area as the depth change left it: a taller panel takes more of it.
-    let free = now.free();
-    let k = b.distance / a.distance.max(f32::EPSILON);
+    let free = now.free().shrink(SHOWN_WHOLE);
     let came: Vec<&Node> = now
         .nodes
         .iter()
         .filter(|n| n.unit.as_deref().is_some_and(|u| !old.contains(&u)))
         .collect();
-    // What came in, or anything of the journey's the free area, now smaller under a
-    // taller panel, no longer holds.
+    // What came in, or anything of the journey's, as the camera from before would
+    // have shown it: off the free area, or too near its edge to show whole, draws
+    // the camera back.
     let judged = now
         .nodes
         .iter()
         .filter(|n| n.in_journey() || n.unit.as_deref().is_some_and(|u| !old.contains(&u)));
     let off = judged.into_iter().any(|n| {
-        let was = v2(middle) + (v2(n.at) - v2(middle)) * k;
-        circle_out(free, was, n.radius) > EDGE
+        n.world.is_some_and(|world| {
+            shown_from(a, rect(now.graph_area), Vec3::from_array(world))
+                .is_none_or(|was| !free.contains(egui::pos2(was.x, was.y)))
+        })
     });
     if off {
         return Vec::new();
@@ -1163,6 +1165,24 @@ fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
         f32::MAX,
         json!({ "camera": camera, "why": why, "came_in": came.len() }),
     )]
+}
+
+/// Where `world` shows, in window points, seen by `camera` filling `graph` with the
+/// viewer's field of view; none behind it.
+fn shown_from(camera: Camera, graph: egui::Rect, world: Vec3) -> Option<Vec2> {
+    let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+    let eye = Vec3::from_array(camera.target) + rotation * Vec3::Z * camera.distance;
+    let local = rotation.inverse() * (world - eye);
+    let depth = -local.z;
+    if depth <= f32::EPSILON || graph.height() <= 0.0 {
+        return None;
+    }
+    let up = (PerspectiveProjection::default().fov / 2.0).tan();
+    let across = up * graph.width() / graph.height();
+    Some(Vec2::new(
+        graph.center().x + local.x / (depth * across) * graph.width() / 2.0,
+        graph.center().y - local.y / (depth * up) * graph.height() / 2.0,
+    ))
 }
 
 /// Names that went while what they name is still drawn on screen: a step that only
@@ -2300,13 +2320,13 @@ mod tests {
     }
 
     /// The scene after a depth change that drew the camera back to twice as far,
-    /// bringing in `k` at `at`.
-    fn deeper(at: [f32; 2]) -> Value {
+    /// bringing in `k` at `world`, `along` the usual view's right from the middle.
+    fn deeper(along: f32) -> Value {
         let mut now = scene();
         now["state"]["camera"]["distance"] = json!(200.0);
-        now["camera"] = json!({ "at": [0.0, 0.0, 200.0], "target_at": [800.0, 500.0] });
+        let world = (crate::nucleus::view_rotation() * Vec3::X * along).to_array();
         let k = json!({ "name": "k", "unit": "x:b::k", "module": "b", "roles": ["journey level 2"],
-            "at": at, "radius": 4.0, "world": [10.0, 1.0, 0.0], "world_radius": 0.2, "on_screen": true });
+            "at": [800.0, 500.0], "radius": 4.0, "world": world, "world_radius": 0.2, "on_screen": true });
         now["nodes"].as_array_mut().unwrap().push(k);
         now
     }
@@ -2314,21 +2334,26 @@ mod tests {
     #[test]
     fn a_depth_change_draws_the_camera_back_only_when_what_came_in_needs_it() {
         let before = scene();
-        // From where the camera was, k would have shown at 800 + 2 × 700.
-        let needed = after(
-            &before,
-            &deeper([1500.0, 500.0]),
-            &[Kind::Depth],
-            "nothing-moved",
-        );
+        let camera = Camera {
+            target: [0.0; 3],
+            distance: 100.0,
+            yaw: VIEW.0,
+            pitch: VIEW.1,
+            held: false,
+        };
+        let graph = egui::Rect::from_min_max(egui::pos2(0.0, 24.0), egui::pos2(1600.0, 1000.0));
+        let shows = |along: f32| {
+            let world = crate::nucleus::view_rotation() * Vec3::X * along;
+            shown_from(camera, graph, world).unwrap()
+        };
+        assert!((shows(0.0) - Vec2::new(800.0, 512.0)).length() < 1e-3);
+        // From where the camera was, k would have shown off the right edge.
+        assert!(shows(80.0).x > 1600.0);
+        let needed = after(&before, &deeper(80.0), &[Kind::Depth], "nothing-moved");
         assert!(passes(&needed), "{needed}");
-        // At 800 + 2 × 100 it would have shown anyway.
-        let result = after(
-            &before,
-            &deeper([900.0, 500.0]),
-            &[Kind::Depth],
-            "nothing-moved",
-        );
+        // Near the middle it would have shown anyway.
+        assert!(shows(10.0).x < 1400.0);
+        let result = after(&before, &deeper(10.0), &[Kind::Depth], "nothing-moved");
         assert!(!passes(&result));
         assert!(
             result["offenders"][0]["why"]
