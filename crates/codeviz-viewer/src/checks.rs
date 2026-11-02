@@ -44,8 +44,10 @@ const SPHERE_OVERLAP: f32 = 0.002;
 /// Largest sphere's radius against the smallest's (CORE: "no more than ~4×").
 const SPHERE_RATIO: f32 = 4.0;
 /// Farthest a function's name may sit from its dot, and a module's from its sphere's
-/// rim, edge to edge, in points.
-const LABEL_REACH: f32 = 40.0;
+/// rim, edge to edge, in points (CORE: "≤ ~40 px"); past it a name names nothing a
+/// reader can see. The placer keeps to its own rule of the same reach,
+/// [`crate::labels`]'s `NEAR`.
+pub(crate) const LABEL_REACH: f32 = 40.0;
 /// Smallest and largest font size of a function's name, in points.
 const NAME_SIZES: (f32, f32) = (11.0, 18.0);
 /// Most distinct font sizes on screen at once: module name, function name, panel,

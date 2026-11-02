@@ -26,7 +26,7 @@ use crate::{
     disclosure::{self, Disclose, Disclosed},
     history::{History, Seen, View},
     module_names,
-    nucleus::{Body, Nucleus, Trail},
+    nucleus::{Nucleus, Trail},
 };
 
 /// How sure we are that a span really happens as drawn.
@@ -207,9 +207,6 @@ pub(crate) struct Explorer {
     /// The graph gathered into module spheres: browsing, the whole codebase; in a
     /// journey, round its start's module.
     nucleus: Nucleus,
-    /// The disclosure, and whether the view browsed, the nucleus's trail was last
-    /// worked out for.
-    traced: Option<(Arc<Disclosed>, bool)>,
     /// Whether a journey is open, or the view browses.
     mode: ViewMode,
     /// Browsing, the function last clicked: what the view lights, and what Enter opens
@@ -255,8 +252,7 @@ impl Explorer {
                 break;
             }
         }
-        // Round nothing for now: gathered for real by `gather`.
-        let nucleus = Nucleus::gather(&graph, None, Trail::default(), false);
+        let nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
         let module_names = {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
                 .map(|cluster| {
@@ -285,7 +281,6 @@ impl Explorer {
             aside: None,
             revision: 0,
             nucleus,
-            traced: None,
             mode: ViewMode::Browse,
             selection: None,
             outside: false,
@@ -379,6 +374,7 @@ impl Explorer {
         // The panel follows the cursor afresh.
         self.revision += 1;
         self.disclose_again();
+        self.sync_nucleus();
     }
 
     /// Goes somewhere: whatever `go` changes, the view before it is remembered, so
@@ -388,6 +384,7 @@ impl Explorer {
         // Where the camera stood, a module expanded or not.
         let resting = self.expand_pose.or(self.pose);
         go(self);
+        self.sync_nucleus();
         if before.mode == ViewMode::Browse && self.mode == ViewMode::Journey {
             self.browse_pose = resting;
         }
@@ -575,6 +572,7 @@ impl Explorer {
     pub(crate) fn toggle_outside(&mut self) {
         if !self.browsing() {
             self.outside = !self.outside;
+            self.sync_nucleus();
         }
     }
 
@@ -629,17 +627,8 @@ impl Explorer {
     /// Gathers the graph into spheres round where the view now is, at once, with
     /// nothing easing there: as the window opens.
     pub(crate) fn gather(&mut self) {
-        self.traced = Some((Arc::clone(&self.disclosed), self.browsing()));
-        let mut nucleus = Nucleus::gather(
-            &self.graph,
-            self.nucleus_start(),
-            self.trail(),
-            self.browsing(),
-        );
-        nucleus.set_outside(&self.graph, self.outside);
-        nucleus.set_cursor(self.cursor());
-        while nucleus.advance(1.0) {}
-        self.nucleus = nucleus;
+        self.sync_nucleus();
+        while self.nucleus.advance(1.0) {}
     }
 
     /// X or a double click. With a module expanded, shrinks it back, and the camera
@@ -677,7 +666,7 @@ impl Explorer {
         let sphere = self.module_under_pointer.filter(|&cluster| {
             self.nucleus
                 .ball(cluster)
-                .is_some_and(|ball| self.browsing() || ball.body != Body::Closed)
+                .is_some_and(|ball| self.nucleus.shows_body(ball.body))
         });
         self.under_pointer
             .and_then(|tile| self.graph.cluster(tile))
@@ -727,42 +716,42 @@ impl Explorer {
         }
     }
 
-    /// The open journey from its start, as the nucleus names it; browsing, none.
-    fn trail(&self) -> Trail {
-        if self.browsing() {
-            return Trail::default();
-        }
-        disclosure::trail(&self.track, &self.map, &self.disclosed)
-    }
-
-    /// Re-centers the nucleus when the function it is gathered round changes, marks the
-    /// journey's cursor where it sits, and eases it along by `dt` seconds. Returns
-    /// whether what it shows changed, rather than only moved.
-    pub(crate) fn ease_nucleus(&mut self, dt: f32) -> bool {
+    /// Tells the nucleus what it gathers round now: whether the view browses, the
+    /// function in the middle, the journey from it, its outside callers and its
+    /// cursor. It eases there from wherever things are. Every change to any of them
+    /// ends here.
+    fn sync_nucleus(&mut self) {
         let start = self.nucleus_start();
         let cursor = self.cursor();
         let browsing = self.browsing();
-        let traced = self
-            .traced
-            .as_ref()
-            .is_some_and(|(d, b)| Arc::ptr_eq(d, &self.disclosed) && *b == browsing);
-        let trail = (!traced).then(|| self.trail());
+        let outside = self.outside;
+        let graph = &self.graph;
+        let trail = if browsing {
+            &Trail::default()
+        } else {
+            self.disclosed.trail()
+        };
         let nucleus = &mut self.nucleus;
-        let mut recentered = nucleus.set_browse(&self.graph, browsing);
-        nucleus.set_outside(&self.graph, self.outside);
+        let mut recentered = nucleus.set_browse(graph, browsing);
+        nucleus.set_outside(graph, outside);
         recentered |= nucleus.start() != start;
         if recentered {
-            nucleus.recenter(&self.graph, start);
+            nucleus.recenter(graph, start);
         }
-        if let Some(trail) = trail {
-            self.traced = Some((Arc::clone(&self.disclosed), browsing));
-            recentered |= nucleus.retrace(&self.graph, trail);
-        }
+        recentered |= nucleus.retrace(graph, trail);
         let marked = nucleus.set_cursor(cursor);
-        if nucleus.advance(dt) || recentered || marked {
+        if recentered || marked {
             self.moved += 1;
         }
-        recentered || marked
+    }
+
+    /// Eases the nucleus along by `dt` seconds. Returns whether anything moved.
+    pub(crate) fn ease_nucleus(&mut self, dt: f32) -> bool {
+        let moved = self.nucleus.advance(dt);
+        if moved {
+            self.moved += 1;
+        }
+        moved
     }
 
     /// The function set aside in a journey, if any.
@@ -831,6 +820,7 @@ impl Explorer {
     pub(crate) fn set_disclose(&mut self, disclose: Disclose) {
         self.disclose = disclose;
         self.disclose_again();
+        self.sync_nucleus();
     }
 
     /// Opens or folds the calls under one span, past the disclosed depth.
@@ -840,6 +830,7 @@ impl Explorer {
             expanded.insert(span);
         }
         self.disclose_again();
+        self.sync_nucleus();
     }
 
     /// Works out what the journey discloses again, after the journey, its depth or
@@ -919,6 +910,7 @@ impl Explorer {
     pub(crate) fn step(&mut self, step: Step) -> Option<SpanId> {
         let before = self.view();
         let next = self.walk(step);
+        self.sync_nucleus();
         if !self.walking && self.view() != before {
             self.history.leave(before);
             self.walking = true;
@@ -1770,7 +1762,7 @@ pub(crate) mod tests {
             [a, b, c].map(|t| nucleus.level(t).is_some())
         };
         assert_eq!(names(&explorer), [true, true, false], "one level down");
-        assert_eq!(explorer.nucleus().numbers(b), ["2"]);
+        assert_eq!(explorer.disclosure().tiles()[&b], ["2"]);
 
         explorer.click(c, None);
         explorer.ease_nucleus(1.0);
@@ -1792,7 +1784,7 @@ pub(crate) mod tests {
         explorer.set_disclose(Disclose(2));
         explorer.ease_nucleus(1.0);
         assert_eq!(names(&explorer), [true, true, true], "two levels down");
-        assert_eq!(explorer.nucleus().numbers(c), ["1.1"]);
+        assert_eq!(explorer.disclosure().tiles()[&c], ["1.1"]);
         assert_eq!(explorer.nucleus().level(c), Some(2));
     }
 

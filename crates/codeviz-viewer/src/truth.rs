@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use crate::{
     drive::{Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
+    labels::node_name,
     nucleus::Flow,
-    ui::node_name,
 };
 
 /// The view's content, as JSON.
@@ -159,12 +159,12 @@ pub(crate) fn scene(view: &View) -> Value {
         })
         .collect();
     let named = match_labels(explorer, &labels, &screen.labels, &balls);
-    let label_of = |what: Named| named.iter().position(|&n| n == Some(what));
+    let label_of = |what: Labelled| named.iter().position(|&n| n == Some(what));
 
     let nodes: Vec<Value> = drawn
         .iter()
         .map(|d| {
-            let label = label_of(Named::Node(d.tile));
+            let label = label_of(Labelled::Node(d.tile));
             json!({
                 "name": node_name(explorer, d.tile),
                 "unit": explorer.tile_unit(d.tile).map(ToString::to_string),
@@ -189,7 +189,7 @@ pub(crate) fn scene(view: &View) -> Value {
         .filter_map(|&(cluster, at, radius)| {
             let n = nucleus;
             let ball = n.ball(cluster)?;
-            let label = label_of(Named::Module(cluster));
+            let label = label_of(Labelled::Module(cluster));
             Some(json!({
                 "name": explorer.cluster_name(cluster),
                 "body": format!("{:?}", ball.body).to_lowercase(),
@@ -262,7 +262,7 @@ fn label_entries(
     explorer: &Explorer,
     screen: &Screen,
     labels: &[&Painted],
-    named: &[Option<Named>],
+    named: &[Option<Labelled>],
 ) -> Vec<Value> {
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, screen.window);
     labels
@@ -284,12 +284,12 @@ fn label_entries(
                 .map(|(name, _)| name.as_str())
                 .collect();
             let (kind, of, unit) = match named[index] {
-                Some(Named::Node(tile)) => (
+                Some(Labelled::Node(tile)) => (
                     "function",
                     Some(node_name(explorer, tile)),
                     explorer.tile_unit(tile).map(ToString::to_string),
                 ),
-                Some(Named::Module(cluster)) => {
+                Some(Labelled::Module(cluster)) => {
                     ("module", Some(explorer.cluster_name(cluster)), None)
                 }
                 None => ("other", None, None),
@@ -319,7 +319,7 @@ fn speck(explorer: &Explorer, tile: usize) -> bool {
 
 /// What a label on the graph names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Named {
+enum Labelled {
     Node(usize),
     Module(usize),
 }
@@ -333,17 +333,17 @@ fn match_labels(
     labels: &[&Painted],
     pills: &[(egui::Rect, usize)],
     balls: &[(usize, Vec2, f32)],
-) -> Vec<Option<Named>> {
+) -> Vec<Option<Labelled>> {
     // How far a module's name may sit from its sphere's rim.
     const REACH: f32 = 160.0;
-    let mut named: Vec<Option<Named>> = labels
+    let mut named: Vec<Option<Labelled>> = labels
         .iter()
         .map(|label| {
             pills
                 .iter()
                 .rev()
                 .find(|(pill, _)| pill.contains(label.rect.center()))
-                .map(|&(_, tile)| Named::Node(tile))
+                .map(|&(_, tile)| Labelled::Node(tile))
         })
         .collect();
     let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
@@ -363,7 +363,7 @@ fn match_labels(
     let mut taken = Vec::new();
     for (_, label, cluster) in pairs {
         if named[label].is_none() && !taken.contains(&cluster) {
-            named[label] = Some(Named::Module(cluster));
+            named[label] = Some(Labelled::Module(cluster));
             taken.push(cluster);
         }
     }
@@ -450,7 +450,12 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
 
 /// A function's numbers in the open journey.
 fn numbers(explorer: &Explorer, tile: usize) -> Vec<String> {
-    explorer.nucleus().numbers(tile).to_vec()
+    explorer
+        .disclosure()
+        .tiles()
+        .get(&tile)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// What an arrow's color says.

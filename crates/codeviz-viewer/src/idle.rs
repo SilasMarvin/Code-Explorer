@@ -33,7 +33,7 @@ pub(crate) struct Awake(pub(crate) bool);
 /// What the view shows that the panel can change after the scene's systems have run
 /// for the frame: the cursor, what is under the pointer, the depth, the function set
 /// aside and the start.
-type Shown = (
+type Watched = (
     Option<SpanId>,
     Option<usize>,
     Disclose,
@@ -45,7 +45,7 @@ fn keep_awake(
     mut awake: ResMut<Awake>,
     cameras: Query<&OrbitCamera>,
     explorer: Option<Res<Explorer>>,
-    mut shown: Local<Option<Shown>>,
+    mut shown: Local<Option<Watched>>,
     mut redraw: MessageWriter<RequestRedraw>,
 ) {
     // A click or hover in the journey panel lands after the scene has drawn the

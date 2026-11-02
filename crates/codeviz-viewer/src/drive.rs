@@ -40,13 +40,14 @@ use crate::{
     explorer::Explorer,
     idle::Awake,
     keys::Press,
+    labels::node_name,
     nucleus::Flow,
     scene::Tile,
     script::{
-        Expect, Gesture, Kind, Line, Name, Spot, Step, bar_number, close_matches, snap_label,
+        Aim, Expect, Gesture, Kind, Line, Name, Step, bar_number, close_matches, snap_label,
         snap_name, unknown,
     },
-    ui::{Chrome, KeyHelp, node_name},
+    ui::{Chrome, KeyHelp},
 };
 
 /// Frames to let the scene settle (assets load, camera eases) before the first step.
@@ -856,7 +857,7 @@ fn record(
         widgets: clickable,
         bars,
         overlays,
-        labels: crate::ui::drawn_labels(&ctx),
+        labels: crate::labels::drawn_labels(&ctx),
         search,
         scale: window.scale_factor(),
     };
@@ -1594,9 +1595,9 @@ fn double_click_module(drive: &mut Drive, view: &View, module: &str) -> Result<V
 
 /// A wheel turn with the pointer on a function or a point first, else where it is
 /// (the graph's middle before it has moved).
-fn scroll(drive: &Drive, view: &View, by: Vec2, at: Option<&Spot>) -> Result<Vec<Act>, String> {
+fn scroll(drive: &Drive, view: &View, by: Vec2, at: Option<&Aim>) -> Result<Vec<Act>, String> {
     let to = match at {
-        Some(Spot::Unit(unit)) => {
+        Some(Aim::Unit(unit)) => {
             let drawn = view.find(drive.names.unit(unit)?).map_err(|why| {
                 format!(
                     "cannot scroll at {unit}: {why}; scroll at a point, or bring it on \
@@ -1605,7 +1606,7 @@ fn scroll(drive: &Drive, view: &View, by: Vec2, at: Option<&Spot>) -> Result<Vec
             })?;
             Some(drawn.at)
         }
-        Some(Spot::At(point)) => Some(*point),
+        Some(Aim::At(point)) => Some(*point),
         None => drive.pointer.is_none().then(|| graph_middle(view)),
     };
     let mut acts = Vec::new();

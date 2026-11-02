@@ -7,7 +7,7 @@ use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, input::EguiWantsInput};
 
 use crate::{
-    camera::OrbitCamera, explorer::Explorer, idle::Awake, nucleus::Nucleus, scene::Tile, ui,
+    camera::OrbitCamera, explorer::Explorer, idle::Awake, labels, nucleus::Nucleus, scene::Tile,
 };
 
 /// How far past a function's drawn edge, in points, the pointer still counts as on it.
@@ -19,7 +19,7 @@ const CLICK_TRAVEL: f32 = 4.0;
 
 /// A function on screen, as the pointer may find it.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Spot {
+pub(crate) struct OnScreen {
     pub(crate) tile: usize,
     /// Where its middle shows, and how far its edge is from it, in window points.
     pub(crate) at: Vec2,
@@ -33,7 +33,7 @@ pub(crate) struct Spot {
 /// The function the pointer at `pointer` is on, of `spots`: a named function before a
 /// speck, one whose disc holds the pointer before one it only grazes, then the
 /// nearest the camera.
-pub(crate) fn pick(spots: &[Spot], pointer: Vec2) -> Option<usize> {
+pub(crate) fn pick(spots: &[OnScreen], pointer: Vec2) -> Option<usize> {
     spots
         .iter()
         .filter_map(|spot| {
@@ -67,7 +67,7 @@ pub(crate) fn point(
             let named = contexts
                 .ctx_mut()
                 .ok()
-                .and_then(|ctx| ui::label_at(ctx, egui_pos(pointer)))
+                .and_then(|ctx| labels::label_at(ctx, egui_pos(pointer)))
                 .filter(|(tile, _)| explorer.nucleus().drawn(*tile))
                 .map(|(tile, on_label)| {
                     number = on_label;
@@ -75,7 +75,7 @@ pub(crate) fn point(
                 });
             named.or_else(|| {
                 let (camera, view) = cameras.single().ok()?;
-                let spots: Vec<Spot> = tiles
+                let spots: Vec<OnScreen> = tiles
                     .iter()
                     .filter(|(tile, _, seen)| seen.get() && explorer.nucleus().drawn(tile.0))
                     .filter_map(|(tile, placed, _)| spot(&explorer, camera, view, tile.0, placed))
@@ -119,7 +119,7 @@ fn spot(
     view: &GlobalTransform,
     tile: usize,
     placed: &GlobalTransform,
-) -> Option<Spot> {
+) -> Option<OnScreen> {
     let middle = placed.translation();
     let at = camera.world_to_viewport(view, middle).ok()?;
     // The sphere is half a unit across before it is scaled.
@@ -127,7 +127,7 @@ fn spot(
     let edge = camera
         .world_to_viewport(view, middle + view.up() * radius)
         .ok()?;
-    Some(Spot {
+    Some(OnScreen {
         tile,
         at,
         radius: at.distance(edge),
@@ -351,8 +351,8 @@ pub(crate) fn hover(
 mod tests {
     use super::*;
 
-    fn spot(tile: usize, x: f32, radius: f32, depth: f32, speck: bool) -> Spot {
-        Spot {
+    fn spot(tile: usize, x: f32, radius: f32, depth: f32, speck: bool) -> OnScreen {
+        OnScreen {
             tile,
             at: Vec2::new(x, 0.0),
             radius,

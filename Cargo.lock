@@ -2408,6 +2408,7 @@ dependencies = [
  "blake3",
  "codeviz-core",
  "codeviz-ir",
+ "glam",
 ]
 
 [[package]]
