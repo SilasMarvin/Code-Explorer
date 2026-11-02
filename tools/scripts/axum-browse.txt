@@ -1,0 +1,55 @@
+#: view demo/out/axum-server.json
+# Browse on the small demo: a click selects and moves nothing; a click on empty
+# space deselects; `/` finds a function and Enter selects it in place; the wheel
+# zooms about the pointer and stops at the whole map; F frames, R shows everything.
+snap open
+expect mode browse
+expect selection none
+
+click pricing::quote
+expect selection pricing::quote
+expect named pricing::quote
+expect nothing-moved
+snap select by dot
+
+click-label orders::place
+expect selection orders::place
+expect nothing-moved
+snap select by name
+
+hover pricing::quote
+expect nothing-moved
+snap hover
+
+click-empty
+expect selection none
+expect nothing-moved
+snap deselect
+
+key /
+expect search true
+type quote
+key enter
+expect search false
+expect selection pricing::quote
+snap searched
+
+key f
+expect check framed
+snap f
+
+scroll 3 at pricing::quote
+expect check zoom-to-pointer
+snap wheel in
+
+scroll -3 at pricing::quote
+expect check zoom-to-pointer
+snap wheel out
+
+scroll -40
+expect check zoom-bounds
+snap wheel out far
+
+key r
+expect check framed
+snap r

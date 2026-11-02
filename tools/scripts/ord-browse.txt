@@ -1,0 +1,53 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json
+# Browse on this repo's own call graph (about 2,300 functions): search selects in
+# place; clicks on dots and names select and move nothing; a click on empty space
+# deselects; F frames the selection; the wheel zooms about the pointer and stops at
+# the whole map; R shows everything from the front.
+snap open
+expect mode browse
+
+key /
+type spotlit
+key enter
+expect selection Explorer::spotlit
+expect named Explorer::spotlit
+expect nothing-moved
+snap searched
+
+click-label Explorer::graph_focus
+expect selection Explorer::graph_focus
+expect nothing-moved
+snap select by name
+
+click Explorer::spotlit
+expect selection Explorer::spotlit
+expect nothing-moved
+snap select by dot
+
+hover-label Explorer::spotlight
+expect nothing-moved
+snap hover name
+
+key f
+expect check framed
+snap f
+
+scroll 3 at Explorer::spotlit
+expect check zoom-to-pointer
+snap wheel in
+
+scroll -3 at Explorer::spotlit
+expect check zoom-to-pointer
+snap wheel out
+
+click-empty
+expect selection none
+snap deselect
+
+scroll -40
+expect check zoom-bounds
+snap wheel out far
+
+key r
+expect check framed
+snap r

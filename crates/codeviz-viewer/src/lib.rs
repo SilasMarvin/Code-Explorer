@@ -53,6 +53,8 @@ pub struct Viewer {
     /// A session's steps, each with its line; with one, the screenshot path is the
     /// directory its snapshots go in.
     script: Option<Vec<script::Line>>,
+    /// Whether to look the script's names up and stop, without opening the window.
+    check_script: bool,
     step: usize,
     focus: Option<UnitId>,
     /// The function a screenshot puts the pointer over.
@@ -93,6 +95,7 @@ impl Viewer {
             screenshot: None,
             keys: Vec::new(),
             script: None,
+            check_script: false,
             step: 0,
             focus: None,
             hover: None,
@@ -190,6 +193,13 @@ impl Viewer {
         self
     }
 
+    /// Only reads the script and looks up what it names, without opening the window.
+    #[must_use]
+    pub fn checking_script(mut self) -> Self {
+        self.check_script = true;
+        self
+    }
+
     fn explorer(&mut self) -> Explorer {
         let mut explorer =
             Explorer::new(std::mem::take(&mut self.system), None, self.options.clone());
@@ -241,6 +251,11 @@ impl Viewer {
             Some(Ok(names)) => names,
             None => drive::Names::default(),
         };
+        if self.check_script {
+            let steps = self.script.as_ref().map_or(0, Vec::len);
+            println!("script ok: {steps} steps, every name found");
+            return AppExit::Success;
+        }
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {

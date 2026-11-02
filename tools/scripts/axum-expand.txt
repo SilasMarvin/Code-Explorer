@@ -1,0 +1,52 @@
+#: view demo/out/axum-server.json
+# Zooming into a module and back out on the small demo, browsing and in a journey:
+# X or a double click flies in so the module fills the view; X again or Esc flies
+# back to exactly where the camera was, however it moved meanwhile.
+click pricing::quote
+snap before x
+
+key x
+expect nucleus expanded
+expect check expanded-fill
+snap expanded
+
+scroll 2 at pricing::quote
+expect check zoom-to-pointer
+snap zoomed in
+
+drag 80 0
+snap orbited
+
+key x
+expect nucleus modules
+expect camera-same-as before x
+snap collapsed
+
+doubleclick-module pricing
+expect nucleus expanded
+expect check expanded-fill
+snap double clicked
+
+key esc
+expect nucleus modules
+expect camera-same-as collapsed
+snap esc collapses
+
+shift+click orders::place
+expect mode journey
+expect start orders::place
+snap journey
+
+key x
+expect nucleus expanded
+expect check expanded-fill
+snap journey expanded
+
+key down
+expect cursor users::find_user
+snap cursor while expanded
+
+key x
+expect nucleus modules
+expect camera-same-as journey
+snap journey collapsed

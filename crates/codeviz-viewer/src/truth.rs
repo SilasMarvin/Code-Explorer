@@ -399,7 +399,12 @@ fn match_labels(
         let name = explorer.cluster_name(cluster).to_uppercase();
         consider(Named::Module(cluster), &name, at, radius);
     }
-    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Module names first: theirs are in capitals and hold counts, so a function named
+    // like a word in one (`of` in `EXPLORER 3 of 106`) must not take it.
+    pairs.sort_by(|a, b| {
+        let node = |what: &Named| matches!(what, Named::Node(_));
+        node(&a.2).cmp(&node(&b.2)).then(a.0.total_cmp(&b.0))
+    });
     let mut named = vec![None; labels.len()];
     let mut taken = Vec::new();
     for (_, label, what) in pairs {

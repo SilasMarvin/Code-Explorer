@@ -63,6 +63,10 @@ struct Display {
         conflicts_with = "keys"
     )]
     script: Option<PathBuf>,
+    /// With --script, read it and look up every function and module it names, then
+    /// exit without opening the window.
+    #[arg(long, requires = "script")]
+    check_script: bool,
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
@@ -128,6 +132,9 @@ fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result
     }
     if let Some(script) = script {
         viewer = viewer.with_script(script);
+    }
+    if args.check_script {
+        viewer = viewer.checking_script();
     }
     if viewer.run().is_error() {
         bail!("viewer exited with an error");

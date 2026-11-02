@@ -1,0 +1,51 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus Finder::walk
+# Zooming into a module and back out on this repo's own graph, in a journey opened by
+# --focus and then browsing: X or a double click flies in so the module fills the
+# view; X again or Esc flies back to exactly where the camera was.
+expect mode journey
+expect start Finder::walk
+snap journey
+
+key x
+expect nucleus expanded
+expect check expanded-fill
+snap expanded
+
+scroll 3 at Finder::walk
+expect check zoom-to-pointer
+snap zoomed in
+
+drag 60 20
+snap orbited
+
+key x
+expect nucleus modules
+expect camera-same-as journey
+snap collapsed
+
+doubleclick-module scenario
+expect nucleus expanded
+expect check expanded-fill
+snap double clicked
+
+key esc
+expect nucleus modules
+expect camera-same-as collapsed
+snap esc collapses
+
+key esc
+expect mode browse
+snap browse
+
+click-label Finder::walk
+expect selection Finder::walk
+snap selected
+
+key x
+expect nucleus expanded
+expect check expanded-fill
+snap browse expanded
+
+key x
+expect camera-same-as selected
+snap browse collapsed

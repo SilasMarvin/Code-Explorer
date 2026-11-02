@@ -9,6 +9,9 @@
   tools/drive suite [--wt DIR] [--only TEXT]... [--prefix P]
       Runs every tools/scripts/*.txt (or those whose name holds TEXT), one window at a
       time, and prints a pass/fail table and the failing checks and expects.
+  tools/drive check SCRIPT... [--wt DIR]
+      Reads each script and looks up every function and module it names, without
+      opening a window: a misspelt name is reported with the nearest ones.
   tools/drive read NAME
       Prints the summary of a session already run.
   tools/drive shot NAME [--wt DIR] -- VIEW ARGS [--keys "K1 K2"] [--hover UNIT]
@@ -228,11 +231,38 @@ def run_session(name, script, wt=REPO, view_args=None, quiet=False, into=None):
         raise Trouble(f"codeviz exited {code}:\n{viewer_errors(log)}")
     shrink_pngs(out)
     summary_file = out / "checks.json"
-    if not summary_file.exists():
-        raise Trouble(f"no checks.json in {out}: was {exe} built from this harness?\n{viewer_errors(log)}")
-    summary = json.loads(summary_file.read_text())
+    if summary_file.exists():
+        summary = json.loads(summary_file.read_text())
+    else:
+        summary = older_summary(out)
     summary.update(name=name, dir=str(out))
     return summary
+
+
+def check_script(script, wt=REPO, view_args=None):
+    """Reads a script and looks up its names in the viewer, no window; raises Trouble
+    saying what is wrong."""
+    script = Path(script).resolve()
+    view_args = view_args or header_args(script.read_text())
+    if not view_args:
+        raise Trouble(f"{script}: no view args: give them after `--`, or a `#: view DATA [FLAGS]` line")
+    exe = binary(wt)
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "check.log"
+        argv = [str(exe), *view_args, "--script", str(script), "--screenshot", tmp, "--check-script"]
+        if guarded(argv, Path(wt).resolve(), log, 300) != 0:
+            raise Trouble(f"{script.name}:\n{viewer_errors(log)}")
+
+
+def older_summary(out):
+    """A viewer from before the checks writes no checks.json: the failed steps alone."""
+    session = out / "session.json"
+    steps = json.loads(session.read_text())["steps"] if session.exists() else []
+    failed = [s for s in steps if not s.get("ok")]
+    print(f"note: {out} has no checks.json (a viewer from before the checks); steps only",
+          file=sys.stderr)
+    return {"ok": not failed, "checks": {}, "expects": [], "snaps": {},
+            "failed_steps": failed}
 
 
 def viewer_errors(log):
@@ -311,6 +341,15 @@ def suite(wt, only, prefix):
     scripts = sorted(p for p in SCRIPTS.glob("*.txt") if not only or any(o in p.stem for o in only))
     if not scripts:
         raise Trouble(f"no scripts in {SCRIPTS} match {only}")
+    # Every name in every script first, so a typo fails before any window opens.
+    problems = []
+    for script in scripts:
+        try:
+            check_script(script, wt)
+        except Trouble as error:
+            problems.append(str(error))
+    if problems:
+        raise Trouble("\n".join(problems))
     rows = []
     for script in scripts:
         name = prefix + script.stem
@@ -396,6 +435,13 @@ def main(argv):
         only = option(mine, "--only", many=True)
         prefix = option(mine, "--prefix", "suite-")
         return 0 if suite(wt, only, prefix) else 1
+    if command == "check":
+        if not mine:
+            raise Trouble("usage: tools/drive check SCRIPT... [--wt DIR] [-- VIEW ARGS]")
+        for script in mine:
+            check_script(script, wt, view_args)
+            print(f"{script}: ok")
+        return 0
     if command == "read":
         if len(mine) != 1:
             raise Trouble("usage: tools/drive read NAME")

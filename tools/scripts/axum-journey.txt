@@ -1,0 +1,81 @@
+#: view demo/out/axum-server.json
+# A journey on the small demo: Enter opens the selection's journey; the cursor walks
+# by keys, bars and clicks, and nothing moves but the highlight; depth and `i` show
+# more and move nothing else; Esc leaves and restores the camera; Back and Forward
+# walk the history.
+click orders::place
+expect selection orders::place
+snap before enter
+
+key enter
+expect mode journey
+expect start orders::place
+expect cursor orders::place
+expect check panel-agrees
+snap journey
+
+key down
+expect cursor users::find_user
+expect nothing-moved
+snap cursor down
+
+key right
+expect cursor validation::check_quantity
+key left
+expect cursor users::find_user
+key up
+expect cursor orders::place
+key ]
+key [
+expect cursor orders::place
+expect nothing-moved
+snap cursor keys
+
+bar 3
+expect cursor pricing::quote
+expect nothing-moved
+expect check panel-agrees
+snap bar 3
+
+click Store::insert_order
+expect cursor Store::insert_order
+expect nothing-moved
+snap click a call
+
+click-label users::find_user
+expect cursor users::find_user
+expect nothing-moved
+snap click a name
+
+key .
+expect depth 2
+expect check nothing-moved
+expect check panel-agrees
+snap depth 2
+
+key ,
+expect depth 1
+expect check nothing-moved
+snap depth 1
+
+key i
+expect outside_callers true
+expect nothing-moved
+snap outside callers
+
+key i
+expect outside_callers false
+snap outside callers off
+
+key esc
+expect mode browse
+expect camera-same-as before enter
+snap left the journey
+
+key backspace
+expect mode journey
+snap back
+
+key shift+backspace
+expect mode browse
+snap forward
