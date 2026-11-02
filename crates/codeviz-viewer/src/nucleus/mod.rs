@@ -37,6 +37,7 @@ use codeviz_layout::{
 };
 
 pub(crate) use draw::{create_looks, draw, follow, place_bodies};
+pub(crate) use journey::rank_callers;
 
 use crate::{
     camera::{ease, transition_step},
@@ -454,6 +455,11 @@ impl Nucleus {
     /// Whether a function is an outside caller into the journey, shown.
     pub(crate) fn outside(&self, tile: usize) -> bool {
         self.now.outside.contains(&tile)
+    }
+
+    /// The outside callers into the journey shown (I).
+    pub(crate) fn outside_callers(&self) -> impl Iterator<Item = usize> + '_ {
+        self.now.outside.iter().copied()
     }
 
     /// Whether a function is one of the start's callers folded into its module's

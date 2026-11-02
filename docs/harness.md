@@ -79,7 +79,7 @@ carries, in any case.
 | `shift+click UNIT` | as it says |
 | `doubleclick UNIT` | double-clicks the function's dot: the first click picks it, the double click expands its module |
 | `doubleclick-module MODULE` | double-clicks the module's sphere at the spot farthest from its dots and names; where no spot is clear of its dots, on a dot (which expands the module too), with a note |
-| `bar N` | clicks the journey bar numbered N (`2`, `1.2`), or the bar of the function N (`Explorer::spotlit`, the start's bar first), or the bar that reads N |
+| `bar N` | clicks the journey bar numbered N (`2`, `1.2`), or the bar of the function N (`Explorer::spotlit`, the start's bar first), or the bar that reads N; else the bar of the start's caller N, in the row above the start's |
 | `chip N` | clicks the badge on bar N (as `bar` finds it) that unfolds the calls folded under it |
 | `search-pick TEXT` | clicks the open search box's row that says TEXT (any case), else the row whose function's id ends with it, else the first row holding it |
 | `button TEXT` | clicks the button that says TEXT (exact, any case; else a short label holding it); `button Fit` frames as F does |
@@ -122,6 +122,7 @@ with why, marks the session failed, and the session goes on.
 | `expect state FIELD VALUE` | the same, spelt out |
 | `expect selection UNIT\|none` | the function selected while browsing |
 | `expect cursor UNIT\|none`, `expect start UNIT\|none` | the journey's cursor, its start (`none` while browsing) |
+| `expect aside UNIT\|none` | the function set aside in a journey (a click off the journey, or ↑ into the row of the start's callers) |
 | `expect named UNIT` | the function's name is drawn |
 | `expect drawn UNIT` | the function's dot is drawn on the graph |
 | `expect camera-same-as LABEL` | the camera's target, distance, yaw and pitch are those at the snap LABEL (`before x` or `03-before-x`), within 0.05 and 0.002 rad |
@@ -187,7 +188,9 @@ scene's units.
   `role`, `drawn`, and when drawn `width` (the shaft), `head`, `head_width`, `tip`,
   `on_screen`.
 - `bars`: journey bars in view: `number`, `name`, `unit`, `rect`, `cursor`, `lit`,
-  `cut_off`, `folded` (calls folded under it), `chip` (the badge that unfolds them).
+  `cut_off`, `folded` (calls folded under it), `chip` (the badge that unfolds them);
+  then the bars of the start's callers in the row above its bar: `caller` true, no
+  `number`, `aside` (the one set aside).
   `search_rows` (while the search box shows): `text`, `unit`, `rect`, `shown`,
   `highlighted` (what Enter takes). `buttons`: `text`, `rect`, `enabled`, `cut_off`.
   `overlays`: `name`, `rect`, `clipped`. `text`: every other text drawn, with `rect`
@@ -270,6 +273,7 @@ such a camera alone.
 | `axum-steps` | the harness's own steps: `search-pick`, `bar` by function, `chip`, `frames`, `button Fit` judged as F, `pan`; `map-on-screen` after R |
 | `axum-layout` | one sizing rule for every sphere, dots inside their spheres and apart, one size per role, few text sizes; a click on a lit function moves nothing; in a journey `.` and `i` move nothing and keep dots inside their modules; expanded, spheres apart and sized alike |
 | `axum-look`, `ord-look` | how the graph is drawn: arrow sizes, module names above their spheres, names wherever they fit (browsing too), hover unlike the selection, an expanded module showing and naming all its functions, a depth change and `i` taking no name away |
+| `axum-callers` | the way up a journey: ↑ from the start into the row of its callers, ← → along it, ↓ back, Enter and Shift-click open a caller's journey, a caller's bar sets it aside; `i` with nothing calling in from outside stays off; `inside` on the top bar; search ranks a function's own name before its module's |
 | `axum-search` | search: ↓ and Enter take the row highlighted; a route found by its path and its function's name, listed once; reopened, the last query is selected and typing replaces it; Esc from a journey selects its start |
 | `ord-panel` | the panel on a crowded journey: bars keep their numbers, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk) |
 

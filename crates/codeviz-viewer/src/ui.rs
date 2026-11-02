@@ -197,8 +197,9 @@ fn draw_ui(
             );
         }
         // In a journey, the hint at the keys sits in the panel's header.
+        let expanded = explorer.nucleus().expanded();
         if explorer.browsing() {
-            key_hint(ctx, graph_area);
+            key_hint(ctx, graph_area, expanded);
         }
         if help.0 {
             // Down to the window's foot, over the journey panel where it must, so the
@@ -210,7 +211,8 @@ fn draw_ui(
             key_help(ctx, room, &mut help.0, explorer.browsing());
         }
         if let Some(area) = panel_area {
-            let tethers = journey_panel::draw(ctx, area, hint(false), &mut explorer, &mut panel);
+            let tethers =
+                journey_panel::draw(ctx, area, &hint(false, expanded), &mut explorer, &mut panel);
             // Not over the key help, which would read as crossed out.
             if !help.0 {
                 draw_tethers(ctx, &tethers, &explorer, &to_screen);
@@ -301,21 +303,27 @@ fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
     ui.separator();
 }
 
-/// Which mode the view is in, always in the same place: `Browsing`, or `Journey ·`
-/// and where it starts.
+/// Where the view is, always in the same place: `Browsing`, or `Journey ·` and where
+/// it starts; then, with a module expanded, `· inside` it.
 fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
-    let (text, hint) = match explorer.start_unit() {
+    let (mut text, mut hint) = match explorer.start_unit() {
         Some(_) => (
             format!("Journey · {}", journey_title(explorer)),
             "A journey is open: a click on a function it runs moves its cursor; \
-             Esc leaves it for browsing",
+             Esc leaves it for browsing"
+                .to_owned(),
         ),
         None => (
             "Browsing".to_owned(),
             "No journey is open: a click selects a function and moves nothing; \
-             Enter or Shift-click opens its journey",
+             Enter or Shift-click opens its journey"
+                .to_owned(),
         ),
     };
+    if let Some(module) = inside(explorer) {
+        text = format!("{text} · inside {module}");
+        hint = format!("Zoomed into {module}, showing all its functions. X or Esc: back out");
+    }
     egui::Frame::new()
         .fill(egui::Color32::from_rgba_premultiplied(30, 34, 46, 255))
         .corner_radius(6.0)
@@ -513,15 +521,14 @@ fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
     }
     let mut ranked: Vec<(u8, Row)> = functions
         .filter_map(|(tile, unit)| {
-            let id = unit.as_str();
-            let rank = [
-                Some(explorer.unit_name(unit)),
-                route(unit).map(|e| e.label.clone()),
-            ]
-            .into_iter()
-            .flatten()
-            .filter_map(|name| search_rank(query, id, &name))
-            .min()?;
+            // Its own name, and an entry point's route.
+            let names: Vec<&str> = system
+                .unit(unit)
+                .map(|u| u.name.as_str())
+                .into_iter()
+                .chain(route(unit).map(|e| e.label.as_str()))
+                .collect();
+            let rank = search_rank(query, unit.as_str(), &names, &explorer.unit_name(unit))?;
             Some((rank, row(tile, unit)))
         })
         .collect();
@@ -535,24 +542,33 @@ fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
     (rows, found)
 }
 
-/// How well `query` finds a function, best first, or `None` when it does not: its
-/// name exactly, then its name's start, then anywhere in its path, then each word of
-/// the query in order along the path. `.` and `::` are the same, so `orders.place`
-/// finds `services::orders::place`.
-fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
+/// How well `query` finds a function, best first, or `None` when it does not: by the
+/// function's own `names` (its name, an entry point's route) first, exactly, then
+/// their start, then anywhere in them; or exactly as the graph names it in full
+/// (`qualified`, as `orders.place`) or by the end of its path; then anywhere in its
+/// path, its module's name among it; then each word of the query in order along the
+/// path. `.` and `::` are the same, so `orders.place` finds `services::orders::place`.
+fn search_rank(query: &str, id: &str, names: &[&str], qualified: &str) -> Option<u8> {
     let normal = |text: &str| text.to_lowercase().replace("::", ".");
     let query = normal(query.trim());
-    let name = normal(name);
+    let names: Vec<String> = names.iter().map(|name| normal(name)).collect();
     // The path without its producer's prefix, as in `rust:`.
     let path = normal(id.split_once(':').map_or(id, |(_, path)| path));
-    if name == query || path == query || path.ends_with(&format!(".{query}")) {
+    if names.contains(&query)
+        || normal(qualified) == query
+        || path == query
+        || path.ends_with(&format!(".{query}"))
+    {
         return Some(0);
     }
-    if name.starts_with(&query) || name.contains(&format!(".{query}")) {
+    if names.iter().any(|name| name.starts_with(&query)) {
         return Some(1);
     }
-    if path.contains(&query) || name.contains(&query) {
+    if names.iter().any(|name| name.contains(&query)) {
         return Some(2);
+    }
+    if path.contains(&query) || normal(qualified).contains(&query) {
+        return Some(3);
     }
     let mut rest = path.as_str();
     for word in query
@@ -562,17 +578,26 @@ fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
         let at = rest.find(word)?;
         rest = &rest[at + word.len()..];
     }
-    Some(3)
+    Some(4)
 }
 
-/// With a function set aside, a chip that says so; a click on it, as Enter does,
-/// starts a journey there.
+/// With a function set aside, a chip that says what it is to the journey; a click on
+/// it, as Enter does, starts a journey there.
 fn aside_chip(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if explorer.aside().is_none() {
         return;
     }
+    let said = if explorer.aside_caller().is_some() {
+        let start = explorer
+            .start_unit()
+            .map(|unit| explorer.function_name(unit))
+            .unwrap_or_default();
+        format!("calls {start} · Enter starts a journey here")
+    } else {
+        "not on this journey · Enter starts one here".to_owned()
+    };
     let chip = egui::Button::new(
-        egui::RichText::new("not on this journey · Enter starts one here")
+        egui::RichText::new(said)
             .size(text::BODY)
             .color(egui::Color32::WHITE),
     )
@@ -582,8 +607,8 @@ fn aside_chip(ui: &mut egui::Ui, explorer: &mut Explorer) {
     if ui
         .add(chip)
         .on_hover_text(
-            "Selected off the journey, in place. Enter, or a click here, starts a journey \
-             here; an arrow or Esc goes back to the journey's cursor",
+            "Selected in place. Enter, or a click here, starts a journey here; an arrow \
+             or Esc goes back to the journey",
         )
         .clicked()
         && let Some(tile) = explorer.current()
@@ -629,6 +654,14 @@ fn fit_viewport(camera: &mut Camera, window: &Window, central: egui::Rect) {
             ..default()
         });
     }
+}
+
+/// The module expanded, by the name its sphere carries.
+pub(crate) fn inside(explorer: &Explorer) -> Option<String> {
+    explorer
+        .nucleus()
+        .expanded_module()
+        .map(|module| explorer.cluster_name(module).to_uppercase())
 }
 
 /// The journey's entry route when it starts at one, else its start's name.
@@ -695,6 +728,11 @@ mod tests {
             "found by its name too, and listed once, by its route"
         );
         assert_eq!(names("orders.place"), ["orders.place"]);
+        assert_eq!(
+            names("order")[..2],
+            ["POST /users/{id}/orders", "orders.place"],
+            "a function whose name holds the word before one whose module does"
+        );
         let (rows, found) = find(&explorer, "helper");
         assert_eq!(
             (rows.len(), found),
@@ -715,16 +753,19 @@ mod tests {
             search_rank(
                 query,
                 "rust:axum_server::services::orders::place",
+                &["place"],
                 "orders.place",
             )
         };
         assert_eq!(place("orders.place"), Some(0), "as the graph names it");
         assert_eq!(place("orders::place"), Some(0), "as Rust writes it");
-        assert_eq!(place("ord"), Some(1));
-        assert_eq!(place("services.orders"), Some(2));
+        assert_eq!(place("pla"), Some(1), "its name's start");
+        assert_eq!(place("lac"), Some(2), "within its name");
+        assert_eq!(place("ord"), Some(3), "its module's name");
+        assert_eq!(place("services.orders"), Some(3));
         assert_eq!(
             place("server place"),
-            Some(3),
+            Some(4),
             "words in order along the path"
         );
         assert_eq!(place("place orders"), None, "but not out of order");

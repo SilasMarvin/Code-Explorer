@@ -65,8 +65,8 @@ pub(crate) struct Track {
     expanded: HashSet<SpanId>,
     /// Every function the journey runs, at any depth.
     units: HashSet<UnitId>,
-    /// Names two or more functions on the journey share, so each is named with its
-    /// type or module before it.
+    /// Names two or more functions on the journey, its start's callers or the outside
+    /// callers shown share, so each is named with its type or module before it.
     homonyms: HashSet<String>,
 }
 
@@ -121,26 +121,8 @@ impl Track {
                 _ => None,
             })
             .collect();
-        self.homonyms = self.find_homonyms(system);
         // A rebuilt journey numbers its spans afresh.
         self.expanded.clear();
-    }
-
-    /// The names two or more functions the journey runs share, at any depth, so a
-    /// level more or less never renames anything. An entry point goes by its route.
-    fn find_homonyms(&self, system: &System) -> HashSet<String> {
-        let entries: HashSet<&UnitId> = system.entries().iter().map(|e| &e.unit).collect();
-        let mut seen: HashMap<&str, &UnitId> = HashMap::new();
-        let mut shared = HashSet::new();
-        for id in &self.units {
-            let Some(unit) = system.unit(id).filter(|_| !entries.contains(id)) else {
-                continue;
-            };
-            if *seen.entry(unit.name.as_str()).or_insert(id) != id {
-                shared.insert(unit.name.clone());
-            }
-        }
-        shared
     }
 
     /// On the happy path, where each failing outcome splits off: the deepest unit on
@@ -611,13 +593,26 @@ impl Explorer {
         self.outside && !self.browsing()
     }
 
-    /// In a journey, shows every function that calls one on it from off it, or leaves
-    /// them out again (I); nothing already there moves. Browsing, the selection's
-    /// callers already show, so it does nothing.
+    /// In a journey, shows every function off it that calls the one the cursor is on,
+    /// or leaves them out again (I); nothing already there moves. With none to show,
+    /// says so instead. Browsing, the selection's callers already show, so it does
+    /// nothing.
     pub(crate) fn toggle_outside(&mut self) {
-        if !self.browsing() {
-            self.outside = !self.outside;
+        if self.browsing() {
+            return;
+        }
+        self.outside = !self.outside;
+        self.sync_nucleus();
+        if self.outside && self.nucleus.outside_callers().next().is_none() {
+            self.outside = false;
             self.sync_nucleus();
+            let name = self
+                .cursor()
+                .or_else(|| self.start())
+                .and_then(|tile| self.tile_unit(tile))
+                .map(|unit| self.function_name(unit))
+                .unwrap_or_default();
+            self.say(&format!("Nothing off the journey calls {name}"));
         }
     }
 
@@ -829,6 +824,33 @@ impl Explorer {
         if recentered || marked {
             self.moved += 1;
         }
+        self.rename();
+    }
+
+    /// Works out again the names two or more functions in view share, so each is
+    /// named with its type or module before it: of the functions the journey runs at
+    /// any depth, so a level more or less never renames anything, its start's callers,
+    /// and the outside callers shown. An entry point goes by its route.
+    fn rename(&mut self) {
+        let system = &self.system;
+        let entries: HashSet<&UnitId> = system.entries().iter().map(|e| &e.unit).collect();
+        let callers = self
+            .start()
+            .into_iter()
+            .flat_map(|start| self.graph.callers(start))
+            .chain(self.nucleus.outside_callers())
+            .filter_map(|tile| self.tile_unit(tile));
+        let mut seen: HashMap<&str, &UnitId> = HashMap::new();
+        let mut shared = HashSet::new();
+        for id in self.track.units.iter().chain(callers) {
+            let Some(unit) = system.unit(id).filter(|_| !entries.contains(id)) else {
+                continue;
+            };
+            if *seen.entry(unit.name.as_str()).or_insert(id) != id {
+                shared.insert(unit.name.clone());
+            }
+        }
+        self.track.homonyms = shared;
     }
 
     /// Eases the nucleus along by `dt` seconds. Returns whether anything moved.
@@ -849,6 +871,48 @@ impl Explorer {
     /// whether there was one.
     pub(crate) fn clear_aside(&mut self) -> bool {
         self.aside.take().is_some()
+    }
+
+    /// In a journey, the functions that call its start, as the row above the start's
+    /// bar lists them: those nearest the journey first, as the graph names them.
+    pub(crate) fn start_callers(&self) -> Vec<usize> {
+        let Some(start) = self.start() else {
+            return Vec::new();
+        };
+        let whole = &self.disclosed.trail().whole;
+        let middle = self.graph.cluster(start);
+        crate::nucleus::rank_callers(
+            &self.graph,
+            start,
+            |tile| whole.contains_key(&tile),
+            |tile| self.graph.cluster(tile).or(middle).unwrap_or_default(),
+        )
+    }
+
+    /// Whether anything calls the journey's start but itself: the panel lists them in
+    /// a row above it.
+    pub(crate) fn start_called(&self) -> bool {
+        self.start()
+            .is_some_and(|start| self.graph.callers(start).any(|tile| tile != start))
+    }
+
+    /// Where the function set aside sits in the row of the start's callers, when it
+    /// is one of them: ← and → then move along the row, and ↓ goes back to the start.
+    pub(crate) fn aside_caller(&self) -> Option<usize> {
+        let aside = self.aside()?;
+        self.start_callers().iter().position(|&t| t == aside)
+    }
+
+    /// Sets `tile` aside, selected in place, as a click off the journey does.
+    fn set_aside(&mut self, tile: usize) {
+        self.notice = None;
+        self.aside = Some(tile);
+    }
+
+    /// A click on a caller's bar in the panel: sets it aside, as ↑ from the start
+    /// does, remembering where the view was.
+    pub(crate) fn pick_caller(&mut self, tile: usize) {
+        self.navigate(|explorer| explorer.set_aside(tile));
     }
 
     /// Goes to a function as a click does, remembering where the view was. Browsing,
@@ -1060,11 +1124,22 @@ impl Explorer {
         if self.browsing() {
             return None;
         }
+        if let Some(index) = self.aside_caller() {
+            return self.walk_callers(step, index);
+        }
         if self.clear_aside() {
             return self.cursor_span();
         }
         let journey = self.journey()?;
         let current = self.cursor_span().unwrap_or_else(|| journey.root());
+        // Up from the start, into the row of its callers, the first of them set aside.
+        if step == Step::Parent
+            && current == journey.root()
+            && let Some(&first) = self.start_callers().first()
+        {
+            self.set_aside(first);
+            return None;
+        }
         let tile = |span: SpanId| self.track.tile(span, &self.map);
         // A closure is drawn as part of the function around it, with no bar or node of
         // its own: the cursor never stops on one, and the calls made inside it are its
@@ -1130,6 +1205,35 @@ impl Explorer {
         next
     }
 
+    /// The keys along the row of the start's callers, with the caller at `index` set
+    /// aside: ← and → move along it, ↓ goes back down to the start, ↑ says how to go
+    /// further up; any other key goes back to the cursor.
+    fn walk_callers(&mut self, step: Step, index: usize) -> Option<SpanId> {
+        let callers = self.start_callers();
+        let along = match step {
+            Step::Next => Some(index + 1),
+            Step::Previous => index.checked_sub(1),
+            Step::Parent => {
+                self.say("Enter starts a journey at this caller, to go further up");
+                return None;
+            }
+            Step::Child => {
+                self.move_cursor(self.journey().map(Journey::root));
+                return self.cursor_span();
+            }
+            Step::Into | Step::Back => {
+                self.clear_aside();
+                return self.cursor_span();
+            }
+        };
+        match along.and_then(|i| callers.get(i)) {
+            Some(&tile) => self.set_aside(tile),
+            None if step == Step::Next => self.say("No later caller"),
+            None => self.say("No earlier caller"),
+        }
+        None
+    }
+
     /// Says something for a moment, over the graph.
     fn say(&mut self, text: &str) {
         self.said += 1;
@@ -1148,7 +1252,8 @@ impl Explorer {
 /// past the depth shown.
 fn stuck(step: Step, first: bool, folded: bool) -> &'static str {
     match step {
-        Step::Parent | Step::Back if first => "Already at the journey's start",
+        Step::Parent if first => "Nothing calls the journey's start",
+        Step::Back if first => "Already at the journey's start",
         Step::Parent => "Nothing above this call is drawn",
         Step::Back => "No earlier call is drawn",
         Step::Next => "No later call from the same caller",
@@ -1296,7 +1401,7 @@ pub(crate) mod tests {
         assert_eq!(explorer.step(Step::Parent), None);
         assert_eq!(
             explorer.notice().map(|(_, t)| t),
-            Some("Already at the journey's start")
+            Some("Nothing calls the journey's start")
         );
     }
 
@@ -2177,6 +2282,87 @@ pub(crate) mod tests {
             number(&explorer).as_deref(),
             Some("4"),
             "the one its name numbers"
+        );
+    }
+
+    #[test]
+    fn up_from_the_start_walks_the_row_of_its_callers() {
+        // main and b both call a; the journey starts at a.
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
+            { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "a#0", "text": "a", "targets": [ { "unit": "x:a", "certainty": "exact" } ] },
+                { "key": "b#0", "text": "b", "targets": [ { "unit": "x:b", "certainty": "exact" } ] } ] },
+            { "id": "x:b", "name": "b", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "a#0", "text": "a", "targets": [ { "unit": "x:a", "certainty": "exact" } ] } ] },
+            { "id": "x:a", "name": "a", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "c#0", "text": "c", "targets": [ { "unit": "x:c", "certainty": "exact" } ] } ] },
+            { "id": "x:c", "name": "c", "kind": "fn", "role": "invocable" } ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let mut explorer = opened(system, "x:a");
+        let (main, b) = (tile(&explorer, "main"), tile(&explorer, "b"));
+        let row = explorer.start_callers();
+        assert_eq!(row.len(), 2, "main and b, a row above the start");
+        assert!(row.contains(&main) && row.contains(&b));
+
+        explorer.step(Step::Parent);
+        assert_eq!(
+            explorer.aside(),
+            Some(row[0]),
+            "up into the row, its first set aside"
+        );
+        assert_eq!(explorer.aside_caller(), Some(0));
+        assert_eq!(at(&explorer), "a", "the cursor stays on the start");
+        explorer.step(Step::Previous);
+        assert_eq!(explorer.notice().map(|(_, t)| t), Some("No earlier caller"));
+        explorer.step(Step::Next);
+        assert_eq!(explorer.aside(), Some(row[1]), "along the row");
+        explorer.step(Step::Child);
+        assert_eq!(explorer.aside(), None, "down, back to the start");
+        assert_eq!(at(&explorer), "a");
+        assert!(explorer.go_back(), "the walk into the row is remembered");
+        assert_eq!(explorer.aside(), None, "as one move, from where it began");
+
+        explorer.step(Step::Parent);
+        explorer.step(Step::Next);
+        enter(&mut explorer);
+        assert_eq!(
+            explorer.start_unit(),
+            explorer.tile_unit(row[1]),
+            "Enter starts a journey at the caller"
+        );
+
+        explorer.open_at(tile(&explorer, "a"));
+        explorer.pick_caller(main);
+        assert_eq!(explorer.aside(), Some(main), "its bar sets it aside too");
+    }
+
+    #[test]
+    fn a_caller_sharing_the_start_s_name_says_whose() {
+        // Explorer::reroot calls Track::reroot, where the journey starts.
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
+            { "id": "x:Explorer", "name": "Explorer", "kind": "struct", "role": "group" },
+            { "id": "x:Track", "name": "Track", "kind": "struct", "role": "group" },
+            { "id": "x:Explorer::reroot", "name": "reroot", "kind": "method", "role": "invocable", "parent": "x:Explorer", "calls": [
+                { "key": "r#0", "text": "reroot", "targets": [ { "unit": "x:Track::reroot", "certainty": "exact" } ] } ] },
+            { "id": "x:Track::reroot", "name": "reroot", "kind": "method", "role": "invocable", "parent": "x:Track" } ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let explorer = opened(system, "x:Track::reroot");
+        let name = |id: &str| explorer.function_name(&UnitId::new(id));
+        assert_eq!(name("x:Track::reroot"), "Track.reroot");
+        assert_eq!(name("x:Explorer::reroot"), "Explorer.reroot");
+    }
+
+    #[test]
+    fn i_with_no_outside_callers_says_so() {
+        let mut explorer = explorer();
+        explorer.toggle_outside();
+        assert!(
+            !explorer.outside_shown(),
+            "nothing to bring in, so it stays off"
+        );
+        assert_eq!(
+            explorer.notice().map(|(_, t)| t),
+            Some("Nothing off the journey calls main")
         );
     }
 

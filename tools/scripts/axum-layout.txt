@@ -1,8 +1,9 @@
 #: view demo/out/axum-server.json
 # Sizing and placement on the small demo: one sizing rule for every sphere, dots
 # inside their spheres and apart, one size per role, a few text sizes; a click on a
-# lit function lights it where it is and moves nothing; in a journey, `.` and `i`
-# bring functions in where room was kept for them, inside their modules.
+# lit function lights it where it is and moves nothing; in a journey, `.` brings
+# functions in where room was kept for them, inside their modules, and `i` with
+# nothing to bring in moves nothing.
 snap open
 expect check sphere-sizes
 expect check dots-in-spheres
@@ -30,8 +31,9 @@ expect check nothing-moved
 expect check dots-in-spheres
 snap depth 2
 
+# Nothing off the journey calls quote: `i` says so and brings nothing in.
 key i
-expect outside_callers true
+expect outside_callers false
 expect nothing-moved
 expect check dots-in-spheres
 snap outside callers

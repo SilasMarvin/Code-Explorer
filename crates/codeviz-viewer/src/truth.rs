@@ -588,7 +588,8 @@ fn merge(into: &mut Value, more: Value) {
     }
 }
 
-/// The journey's bars drawn in its panel, by number.
+/// The journey's bars drawn in its panel, by number, then the bars of its start's
+/// callers in the row above the start's (`caller`, with no number).
 fn bars(view: &View) -> Vec<Value> {
     let explorer = &*view.explorer;
     let Some(drawn) = &view.screen.bars else {
@@ -620,6 +621,20 @@ fn bars(view: &View) -> Vec<Value> {
                 "cut_off": !drawn.content.contains_rect(r),
             })
         })
+        .chain(drawn.callers.iter().map(|&(tile, r)| {
+            let unit = explorer.tile_unit(tile);
+            json!({
+                "number": null,
+                "name": unit.map(|u| explorer.function_name(u)).unwrap_or_default(),
+                "unit": unit.map(ToString::to_string),
+                "rect": rect(r),
+                "caller": true,
+                "aside": explorer.aside() == Some(tile),
+                "cursor": false,
+                "lit": explorer.hovered() == Some(tile),
+                "cut_off": false,
+            })
+        }))
         .collect()
 }
 
