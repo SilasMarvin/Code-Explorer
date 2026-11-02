@@ -137,11 +137,17 @@ pub(crate) fn drawn_radius(
 }
 
 pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
-    let nucleus = explorer.nucleus();
     // The journey's cursor is the one pink node, wherever it is.
     if explorer.cursor() == Some(tile) {
         return NodeLook::Cursor;
     }
+    role_look(explorer, tile)
+}
+
+/// What a function is to the view, were the cursor not on it: how the panel paints
+/// the bars of its other runs.
+pub(crate) fn role_look(explorer: &Explorer, tile: usize) -> NodeLook {
+    let nucleus = explorer.nucleus();
     if nucleus.start() == Some(tile) || explorer.aside() == Some(tile) {
         return NodeLook::Start;
     }
@@ -156,7 +162,12 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
 /// The color a node is filled with, at full strength, as [`node_look`] has it. A
 /// journey bar is painted the same, so a bar and its node read as one thing.
 pub(crate) fn node_color(explorer: &Explorer, tile: usize) -> Color {
-    match node_look(explorer, tile) {
+    look_color(node_look(explorer, tile))
+}
+
+/// The color a look fills with, at full strength.
+pub(crate) fn look_color(look: NodeLook) -> Color {
+    match look {
         NodeLook::Start => Color::WHITE,
         NodeLook::Cursor => CURSOR,
         NodeLook::Role(flow) => flow.color(),

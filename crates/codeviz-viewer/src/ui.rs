@@ -7,7 +7,7 @@ use bevy_egui::{
     EguiContext, EguiContexts, EguiInput, EguiPreUpdateSet, EguiPrimaryContextPass,
     PrimaryEguiContext, egui,
 };
-use codeviz_ir::{Role, UnitId};
+use codeviz_ir::UnitId;
 
 use crate::{
     arrows,
@@ -15,6 +15,7 @@ use crate::{
     colors::{CALLER_TEXT, MUTED},
     drive::Marks,
     explorer::Explorer,
+    idle::Awake,
     journey_panel::{self, JourneyPanel},
     key_help::{key_help, key_hint},
     labels::draw_graph_labels,
@@ -99,7 +100,31 @@ pub(crate) struct KeyHelp(pub(crate) bool);
 #[derive(Resource, Debug, Default)]
 struct Search {
     query: String,
+    /// The functions the query finds, best first, as far as the box lists them.
+    rows: Vec<Row>,
+    /// How many it finds in all.
+    found: usize,
+    /// The query `rows` were found for.
+    found_for: Option<String>,
+    /// The row ↑ and ↓ have moved to, which Enter picks.
+    highlighted: usize,
+    /// Whether the box was open the frame before, so opening it selects what it
+    /// holds, to type over.
+    was_open: bool,
 }
+
+/// A function the search finds: what it is called, the module it is in, and its
+/// kind.
+#[derive(Debug, Clone)]
+struct Row {
+    unit: UnitId,
+    name: String,
+    module: String,
+    kind: String,
+}
+
+/// At most this many functions are listed; the box says how many more it found.
+const LISTED: usize = 100;
 
 /// Whether the search box is open.
 #[derive(Resource, Default)]
@@ -118,6 +143,7 @@ fn draw_ui(
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut marks: ResMut<Marks>,
+    mut awake: ResMut<Awake>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let mut root_ui = egui::Ui::new(
@@ -155,13 +181,17 @@ fn draw_ui(
         // The calls under the names.
         arrows::draw(&painter, &explorer, (&camera, transform), &mut marks);
         draw_graph_labels(&painter, &to_screen, &explorer, transform.up().into());
+        let opening = chrome.search && !search.was_open;
+        search.was_open = chrome.search;
         if chrome.search {
-            search_box(
+            // What it finds is laid out a frame after it is found: one more follows.
+            awake.0 |= search_box(
                 ctx,
                 graph_area,
                 &mut explorer,
                 &mut search,
                 &mut chrome.search,
+                opening,
             );
         }
         key_hint(ctx, graph_area, explorer.browsing());
@@ -270,8 +300,8 @@ fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
 /// and where it starts.
 fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
     let (text, hint) = match explorer.start_unit() {
-        Some(root) => (
-            format!("Journey · {}", explorer.unit_name(root)),
+        Some(_) => (
+            format!("Journey · {}", journey_title(explorer)),
             "A journey is open: a click on a function it runs moves its cursor; \
              Esc leaves it for browsing",
         ),
@@ -296,50 +326,24 @@ fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
     ui.separator();
 }
 
-/// A box to find a function by name, over the top of the graph: Enter or a click
-/// opens it, Escape closes the box.
+/// A box to find a function by name, over the top of the graph: ↑ and ↓ move along
+/// what it finds, Enter or a click takes it, Escape closes the box. Opened again, it
+/// holds the last query, selected, so typing replaces it. Returns whether what it
+/// finds changed.
 fn search_box(
     ctx: &egui::Context,
     area: egui::Rect,
     explorer: &mut Explorer,
     search: &mut Search,
     open: &mut bool,
-) {
-    let system = explorer.system();
-    let rows: Vec<(UnitId, String, String)> = if search.query.trim().is_empty() {
-        let mut rows: Vec<_> = system
-            .entries()
-            .iter()
-            .filter(|e| explorer.map().tile_of(&e.unit).is_some())
-            .map(|e| (e.unit.clone(), e.label.clone(), e.kind.clone()))
-            .collect();
-        rows.sort_by(|a, b| a.1.cmp(&b.1));
-        rows
-    } else {
-        let entries = system
-            .entries()
-            .iter()
-            .filter(|e| explorer.map().tile_of(&e.unit).is_some())
-            .map(|e| (&e.unit, e.label.clone(), &e.kind));
-        let units = system
-            .units()
-            .filter(|u| u.role == Role::Invocable)
-            .map(|u| (&u.id, explorer.unit_name(&u.id), &u.kind));
-        let mut ranked: Vec<(u8, UnitId, String, String)> = entries
-            .chain(units)
-            .filter_map(|(id, name, kind)| {
-                let rank = search_rank(&search.query, id.as_str(), &name)?;
-                Some((rank, id.clone(), name, kind.clone()))
-            })
-            .collect();
-        ranked.sort_by(|a, b| (a.0, a.2.len(), &a.2).cmp(&(b.0, b.2.len(), &b.2)));
-        ranked.dedup_by(|a, b| a.1 == b.1);
-        ranked
-            .into_iter()
-            .take(200)
-            .map(|(_, id, name, kind)| (id, name, kind))
-            .collect()
-    };
+    opening: bool,
+) -> bool {
+    let refound = search.found_for.as_deref() != Some(search.query.as_str());
+    if refound {
+        (search.rows, search.found) = find(explorer, &search.query);
+        search.found_for = Some(search.query.clone());
+        search.highlighted = 0;
+    }
     let mut chosen = None;
     egui::Area::new("search".into())
         .pivot(egui::Align2::CENTER_TOP)
@@ -352,47 +356,70 @@ fn search_box(
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::symmetric(10, 8))
                 .show(ui, |ui| {
-                    ui.set_width(420.0);
+                    ui.set_width(460.0);
+                    // Before the text box, which would take them to move its caret.
+                    let moved = highlight_keys(ui, search);
+                    let id = egui::Id::new("search_query");
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut search.query)
+                            .id(id)
                             .hint_text("search functions…")
                             .desired_width(f32::INFINITY),
                     );
                     field.request_focus();
+                    if opening {
+                        select_all(ui.ctx(), id, &search.query);
+                    }
                     if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        chosen = rows.first().map(|row| row.0.clone());
+                        chosen = search
+                            .rows
+                            .get(search.highlighted)
+                            .map(|row| row.unit.clone());
                     }
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                         *open = false;
                     }
-                    if rows.is_empty() {
+                    if search.rows.is_empty() {
                         ui.label(egui::RichText::new("no function matches").color(MUTED));
                     }
                     let mut drawn = Vec::new();
                     let shown = egui::ScrollArea::vertical()
                         .id_salt("units")
-                        .max_height(260.0)
+                        .max_height(300.0)
                         .show(ui, |ui| {
-                            for (index, (id, title, kind)) in rows.iter().enumerate() {
+                            for (index, row) in search.rows.iter().enumerate() {
+                                let highlighted = index == search.highlighted;
                                 ui.horizontal(|ui| {
-                                    let row = ui
-                                        .selectable_label(explorer.start_unit() == Some(id), title)
-                                        .on_hover_text(id.as_str());
-                                    if row.clicked() {
-                                        chosen = Some(id.clone());
+                                    let picked = ui
+                                        .selectable_label(highlighted, &row.name)
+                                        .on_hover_text(row.unit.as_str());
+                                    if picked.clicked() {
+                                        chosen = Some(row.unit.clone());
+                                    }
+                                    if highlighted && moved {
+                                        picked.scroll_to_me(None);
                                     }
                                     drawn.push(crate::drive::SearchRow {
-                                        rect: row.rect,
-                                        unit: id.to_string(),
-                                        text: title.clone(),
-                                        highlighted: index == 0,
+                                        rect: picked.rect,
+                                        unit: row.unit.to_string(),
+                                        text: row.name.clone(),
+                                        highlighted,
                                     });
-                                    ui.label(egui::RichText::new(kind).small().color(MUTED));
+                                    ui.label(egui::RichText::new(&row.module).color(MUTED));
+                                    ui.label(egui::RichText::new(&row.kind).small().color(MUTED));
                                 });
                             }
                         });
                     // Where each row is, for a scripted session to pick.
                     crate::drive::note_search_rows(ui.ctx(), shown.inner_rect, drawn);
+                    let more = search.found.saturating_sub(search.rows.len());
+                    if more > 0 {
+                        ui.label(
+                            egui::RichText::new(format!("{more} more: type more of the name"))
+                                .small()
+                                .color(MUTED),
+                        );
+                    }
                 });
         });
     // Browsing, the function found is selected where it sits, as a click selects it;
@@ -405,6 +432,102 @@ fn search_box(
         }
         *open = false;
     }
+    refound
+}
+
+/// Selects all of a text box's text, so what is typed replaces it.
+fn select_all(ctx: &egui::Context, id: egui::Id, text: &str) {
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        let all = egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(text.chars().count()),
+        );
+        state.cursor.set_char_range(Some(all));
+        state.store(ctx, id);
+    }
+}
+
+/// ↓ and ↑ move the highlight along the rows found. Returns whether it moved.
+fn highlight_keys(ui: &egui::Ui, search: &mut Search) -> bool {
+    let (down, up) = ui.input_mut(|i| {
+        (
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+        )
+    });
+    let before = search.highlighted;
+    if down {
+        search.highlighted = (before + 1).min(search.rows.len().saturating_sub(1));
+    }
+    if up {
+        search.highlighted = before.saturating_sub(1);
+    }
+    search.highlighted != before
+}
+
+/// The functions `query` finds, one row each, best first, as many as are listed, and
+/// how many it finds in all. With no query, the entry points. A function is found by
+/// its name, its path, or its route, and listed as the graph names it, with its type,
+/// and its module (as its sphere is named, so two modules of one name are told apart
+/// by their crate).
+fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
+    let system = explorer.system();
+    let map = explorer.map();
+    let route = |unit: &UnitId| system.entries().iter().find(|e| &e.unit == unit);
+    let row = |tile: usize, unit: &UnitId| {
+        let entry = route(unit);
+        Row {
+            unit: unit.clone(),
+            name: entry.map_or_else(|| explorer.unit_name(unit), |e| e.label.clone()),
+            module: explorer
+                .graph()
+                .cluster(tile)
+                .map(|cluster| explorer.cluster_name(cluster))
+                .unwrap_or_default(),
+            kind: entry
+                .map(|e| e.kind.clone())
+                .or_else(|| system.unit(unit).map(|u| u.kind.clone()))
+                .unwrap_or_default(),
+        }
+    };
+    // Each function once: a closure is found as the function it is part of.
+    let functions = map
+        .tiles
+        .iter()
+        .enumerate()
+        .map(|(tile, t)| (tile, &t.unit));
+    if query.trim().is_empty() {
+        let mut rows: Vec<Row> = functions
+            .filter(|(_, unit)| route(unit).is_some())
+            .map(|(tile, unit)| row(tile, unit))
+            .collect();
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        let found = rows.len();
+        rows.truncate(LISTED);
+        return (rows, found);
+    }
+    let mut ranked: Vec<(u8, Row)> = functions
+        .filter_map(|(tile, unit)| {
+            let id = unit.as_str();
+            let rank = [
+                Some(explorer.unit_name(unit)),
+                route(unit).map(|e| e.label.clone()),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(|name| search_rank(query, id, &name))
+            .min()?;
+            Some((rank, row(tile, unit)))
+        })
+        .collect();
+    ranked.sort_by(|(a, x), (b, y)| (a, x.name.len(), &x.name).cmp(&(b, y.name.len(), &y.name)));
+    let found = ranked.len();
+    let rows = ranked
+        .into_iter()
+        .take(LISTED)
+        .map(|(_, row)| row)
+        .collect();
+    (rows, found)
 }
 
 /// How well `query` finds a function, best first, or `None` when it does not: its
@@ -514,7 +637,61 @@ pub(crate) fn short(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use codeviz_core::System;
+    use codeviz_ir::Document;
+
     use super::*;
+
+    #[test]
+    fn search_finds_each_function_once_by_route_name_or_path() {
+        // place_order serves a route; place calls it; many helpers share a prefix.
+        let helpers: Vec<String> = (0..LISTED + 5)
+            .map(|n| {
+                format!(r#"{{ "id": "x:orders::helper{n}", "name": "helper{n}", "kind": "fn", "role": "invocable", "parent": "x:orders" }}"#)
+            })
+            .collect();
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }},
+            "entries": [ {{ "unit": "x:handlers::place_order", "label": "POST /users/{{id}}/orders", "kind": "http" }} ],
+            "units": [
+                {{ "id": "x:handlers", "name": "handlers", "kind": "module", "role": "group" }},
+                {{ "id": "x:orders", "name": "orders", "kind": "module", "role": "group" }},
+                {{ "id": "x:handlers::place_order", "name": "place_order", "kind": "fn", "role": "invocable", "parent": "x:handlers" }},
+                {{ "id": "x:orders::place", "name": "place", "kind": "fn", "role": "invocable", "parent": "x:orders" }},
+                {} ] }}"#,
+            helpers.join(",")
+        );
+        let explorer = Explorer::new(System::new([Document::from_json(&json).unwrap()]));
+        let names = |query: &str| -> Vec<String> {
+            find(&explorer, query)
+                .0
+                .into_iter()
+                .map(|row| row.name)
+                .collect()
+        };
+        assert_eq!(
+            names("POST /users/{id}/orders"),
+            ["POST /users/{id}/orders"]
+        );
+        assert_eq!(
+            names("place_order"),
+            ["POST /users/{id}/orders"],
+            "found by its name too, and listed once, by its route"
+        );
+        assert_eq!(names("orders.place"), ["orders.place"]);
+        let (rows, found) = find(&explorer, "helper");
+        assert_eq!(
+            (rows.len(), found),
+            (LISTED, LISTED + 5),
+            "listed up to a hundred"
+        );
+        assert_eq!(rows[0].module, "orders", "with the module it is in");
+        assert_eq!(
+            names(""),
+            ["POST /users/{id}/orders"],
+            "no query: the entry points"
+        );
+    }
 
     #[test]
     fn search_reads_dots_as_paths() {

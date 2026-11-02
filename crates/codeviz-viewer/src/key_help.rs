@@ -242,7 +242,10 @@ fn reading(browsing: bool) -> &'static [&'static str] {
         "The panel: a bar per call, left to right as they run, a row a level deeper. \
          Dashed: runs only sometimes, and says when (if …, in a loop). Pale: a call only \
          guessed at, or handed off to run later. A triangle and a count: calls folded \
-         under it; a click opens them. A green end returns, a red one fails.",
+         under it; a click opens them. A green end returns, a red one fails. ↻: already \
+         running further up; ↺ calls itself: it calls itself straight back. Too long to \
+         fit, it scrolls with the cursor: drag it, or zoom it with the wheel; the line \
+         along its foot shows which part is in view.",
     ]
 }
 

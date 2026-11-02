@@ -44,36 +44,13 @@ const CLEAR: f32 = 1.0;
 /// before laying it out.
 const CHAR_WIDTH: f32 = 0.5;
 
-/// A function's name as the graph and the journey panel both show it: an entry
-/// point's route; a method's with its type's (`Track.root`), unless the type is
-/// named as its module is (`spotlit` of `Explorer` in `explorer`); any other
-/// function's alone, as its module's sphere names the module.
+/// A function's name as the graph and the journey panel both show it:
+/// [`Explorer::function_name`]'s.
 pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
-    let Some(unit) = explorer.tile_unit(tile) else {
-        return String::new();
-    };
-    let system = explorer.system();
-    if let Some(entry) = system.entries().iter().find(|e| &e.unit == unit) {
-        return entry.label.clone();
-    }
-    let Some(own) = system.unit(unit) else {
-        return unit.to_string();
-    };
-    let module = explorer
-        .graph()
-        .cluster(tile)
-        .and_then(|c| explorer.graph().cluster_unit(c))
-        .and_then(|id| system.unit(id))
-        .map(|m| m.name.replace('_', ""));
-    match own.parent.as_ref().and_then(|p| system.unit(p)) {
-        Some(parent)
-            if !matches!(parent.kind.as_str(), "module" | "crate")
-                && module.is_none_or(|m| !m.eq_ignore_ascii_case(&parent.name)) =>
-        {
-            format!("{}.{}", parent.name, own.name)
-        }
-        _ => own.name.clone(),
-    }
+    explorer
+        .tile_unit(tile)
+        .map(|unit| explorer.function_name(unit))
+        .unwrap_or_default()
 }
 
 /// What a graph label names.
