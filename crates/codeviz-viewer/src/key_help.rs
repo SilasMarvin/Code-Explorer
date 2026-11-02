@@ -10,22 +10,27 @@ use crate::{
 };
 
 /// A hint at the keys along `foot`.
-pub(crate) fn key_hint(ctx: &egui::Context, foot: egui::Rect, browsing: bool) {
+pub(crate) fn key_hint(ctx: &egui::Context, foot: egui::Rect) {
     ctx.layer_painter(egui::LayerId::background())
         .with_clip_rect(foot)
         .text(
             egui::pos2(foot.min.x + 12.0, foot.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
-            if browsing {
-                "Browsing · click a function to select it, nothing moves · Enter opens its \
-                 journey · Backspace back · / search · R whole map · H keys"
-            } else {
-                "Journey · click a call to move the cursor there · ] [ ↓ ↑ ← → step · , . \
-                 less or more · I calls in from outside · Esc leaves for browsing · H keys"
-            },
+            hint(true),
             egui::FontId::proportional(text::SMALL),
             MUTED,
         );
+}
+
+/// The line on the keys that matter most, browsing or in a journey.
+pub(crate) fn hint(browsing: bool) -> &'static str {
+    if browsing {
+        "Browsing · click a function to select it, nothing moves · Enter opens its journey · \
+         Backspace back · / search · R whole map · H keys"
+    } else {
+        "click a call to move the cursor there · ] [ ↓ ↑ ← → step · , . less or more · \
+         I calls in from outside · Esc leaves for browsing · H keys"
+    }
 }
 
 /// Which view a key does something in.

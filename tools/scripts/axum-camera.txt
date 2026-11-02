@@ -54,8 +54,7 @@ shift+click orders::place
 expect mode journey
 snap journey
 
-hover validation::check_quantity
-key x
+doubleclick-module validation
 expect expanded validation
 expect check expanded-fill
 snap expanded another module

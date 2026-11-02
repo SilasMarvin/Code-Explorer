@@ -594,13 +594,30 @@ impl Nucleus {
         })
     }
 
+    /// Where a function is going to be drawn once a re-centering ends: what the
+    /// camera frames, rather than where it passes on the way.
+    pub(crate) fn resting_point(&self, tile: usize) -> Option<Vec3> {
+        if self.is_cursor(tile) && !self.now.shown.get(tile).copied().unwrap_or(false) {
+            let ball = *self
+                .now
+                .balls
+                .get(self.module_of.get(tile).copied().flatten()?)?;
+            return Some(self.below(ball));
+        }
+        self.now.points.get(tile).copied()
+    }
+
     /// Just under a function's module as the usual view sees it, where a function
     /// the arrangement folds away shows without moving anything: clear of the
     /// module's name on top and of the arrows leaving its sides.
     fn under(&self, tile: usize) -> Option<Vec3> {
-        let ball = self.ball(self.module_of.get(tile).copied().flatten()?)?;
+        Some(self.below(self.ball(self.module_of.get(tile).copied().flatten()?)?))
+    }
+
+    /// Just under `ball`, as [`Self::under`] says.
+    fn below(&self, ball: Ball) -> Vec3 {
         let down = view_rotation() * Vec3::NEG_Y;
-        Some(ball.center + down * (ball.radius + 0.8 * self.zoom()))
+        ball.center + down * (ball.radius + 0.8 * self.zoom())
     }
 
     /// A module's sphere as drawn now.
@@ -724,47 +741,6 @@ impl Nucleus {
                 ]
             })
             .collect()
-    }
-
-    /// Expanded in a journey, the function the view is centred on: the cursor while
-    /// it is inside the expanded module, so whatever moves it there, a click, a key
-    /// or a bar, centres the view on it the same way; else the start.
-    pub(crate) fn centre(&self) -> Option<usize> {
-        if !self.now.expanded || self.browse {
-            return None;
-        }
-        let inside =
-            |tile: usize| self.module_of.get(tile).copied().flatten() == Some(self.now.middle);
-        match self.cursor {
-            Some(cursor) if inside(cursor) => Some(cursor),
-            _ => self.now.start,
-        }
-    }
-
-    /// Where the camera looks: expanded in a journey, the function it centres on; the
-    /// nucleus in a journey otherwise; browsing, the middle of the modules the
-    /// selection touches.
-    pub(crate) fn frame_target(&self) -> Vec3 {
-        if let Some(at) = self.centre().and_then(|t| self.now.points.get(t).copied()) {
-            return at;
-        }
-        // A module expanded where it is: its middle.
-        if let Some(ball) = self.expanded.and_then(|c| self.now.balls.get(c)) {
-            return ball.center;
-        }
-        let open: Vec<Vec3> = self
-            .now
-            .balls
-            .iter()
-            .filter(|b| self.browse && b.body == Body::Open)
-            .map(|b| b.center)
-            .collect();
-        if open.is_empty() {
-            return Vec3::ZERO;
-        }
-        #[expect(clippy::cast_precision_loss, reason = "a module count")]
-        let middle = open.iter().copied().sum::<Vec3>() / open.len() as f32;
-        middle
     }
 
     /// Everything placed around `start`, the nucleus expanded or not, or browsing.

@@ -1,0 +1,86 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json
+# The camera on this repo's own graph, where testers lost it: the wheel stops short of
+# a sphere and out at the whole map in the middle of the view; a journey is framed
+# into the free area above its panel, by Enter, F and the panel's Fit alike; expanded
+# in a journey, the cursor is kept in view and a level less moves nothing; R expanded
+# shrinks back first; X with nothing selected expands the module in the middle, and a
+# double click keeps the selection.
+snap open
+
+scroll 60 at Explorer::lens
+expect check zoom-bounds
+snap wheel in max
+
+scroll -60 at 80 80
+expect check zoom-bounds
+snap wheel out max
+
+key r
+expect check framed
+snap r
+
+key /
+type spotlit
+key enter
+expect selection Explorer::spotlit
+snap selected
+
+key enter
+expect mode journey
+expect start Explorer::spotlit
+snap journey
+
+key .
+key .
+snap deeper
+
+key f
+expect check framed
+snap f
+
+button Fit
+expect camera-same-as f
+snap fit
+
+key x
+expect expanded explorer
+expect check expanded-fill
+snap expanded
+
+bar 3
+expect cursor ForceGraph::callers
+snap cursor off the module
+
+key ,
+expect camera-same-as cursor off the module
+snap level less expanded
+
+key f
+expect check framed
+snap f expanded
+
+key r
+expect nucleus modules
+expect check framed
+snap r expanded
+
+key esc
+expect mode browse
+expect camera-same-as selected
+snap esc
+
+click-empty
+expect selection none
+key x
+expect nucleus expanded
+expect check expanded-fill
+snap x in the middle
+
+key x
+expect nucleus modules
+click Explorer::spotlit
+expect selection Explorer::spotlit
+doubleclick-module scenario
+expect expanded scenario
+expect selection Explorer::spotlit
+snap double click keeps the selection

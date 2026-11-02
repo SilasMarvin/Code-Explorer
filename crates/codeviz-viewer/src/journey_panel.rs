@@ -45,37 +45,27 @@ const BAR_TEXT_SMALL: f32 = text::SMALL;
 /// Rows a docked journey grows to before it scrolls: the start and four levels.
 const DOCKED_ROWS: usize = 5;
 
-const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
+/// Opaque: the graph is drawn on under the panel.
+const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(11, 13, 19);
 
 /// The rows of bars the journey shows: a row a level, the start's included.
 pub(crate) fn rows(explorer: &Explorer) -> usize {
     explorer.disclosure().rows()
 }
 
-/// Where the graph renders and where the panel sits, within `area`, with `rows` of
-/// bars to show: along the foot of the window, as wide as it, and as tall as the
-/// levels shown, up to a few, past which it scrolls. The graph renders above the
-/// tallest it grows to, so a level more or less never moves the graph.
+/// The graph's free area within `area`, and the strip along its foot the panel takes,
+/// with `rows` of bars to show: the panel as wide as the window less a margin round
+/// it, and as tall as the levels shown, up to a few, past which it scrolls.
 pub(crate) fn split(area: egui::Rect, rows: usize) -> (egui::Rect, egui::Rect) {
     #[expect(clippy::cast_precision_loss, reason = "a handful of rows")]
-    let height = |rows: usize| {
-        (HEADER + PAD * 2.0 + rows as f32 * (ROW + ROW_GAP))
-            .min((area.height() * 0.4).max(140.0))
-            .min(area.height() - MARGIN * 2.0)
-    };
-    let tallest = height(DOCKED_ROWS);
-    let panel = egui::Rect::from_min_max(
-        egui::pos2(
-            area.min.x + MARGIN,
-            area.max.y - MARGIN - height(rows.clamp(2, DOCKED_ROWS)),
-        ),
-        area.max - egui::vec2(MARGIN, MARGIN),
-    );
-    let graph = egui::Rect::from_min_max(
-        area.min,
-        egui::pos2(area.max.x, area.max.y - MARGIN - tallest),
-    );
-    (graph, panel)
+    let height = (HEADER + PAD * 2.0 + rows.clamp(2, DOCKED_ROWS) as f32 * (ROW + ROW_GAP))
+        .min((area.height() * 0.4).max(140.0))
+        .min(area.height() - MARGIN * 2.0);
+    let top = area.max.y - height - MARGIN * 2.0;
+    (
+        egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, top)),
+        egui::Rect::from_min_max(egui::pos2(area.min.x, top), area.max),
+    )
 }
 
 /// One bar on screen.
@@ -94,21 +84,26 @@ pub(crate) struct Tethers {
     pub(crate) hovered: Option<egui::Rect>,
 }
 
-/// Draws the panel and handles its input. Returns the bar to tether to its node in
-/// the graph.
+/// Draws the panel in `strip` (see [`split`]), the hint at the keys in its header,
+/// and handles its input. Returns the bar to tether to its node in the graph.
 pub(crate) fn draw(
     ctx: &egui::Context,
-    rect: egui::Rect,
+    strip: egui::Rect,
+    hint: &str,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
 ) -> Tethers {
     let mut tethers = Tethers::default();
+    let rect = strip.shrink(MARGIN);
     egui::Area::new("journey_panel".into())
-        .fixed_pos(rect.min)
+        .fixed_pos(strip.min)
+        .constrain(false)
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
+            // The whole strip is the panel's, so nothing on the graph shows as if
+            // clickable under its margin.
+            ui.allocate_rect(strip, egui::Sense::hover());
             ui.set_clip_rect(rect);
-            ui.allocate_rect(rect, egui::Sense::hover());
             ui.painter().rect(
                 rect,
                 8.0,
@@ -117,7 +112,13 @@ pub(crate) fn draw(
                 egui::StrokeKind::Inside,
             );
             let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER));
-            header_bar(ui, header.shrink2(egui::vec2(10.0, 2.0)), explorer, panel);
+            header_bar(
+                ui,
+                header.shrink2(egui::vec2(10.0, 2.0)),
+                hint,
+                explorer,
+                panel,
+            );
             let content =
                 egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.min.y + HEADER), rect.max)
                     .shrink(PAD);
@@ -154,6 +155,7 @@ fn disclosure(ui: &mut egui::Ui, explorer: &mut Explorer) {
 fn header_bar(
     ui: &mut egui::Ui,
     rect: egui::Rect,
+    hint: &str,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
 ) {
@@ -166,15 +168,21 @@ fn header_bar(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .small_button("Fit")
-                    .on_hover_text("Fit the whole journey (double-click)")
+                    .on_hover_text("Fit the whole journey, here and in the graph (double-click)")
                     .clicked()
                 {
                     panel.zoom = None;
+                    explorer.frame_again();
                 }
                 disclosure(ui, explorer);
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     title(ui, explorer);
+                    ui.add_space(16.0);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(hint).size(text::SMALL).color(MUTED))
+                            .truncate(),
+                    );
                 });
             });
         },
@@ -733,7 +741,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    draw(ui.ctx(), screen, &mut explorer, &mut panel);
+                    draw(ui.ctx(), screen, "", &mut explorer, &mut panel);
                 },
             );
             output.textures_delta.clear();

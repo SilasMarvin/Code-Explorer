@@ -142,13 +142,13 @@ scene's units.
 - `state`: `mode` (`browse`, `journey`), `selection` (browsing), `start` (the
   journey's), `start_module` (the module in the middle: the start's, or the
   selection's), `cursor` (`number`, `name`), `aside` (the function set aside in a
-  journey), `centre` (expanded, the function the view centres on), `nucleus`
+  journey), `nucleus`
   (`modules`, `expanded`), `expanded` (the module expanded, by name), `depth`, `outside_callers`, `hovered` (the function the
   pointer has rested on, as drawn) and `under_pointer` (what the pointer is on now),
   `search`, `help`, `back`, `forward`, `camera` (`target`, `distance`, `yaw`, `pitch`),
   `pointer`.
 - `nodes`: every function drawn: `name`, `unit`, `module`, `roles` (`start`,
-  `selection`, `centre`, `cursor`, `aside`, `caller`, `journey level N`, `opened`
+  `selection`, `cursor`, `aside`, `caller`, `journey level N`, `opened`
   for a function of the module expanded while browsing, `hovered`, `speck` for a
   faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
   screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `crowded_by`.

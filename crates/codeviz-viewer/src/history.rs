@@ -68,6 +68,11 @@ impl<T> Default for History<T> {
 }
 
 impl<T: PartialEq> History<T> {
+    /// Forgets the place last left, as when a move is taken back at once.
+    pub(crate) fn forget_last(&mut self) {
+        self.back.pop();
+    }
+
     /// Records leaving `from` for somewhere new; what was ahead is dropped, as a
     /// browser drops it when you follow a link after going back.
     pub(crate) fn leave(&mut self, from: T) {

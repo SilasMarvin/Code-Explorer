@@ -204,9 +204,9 @@ pub(crate) fn click(
 const DOUBLE_CLICK: f32 = 0.4;
 
 /// A double click on a module expands it: anywhere on its sphere, or on one of its
-/// functions, which the first click has already picked as any click does. With a
-/// module expanded, a double click off every function shrinks it back. A press that
-/// drags to orbit is no click.
+/// functions, which the first click has already picked as any click does; on another
+/// module than the one expanded, expands that one instead. On the module expanded,
+/// off every function, it shrinks it back. A press that drags to orbit is no click.
 pub(crate) fn double_click(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -238,12 +238,15 @@ pub(crate) fn double_click(
         return;
     }
     *last = None;
-    if explorer.nucleus().expanded() {
-        if explorer.under_pointer.is_none() {
+    let expanded = explorer.nucleus().expanded_module();
+    match explorer.module_pointed() {
+        // Another module than the one expanded, or the first: expanded instead.
+        Some(module) if Some(module) != expanded => explorer.expand_pointed(module),
+        // Off every function of the module expanded: shrunk back.
+        _ if expanded.is_some() && explorer.under_pointer.is_none() => {
             explorer.toggle_expand(None);
         }
-    } else if let Some(module) = explorer.module_pointed() {
-        explorer.toggle_expand(Some(module));
+        _ => {}
     }
 }
 

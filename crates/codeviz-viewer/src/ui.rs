@@ -13,8 +13,9 @@ use crate::{
     camera::OrbitCamera,
     colors::{CALLER_TEXT, MUTED},
     explorer::Explorer,
+    framing::GraphView,
     journey_panel::{self, JourneyPanel},
-    key_help::{key_help, key_hint},
+    key_help::{hint, key_help, key_hint},
     labels::draw_graph_labels,
     text,
 };
@@ -26,6 +27,7 @@ impl Plugin for UiPlugin {
         app.init_resource::<Search>()
             .init_resource::<KeyHelp>()
             .init_resource::<Chrome>()
+            .init_resource::<GraphView>()
             .add_systems(
                 PreUpdate,
                 keys_to_the_graph
@@ -115,6 +117,7 @@ fn draw_ui(
     mut chrome: ResMut<Chrome>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
+    mut graph_view: ResMut<GraphView>,
     mut moved: Local<u64>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -131,15 +134,13 @@ fn draw_ui(
     let screen = ctx.viewport_rect();
     let central =
         egui::Rect::from_min_max(egui::pos2(screen.min.x, screen.min.y + top), screen.max);
-    // Browsing, no journey is open, so its panel is not drawn.
-    let (graph_area, panel_area) = if explorer.browsing() {
-        (central, None)
-    } else {
-        let (graph, panel) = journey_panel::split(central, journey_panel::rows(&explorer));
-        (graph, Some(panel))
-    };
+    // The graph is drawn under the whole of it, the journey panel over its foot, so a
+    // level more or less, which changes how tall the panel is, moves nothing; names,
+    // the search box and the framing keep to the free area above the panel.
+    graph_view.0 = Some(central);
+    let (graph_area, panel_area) = areas(central, &explorer);
     if let Ok((mut camera, transform, orbit)) = cameras.single_mut() {
-        fit_viewport(&mut camera, &window, graph_area);
+        fit_viewport(&mut camera, &window, central);
         let to_screen = |position: Vec3| {
             camera
                 .world_to_viewport(transform, position)
@@ -169,7 +170,10 @@ fn draw_ui(
                 &mut chrome.search,
             );
         }
-        key_hint(ctx, graph_area, explorer.browsing());
+        // In a journey, the hint at the keys sits in the panel's header.
+        if explorer.browsing() {
+            key_hint(ctx, graph_area);
+        }
         if help.0 {
             // Down to the window's foot, over the journey panel where it must, so the
             // whole list fits rather than scrolls.
@@ -180,7 +184,7 @@ fn draw_ui(
             key_help(ctx, room, &mut help.0, explorer.browsing());
         }
         if let Some(area) = panel_area {
-            let tethers = journey_panel::draw(ctx, area, &mut explorer, &mut panel);
+            let tethers = journey_panel::draw(ctx, area, hint(false), &mut explorer, &mut panel);
             // Not over the key help, which would read as crossed out.
             if !help.0 {
                 draw_tethers(ctx, &tethers, &explorer, &to_screen);
@@ -461,7 +465,18 @@ fn aside_chip(ui: &mut egui::Ui, explorer: &mut Explorer) {
     }
 }
 
-/// Restricts 3D rendering to the area between the panels.
+/// The graph's free area within its view `central`, and the strip along the foot the
+/// journey panel takes when a journey is open.
+pub(crate) fn areas(central: egui::Rect, explorer: &Explorer) -> (egui::Rect, Option<egui::Rect>) {
+    if explorer.browsing() {
+        (central, None)
+    } else {
+        let (free, strip) = journey_panel::split(central, journey_panel::rows(explorer));
+        (free, Some(strip))
+    }
+}
+
+/// Restricts 3D rendering to the area under the top bar.
 fn fit_viewport(camera: &mut Camera, window: &Window, central: egui::Rect) {
     let scale = window.scale_factor();
     #[expect(

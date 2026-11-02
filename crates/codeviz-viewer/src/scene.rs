@@ -9,14 +9,14 @@ use bevy_egui::{
 };
 
 use crate::{
-    camera,
+    camera::{self, OrbitCamera},
     disclosure::Disclose,
     explorer::{Explorer, Step},
-    framing,
+    framing::{self, GraphView},
     graph_view::{self, NodeMaterials},
     idle::Awake,
     notice, nucleus, pick,
-    ui::{Chrome, KeyHelp},
+    ui::{self, Chrome, KeyHelp},
 };
 
 pub(crate) struct ScenePlugin;
@@ -143,6 +143,8 @@ fn keyboard(
     mut explorer: ResMut<Explorer>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
+    view: Res<GraphView>,
+    cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     if let Some(step) = journey_step(&keys) {
@@ -166,9 +168,20 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
     }
-    // X expands the module under the pointer or the focus's, or shrinks it back.
+    // X expands the focus's module, with none the one in the middle of the view, or
+    // shrinks it back.
     if keys.just_pressed(KeyCode::KeyX) {
-        explorer.toggle_expand(None);
+        let middle = || {
+            let (camera, at) = cameras.single().ok()?;
+            let free = ui::areas(view.0?, &explorer).0;
+            framing::module_nearest_middle(explorer.nucleus(), camera, at, free)
+        };
+        let module = if explorer.nucleus().expanded() {
+            None
+        } else {
+            explorer.focus_module().or_else(middle)
+        };
+        explorer.toggle_expand(module);
     }
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;

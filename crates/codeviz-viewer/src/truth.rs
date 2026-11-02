@@ -90,8 +90,6 @@ pub(crate) fn state(view: &View) -> Value {
             "name": explorer.label(span),
         })),
         "aside": explorer.aside().map(name),
-        // Expanded in a journey, the function the view centres on.
-        "centre": nucleus.centre().map(name),
         "nucleus": if nucleus.expanded() { "expanded" } else { "modules" },
         "expanded": nucleus.expanded_module().map(|c| explorer.cluster_name(c)),
         "depth": explorer.disclose().0,
@@ -439,7 +437,7 @@ fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
 }
 
 /// What a drawn function is to the view: the journey's start or the selection, the
-/// expanded view's centre, the journey's cursor, the function set aside, a caller, a
+/// journey's cursor, the function set aside, a caller, a
 /// call of the journey so many levels down, one of the functions of a module expanded
 /// while browsing, hovered; else a speck.
 fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
@@ -449,7 +447,6 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     for (role, of) in [
         ("start", explorer.start()),
         ("selection", explorer.selection()),
-        ("centre", n.centre()),
         ("cursor", n.cursor()),
         ("aside", explorer.aside()),
     ] {
