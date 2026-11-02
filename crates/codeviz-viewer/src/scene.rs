@@ -2,13 +2,14 @@
 //! systems that run each frame in order, from the pointer and the keys to what is
 //! drawn; with the keys that move the cursor and change what is shown.
 
-use bevy::prelude::*;
+use bevy::{prelude::*, transform::TransformSystems};
 use bevy_egui::{
     EguiPrimaryContextPass,
     input::{egui_wants_any_keyboard_input, egui_wants_any_pointer_input},
 };
 
 use crate::{
+    camera,
     disclosure::Disclose,
     explorer::{Explorer, Step},
     framing,
@@ -53,6 +54,14 @@ impl Plugin for ScenePlugin {
             )
                 .chain(),
         )
+        // Sized once the camera has moved for the frame, before anything is placed
+        // where it is drawn.
+        .add_systems(
+            PostUpdate,
+            graph_view::size_nodes
+                .after(camera::apply_camera)
+                .before(TransformSystems::Propagate),
+        )
         .add_systems(EguiPrimaryContextPass, notice::draw);
     }
 }
@@ -61,7 +70,7 @@ impl Plugin for ScenePlugin {
 #[derive(Component, Debug)]
 pub(crate) struct Tile(pub(crate) usize);
 
-/// A sphere per function, sized by how connected it is.
+/// A sphere per function, sized by [`graph_view::size_nodes`].
 fn spawn_nodes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -75,7 +84,6 @@ fn spawn_nodes(
             .unwrap_or_else(|_| Sphere::new(0.5).mesh().uv(24, 16)),
     );
     let material = materials.0.values().next().cloned().unwrap_or_default();
-    let graph = explorer.graph();
     for index in 0..explorer.map().tiles.len() {
         let Some(at) = explorer.tile_point(index) else {
             continue;
@@ -85,8 +93,7 @@ fn spawn_nodes(
             Tile(index),
             Mesh3d(mesh.clone()),
             MeshMaterial3d(material.clone()),
-            Transform::from_translation(at)
-                .with_scale(Vec3::splat(graph_view::node_size(graph, index))),
+            Transform::from_translation(at),
         ));
     }
 }

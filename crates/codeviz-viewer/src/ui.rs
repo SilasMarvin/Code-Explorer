@@ -18,9 +18,10 @@ use crate::{
     },
     disclosure,
     explorer::Explorer,
-    graph_view,
+    graph_view::{self, Dot},
     journey_panel::{self, JourneyPanel},
     nucleus::{self, Body, Flow},
+    text,
 };
 
 pub(crate) struct UiPlugin;
@@ -70,6 +71,7 @@ fn keys_to_the_graph(
 }
 
 /// egui's proportional font has no arrows; its monospace one does, so it fills in.
+/// egui's text styles keep to [`text`]'s sizes.
 fn fallback_fonts(mut contexts: EguiContexts, mut done: Local<bool>) -> Result {
     if *done {
         return Ok(());
@@ -86,7 +88,9 @@ fn fallback_fonts(mut contexts: EguiContexts, mut done: Local<bool>) -> Result {
     ) {
         family.push(name);
     }
-    contexts.ctx_mut()?.set_fonts(fonts);
+    let ctx = contexts.ctx_mut()?;
+    ctx.set_fonts(fonts);
+    ctx.all_styles_mut(text::styles);
     *done = true;
     Ok(())
 }
@@ -443,7 +447,7 @@ fn aside_chip(ui: &mut egui::Ui, explorer: &mut Explorer) {
     }
     let chip = egui::Button::new(
         egui::RichText::new("not on this journey · Enter starts one here")
-            .size(13.0)
+            .size(text::BODY)
             .color(egui::Color32::WHITE),
     )
     .fill(egui::Color32::from_rgb(70, 52, 104))
@@ -695,6 +699,9 @@ struct Placer<'a> {
     /// The lit nodes no name may cover, not even one held where it first showed:
     /// all but those only the pointer lights.
     blocking: Vec<(usize, egui::Pos2, f32)>,
+    /// Every sphere drawn, by cluster, its middle and radius on screen: a module's
+    /// name lies over none but its own.
+    spheres: Vec<(usize, egui::Pos2, f32)>,
     last: ShownLabels,
     next: ShownLabels,
     /// Where each label placed this frame sits.
@@ -755,6 +762,7 @@ impl<'a> Placer<'a> {
             taken,
             nodes,
             blocking: Vec::new(),
+            spheres: Vec::new(),
             last: painter
                 .ctx()
                 .data_mut(|d| d.get_temp::<ShownLabels>(Self::id()))
@@ -788,10 +796,11 @@ impl<'a> Placer<'a> {
     /// there is room again. A new label goes where [`Placer::new_spot`] finds room. A
     /// held place more than [`NEAR`] from its node, or over another lit node, gives
     /// way to a nearer one.
-    /// The cursor's and the selection's names stay where they are placed; one with no
-    /// room of its own is drawn right beside its node, over others, but takes no
-    /// room, so where the cursor is never decides what else is named. Returns whether
-    /// it was placed, or put off until the held names are.
+    /// A function's name whose held place, still on the graph, is now taken goes
+    /// unnamed instead. The cursor's and the selection's names stay where they are
+    /// placed; one with no room of its own is drawn right beside its node, over
+    /// others, but takes no room, so where the cursor is never decides what else is
+    /// named. Returns whether it was placed, or put off until the held names are.
     fn place(
         &mut self,
         key: Named,
@@ -818,6 +827,18 @@ impl<'a> Placer<'a> {
                     && (force == Force::Always || self.has_room(spot(at))) =>
             {
                 Some(at)
+            }
+            // A function's name held where it first showed, still on the graph but
+            // now over another node or name, goes unnamed rather than elsewhere: what
+            // moves nothing moves no name. The cursor's and the selection's are drawn
+            // come what may.
+            Some(at)
+                if matches!(key, Named::Node(_))
+                    && force != Force::Always
+                    && !self.beside.contains(&key)
+                    && self.painter.clip_rect().contains_rect(spot(at)) =>
+            {
+                return false;
             }
             Some(_) => {
                 self.displaced.push(Displaced {
@@ -884,9 +905,17 @@ impl<'a> Placer<'a> {
         self.painter.clip_rect().contains_rect(rect) && covered <= rect.area() * COVERED_SHARE
     }
 
-    /// Whether a function's name at `rect` would lie over another lit node's middle;
-    /// a landmark's never counts, as module names do not keep off nodes.
+    /// Whether a function's name at `rect` would lie over another lit node's middle,
+    /// or a module's over another module's sphere; a landmark never counts nodes, as
+    /// module names browsing do not keep off them.
     fn covers_node(&self, key: Named, rect: egui::Rect) -> bool {
+        if let Named::Group(own) = key
+            && self.spheres.iter().any(|&(cluster, at, radius)| {
+                cluster != own && rect.distance_to_pos(at) < radius - 0.5
+            })
+        {
+            return true;
+        }
         if self.landmark(key) {
             return false;
         }
@@ -961,11 +990,13 @@ impl<'a> Placer<'a> {
             .or_else(|| {
                 let (at, over_names) = self.least_misleading(key, node, edge, extent);
                 match force {
-                    Force::Always => Some(at),
+                    // Over another name if it must, but never cut off by the graph's
+                    // edge.
+                    Force::Always if bounds.contains_rect(spot(at)) => Some(at),
                     Force::Free if !over_names && close(at) && !self.covers_node(key, spot(at)) => {
                         Some(at)
                     }
-                    Force::Free | Force::Never => None,
+                    Force::Always | Force::Free | Force::Never => None,
                 }
             })
     }
@@ -1080,8 +1111,9 @@ impl<'a> Placer<'a> {
         }
     }
 
-    /// Where a name that must show goes when no place is free: off every other lit
-    /// node if it can be, wherever it misleads least, over its own node if need be,
+    /// Where a name that must show goes when no place is free: on the graph, off every
+    /// other lit node if it can be, wherever it misleads least, over its own node if
+    /// need be,
     /// then where it lies over the fewest other names and nodes, nearest; and whether
     /// it lies over another name there. Names placed this frame weigh only after
     /// misreading, as their places may in turn hang on this one's.
@@ -1112,9 +1144,9 @@ impl<'a> Placer<'a> {
             .min_by_key(|&at| {
                 let rect = at.rect(node, edge, extent);
                 (
+                    !bounds.contains_rect(rect),
                     self.covers_node(key, rect),
                     self.misread(key, rect, node, edge),
-                    !bounds.contains_rect(rect),
                     under(names, rect),
                     under(blocked, rect),
                     at.over,
@@ -1288,7 +1320,7 @@ fn label_job(
     }
     job.append(name, 0.0, format(color, size));
     if let Some(note) = note {
-        job.append(&note, 6.0, format(MUTED, size - 1.5));
+        job.append(&note, 6.0, format(MUTED, text::SMALL));
     }
     job
 }
@@ -1323,7 +1355,16 @@ fn draw_graph_labels(
         .filter(|number| !number.is_empty());
     // The journey's start, which is named as the start come what may.
     let start = explorer.start();
-    // Where each shown node sits on screen, and how far its edge is from its middle.
+    // Where each shown node sits on screen, and how far its edge is from its middle
+    // as names keep off it: as far as the biggest a node is drawn, whatever this one
+    // is to the view, so a name keeps its place as the selection or the cursor comes
+    // and goes.
+    let edge_radius = nucleus.dot_radius(Dot::Focus);
+    let edge_of = |world: Vec3| {
+        let node = to_screen(world)?;
+        let edge = to_screen(world + up * edge_radius).map_or(8.0, |p| p.distance(node));
+        Some(Dot::Focus.clamp(edge))
+    };
     let discs: Vec<Option<(egui::Pos2, f32)>> = (0..map.tiles.len())
         .map(|tile| {
             // Only the start, what the nucleus lights and what is hovered, however
@@ -1331,10 +1372,7 @@ fn draw_graph_labels(
             let named = nucleus.drawn(tile)
                 && (nucleus.lit(tile) || white == Some(tile) || hovered == Some(tile));
             let world = explorer.tile_point(tile).filter(|_| named)?;
-            let node = to_screen(world)?;
-            let radius = graph_view::node_size(graph, tile) * nucleus.node_scale(false) / 2.0;
-            let edge = to_screen(world + up * radius).map_or(8.0, |p| p.distance(node));
-            Some((node, edge))
+            Some((to_screen(world)?, edge_of(world)?))
         })
         .collect();
 
@@ -1564,6 +1602,12 @@ fn draw_graph_labels(
     // And off the nodes that matter, so they never hide a neighbor: every lit one, the
     // journey's, its callers and those brought in from outside; what only the pointer
     // names is no reason for another name to move.
+    // And off the places a journey's open modules keep free for callers from outside
+    // it, so those come and go covering no name.
+    let free = nucleus
+        .kept_free()
+        .iter()
+        .filter_map(|&at| Some((usize::MAX, to_screen(at)?, edge_of(at)?)));
     let blocking: Vec<(usize, egui::Pos2, f32)> = (0..discs.len())
         .filter(|&tile| {
             nucleus.level(tile).is_some()
@@ -1572,6 +1616,7 @@ fn draw_graph_labels(
                 || white == Some(tile)
         })
         .filter_map(|tile| discs[tile].map(|(node, edge)| (tile, node, edge)))
+        .chain(free)
         .collect();
     let mut placer = Placer::new(
         painter,
@@ -1591,6 +1636,14 @@ fn draw_graph_labels(
     );
     placer.cards = lasting;
     placer.blocking = blocking;
+    placer.spheres = nucleus
+        .balls()
+        .filter(|(_, ball)| nucleus.shows_body(ball.body))
+        .filter_map(|(cluster, ball)| {
+            let (middle, edge) = sphere_on_screen(ball)?;
+            Some((cluster, middle, edge))
+        })
+        .collect();
     placer.landmarks = nucleus.browsing();
     let held_keys: HashSet<Named> = held.keys().copied().collect();
     placer.held = held;
@@ -1657,15 +1710,7 @@ fn draw_graph_labels(
                     .flatten()
                     .reduce(|a, b| format!("{a} · {b}"));
                 let browsing = nucleus.browsing();
-                // Browsing, as big as the module, whatever is clicked, so a name
-                // opening or closing its module keeps its place.
-                let size = match body {
-                    _ if browsing => browse_name_size(nucleus.count(group)),
-                    Some(Body::Nucleus) => 15.0,
-                    Some(Body::Closed | Body::Faint) => 10.5,
-                    _ => 12.0,
-                };
-                let job = label_job(None, &label.to_uppercase(), note, color, size);
+                let job = label_job(None, &label.to_uppercase(), note, color, text::TITLE);
                 // Expanded, the calls drawn end at the modules on the ring. Browsing,
                 // every module big enough is a landmark, kept off the others' names;
                 // the one the pointer is over is named come what may.
@@ -1756,17 +1801,6 @@ fn draw_graph_labels(
                 // read as one.
                 let fill = egui_color(graph_view::node_color(explorer, tile));
                 let lead = order.map(|order| (format!(" {order} "), ON_FILL, Some(fill)));
-                // The cursor's name keeps the size it had before the cursor came, and a
-                // name clicked off the journey the size it had before the click, so
-                // each keeps its place too.
-                let size = match tier {
-                    _ if aside == Some(tile) && nucleus.outside(tile) => 10.0,
-                    _ if aside == Some(tile) => 11.0,
-                    0 => 14.0,
-                    _ if quiet => 10.0,
-                    1 => 12.0,
-                    _ => 11.0,
-                };
                 // The pill's border says which way it relates to the start, as its call
                 // does; the cursor's is its own color.
                 let stroke = match level {
@@ -1778,7 +1812,9 @@ fn draw_graph_labels(
                     Some(2..) => Some(egui_color(DEEPER)),
                     _ => None,
                 };
-                let job = label_job(lead, &name, said, color, size);
+                // One size for every function's name, so a click that makes one the
+                // selection or the cursor never moves it.
+                let job = label_job(lead, &name, said, color, text::BODY);
                 // The start and what is hovered are named come what may; everything
                 // the nucleus names, wherever there is room.
                 let force = if tier == 0 || hovered == Some(tile) {
@@ -1898,20 +1934,14 @@ fn traced_call(painter: &egui::Painter, route: &[egui::Pos2], edge: f32) {
 /// module to be named without the pointer on it.
 const NAMED_SPHERE: f32 = 13.0;
 
-/// Browsing, how big a module's name is, by how many functions it holds.
-fn browse_name_size(count: usize) -> f32 {
-    #[expect(clippy::cast_precision_loss, reason = "a function count")]
-    (9.5 + 1.2 * (count.max(1) as f32).ln()).clamp(10.0, 15.5)
-}
-
 /// How many of the functions lit had no room for their names, at the graph's foot
 /// above the hint at the keys.
 fn unnamed_note(painter: &egui::Painter, unnamed: usize, lit: usize) {
     let area = painter.clip_rect();
-    let text = format!(
+    let note = format!(
         "{unnamed} of {lit} lit functions unnamed for want of room · zoom in, or point at one"
     );
-    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.0), MUTED);
+    let galley = painter.layout_no_wrap(note, egui::FontId::proportional(text::SMALL), MUTED);
     let at = egui::pos2(area.min.x + 12.0, area.max.y - 30.0 - galley.size().y);
     painter.rect_filled(
         egui::Rect::from_min_size(at, galley.size()).expand2(PILL_PAD),
@@ -1935,7 +1965,7 @@ fn key_hint(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
                 "Journey · click a call to move the cursor there · ] [ ↓ ↑ ← → step · , . \
                  less or more · I calls in from outside · Esc leaves for browsing · H keys"
             },
-            egui::FontId::proportional(12.0),
+            egui::FontId::proportional(text::SMALL),
             MUTED,
         );
 }
@@ -2213,7 +2243,7 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                         } else {
                             "Keys in a journey"
                         };
-                        ui.label(egui::RichText::new(title).strong().size(14.0));
+                        ui.label(egui::RichText::new(title).strong().size(text::TITLE));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("close (H)").clicked() {
                                 *open = false;
@@ -2226,7 +2256,7 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                             ui.spacing_mut().item_spacing.x = 4.0;
                             for (color, what) in color_key(view.browsing) {
                                 ui.label(egui::RichText::new("●").color(color));
-                                ui.label(egui::RichText::new(what).size(11.5).color(MUTED));
+                                ui.label(egui::RichText::new(what).size(text::SMALL).color(MUTED));
                                 ui.add_space(8.0);
                             }
                         });
@@ -2239,13 +2269,13 @@ fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showin
                                  shows only the journey; a click moves its cursor and nothing \
                                  else. Esc leaves it for browsing."
                             })
-                            .size(11.5)
+                            .size(text::SMALL)
                             .color(egui::Color32::WHITE),
                         );
                         for line in reading(view.browsing) {
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(*line).size(11.5).color(MUTED),
+                                    egui::RichText::new(*line).size(text::SMALL).color(MUTED),
                                 )
                                 .wrap(),
                             );
@@ -2313,7 +2343,7 @@ fn more_below(ui: &egui::Ui, scroll: &egui::scroll_area::ScrollAreaOutput<()>) {
     let foot = scroll.inner_rect;
     let galley = ui.painter().layout_no_wrap(
         "▼ more below: scroll".to_owned(),
-        egui::FontId::proportional(12.0),
+        egui::FontId::proportional(text::SMALL),
         egui::Color32::WHITE,
     );
     let at = egui::pos2(
@@ -2327,7 +2357,7 @@ fn more_below(ui: &egui::Ui, scroll: &egui::scroll_area::ScrollAreaOutput<()>) {
 
 /// One group of keys, each key in a fixed column and what it does wrapping beside it.
 fn key_section(ui: &mut egui::Ui, title: &str, keys: &[(&str, &str)]) {
-    ui.label(egui::RichText::new(title).strong().size(12.5));
+    ui.label(egui::RichText::new(title).strong().size(text::BODY));
     for (key, what) in keys {
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
@@ -2338,12 +2368,14 @@ fn key_section(ui: &mut egui::Ui, title: &str, keys: &[(&str, &str)]) {
                     ui.label(
                         egui::RichText::new(*key)
                             .monospace()
-                            .size(11.0)
+                            .size(text::SMALL)
                             .color(egui::Color32::WHITE),
                     );
                 },
             );
-            ui.add(egui::Label::new(egui::RichText::new(*what).size(11.5).color(MUTED)).wrap());
+            ui.add(
+                egui::Label::new(egui::RichText::new(*what).size(text::SMALL).color(MUTED)).wrap(),
+            );
         });
     }
     ui.add_space(6.0);
@@ -2483,7 +2515,7 @@ mod tests {
     }
 
     #[test]
-    fn a_held_name_gives_way_to_a_lit_node_under_it_and_none_goes_far() {
+    fn a_held_name_over_a_node_lit_since_goes_unnamed_rather_than_elsewhere() {
         let (a, b) = (egui::pos2(400.0, 300.0), egui::pos2(440.0, 300.0));
         // Held to the right of `a`, where `b` has since lit up.
         let right = Spot::beside(0, 0);
@@ -2494,10 +2526,10 @@ mod tests {
             },
             &[(Named::Node(0), a, Force::Free)],
         );
-        let label = &shown[&Named::Node(0)];
-        let rect = egui::Rect::from_min_size(a + label.offset, label.galley.size());
-        assert!(!rect.contains(b), "off the lit node: {rect:?}");
-        assert!(near(rect, a, 5.0), "and still near its own: {rect:?}");
+        assert!(
+            !shown.contains_key(&Named::Node(0)),
+            "neither over the lit node nor moved"
+        );
     }
 
     #[test]

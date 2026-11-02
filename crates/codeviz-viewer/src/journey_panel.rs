@@ -13,6 +13,7 @@ use crate::{
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
     graph_view::node_color,
+    text,
     ui::{journey_title, short},
 };
 
@@ -39,8 +40,8 @@ const ROW_GAP: f32 = 5.0;
 /// Share of a slot left between consecutive bars on a row.
 const BAR_GAP: f32 = 0.06;
 /// How big a bar's name is drawn, and how small it shrinks to fit.
-const BAR_TEXT: f32 = 12.5;
-const BAR_TEXT_SMALL: f32 = 11.0;
+const BAR_TEXT: f32 = text::BODY;
+const BAR_TEXT_SMALL: f32 = text::SMALL;
 /// Rows a docked journey grows to before it scrolls: the start and four levels.
 const DOCKED_ROWS: usize = 5;
 
@@ -211,7 +212,7 @@ fn canvas(
             content.center(),
             egui::Align2::CENTER_CENTER,
             "No journey here. Focus a node and press Enter to trace from it.",
-            egui::FontId::proportional(13.0),
+            egui::FontId::proportional(text::BODY),
             MUTED,
         );
         return Tethers::default();
@@ -415,7 +416,7 @@ fn canvas(
                 egui::pos2(badge.min.x + 13.5, badge.center().y),
                 egui::Align2::LEFT_CENTER,
                 folded.to_string(),
-                egui::FontId::proportional(10.5),
+                egui::FontId::proportional(text::SMALL),
                 ink,
             );
             if mouse.is_some_and(|p| badge.contains(p)) {
@@ -493,7 +494,7 @@ fn canvas(
                 free.center(),
                 egui::Align2::CENTER_CENTER,
                 number,
-                egui::FontId::proportional(11.5),
+                egui::FontId::proportional(text::SMALL),
                 text,
             );
         }

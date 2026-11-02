@@ -335,7 +335,10 @@ fn camera_input(
     }
 }
 
-fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Transform)>) {
+pub(crate) fn apply_camera(
+    time: Res<Time>,
+    mut cameras: Query<(&mut OrbitCamera, &mut Transform)>,
+) {
     let ease = 1.0 - (-EASING * time.delta_secs()).exp();
     for (mut camera, mut transform) in &mut cameras {
         camera.looking_at = camera.looking_at.lerp(camera.target, ease);
