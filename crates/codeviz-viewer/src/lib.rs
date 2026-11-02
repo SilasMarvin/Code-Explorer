@@ -38,7 +38,7 @@ use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::UnitId;
 
 use crate::{
-    explorer::{Autoplay, Explorer, ViewMode},
+    explorer::{Autoplay, Explorer},
     journey_panel::{JourneyPanel, PanelMode},
     lens::{Lens, Measure, Source},
 };
@@ -47,7 +47,6 @@ use crate::{
 #[derive(Debug)]
 pub struct Viewer {
     system: System,
-    root: Option<UnitId>,
     options: JourneyOptions,
     title: String,
     screenshot: Option<PathBuf>,
@@ -69,8 +68,6 @@ pub struct Viewer {
     bare: bool,
     /// Whether the nucleus opens expanded.
     expanded: bool,
-    /// Whether it opens in the focus's journey or browsing.
-    mode: ViewMode,
 }
 
 /// A session's steps, read from a script a step per line: `key shift+i`, `click
@@ -99,7 +96,6 @@ impl Viewer {
     pub fn new(system: System) -> Self {
         Self {
             system,
-            root: None,
             options: JourneyOptions::default(),
             title: "codeviz".to_owned(),
             screenshot: None,
@@ -114,15 +110,7 @@ impl Viewer {
             depth: None,
             bare: false,
             expanded: false,
-            mode: ViewMode::Journey,
         }
-    }
-
-    /// The unit to start from. Without one, the first entry is used.
-    #[must_use]
-    pub fn with_root(mut self, root: UnitId) -> Self {
-        self.root = Some(root);
-        self
     }
 
     /// Opens on this outcome (index into the entry's scenarios) instead of the happy path.
@@ -171,7 +159,8 @@ impl Viewer {
         self
     }
 
-    /// Opens with this function focused in the graph.
+    /// Opens the journey that starts at this function; without one, the view opens
+    /// browsing.
     #[must_use]
     pub fn with_focus(mut self, unit: UnitId) -> Self {
         self.focus = Some(unit);
@@ -204,14 +193,6 @@ impl Viewer {
     #[must_use]
     pub fn expanded(mut self) -> Self {
         self.expanded = true;
-        self
-    }
-
-    /// Opens browsing, with no journey open and the focus selected, or with none
-    /// given, nothing; Enter opens the selection's journey.
-    #[must_use]
-    pub fn browsing(mut self) -> Self {
-        self.mode = ViewMode::Browse;
         self
     }
 
@@ -260,11 +241,8 @@ impl Viewer {
     }
 
     fn explorer(&mut self) -> Explorer {
-        let mut explorer = Explorer::new(
-            std::mem::take(&mut self.system),
-            self.root.take(),
-            self.options.clone(),
-        );
+        let mut explorer =
+            Explorer::new(std::mem::take(&mut self.system), None, self.options.clone());
         if self.scenario.is_some() {
             explorer.set_scenario(self.scenario);
         }
@@ -281,13 +259,10 @@ impl Viewer {
             .and_then(|unit| explorer.map().tile_of(&unit));
         if let Some(tile) = focus {
             explorer.open_at(tile);
-        }
-        if self.mode == ViewMode::Browse {
+        } else {
+            // With no journey asked for, browsing, with nothing selected: the whole map.
             explorer.leave_journey();
-            // Browsing with nothing asked for, nothing is selected: the whole map.
-            if focus.is_none() {
-                explorer.clear_selection();
-            }
+            explorer.clear_selection();
         }
         explorer.gather();
         explorer.expand_nucleus(self.expanded);

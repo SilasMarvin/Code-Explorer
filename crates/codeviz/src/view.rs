@@ -19,9 +19,6 @@ pub(crate) struct ViewArgs {
 /// What the viewer opens on and how it shows it.
 #[derive(Debug, clap::Args)]
 struct Display {
-    /// Entry label (`POST /users`) or unit id suffix to start from.
-    #[arg(short, long)]
-    entry: Option<String>,
     /// Include calls nothing resolved.
     #[arg(long)]
     unresolved: bool,
@@ -47,7 +44,8 @@ struct Display {
     /// How the reveal measures nearness.
     #[arg(long, value_enum, default_value_t = NearArg::Calls)]
     reveal_by: NearArg,
-    /// Open with this function (entry label or unit id suffix) focused in the graph.
+    /// Open the journey that starts at this function (entry label or unit id suffix).
+    /// Without it, the view opens browsing the whole codebase.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
     /// With --screenshot, as though the pointer were over this function (entry label
@@ -60,8 +58,10 @@ struct Display {
     /// Draw only the graph and the journey, without the panels and cards around them.
     #[arg(long)]
     bare: bool,
-    #[command(flatten)]
-    third: Third,
+    /// Open with the journey's start module expanded to show how calls run inside it
+    /// (X toggles it).
+    #[arg(long, requires = "focus")]
+    expand: bool,
     /// Render once, save a PNG screenshot here, and exit.
     #[arg(long, value_name = "PATH")]
     screenshot: Option<PathBuf>,
@@ -80,32 +80,6 @@ struct Display {
         conflicts_with = "keys"
     )]
     script: Option<PathBuf>,
-}
-
-/// How the view opens.
-#[derive(Debug, clap::Args)]
-struct Third {
-    /// Open with the journey's start module expanded to show how calls run inside it
-    /// (X toggles it).
-    #[arg(long)]
-    expand: bool,
-    /// Open browsing, with no journey open and the focus selected, or without
-    /// --focus, nothing: a click selects a function and moves nothing; Enter opens the
-    /// selected function's journey.
-    #[arg(long, conflicts_with = "expand")]
-    browse: bool,
-}
-
-impl Third {
-    fn apply(&self, mut viewer: Viewer) -> Viewer {
-        if self.expand {
-            viewer = viewer.expanded();
-        }
-        if self.browse {
-            viewer = viewer.browsing();
-        }
-        viewer
-    }
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -155,10 +129,6 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
 /// Opens `documents` and blocks until the window closes.
 fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result<()> {
     let system = System::new(documents);
-    let root = match &args.entry {
-        Some(query) => Some(crate::journey::find_one(&system, query)?),
-        None => None,
-    };
     let focus = args
         .focus
         .as_ref()
@@ -179,9 +149,6 @@ fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result
             zoom: args.zoom.into(),
             ..JourneyOptions::default()
         });
-    if let Some(root) = root {
-        viewer = viewer.with_root(root);
-    }
     if let Some(focus) = focus {
         viewer = viewer.with_focus(focus);
     }
@@ -216,7 +183,9 @@ fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result
     if args.bare {
         viewer = viewer.bare();
     }
-    viewer = args.third.apply(viewer);
+    if args.expand {
+        viewer = viewer.expanded();
+    }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
     }
