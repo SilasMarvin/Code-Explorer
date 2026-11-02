@@ -92,6 +92,7 @@ pub(crate) fn state(view: &View) -> Value {
         // Expanded in a journey, the function the view centres on.
         "centre": nucleus.centre().map(name),
         "nucleus": if nucleus.expanded() { "expanded" } else { "modules" },
+        "expanded": nucleus.expanded_module().map(|c| explorer.cluster_name(c)),
         "depth": explorer.disclose().0,
         "outside_callers": explorer.outside_shown(),
         "hovered": explorer.hovered().map(name),
@@ -435,7 +436,8 @@ fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
 
 /// What a drawn function is to the view: the journey's start or the selection, the
 /// expanded view's centre, the journey's cursor, the function set aside, a caller, a
-/// call of the journey so many levels down, hovered; else a speck.
+/// call of the journey so many levels down, one of the functions of a module expanded
+/// while browsing, hovered; else a speck.
 fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     let mut roles = Vec::new();
     let n = explorer.nucleus();
@@ -458,6 +460,9 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
         Some(-1) => roles.push("caller".to_owned()),
         Some(level) if level > 0 => roles.push(format!("journey level {level}")),
         _ => {}
+    }
+    if n.opened_up(tile) && n.level(tile).is_none() && !is(n.start()) {
+        roles.push("opened".to_owned());
     }
     if is(n.hovered()) {
         roles.push("hovered".to_owned());

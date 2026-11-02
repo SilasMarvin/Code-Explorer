@@ -26,7 +26,7 @@ use crate::{
     disclosure::{self, Disclose, Disclosed},
     history::{History, Seen, View},
     module_names,
-    nucleus::{Nucleus, Trail},
+    nucleus::{Body, Nucleus, Trail},
 };
 
 /// How sure we are that a span really happens as drawn.
@@ -192,6 +192,9 @@ pub(crate) struct Explorer {
     /// The journey number on the name under the pointer, so a click on a name goes to
     /// the call it numbers.
     pub(crate) under_pointer_number: Option<String>,
+    /// The module whose sphere the pointer is over, nearest the camera, of those
+    /// drawn: what X and a double click expand.
+    pub(crate) module_under_pointer: Option<usize>,
     /// In a journey, a function clicked off it, selected in place until a journey
     /// key, Esc or Enter, which starts a journey there.
     aside: Option<usize>,
@@ -219,7 +222,7 @@ pub(crate) struct Explorer {
     pose: Option<Pose>,
     /// Where the camera stood browsing when a journey was last entered from there.
     browse_pose: Option<Pose>,
-    /// Where the camera stood when the nucleus was expanded, to go back to when it
+    /// Where the camera stood when a module was expanded, to go back to when it
     /// shrinks back, however the view was turned or moved while it was expanded.
     expand_pose: Option<Pose>,
     /// Where the camera is to go back to, until the camera takes it.
@@ -276,6 +279,7 @@ impl Explorer {
             disclosed: Arc::default(),
             under_pointer: None,
             under_pointer_number: None,
+            module_under_pointer: None,
             aside: None,
             revision: 0,
             nucleus,
@@ -339,10 +343,15 @@ impl Explorer {
     /// was, and the camera back to where it stood.
     fn restore(&mut self, view: View) {
         self.leaving_browse(view.mode);
-        // Expanding is no place of its own: a camera that framed the nucleus expanded
-        // is not put back on it shrunk, nor the other way round. The camera stays, and
-        // shrinking back still returns to where it stood before X.
-        let expanded = view.mode == ViewMode::Journey && self.nucleus.expanded();
+        // Expanding is no place of its own. Going to another journey, or between
+        // browsing and a journey, shrinks back what is expanded; within one, it stays.
+        // A camera that framed a module expanded is not put back on it shrunk, nor the
+        // other way round. The camera stays, and shrinking back still returns to where
+        // it stood before X.
+        if view.mode != self.mode || view.start != self.track.start {
+            self.drop_expansion();
+        }
+        let expanded = self.nucleus.expanded();
         if let Seen(Some(pose), seen_expanded) = view.pose
             && seen_expanded == expanded
         {
@@ -374,9 +383,11 @@ impl Explorer {
     /// Back returns to it. A move that changes nothing is not remembered.
     fn navigate(&mut self, go: impl FnOnce(&mut Self)) {
         let before = self.view();
+        // Where the camera stood, a module expanded or not.
+        let resting = self.expand_pose.or(self.pose);
         go(self);
         if before.mode == ViewMode::Browse && self.mode == ViewMode::Journey {
-            self.browse_pose = before.pose.0;
+            self.browse_pose = resting;
         }
         if self.view() != before {
             self.history.leave(before);
@@ -519,11 +530,11 @@ impl Explorer {
             explorer.selection = explorer.current();
             explorer.mode = ViewMode::Browse;
             explorer.aside = None;
+            // Browsing shrinks back what is expanded; the pose it would have gone
+            // back to is the journey's, not the codebase's.
+            explorer.drop_expansion();
         });
         self.aim += 1;
-        // Browsing shrinks the nucleus back; the pose it would have gone back to is
-        // the journey's, not the codebase's.
-        self.expand_pose = None;
         // Back to the codebase as it was seen before the journey, unframed.
         self.return_to(self.browse_pose);
     }
@@ -532,7 +543,7 @@ impl Explorer {
     /// browsing into a journey (`next`).
     fn leaving_browse(&mut self, next: ViewMode) {
         if self.mode == ViewMode::Browse && next == ViewMode::Journey {
-            self.browse_pose = self.pose;
+            self.browse_pose = self.expand_pose.or(self.pose);
         }
     }
 
@@ -574,6 +585,9 @@ impl Explorer {
             return;
         };
         self.navigate(|explorer| {
+            if explorer.browsing() || explorer.track.start.as_ref() != Some(&unit) {
+                explorer.drop_expansion();
+            }
             explorer.mode = ViewMode::Journey;
             explorer.aside = None;
             if explorer.track.start.as_ref() == Some(&unit) {
@@ -626,18 +640,64 @@ impl Explorer {
         self.nucleus = nucleus;
     }
 
-    /// In a journey, expands the nucleus to show how calls run inside its start's
-    /// module, or shrinks it back, round the start again.
-    pub(crate) fn expand_nucleus(&mut self, on: bool) {
-        if self.browsing() || self.nucleus.expanded() == on {
+    /// X or a double click. With a module expanded, shrinks it back, and the camera
+    /// returns to exactly where it stood before X, however it moved meanwhile.
+    /// Otherwise expands `module`, or with none given, the module under the pointer,
+    /// else that of the function the view is on (the selection, the function set
+    /// aside, the cursor or the start), remembering where the camera stands; the
+    /// camera then flies in until the module fills the view.
+    pub(crate) fn toggle_expand(&mut self, module: Option<usize>) {
+        if self.nucleus.expanded() {
+            self.nucleus.expand(&self.graph, None);
+            let pose = self.expand_pose.take();
+            self.return_to(pose);
             return;
         }
-        self.nucleus.expand(&self.graph, on);
-        if on {
-            self.expand_pose = self.pose;
-        } else if let Some(pose) = self.expand_pose.take() {
-            // Back to exactly where the camera stood before it expanded.
-            self.return_to(Some(pose));
+        match module.or_else(|| self.module_to_expand()) {
+            Some(module) => {
+                self.expand_pose = self.pose;
+                self.nucleus.expand(&self.graph, Some(module));
+            }
+            None => self.say("X expands the module under the pointer, or the selection's"),
+        }
+    }
+
+    /// What X expands: the module the pointer is on, else the module of the
+    /// function the view is on.
+    fn module_to_expand(&self) -> Option<usize> {
+        self.module_pointed()
+            .or_else(|| self.current().and_then(|tile| self.graph.cluster(tile)))
+    }
+
+    /// The module the pointer is on: the module of the function under it, else the
+    /// module whose sphere it is over, in a journey only one that shows some of it.
+    pub(crate) fn module_pointed(&self) -> Option<usize> {
+        let sphere = self.module_under_pointer.filter(|&cluster| {
+            self.nucleus
+                .ball(cluster)
+                .is_some_and(|ball| self.browsing() || ball.body != Body::Closed)
+        });
+        self.under_pointer
+            .and_then(|tile| self.graph.cluster(tile))
+            .or(sphere)
+    }
+
+    /// Shrinks back what is expanded without sending the camera anywhere: the view is
+    /// going somewhere else, which frames itself.
+    fn drop_expansion(&mut self) {
+        self.nucleus.expand(&self.graph, None);
+        self.expand_pose = None;
+    }
+
+    /// A click on the graph clear of every function: browsing, the selection goes;
+    /// in a journey, the function set aside. The camera stays.
+    pub(crate) fn click_empty(&mut self) {
+        if self.browsing() {
+            if self.selection.is_some() {
+                self.navigate(|explorer| explorer.selection = None);
+            }
+        } else {
+            self.clear_aside();
         }
     }
 
@@ -1563,7 +1623,7 @@ pub(crate) mod tests {
         let mut explorer = explorer();
         let [main, a, b] = ["main", "a", "b"].map(|name| tile(&explorer, name));
         explorer.gather();
-        explorer.expand_nucleus(true);
+        explorer.toggle_expand(None);
         explorer.ease_nucleus(1.0);
         let named = |explorer: &Explorer| {
             let nucleus = explorer.nucleus();
@@ -1644,6 +1704,73 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn browsing_x_expands_the_selections_module_where_it_is() {
+        use crate::camera::OrbitCamera;
+        let mut camera = OrbitCamera::default();
+        let before = camera.pose();
+        camera.pan_to(Vec3::new(40.0, 0.0, 0.0));
+        let moved = camera.pose();
+
+        let mut explorer = explorer();
+        let a = tile(&explorer, "a");
+        explorer.leave_journey();
+        explorer.click(a, None);
+        while explorer.ease_nucleus(1.0) {}
+        let points = |explorer: &Explorer| -> Vec<Option<Vec3>> {
+            (0..explorer.map().tiles.len())
+                .map(|t| explorer.tile_point(t))
+                .collect()
+        };
+        let placed = points(&explorer);
+        explorer.take_return_pose();
+        explorer.see(before);
+        explorer.toggle_expand(None);
+        assert_eq!(
+            explorer.nucleus().expanded_module(),
+            explorer.graph().cluster(a),
+            "the selection's module"
+        );
+        while explorer.ease_nucleus(1.0) {}
+        assert_eq!(points(&explorer), placed, "nothing moves but the camera");
+        assert!(explorer.nucleus().named(a), "its functions are named");
+
+        explorer.see(moved);
+        explorer.toggle_expand(None);
+        assert!(!explorer.nucleus().expanded());
+        assert_eq!(
+            explorer.take_return_pose(),
+            Some(Return::To(before)),
+            "X again goes back to exactly where the camera stood"
+        );
+    }
+
+    #[test]
+    fn a_click_off_every_function_deselects_and_leaves_the_camera() {
+        let mut explorer = explorer();
+        let a = tile(&explorer, "a");
+        explorer.leave_journey();
+        explorer.click(a, None);
+        explorer.take_return_pose();
+        explorer.click_empty();
+        assert_eq!(explorer.selection(), None);
+        assert_eq!(explorer.take_return_pose(), None, "the camera stays");
+        assert!(explorer.go_back(), "Back selects it again");
+        assert_eq!(explorer.selection(), Some(a));
+
+        explorer.open_at(a);
+        let b = tile(&explorer, "b");
+        explorer.click(b, None);
+        assert_eq!(explorer.aside(), Some(b));
+        explorer.click_empty();
+        assert_eq!(
+            explorer.aside(),
+            None,
+            "in a journey, the function set aside goes"
+        );
+        assert!(!explorer.browsing());
+    }
+
+    #[test]
     fn shrinking_back_returns_the_camera_to_where_it_stood_before_expanding() {
         use crate::camera::OrbitCamera;
         let mut camera = OrbitCamera::default();
@@ -1658,11 +1785,11 @@ pub(crate) mod tests {
         let mut explorer = explorer();
         let b = tile(&explorer, "b");
         explorer.see(before);
-        explorer.expand_nucleus(true);
+        explorer.toggle_expand(None);
         assert!(explorer.nucleus().expanded());
         explorer.see(moved);
         explorer.click(b, None);
-        explorer.expand_nucleus(false);
+        explorer.toggle_expand(None);
         assert_eq!(
             returned(&mut explorer),
             Some(before),

@@ -2029,11 +2029,25 @@ const KEYS: [KeyGroup; 7] = [
             ),
             (
                 "Esc",
-                "close search, this list, a function selected off the journey; then \
-                 leave the journey for browsing",
+                "close search, this list, a function selected off the journey, the \
+                 module expanded; then leave the journey for browsing",
                 When::Journey,
             ),
-            ("Esc", "close search, this list", When::Browse),
+            (
+                "Esc",
+                "close search, this list, the module expanded",
+                When::Browse,
+            ),
+            (
+                "click empty space",
+                "clear the selection; the camera stays",
+                When::Browse,
+            ),
+            (
+                "click empty space",
+                "let go of a function selected off the journey",
+                When::Journey,
+            ),
             (
                 "Backspace",
                 "back: the selection before, or across into the journey before (← Back)",
@@ -2082,11 +2096,18 @@ const KEYS: [KeyGroup; 7] = [
     ),
     (
         "Spheres",
-        &[(
-            "X, dbl-click",
-            "expand the start's module / shrink it back; inside, a click centres it",
-            When::Journey,
-        )],
+        &[
+            (
+                "X",
+                "fly into the module under the pointer, else the focus's / back out",
+                When::Always,
+            ),
+            (
+                "dbl-click",
+                "fly into the module clicked; off any function, back out",
+                When::Always,
+            ),
+        ],
     ),
     (
         "Camera",
@@ -2104,15 +2125,10 @@ const KEYS: [KeyGroup; 7] = [
             ),
             (
                 "F",
-                "back to the usual view, round what is lit",
+                "frame the focus: the selection, the journey, or the module expanded",
                 When::Always,
             ),
-            (
-                "R",
-                "frame the whole codebase from this angle",
-                When::Browse,
-            ),
-            ("R", "frame the journey from this angle", When::Journey),
+            ("R", "everything shown, from the front", When::Always),
         ],
     ),
     ("Help", &[("H", "this list", When::Always)]),

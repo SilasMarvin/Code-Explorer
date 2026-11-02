@@ -130,9 +130,10 @@ pub(crate) struct Line {
 
 /// Fields of the snapshot's `state` an `expect` may name, with the values each takes
 /// (none listed: any).
-const STATE_FIELDS: [(&str, &[&str]); 8] = [
+const STATE_FIELDS: [(&str, &[&str]); 9] = [
     ("mode", &["browse", "journey"]),
     ("nucleus", &["modules", "expanded"]),
+    ("expanded", &[]),
     ("depth", &[]),
     ("search", &["true", "false"]),
     ("help", &["true", "false"]),
@@ -516,7 +517,8 @@ impl Step {
             Step::Point { gesture, .. } => match gesture {
                 Gesture::Hover | Gesture::LabelHover => Kind::Still,
                 Gesture::Click | Gesture::LabelClick => Kind::Click,
-                Gesture::ShiftClick | Gesture::DoubleClick => Kind::Moves,
+                Gesture::ShiftClick => Kind::Moves,
+                Gesture::DoubleClick => Kind::Expand,
             },
             Step::Bar(_) => Kind::Click,
             Step::DoubleClickModule(_) => Kind::Expand,
@@ -788,6 +790,7 @@ mod tests {
         assert_eq!(kind("bar 2"), Kind::Click);
         assert_eq!(kind("shift+click main"), Kind::Moves);
         assert_eq!(kind("doubleclick-module m"), Kind::Expand);
+        assert_eq!(kind("doubleclick main"), Kind::Expand);
         assert_eq!(kind("scroll 2"), Kind::Zoom);
         assert_eq!(kind("drag 1 1"), Kind::Moves);
     }

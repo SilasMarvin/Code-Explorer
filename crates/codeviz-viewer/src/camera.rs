@@ -2,7 +2,10 @@
 //! is. On a trackpad, two fingers orbit, shift and two fingers pan, and a pinch or
 //! ctrl and two fingers zoom; with a mouse, the wheel zooms, left- or middle-drag
 //! orbits and right- or shift-drag pans. Zoom goes towards the pointer, so you can
-//! zoom into any part of the graph. Moves to a new point, distance or angle ease in.
+//! zoom into any part of the graph, as near as a module filling the view and as far as
+//! the whole scene with room round it. Moves to a new point, distance or angle take
+//! one short, eased [`TRANSITION_SECONDS`]; a hand on the wheel or a drag stops them
+//! where they are.
 
 use bevy::{
     camera::{CameraOutputMode, visibility::RenderLayers},
@@ -38,9 +41,35 @@ impl Plugin for OrbitCameraPlugin {
     }
 }
 
+/// How long every move the camera is sent on takes, and every re-gathering of the
+/// spheres: one length for every transition.
+pub(crate) const TRANSITION_SECONDS: f32 = 0.35;
+
+/// The longest step a transition takes in one frame, in seconds: after an idle spell
+/// the first frame's time is long, and would otherwise jump to the end.
+const LONGEST_STEP: f32 = 1.0 / 30.0;
+
+/// How far along a transition `dt` seconds take it.
+pub(crate) fn transition_step(dt: f32) -> f32 {
+    dt / TRANSITION_SECONDS
+}
+
+/// The time this frame moves transitions along by: its own, but no more than
+/// [`LONGEST_STEP`].
+pub(crate) fn frame_time(time: &Time) -> f32 {
+    time.delta_secs().min(LONGEST_STEP)
+}
+
+/// The one easing: the share of the way at `t` of a transition (0 to 1), slow at
+/// both ends and never past the end.
+pub(crate) fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[derive(Component, Debug)]
 pub(crate) struct OrbitCamera {
-    /// Where the camera is easing towards looking at.
+    /// Where the camera is going to look.
     pub(crate) target: Vec3,
     /// Where it looks now.
     looking_at: Vec3,
@@ -48,13 +77,40 @@ pub(crate) struct OrbitCamera {
     pub(crate) distance: f32,
     yaw: f32,
     pitch: f32,
-    /// A distance being eased towards, until the viewer zooms by hand.
+    /// A distance it is sent to, until it gets there or the viewer zooms by hand.
     goal_distance: Option<f32>,
-    /// Angles being eased towards, until the viewer orbits by hand.
+    /// Angles it is sent to, until it gets there or the viewer orbits by hand.
     goal_angles: Option<(f32, f32)>,
-    /// The angles it may turn to, when held near one: browsing, the flattened map
-    /// never turns edge-on.
+    /// The move under way: where it set out from, where to, and how far along.
+    trip: Option<Trip>,
+    /// The angles it may turn to: held near the usual view, so the map never turns
+    /// edge-on.
     bounds: Option<Bounds>,
+    /// How near and how far the wheel may take it.
+    reach: Option<Reach>,
+}
+
+/// Where the camera stands, for a move from one stand to another.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Stand {
+    looking_at: Vec3,
+    distance: f32,
+    angles: (f32, f32),
+}
+
+/// A move under way.
+#[derive(Debug, Clone, Copy)]
+struct Trip {
+    from: Stand,
+    to: Stand,
+    progress: f32,
+}
+
+/// How near and how far from what it looks at the wheel may take the camera.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Reach {
+    pub(crate) near: f32,
+    pub(crate) far: f32,
 }
 
 /// Angles held near `middle`: yaw and pitch each at most `reach` off it.
@@ -88,17 +144,78 @@ impl Default for OrbitCamera {
             pitch: nucleus::VIEW.1,
             goal_distance: None,
             goal_angles: None,
+            trip: None,
             bounds: None,
+            reach: None,
         }
     }
 }
 
 impl OrbitCamera {
-    /// Whether the camera is still easing towards where it was sent.
+    /// Whether the camera is still moving to where it was sent.
     pub(crate) fn easing(&self) -> bool {
-        self.goal_distance.is_some()
-            || self.goal_angles.is_some()
-            || self.looking_at.distance(self.target) > self.distance * 1e-4
+        self.goal() != self.stand()
+    }
+
+    /// Where it stands now.
+    fn stand(&self) -> Stand {
+        Stand {
+            looking_at: self.looking_at,
+            distance: self.distance,
+            angles: (self.yaw, self.pitch),
+        }
+    }
+
+    /// Where it is sent.
+    fn goal(&self) -> Stand {
+        Stand {
+            looking_at: self.target,
+            distance: self.goal_distance(),
+            angles: self.goal_angles.unwrap_or((self.yaw, self.pitch)),
+        }
+    }
+
+    /// Stops wherever it is on its way: a hand on the wheel or a drag takes over.
+    fn halt(&mut self) {
+        self.target = self.looking_at;
+        self.goal_distance = None;
+        self.goal_angles = None;
+        self.trip = None;
+    }
+
+    /// Moves along to where it is sent by `step` of a whole transition: a new goal
+    /// starts a new move from where it stands.
+    fn advance(&mut self, step: f32) {
+        let (now, goal) = (self.stand(), self.goal());
+        if now == goal {
+            self.trip = None;
+            return;
+        }
+        let trip = match self.trip {
+            Some(trip) if trip.to == goal => trip,
+            _ => Trip {
+                from: now,
+                to: goal,
+                progress: 0.0,
+            },
+        };
+        let progress = (trip.progress + step).min(1.0);
+        let t = ease(progress);
+        let (from, to) = (trip.from, trip.to);
+        self.looking_at = from.looking_at.lerp(to.looking_at, t);
+        self.distance = from.distance + (to.distance - from.distance) * t;
+        self.yaw = from.angles.0 + (to.angles.0 - from.angles.0) * t;
+        self.pitch = from.angles.1 + (to.angles.1 - from.angles.1) * t;
+        if progress >= 1.0 {
+            self.looking_at = to.looking_at;
+            self.distance = to.distance;
+            (self.yaw, self.pitch) = to.angles;
+            self.goal_distance = None;
+            self.goal_angles = None;
+            self.trip = None;
+        } else {
+            self.trip = Some(Trip { progress, ..trip });
+        }
     }
 
     /// Eases towards looking at `target` from `distance` away.
@@ -116,24 +233,41 @@ impl OrbitCamera {
 
     /// Moves the point orbited by `offset` at once.
     fn pan(&mut self, offset: Vec3) {
+        self.halt();
         self.target += offset;
         self.looking_at += offset;
     }
 
     /// Zooms by `factor` (below 1 is nearer), towards `toward` when given: the whole
-    /// view scales about that point, so it stays where it is on screen.
+    /// view scales about that point, so it stays where it is on screen. It goes no
+    /// nearer than the reach's near end nor further than its far end, but never jumps
+    /// to either from outside it.
     fn zoom(&mut self, factor: f32, toward: Option<Vec3>) {
-        let distance = (self.distance * factor).clamp(2.0, 4_000.0);
+        self.halt();
+        let reach = self.reach.unwrap_or(Reach {
+            near: 2.0,
+            far: 4_000.0,
+        });
+        let wanted = self.distance * factor;
+        let distance = if factor < 1.0 {
+            wanted.max(reach.near.min(self.distance))
+        } else {
+            wanted.min(reach.far.max(self.distance))
+        };
         if let Some(point) = toward {
             self.pan((self.looking_at - point) * (distance / self.distance - 1.0));
         }
         self.distance = distance;
-        self.goal_distance = None;
+    }
+
+    /// How near and how far the wheel may take it from now on.
+    pub(crate) fn limit(&mut self, reach: Reach) {
+        self.reach = Some(reach);
     }
 
     /// Turns by a drag of `delta` pixels, no further than the bounds allow.
     fn orbit(&mut self, delta: Vec2) {
-        self.goal_angles = None;
+        self.halt();
         let yaw = self.yaw - delta.x * ORBIT_SPEED;
         let pitch = (self.pitch - delta.y * ORBIT_SPEED).clamp(-PITCH_LIMIT, PITCH_LIMIT);
         (self.yaw, self.pitch) = self
@@ -221,7 +355,6 @@ impl Pose {
 
 const ORBIT_SPEED: f32 = 0.005;
 const PITCH_LIMIT: f32 = 1.5;
-const EASING: f32 = 8.0;
 
 fn spawn_camera(
     mut commands: Commands,
@@ -336,22 +469,9 @@ fn camera_input(
 }
 
 fn apply_camera(time: Res<Time>, mut cameras: Query<(&mut OrbitCamera, &mut Transform)>) {
-    let ease = 1.0 - (-EASING * time.delta_secs()).exp();
+    let step = transition_step(frame_time(&time));
     for (mut camera, mut transform) in &mut cameras {
-        camera.looking_at = camera.looking_at.lerp(camera.target, ease);
-        if let Some(goal) = camera.goal_distance {
-            camera.distance += (goal - camera.distance) * ease;
-            if (goal - camera.distance).abs() < 0.01 {
-                camera.goal_distance = None;
-            }
-        }
-        if let Some((yaw, pitch)) = camera.goal_angles {
-            camera.yaw += (yaw - camera.yaw) * ease;
-            camera.pitch += (pitch - camera.pitch) * ease;
-            if (yaw - camera.yaw).abs() + (pitch - camera.pitch).abs() < 1e-4 {
-                camera.goal_angles = None;
-            }
-        }
+        camera.advance(step);
         let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
         transform.translation = camera.looking_at + rotation * Vec3::Z * camera.distance;
         transform.rotation = rotation;
@@ -369,6 +489,70 @@ fn remember_pose(mut explorer: ResMut<Explorer>, cameras: Query<&OrbitCamera>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_move_takes_one_short_transition_and_never_overshoots() {
+        let mut camera = OrbitCamera::default();
+        camera.glide_to(Vec3::new(10.0, 0.0, 0.0), 30.0);
+        camera.turn_to((0.0, 0.0));
+        let frame = 1.0 / 60.0;
+        let mut frames = 0;
+        let mut last = camera.looking_at.x;
+        while camera.easing() {
+            camera.advance(transition_step(frame));
+            assert!(camera.looking_at.x >= last && camera.looking_at.x <= 10.0);
+            assert!(camera.distance >= 30.0 && camera.distance <= 60.0);
+            last = camera.looking_at.x;
+            frames += 1;
+            assert!(frames < 100, "it gets there");
+        }
+        #[expect(clippy::cast_precision_loss, reason = "a frame count")]
+        let took = frames as f32 * frame;
+        assert!(took <= TRANSITION_SECONDS + frame, "took {took} s");
+        assert_eq!(
+            camera.pose().parts(),
+            (Vec3::new(10.0, 0.0, 0.0), 30.0, (0.0, 0.0))
+        );
+        camera.advance(transition_step(frame));
+        assert!(!camera.easing(), "and rests there");
+    }
+
+    #[test]
+    fn the_wheel_stops_at_the_reach_but_never_jumps_to_it() {
+        let mut camera = OrbitCamera::default();
+        camera.limit(Reach {
+            near: 20.0,
+            far: 100.0,
+        });
+        for _ in 0..40 {
+            camera.zoom(0.8, None);
+        }
+        assert!((camera.distance - 20.0).abs() < 1e-4, "in to the near end");
+        for _ in 0..40 {
+            camera.zoom(1.25, None);
+        }
+        assert!((camera.distance - 100.0).abs() < 1e-4, "out to the far end");
+        camera.distance = 300.0;
+        camera.zoom(0.9, None);
+        assert!(
+            (camera.distance - 270.0).abs() < 1e-3,
+            "from outside, it comes in"
+        );
+        camera.zoom(1.25, None);
+        assert!(
+            (camera.distance - 270.0).abs() < 1e-3,
+            "but goes no further out"
+        );
+    }
+
+    #[test]
+    fn a_hand_on_the_wheel_stops_a_move() {
+        let mut camera = OrbitCamera::default();
+        camera.glide_to(Vec3::new(10.0, 0.0, 0.0), 30.0);
+        camera.advance(0.5);
+        camera.zoom(0.9, None);
+        assert!(!camera.easing(), "it stays where the hand put it");
+    }
 
     #[test]
     fn bounds_hold_the_angles_near_the_middle_the_same_way_round() {

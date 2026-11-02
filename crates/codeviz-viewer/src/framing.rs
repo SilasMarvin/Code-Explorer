@@ -1,14 +1,14 @@
 //! Where the camera is sent, in one place: F and R, the view pointed somewhere new
 //! (a journey entered or left, a new start, Enter, expanding or shrinking back), a
-//! level more or less of the journey, and the camera put back where it stood (Back,
-//! Esc, X again). The camera's own easing and the pointer's orbit, pan and zoom are
-//! [`crate::camera`]'s.
+//! level more or less of the journey, the camera put back where it stood (Back,
+//! Esc, X again), and how near and far the wheel may take it. The camera's own
+//! easing and the pointer's orbit, pan and zoom are [`crate::camera`]'s.
 
 use bevy::prelude::*;
 use bevy_egui::input::EguiWantsInput;
 
 use crate::{
-    camera::{Bounds, OrbitCamera},
+    camera::{Bounds, OrbitCamera, Reach},
     disclosure::Disclose,
     explorer::{Explorer, Return},
     nucleus::{BROWSE_REACH, Nucleus, VIEW, view_rotation},
@@ -16,23 +16,33 @@ use crate::{
 
 /// What the nucleus was last framed for: whether it was browsed; in a journey, where
 /// it starts, the function the view centres on and how much of it showed; the hand
-/// that last pointed the view; and whether it was expanded.
+/// that last pointed the view; and the module expanded.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Framed {
     browsing: bool,
     start: Option<usize>,
     centre: Option<usize>,
     aim: u64,
-    expanded: bool,
+    expanded: Option<usize>,
     disclose: Option<Disclose>,
 }
+
+/// How much of the view the expanded module's diameter fills, of the view's
+/// smaller side.
+const FILL: f32 = 0.75;
+
+/// Zoomed all the way out, how much further back the camera is than where the
+/// whole scene just fits with room for names: the scene then takes a little over
+/// half the view.
+const FAR_MARGIN: f32 = 1.35;
 
 /// Sends the camera where the view asks, in this order, each having the last word
 /// over the one before:
 ///
-/// - F turns back to the usual three-quarter view and frames what the view is on
-///   ([`Explorer::current`]) with the nucleus; R frames the same from the angle the
-///   camera has, or browsing, turns back to the usual view of the whole codebase.
+/// - F frames the focus from the angle the camera has: browsing, the selection and
+///   what it lights; in a journey, the journey and what the view is on
+///   ([`Explorer::current`]); expanded, the module, filling the view. R turns back
+///   to the usual three-quarter view and frames everything shown.
 /// - Whenever the view is pointed somewhere new, it looks at the nucleus from far
 ///   enough back to see it, every open module and the journey's cursor, turning to
 ///   the usual view. Expanding turns there too and comes in until the expanded module
@@ -63,21 +73,24 @@ pub(crate) fn frame(
         }
     }
 
-    // Browsing, the map is flattened along the usual view: held near it, so no orbit
-    // turns it edge-on.
-    let bounds = browsing.then_some(Bounds {
-        middle: VIEW,
-        reach: BROWSE_REACH,
-    });
-    for (mut camera, _) in &mut cameras {
-        camera.bound(bounds);
+    // The orbit is held near the usual view, so the map, flattened along it, never
+    // turns edge-on, nor the ring round a journey; the wheel, between a module filling
+    // the view and the whole scene with room round it.
+    for (mut camera, projection) in &mut cameras {
+        camera.bound(Some(Bounds {
+            middle: VIEW,
+            reach: BROWSE_REACH,
+        }));
+        if let Some(reach) = reach(nucleus, &camera, projection) {
+            camera.limit(reach);
+        }
     }
     let now = Framed {
         browsing,
         start: nucleus.start().filter(|_| !browsing),
         centre: nucleus.centre(),
         aim: explorer.aim(),
-        expanded: nucleus.expanded(),
+        expanded: nucleus.expanded_module(),
         disclose: (!browsing).then(|| explorer.disclose()),
     };
     let before = last.replace(now);
@@ -111,19 +124,17 @@ fn frame_keys(
     projection: &Projection,
 ) {
     if keys.just_pressed(KeyCode::KeyF) {
-        camera.turn_to(VIEW);
-        fit(nucleus, current, camera, view_rotation(), projection);
-    }
-    if keys.just_pressed(KeyCode::KeyR) {
-        if nucleus.browsing() {
-            // The whole codebase, as it was first seen: from the front.
-            camera.turn_to(VIEW);
-            let rotation = camera.aim_rotation();
-            fit_all(nucleus, camera, rotation, projection);
+        let rotation = camera.aim_rotation();
+        if nucleus.expanded() {
+            fill(nucleus, camera, rotation, projection);
         } else {
-            let rotation = camera.aim_rotation();
             fit(nucleus, current, camera, rotation, projection);
         }
+    }
+    if keys.just_pressed(KeyCode::KeyR) {
+        // Everything shown, as it was first seen: from the front.
+        camera.turn_to(VIEW);
+        fit_all(nucleus, camera, view_rotation(), projection);
     }
 }
 
@@ -141,7 +152,7 @@ fn follow_view(
     // view too, where the ring of modules round the nucleus keeps its order.
     let opening = before.is_none_or(|b| (b.browsing, b.expanded) != (now.browsing, now.expanded));
     let pointed = opening || before.is_some_and(|b| (b.start, b.aim) != (now.start, now.aim));
-    let recentred = before.is_some_and(|b| b.centre != now.centre) && now.expanded;
+    let recentred = before.is_some_and(|b| b.centre != now.centre) && now.expanded.is_some();
     if pointed {
         if opening {
             camera.turn_to(VIEW);
@@ -151,7 +162,7 @@ fn follow_view(
         } else {
             camera.aim_rotation()
         };
-        if opening && now.expanded && !now.browsing {
+        if opening && now.expanded.is_some() {
             // Expanding blows the module up to fill the view; shrinking back returns
             // to where the camera stood before (the explorer's pose).
             fill(nucleus, camera, rotation, projection);
@@ -220,28 +231,58 @@ fn fit(
     );
 }
 
-/// Expanded in a journey, glides to the function the view centres on from just far
-/// enough back that the expanded module fills the view, turned to `rotation`.
+/// Expanded, glides to the expanded module (in a journey's start module, to the
+/// function the view centres on) from just far enough back that the module's
+/// diameter fills [`FILL`] of the view, turned to `rotation`.
 fn fill(nucleus: &Nucleus, camera: &mut OrbitCamera, rotation: Quat, projection: &Projection) {
+    let Projection::Perspective(perspective) = projection else {
+        return;
+    };
     let points = nucleus.nucleus_points(rotation);
     if points.is_empty() {
         return;
     }
-    glide(
-        &points,
-        nucleus.frame_target(),
-        camera,
-        rotation,
-        projection,
+    let target = nucleus.frame_target();
+    camera.glide_to(
+        target,
+        distance_for(&points, target, rotation, perspective, FILL),
     );
 }
 
-/// Browsing, glides to take in the whole codebase from where the camera turns to.
+/// Glides to take in everything shown from where the camera turns to.
 fn fit_all(nucleus: &Nucleus, camera: &mut OrbitCamera, rotation: Quat, projection: &Projection) {
     let points = nucleus.atlas_points(rotation);
+    glide(&points, middle(&points), camera, rotation, projection);
+}
+
+/// The middle of `points`.
+fn middle(points: &[Vec3]) -> Vec3 {
     #[expect(clippy::cast_precision_loss, reason = "a point count")]
-    let middle = points.iter().copied().sum::<Vec3>() / points.len().max(1) as f32;
-    glide(&points, middle, camera, rotation, projection);
+    let count = points.len().max(1) as f32;
+    points.iter().copied().sum::<Vec3>() / count
+}
+
+/// How near and far the wheel may take the camera turned as it is: in, until the
+/// smallest sphere shown fills the view; out, until everything shown takes a little
+/// over half of it.
+fn reach(nucleus: &Nucleus, camera: &OrbitCamera, projection: &Projection) -> Option<Reach> {
+    let Projection::Perspective(perspective) = projection else {
+        return None;
+    };
+    let smallest = nucleus
+        .balls()
+        .filter(|(_, ball)| nucleus.shows_body(ball.body))
+        .map(|(_, ball)| ball.radius)
+        .reduce(f32::min)?;
+    let half = (perspective.fov / 2.0).tan() * perspective.aspect_ratio.min(1.0);
+    let rotation = camera.aim_rotation();
+    let points = nucleus.atlas_points(rotation);
+    let far = fit_distance(&points, middle(&points), rotation, perspective) * FAR_MARGIN;
+    let near = smallest / half;
+    Some(Reach {
+        near,
+        far: far.max(near),
+    })
 }
 
 /// Glides to look at `target`, turned to `rotation`, from far enough back to see
@@ -259,8 +300,11 @@ fn glide(
     camera.glide_to(target, fit_distance(points, target, rotation, perspective));
 }
 
-/// The closest the orbit comes to what it looks at.
+/// The closest a framing brings the camera to what it looks at.
 const MIN_ORBIT_DISTANCE: f32 = 25.0;
+
+/// The share of the half-view a framed point may use: the rest is room for its name.
+const ROOM: f32 = 0.72;
 
 /// How far back a camera turned to `rotation` and looking at `center` must be for
 /// every one of `points` to sit inside the middle of its view, clear of the edges.
@@ -270,10 +314,19 @@ fn fit_distance(
     rotation: Quat,
     perspective: &PerspectiveProjection,
 ) -> f32 {
-    // The share of the half-view a point may use: the rest is room for its name, and
-    // for the journey docked along the foot.
-    const ROOM: f32 = 0.72;
-    let tan_y = (perspective.fov / 2.0).tan() * ROOM;
+    distance_for(points, center, rotation, perspective, ROOM).max(MIN_ORBIT_DISTANCE)
+}
+
+/// How far back a camera turned to `rotation` and looking at `center` must be for
+/// every one of `points` to sit within `share` of the half-view from its middle.
+fn distance_for(
+    points: &[Vec3],
+    center: Vec3,
+    rotation: Quat,
+    perspective: &PerspectiveProjection,
+    share: f32,
+) -> f32 {
+    let tan_y = (perspective.fov / 2.0).tan() * share;
     let tan_x = tan_y * perspective.aspect_ratio;
     let (right, up, back) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
     points
@@ -284,7 +337,7 @@ fn fit_distance(
             let toward = offset.dot(back);
             (offset.dot(right).abs() / tan_x).max(offset.dot(up).abs() / tan_y) + toward
         })
-        .fold(MIN_ORBIT_DISTANCE, f32::max)
+        .fold(0.0, f32::max)
 }
 
 #[cfg(test)]

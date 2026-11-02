@@ -160,14 +160,18 @@ fn keyboard(
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
     }
-    nucleus::toggle(&keys, &mut explorer);
+    // X expands the module under the pointer or the focus's, or shrinks it back.
+    if keys.just_pressed(KeyCode::KeyX) {
+        explorer.toggle_expand(None);
+    }
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;
     }
 }
 
 /// Escape closes whatever is on top: the search box, the key list, the function set
-/// aside, then the journey itself, for browsing with the cursor's function selected.
+/// aside, the expanded module, then the journey itself, for browsing with the
+/// cursor's function selected.
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
     if chrome.search {
         chrome.search = false;
@@ -175,6 +179,8 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         help.0 = false;
     } else if explorer.aside().is_some() {
         explorer.clear_aside();
+    } else if explorer.nucleus().expanded() {
+        explorer.toggle_expand(None);
     } else if !explorer.browsing() {
         explorer.leave_journey();
     }

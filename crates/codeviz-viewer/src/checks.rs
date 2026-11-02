@@ -16,7 +16,7 @@ use bevy_egui::egui;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::script::Kind;
+use crate::{nucleus::VIEW, script::Kind};
 
 // What the checks allow, each in one place. Points are window points, as in the PNG;
 // world sizes are the scene's units.
@@ -49,7 +49,9 @@ const EXPANDED_FILL: (f32, f32) = (0.6, 0.9);
 const EDGE: f32 = 2.0;
 /// Margin F leaves round the dots it frames, in points.
 const FRAME_MARGIN: f32 = 4.0;
-/// How far from head-on R may leave the camera's yaw and pitch, in radians.
+/// How far from the usual view ([`VIEW`]) R may leave the camera's yaw and pitch, in
+/// radians. The usual view is the front the map is laid out for and opens at, not
+/// yaw and pitch zero.
 const FRONT_SLACK: f32 = 0.05;
 /// How far what lay under the pointer may drift on a wheel turn: points, plus a
 /// share of its distance from the pointer.
@@ -102,6 +104,8 @@ struct Snap {
 struct State {
     mode: String,
     nucleus: String,
+    /// The module expanded, by name.
+    expanded: Option<String>,
     pointer: Option<[f32; 2]>,
     camera: Option<Camera>,
 }
@@ -198,6 +202,14 @@ impl Snap {
 
     fn spheres(&self) -> impl Iterator<Item = &Module> {
         self.modules.iter().filter(|m| m.shown)
+    }
+
+    /// The expanded module's sphere: the one the state names, else the nucleus.
+    fn expanded_sphere(&self) -> Option<&Module> {
+        match &self.state.expanded {
+            Some(name) => self.spheres().find(|m| &m.name == name),
+            None => self.spheres().find(|m| m.body == "nucleus"),
+        }
     }
 
     /// The graph's part of the window that nothing lies over: the graph area less any
@@ -654,7 +666,7 @@ fn expanded_fill(s: &Snap, kinds: &[Kind]) -> Value {
     if !s.expanded() {
         return skip("collapsed");
     }
-    let Some(m) = s.spheres().find(|m| m.body == "nucleus") else {
+    let Some(m) = s.expanded_sphere() else {
         return verdict(vec![(
             1.0,
             json!({ "why": "expanded, but no module drawn expanded" }),
@@ -693,15 +705,19 @@ fn framed(s: &Snap, kinds: &[Kind]) -> Value {
                 }
             }
             if let Some(camera) = s.state.camera
-                && (camera.yaw.abs() > FRONT_SLACK || camera.pitch.abs() > FRONT_SLACK)
+                && ((camera.yaw - VIEW.0).abs() > FRONT_SLACK
+                    || (camera.pitch - VIEW.1).abs() > FRONT_SLACK)
             {
-                let offender = json!({ "why": "R leaves the camera off the front", "yaw": r3(camera.yaw), "pitch": r3(camera.pitch) });
+                let offender = json!({
+                    "why": "R leaves the camera off the usual view", "yaw": r3(camera.yaw),
+                    "pitch": r3(camera.pitch), "usual": [r3(VIEW.0), r3(VIEW.1)],
+                });
                 offenders.push((f32::MAX, offender));
             }
         }
         Some(Kind::FrameFocus) => {
             if s.expanded() {
-                if let Some(m) = s.spheres().find(|m| m.body == "nucleus") {
+                if let Some(m) = s.expanded_sphere() {
                     let out = circle_out(free, v2(m.at), m.radius);
                     if out > EDGE {
                         let offender = json!({ "module": m.name, "sticks_out_by": r1(out) });
@@ -1066,7 +1082,7 @@ mod tests {
             "graph_area": [0.0, 24.0, 1600.0, 1000.0],
             "state": {
                 "mode": "browse", "nucleus": "modules", "pointer": [400.0, 500.0],
-                "camera": { "target": [0.0, 0.0, 0.0], "distance": 100.0, "yaw": 0.0, "pitch": 0.0 },
+                "camera": { "target": [0.0, 0.0, 0.0], "distance": 100.0, "yaw": -0.45, "pitch": -0.38 },
             },
             "modules": [
                 { "name": "a", "body": "open", "shown": true, "functions": 2, "at": [400.0, 500.0],
@@ -1278,12 +1294,28 @@ mod tests {
     }
 
     #[test]
+    fn the_expanded_module_is_the_one_the_state_names() {
+        let mut s = scene();
+        s["state"]["nucleus"] = json!("expanded");
+        s["state"]["expanded"] = json!("b");
+        s["modules"][0]["body"] = json!("nucleus");
+        s["modules"][1]["at"] = json!([800.0, 512.0]);
+        s["modules"][1]["radius"] = json!(400.0);
+        let result = after(&s, &s, &[Kind::Expand], "expanded-fill");
+        assert!(
+            passes(&result),
+            "b fills the view, not the nucleus a: {result}"
+        );
+    }
+
+    #[test]
     fn r_shows_every_sphere_from_the_front() {
         let mut s = scene();
         let framed = |s: &Value| after(s, s, &[Kind::FrameAll, Kind::Still], "framed");
         assert!(passes(&framed(&s)));
         s["modules"][1]["at"] = json!([1580.0, 500.0]);
         s["state"]["camera"]["yaw"] = json!(-0.35);
+        assert_eq!(VIEW.0, -0.45, "the scene's camera is at the usual view");
         let result = framed(&s);
         assert_eq!(result["count"], 2);
         assert_eq!(result["offenders"][1]["sticks_out_by"], 60.0);

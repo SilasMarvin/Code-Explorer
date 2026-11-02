@@ -74,9 +74,10 @@ carries, in any case.
 | `click UNIT` | moves the pointer onto the function's dot, checks the pointer picks it, and clicks |
 | `click X Y` | clicks a point, in window points |
 | `click-label UNIT` | clicks the middle of the function's drawn name, as a person picks a small or crowded dot |
-| `click-empty` | clicks a spot on the graph clear of every dot, name, text and overlay, nearest the middle; deselects |
+| `click-empty` | clicks a spot on the graph clear of every dot, name, text and overlay, nearest the middle; deselects, or in a journey clears the function set aside |
 | `hover UNIT`, `hover-label UNIT` | rests the pointer on the dot, or on the name, 0.4 s |
-| `shift+click UNIT`, `doubleclick UNIT` | as they say |
+| `shift+click UNIT` | as it says |
+| `doubleclick UNIT` | double-clicks the function's dot: the first click picks it, the double click expands its module |
 | `doubleclick-module MODULE` | double-clicks the module's sphere at the spot farthest from its dots and names |
 | `bar N` | clicks the journey bar numbered N (`2`, `1.2`), or named N (the start's bar has no number) |
 | `button TEXT` | clicks the button or chip that says TEXT (exact, any case; else a short label holding it) |
@@ -102,6 +103,7 @@ with why, marks the session failed, and the session goes on.
 |---|---|
 | `expect mode browse\|journey` | the view browses, or has a journey open |
 | `expect nucleus modules\|expanded` | a module is expanded, or not |
+| `expect expanded MODULE\|none` | the module expanded, by the name its sphere carries |
 | `expect depth N` | the journey shows N levels |
 | `expect search\|help\|back\|forward\|outside_callers true\|false` | that field of `state` reads so |
 | `expect state FIELD VALUE` | the same, spelt out |
@@ -141,13 +143,14 @@ scene's units.
   journey's), `start_module` (the module in the middle: the start's, or the
   selection's), `cursor` (`number`, `name`), `aside` (the function set aside in a
   journey), `centre` (expanded, the function the view centres on), `nucleus`
-  (`modules`, `expanded`), `depth`, `outside_callers`, `hovered` (the function the
+  (`modules`, `expanded`), `expanded` (the module expanded, by name), `depth`, `outside_callers`, `hovered` (the function the
   pointer has rested on, as drawn) and `under_pointer` (what the pointer is on now),
   `search`, `help`, `back`, `forward`, `camera` (`target`, `distance`, `yaw`, `pitch`),
   `pointer`.
 - `nodes`: every function drawn: `name`, `unit`, `module`, `roles` (`start`,
-  `selection`, `centre`, `cursor`, `aside`, `caller`, `journey level N`, `hovered`,
-  `speck` for a faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
+  `selection`, `centre`, `cursor`, `aside`, `caller`, `journey level N`, `opened`
+  for a function of the module expanded while browsing, `hovered`, `speck` for a
+  faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
   screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `crowded_by`.
 - `modules`: each sphere: `name`, `body` (`nucleus`, `open`, `closed`, `faint`), `shown`,
   `functions`, `named`, `at`, `radius`, `world`, `world_radius`, `on_screen`, `label`,
@@ -187,8 +190,8 @@ constant at the top of that file.
 | `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel, help, search) | always |
 | `text-sizes` | function names are 11 to 18 points; at most 4 font sizes show at once | always |
 | `panel-agrees` | each numbered bar's function carries that number on the graph, no other function does, and the cursor is the same in both | journey bars drawn |
-| `expanded-fill` | the expanded module's diameter is 60–90% of the free area's smaller side (the graph less a docked panel), and it lies inside it | after `x` or a double click, when expanded |
-| `framed` | after R: every sphere inside the free area, camera head-on (yaw and pitch within 0.05); after F: every lit dot (or the expanded module) inside it with a 4-point margin | when F or R is the last step since the snap before that moves the view |
+| `expanded-fill` | the expanded module's (`state.expanded`) diameter is 60–90% of the free area's smaller side (the graph less a docked panel), and it lies inside it | after `x` or a double click, when expanded |
+| `framed` | after R: every sphere inside the free area, camera at the usual view the map opens at (yaw and pitch within 0.05 of it); after F: every lit dot (or the expanded module) inside it with a 4-point margin | when F or R is the last step since the snap before that moves the view |
 | `zoom-to-pointer` | the sphere nearest the pointer moved as a zoom about the pointer moves it (within 4 points plus 5% of its distance) | one wheel turn, nothing else that moves, since the snap before |
 | `zoom-bounds` | some of the map is on screen, and zoomed out it still spans 40% of the free area | after a wheel turn |
 | `nothing-moved` | no dot, sphere or name moved, nor the camera, since the snap before; after `,` or `.` the camera may move, the world may not | every step since is one that must move nothing |
@@ -200,7 +203,7 @@ What a step may move decides which checks judge it:
 | still | `hover`, `hover-label`, `key` arrows, `[`, `]`, `i`, `wait`, `expect` | nothing |
 | click | `click UNIT`, `click-label`, `bar` | nothing; expanded in a journey it may re-centre |
 | depth | `key ,`, `key .` | the camera, to bring new calls on; nothing in the world |
-| expand | `key x`, `doubleclick-module` | the view |
+| expand | `key x`, `doubleclick`, `doubleclick-module` | the view |
 | zoom | `scroll` | the camera |
 | frame | `key f`, `key r` | the camera |
 | moves | everything else (`enter`, `esc`, `backspace`, `/`, `type`, `drag`, `shift+click`, `button`, `click X Y`, `click-empty`, `window`) | the view |
@@ -214,6 +217,7 @@ What a step may move decides which checks judge it:
 | `axum-browse`, `ord-browse` | click and click-label select, nothing moves; hover; click on empty space deselects; `/` search selects in place; F; wheel in and out about a function; wheel out to the bound; R |
 | `axum-journey`, `ord-journey` | Enter opens the journey; cursor by arrows, `[ ]`, a bar, a click on a call and on a name, nothing moving; `.` and `,` depth; `i` outside callers; Esc back to Browse and the camera from before; Back and Forward |
 | `axum-expand`, `ord-expand` | X expands to fill the view, wheel and orbit while expanded, X back to the saved camera; double-click a module; Esc collapses; the same in a journey and browsing |
+| `axum-camera` | double-click on a function expands its module; Back and Forward while expanded; F expanded; the wheel's near bound; X back exactly; a click on empty space moves no camera; in a journey X on another module, Esc collapses, R from the usual view, Esc back to browsing as it was |
 
 `tools/drive suite` checks every script's names, then runs them one window at a time and
 prints a table (failed steps, `expect`s passed, failing checks, verdict) and, for each
