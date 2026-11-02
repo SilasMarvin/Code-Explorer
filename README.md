@@ -11,7 +11,7 @@ mise run demo-merged                 # architecture + Rust code as one system
 mise run demo-diff                   # the Rust demo after a change, diffed
 
 codeviz analyze <dir> -o app.json    # Rust or Python source → IR
-codeviz analyze <dir> --resolve syntax   # skip rust-analyzer: fast, guesses method calls
+codeviz analyze <dir> --resolve syntax   # skip rust-analyzer: fast, misses some method calls
 codeviz import pipeline.yml -o ci.json
 codeviz validate app.json
 codeviz journey app.json             # list entries
@@ -291,6 +291,7 @@ checkouts at the working tree's target directory so they are not built from scra
 `mise install` installs it. Without it, or with `--resolve syntax`, and for any call it
 leaves unresolved (code outside the Cargo workspace, or in a crate that does not build),
 calls are resolved from the syntax alone: module paths, `use` imports, `self` and
-declared types are followed, and a method call on a value of unknown type is matched by
-name and marked `inferred`. Capitalized call targets are treated as constructors and
-dropped either way.
+declared types are followed (through smart pointers, Bevy's `Res`/`ResMut`, and into
+closures), and a method call on a value of unknown type is left unresolved, since it is
+far more often `Option::map` or `Vec::len` than a workspace method of the same name.
+Capitalized call targets are treated as constructors and dropped either way.

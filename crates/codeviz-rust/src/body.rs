@@ -14,7 +14,7 @@ use crate::{
     hash::content_hash,
     syntax::{
         callee_name, is_constructor, label, location, path_segments, receiver_type_path, start,
-        text,
+        text, wrapped_type_path,
     },
 };
 
@@ -29,6 +29,14 @@ pub(crate) struct Context<'a> {
     pub(crate) parameters: Option<Node<'a>>,
     /// Type parameters and where clause, for the traits generic parameters dispatch to.
     pub(crate) generics: [Option<Node<'a>>; 2],
+    /// For a closure or async block, what it sees of the enclosing function's bindings.
+    pub(crate) captured: Option<&'a Captured>,
+}
+
+/// Bindings a closure captures from where it is written.
+pub(crate) struct Captured {
+    bindings: HashMap<String, ReceiverRoot>,
+    generics: HashMap<String, Vec<String>>,
 }
 
 pub(crate) struct Built {
@@ -83,6 +91,10 @@ pub(crate) fn build(
         generics: HashMap::new(),
         call_nodes: HashMap::new(),
     };
+    if let Some(captured) = cx.captured {
+        builder.bindings.clone_from(&captured.bindings);
+        builder.generics.clone_from(&captured.generics);
+    }
     for generics in cx.generics.into_iter().flatten() {
         builder.generics(generics);
     }
@@ -126,16 +138,24 @@ impl Builder<'_, '_, '_> {
         let params: Vec<Node<'_>> = parameters.named_children(&mut cursor).collect();
         for param in params {
             if param.kind() != "parameter" {
+                // An untyped closure parameter shadows whatever it captured by that name.
+                if let Some(name) = binding_name(param, source) {
+                    self.bindings.remove(&name);
+                }
                 continue;
             }
-            let (Some(name), Some(ty)) = (
-                param
-                    .child_by_field_name("pattern")
-                    .and_then(|p| binding_name(p, source)),
-                param
-                    .child_by_field_name("type")
-                    .and_then(|t| receiver_type_path(t, source)),
+            let (Some(pattern), Some(ty)) = (
+                param.child_by_field_name("pattern"),
+                param.child_by_field_name("type"),
             ) else {
+                continue;
+            };
+            let typed = match binding_name(pattern, source) {
+                Some(name) => receiver_type_path(ty, source).map(|path| (name, path)),
+                // `State(store): State<Store>`: the newtype's one field.
+                None => newtype_field(pattern, source).zip(wrapped_type_path(ty, source)),
+            };
+            let Some((name, ty)) = typed else {
                 continue;
             };
             let path = self.substitute(ty);
@@ -191,10 +211,13 @@ impl Builder<'_, '_, '_> {
     /// `let name = Type::constructor(..)`.
     fn let_binding(&mut self, declaration: Node<'_>) {
         let source = self.file.source;
-        let Some(name) = declaration
-            .child_by_field_name("pattern")
-            .and_then(|p| binding_name(p, source))
-        else {
+        let Some(pattern) = declaration.child_by_field_name("pattern") else {
+            return;
+        };
+        let Some(name) = binding_name(pattern, source) else {
+            if let Some(value) = declaration.child_by_field_name("value") {
+                self.unwrapping_binding(pattern, value);
+            }
             return;
         };
         let declared = declaration
@@ -239,6 +262,36 @@ impl Builder<'_, '_, '_> {
         }
     }
 
+    /// Records the binding in `let Some(name) = call()` or `if let Ok(name) = call()`:
+    /// what `?` would leave of the call's value.
+    fn unwrapping_binding(&mut self, pattern: Node<'_>, value: Node<'_>) {
+        let source = self.file.source;
+        let Some(name) = newtype_field(pattern, source) else {
+            return;
+        };
+        let unwraps = pattern
+            .child_by_field_name("type")
+            .is_some_and(|ty| matches!(text(ty, source), "Some" | "Ok"));
+        if !unwraps {
+            return;
+        }
+        let Some(Receiver {
+            root: ReceiverRoot::Returned { call, up, .. },
+            fields,
+        }) = self.receiver(value)
+        else {
+            return;
+        };
+        if fields.is_empty() {
+            let root = ReceiverRoot::Returned {
+                call,
+                tried: true,
+                up,
+            };
+            self.bindings.insert(name, root);
+        }
+    }
+
     /// What a method is called on, when declarations say.
     fn receiver(&self, node: Node<'_>) -> Option<Receiver> {
         match node.kind() {
@@ -254,6 +307,7 @@ impl Builder<'_, '_, '_> {
                 root: ReceiverRoot::Returned {
                     call: *self.call_nodes.get(&node.id())?,
                     tried: false,
+                    up: 0,
                 },
                 fields: Vec::new(),
             }),
@@ -373,6 +427,14 @@ impl Builder<'_, '_, '_> {
                     label: Some("loop".to_owned()),
                     body,
                 });
+            }
+            "let_condition" => {
+                if let Some(value) = node.child_by_field_name("value") {
+                    self.expr(value, false, steps);
+                    if let Some(pattern) = node.child_by_field_name("pattern") {
+                        self.unwrapping_binding(pattern, value);
+                    }
+                }
             }
             "return_expression" => self.return_expression(node, steps),
             "try_expression" => self.try_expression(node, steps),
@@ -657,6 +719,14 @@ impl Builder<'_, '_, '_> {
         let Some(body) = body else {
             return path;
         };
+        let captured = Captured {
+            bindings: self
+                .bindings
+                .iter()
+                .map(|(name, root)| (name.clone(), root.captured()))
+                .collect(),
+            generics: self.generics.clone(),
+        };
         let cx = Context {
             path: &path,
             module: self.cx.module,
@@ -664,6 +734,7 @@ impl Builder<'_, '_, '_> {
             returns_result: false,
             parameters: node.child_by_field_name("parameters"),
             generics: [None, None],
+            captured: Some(&captured),
         };
         let built = build(self.ex, self.file, &cx, body);
         self.ex.push_unit(RawUnit {
@@ -732,8 +803,16 @@ impl Builder<'_, '_, '_> {
             }
             let name = text(*callee, source).to_owned();
             let target = if before(2).is_some_and(|t| t.kind() == ".") {
-                let receiver = before(3).filter(|t| t.kind() == "self").map(|_| Receiver {
-                    root: ReceiverRoot::SelfValue,
+                let root = before(3).and_then(|t| match t.kind() {
+                    "self" => Some(ReceiverRoot::SelfValue),
+                    // A binding, unless it is a field of something: `a.b.name(..)`.
+                    "identifier" if before(4).is_none_or(|t| t.kind() != ".") => {
+                        self.bindings.get(text(*t, source)).cloned()
+                    }
+                    _ => None,
+                });
+                let receiver = root.map(|root| Receiver {
+                    root,
                     fields: Vec::new(),
                 });
                 CallTarget::Method { name, receiver }
@@ -860,6 +939,22 @@ fn arm(label: &str, body: Vec<Step>) -> Arm {
 
 fn exit(kind: ExitKind, label: Option<String>) -> Step {
     Step::Exit { kind, label }
+}
+
+/// The name bound by a one-field tuple-struct pattern: `Some(order)` → `order`.
+fn newtype_field(pattern: Node<'_>, source: &[u8]) -> Option<String> {
+    if pattern.kind() != "tuple_struct_pattern" {
+        return None;
+    }
+    let ty = pattern.child_by_field_name("type")?;
+    let mut cursor = pattern.walk();
+    let mut fields = pattern
+        .named_children(&mut cursor)
+        .filter(|child| child.id() != ty.id());
+    match (fields.next(), fields.next()) {
+        (Some(only), None) => binding_name(only, source),
+        _ => None,
+    }
 }
 
 /// `x`, `mut x` → `x`. Destructuring patterns bind no single name.

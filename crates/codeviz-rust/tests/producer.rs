@@ -155,10 +155,119 @@ fn receivers_resolve_through_declared_types() {
             (".work".into(), Some(Certainty::Exact)),
             // `u8` is known and has no `solo` here: not a guess at `B::solo`.
             (".solo".into(), None),
-            // Nothing known about `unknown`: matched by name.
-            (".solo".into(), Some(Certainty::Inferred)),
+            // Nothing known about `unknown`: not a guess at `B::solo` either.
+            (".solo".into(), None),
         ]
     );
+}
+
+#[test]
+fn methods_on_values_of_unknown_type_are_not_ours_by_name() {
+    // `Option::map`, egui's `Area::order` and `Vec::len` are not the workspace's
+    // `Explorer::map`, `Store::order` and `Journey::len`.
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Explorer { tiles: Vec<u32> }
+         impl Explorer { pub fn map(&self) -> &Vec<u32> { &self.tiles } }
+         pub struct Store;
+         impl Store { pub fn order(&self, id: u32) -> Option<u32> { Some(id) } }
+         pub struct Journey;
+         impl Journey { pub fn len(&self) -> usize { 0 } pub fn is_empty(&self) -> bool { true } }
+         pub fn panel(names: &[String]) -> usize {
+             egui::Area::new(\"panel\").order(egui::Order::Foreground);
+             let lengths = names.iter().map(|name| name.len());
+             names.len() + lengths.sum::<usize>() + usize::from(names.is_empty())
+         }
+         pub fn real(explorer: &Explorer, store: &Store, journey: &Journey) -> usize {
+             explorer.map();
+             store.order(1);
+             journey.len()
+         }",
+    )]);
+    let resolved: Vec<(String, Vec<String>)> = calls(unit(&document, "app::panel"))
+        .into_iter()
+        .filter(|(_, targets)| !targets.is_empty())
+        .collect();
+    assert_eq!(
+        resolved,
+        [(
+            "{closure#0}".to_owned(),
+            vec!["rust:app::panel::{closure#0}".to_owned()]
+        )],
+        "only the closure handed to `map` resolves"
+    );
+    let closure = unit(&document, "app::panel::{closure#0}");
+    assert_eq!(calls(closure), [(".len".to_owned(), vec![])]);
+    assert_eq!(
+        calls(unit(&document, "app::real")),
+        [
+            (
+                ".map".to_owned(),
+                vec!["rust:app::Explorer::map".to_owned()]
+            ),
+            (
+                ".order".to_owned(),
+                vec!["rust:app::Store::order".to_owned()]
+            ),
+            (".len".to_owned(), vec!["rust:app::Journey::len".to_owned()]),
+        ]
+    );
+}
+
+#[test]
+fn receivers_resolve_through_wrappers_patterns_and_closures() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub struct Store; pub struct Explorer; pub struct Track;
+         impl Store { pub fn order(&self) {} }
+         impl Explorer {
+             pub fn track(&self) -> Option<&Track> { None }
+             pub fn tile(&self) {}
+             pub fn settle(&mut self) {}
+         }
+         impl Track { pub fn span(&self) {} }
+         pub async fn reorder(State(store): State<Store>) { store.order(); }
+         pub fn system(explorer: Res<Explorer>, mut moving: ResMut<Explorer>) {
+             let moving = moving.bypass_change_detection();
+             moving.settle();
+             let Some(track) = explorer.track() else { return };
+             if let Some(again) = explorer.track() { again.span(); }
+             let near = |tile: u32| { explorer.tile(); track.span(); };
+             let shadowed = |explorer| explorer.tile();
+             println!(\"{:?}\", explorer.tile());
+         }",
+    )]);
+    let resolved = |id: &str| -> Vec<(String, Vec<String>)> {
+        calls(unit(&document, id))
+            .into_iter()
+            .filter(|(_, targets)| !targets.is_empty())
+            .collect()
+    };
+    let call = |text: &str, target: &str| (text.to_owned(), vec![format!("rust:app::{target}")]);
+
+    // `State(store): State<Store>` binds `store` to the extractor's one field.
+    assert_eq!(resolved("app::reorder"), [call(".order", "Store::order")]);
+    // Through `ResMut`, `bypass_change_detection`, `let .. else`, `if let` and a macro.
+    assert_eq!(
+        resolved("app::system"),
+        [
+            call(".settle", "Explorer::settle"),
+            call(".track", "Explorer::track"),
+            call(".track", "Explorer::track"),
+            call(".span", "Track::span"),
+            call(".tile", "Explorer::tile"),
+        ]
+    );
+    // A closure sees what it captures, a returned value included.
+    assert_eq!(
+        resolved("app::system::{closure#0}"),
+        [
+            call(".tile", "Explorer::tile"),
+            call(".span", "Track::span")
+        ]
+    );
+    // An untyped parameter shadows the capture of the same name.
+    assert_eq!(resolved("app::system::{closure#1}"), []);
 }
 
 #[test]

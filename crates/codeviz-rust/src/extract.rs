@@ -47,12 +47,27 @@ pub(crate) enum ReceiverRoot {
         path: Vec<String>,
         declared: bool,
     },
-    /// The value returned by an earlier call in the same unit; `tried` when `?`
-    /// unwrapped it.
+    /// The value returned by an earlier call; `tried` when `?` unwrapped it. The call
+    /// is in the unit `up` closures out from this one: 0 for its own calls.
     Returned {
         call: usize,
         tried: bool,
+        up: usize,
     },
+}
+
+impl ReceiverRoot {
+    /// The same value, seen from a closure written where it is bound.
+    pub(crate) fn captured(&self) -> Self {
+        match self {
+            Self::Returned { call, tried, up } => Self::Returned {
+                call: *call,
+                tried: *tried,
+                up: up + 1,
+            },
+            other => other.clone(),
+        }
+    }
 }
 
 /// A call target as written, before resolution.
@@ -428,6 +443,7 @@ impl Extractor {
                 returns_result,
                 parameters: node.child_by_field_name("parameters"),
                 generics: [node.child_by_field_name("type_parameters"), where_clause],
+                captured: None,
             },
             block,
         );
