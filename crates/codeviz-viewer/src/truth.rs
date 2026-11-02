@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use crate::{
     drive::{Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
+    labels::node_name,
     nucleus::{Flow, Nucleus},
-    ui::node_name,
 };
 
 /// The view's content, as JSON.

@@ -40,12 +40,13 @@ use crate::{
     explorer::Explorer,
     idle::Awake,
     keys::Press,
+    labels::node_name,
     scene::Tile,
     script::{
         Expect, Gesture, Kind, Line, Name, Spot, Step, close_matches, snap_label, snap_name,
         unknown,
     },
-    ui::{Chrome, KeyHelp, node_name},
+    ui::{Chrome, KeyHelp},
 };
 
 /// Frames to let the scene settle (assets load, camera eases) before the first step.
@@ -736,7 +737,7 @@ fn record(
         widgets: clickable,
         bars,
         overlays,
-        labels: crate::ui::drawn_labels(&ctx),
+        labels: crate::labels::drawn_labels(&ctx),
     };
 }
 

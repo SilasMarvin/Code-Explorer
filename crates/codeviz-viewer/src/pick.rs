@@ -7,7 +7,7 @@ use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, input::EguiWantsInput};
 
 use crate::{
-    camera::OrbitCamera, explorer::Explorer, idle::Awake, nucleus::Nucleus, scene::Tile, ui,
+    camera::OrbitCamera, explorer::Explorer, idle::Awake, labels, nucleus::Nucleus, scene::Tile,
 };
 
 /// How far past a function's drawn edge, in points, the pointer still counts as on it.
@@ -67,7 +67,7 @@ pub(crate) fn point(
             let named = contexts
                 .ctx_mut()
                 .ok()
-                .and_then(|ctx| ui::label_at(ctx, egui_pos(pointer)))
+                .and_then(|ctx| labels::label_at(ctx, egui_pos(pointer)))
                 .filter(|(tile, _)| explorer.nucleus().drawn(*tile))
                 .map(|(tile, on_label)| {
                     number = on_label;
