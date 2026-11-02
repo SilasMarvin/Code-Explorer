@@ -43,8 +43,7 @@ use crate::{
     labels::node_name,
     scene::Tile,
     script::{
-        Expect, Gesture, Kind, Line, Name, Spot, Step, close_matches, snap_label, snap_name,
-        unknown,
+        Aim, Expect, Gesture, Kind, Line, Name, Step, close_matches, snap_label, snap_name, unknown,
     },
     ui::{Chrome, KeyHelp},
 };
@@ -1338,8 +1337,8 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
         }
         Step::Scroll { by, at } => {
             let to = match at {
-                Some(Spot::Unit(unit)) => Some(view.find(drive.names.unit(unit)?)?.at),
-                Some(Spot::At(point)) => Some(*point),
+                Some(Aim::Unit(unit)) => Some(view.find(drive.names.unit(unit)?)?.at),
+                Some(Aim::At(point)) => Some(*point),
                 None => drive.pointer.is_none().then(|| graph_middle(view)),
             };
             let mut acts = Vec::new();

@@ -28,7 +28,7 @@ pub(crate) enum Gesture {
 
 /// Where the pointer goes: onto a function's node, or a point in window points.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Spot {
+pub(crate) enum Aim {
     Unit(String),
     At(Vec2),
 }
@@ -60,7 +60,7 @@ pub(crate) enum Step {
     /// with the pointer here first, else where it is.
     Scroll {
         by: Vec2,
-        at: Option<Spot>,
+        at: Option<Aim>,
     },
     /// Resizes the window to this many points.
     Window(Vec2),
@@ -297,8 +297,8 @@ fn scroll(text: &str) -> Result<Step, String> {
         _ => return Err("`scroll` needs notches: `scroll N` or `scroll DX DY`".to_owned()),
     };
     let at = at.map(|at| match pair(at) {
-        Some(point) => Spot::At(point),
-        None => Spot::Unit(at.to_owned()),
+        Some(point) => Aim::At(point),
+        None => Aim::Unit(at.to_owned()),
     });
     Ok(Step::Scroll { by, at })
 }
@@ -538,7 +538,7 @@ impl Step {
         match self {
             Step::Point { unit, .. }
             | Step::Scroll {
-                at: Some(Spot::Unit(unit)),
+                at: Some(Aim::Unit(unit)),
                 ..
             }
             | Step::Expect(
@@ -656,14 +656,14 @@ mod tests {
             steps[20],
             Step::Scroll {
                 by: Vec2::new(0.0, 3.0),
-                at: Some(Spot::Unit("orders::place".to_owned()))
+                at: Some(Aim::Unit("orders::place".to_owned()))
             }
         );
         assert_eq!(
             steps[21],
             Step::Scroll {
                 by: Vec2::new(1.0, -2.0),
-                at: Some(Spot::At(Vec2::new(800.0, 500.0)))
+                at: Some(Aim::At(Vec2::new(800.0, 500.0)))
             }
         );
         assert_eq!(steps[22], Step::Window(Vec2::new(1200.0, 800.0)));
