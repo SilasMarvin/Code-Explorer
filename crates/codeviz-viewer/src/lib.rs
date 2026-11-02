@@ -31,6 +31,7 @@ mod nucleus;
 mod pick;
 mod scene;
 mod script;
+mod sizes;
 mod text;
 mod truth;
 mod ui;

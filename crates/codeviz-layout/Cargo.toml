@@ -11,6 +11,7 @@ repository.workspace = true
 blake3.workspace = true
 codeviz-core.workspace = true
 codeviz-ir.workspace = true
+glam.workspace = true
 
 [lints]
 workspace = true

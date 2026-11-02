@@ -17,8 +17,9 @@ use crate::{
     },
     disclosure::{self, Disclosed},
     explorer::Explorer,
-    graph_view::{self, Dot},
+    graph_view,
     nucleus::{self, Ball, Body, Flow, Nucleus},
+    sizes::Dot,
     text,
     ui::short,
 };

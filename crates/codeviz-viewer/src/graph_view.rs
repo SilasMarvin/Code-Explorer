@@ -2,10 +2,9 @@
 //! the selection), the function set aside, the cursor and what is hovered. A node's
 //! fill says what it is to the selection or the journey, in the colors its calls and
 //! names carry: white, violet, blue, amber darker the deeper, pink, and grey for the
-//! rest; its module shows in its sphere alone. Its size says only what it is to the view, one size for each:
-//! a faint speck, lit, or the one in focus; kept within bounds on screen however near
-//! or far the view. Hovering only rings the node, so passing over the graph does not
-//! repaint it.
+//! rest; its module shows in its sphere alone. Its size says only what it is to the
+//! view ([`Dot`]): a faint speck, lit, or the one in focus. Hovering only rings the
+//! node, so passing over the graph does not repaint it.
 
 use std::collections::HashMap;
 
@@ -17,6 +16,7 @@ use crate::{
     explorer::Explorer,
     nucleus::{Flow, SHADES},
     scene::Tile,
+    sizes::Dot,
 };
 
 /// How a node is drawn right now: in the color of what it is to the selection or
@@ -100,46 +100,6 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
         },
     );
     table
-}
-
-/// What a function is to the view, which alone sets how big it is drawn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Dot {
-    /// Lit by nothing, or a caller of the start folded into a count.
-    Speck,
-    /// What the selection or the journey lights, and callers brought in from outside.
-    Lit,
-    /// The selection, the journey's start and cursor, the function set aside.
-    Focus,
-}
-
-impl Dot {
-    /// Its radius in the world, before the expanded view's zoom: small beside the
-    /// room [`crate::nucleus`] leaves between two functions in the most crowded
-    /// module.
-    pub(crate) const fn radius(self) -> f32 {
-        match self {
-            Self::Speck => 0.3,
-            Self::Lit => 0.5,
-            Self::Focus => 0.7,
-        }
-    }
-
-    /// The least and most its radius shows on screen, in points: never so small a
-    /// lit one cannot be seen or clicked, never so big it covers its neighbours.
-    const fn bounds(self) -> (f32, f32) {
-        match self {
-            Self::Speck => (1.5, 4.0),
-            Self::Lit => (3.0, 7.0),
-            Self::Focus => (4.0, 9.0),
-        }
-    }
-
-    /// A radius on screen, in points, kept within its bounds.
-    pub(crate) fn clamp(self, on_screen: f32) -> f32 {
-        let (least, most) = self.bounds();
-        on_screen.clamp(least, most)
-    }
 }
 
 /// What a function is to the view.
