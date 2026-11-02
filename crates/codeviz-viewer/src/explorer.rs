@@ -797,7 +797,9 @@ impl Explorer {
     /// Tells the nucleus what it gathers round now: whether the view browses, the
     /// function in the middle, the journey from it, its outside callers and its
     /// cursor. It eases there from wherever things are. Every change to any of them
-    /// ends here.
+    /// ends here. Expanded in a journey, a cursor that moves to another module's
+    /// function takes the expansion with it: that module expands instead, and
+    /// shrinking back still returns to where the camera stood before the first.
     fn sync_nucleus(&mut self) {
         let start = self.nucleus_start();
         let cursor = self.cursor();
@@ -817,6 +819,12 @@ impl Explorer {
             nucleus.recenter(graph, start);
         }
         recentered |= nucleus.retrace(graph, trail);
+        if nucleus.expanded()
+            && nucleus.cursor() != cursor
+            && let Some(module) = cursor.and_then(|tile| graph.cluster(tile))
+        {
+            nucleus.expand(graph, Some(module));
+        }
         let marked = nucleus.set_cursor(graph, cursor);
         if recentered || marked {
             self.moved += 1;
@@ -1885,6 +1893,73 @@ pub(crate) mod tests {
             explorer.take_return_pose(),
             None,
             "Back does not put a camera that framed the nucleus expanded on it shrunk"
+        );
+    }
+
+    #[test]
+    fn expanded_in_a_journey_the_expansion_follows_the_cursor_across_modules() {
+        use crate::camera::OrbitCamera;
+        let module = |name: &str| {
+            format!(
+                r#"{{ "id": "m:{name}", "name": "{name}", "kind": "module", "role": "group" }}"#
+            )
+        };
+        let function = |parent: &str, name: &str, calls: &[&str]| {
+            let calls: Vec<String> = calls
+                .iter()
+                .map(|c| {
+                    format!(
+                        r#"{{ "key": "{c}#0", "text": "{c}", "targets": [{{ "unit": "f:{c}", "certainty": "exact" }}] }}"#
+                    )
+                })
+                .collect();
+            format!(
+                r#"{{ "id": "f:{name}", "name": "{name}", "kind": "fn", "role": "invocable", "parent": "m:{parent}", "calls": [{}] }}"#,
+                calls.join(",")
+            )
+        };
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            [
+                module("core"),
+                module("db"),
+                function("core", "main", &["put", "help"]),
+                function("db", "put", &[]),
+                function("core", "help", &[]),
+            ]
+            .join(",")
+        );
+        let system = System::new([Document::from_json(&json).unwrap()]);
+        let mut explorer = opened(system, "f:main");
+        let [main, put] = ["main", "put"].map(|name| {
+            explorer
+                .map()
+                .tile_of(&UnitId::new(format!("f:{name}")))
+                .unwrap()
+        });
+        let module_of = |tile: usize| explorer.graph().cluster(tile);
+        let (core, db) = (module_of(main), module_of(put));
+        assert_ne!(core, db);
+
+        let before = OrbitCamera::default().pose();
+        explorer.see(before);
+        explorer.toggle_expand(None);
+        assert_eq!(explorer.nucleus().expanded_module(), core);
+        explorer.step(Step::Into);
+        assert_eq!(explorer.cursor(), Some(put));
+        assert_eq!(
+            explorer.nucleus().expanded_module(),
+            db,
+            "the cursor's module expands instead"
+        );
+        explorer.step(Step::Back);
+        assert_eq!(explorer.nucleus().expanded_module(), core, "and back again");
+        explorer.toggle_expand(None);
+        assert!(!explorer.nucleus().expanded());
+        assert_eq!(
+            explorer.take_return_pose(),
+            Some(Return::To(before)),
+            "shrinking back returns to where the camera stood before the first"
         );
     }
 

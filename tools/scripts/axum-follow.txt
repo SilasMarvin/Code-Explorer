@@ -1,0 +1,56 @@
+#: view demo/out/axum-server.json --focus orders::place
+# Expanded in a journey, the expansion follows the cursor from module to module and
+# back; X shrinks back to the camera from before the first expand. A journey frames
+# its spheres whole, clear of the panel, at every depth.
+snap journey
+expect check spheres-unclipped
+key .
+key .
+key .
+expect check spheres-unclipped
+snap depth 4
+key ,
+key ,
+key ,
+snap depth 1
+key x
+expect expanded orders
+snap expanded start module
+key down
+expect cursor users::find_user
+expect expanded users
+expect check expanded-fill
+expect check focus-on-screen
+snap cursor into users
+key right
+expect cursor validation::check_quantity
+expect expanded validation
+snap cursor into validation
+key left
+key up
+expect cursor orders::place
+expect expanded orders
+expect check expanded-fill
+snap cursor back to the start
+bar pricing::quote
+expect expanded pricing
+expect check focus-on-screen
+snap bar into pricing
+key x
+expect expanded none
+expect camera-same-as depth 1
+snap collapsed
+# Expanded by a double click on a module the cursor is not in, the view stays on it
+# through a level more; Esc shrinks back to the camera from before.
+doubleclick-module store
+expect expanded store
+expect check expanded-fill
+snap store expanded
+key .
+expect expanded store
+expect camera-same-as store expanded
+snap store deeper
+key esc
+expect expanded none
+expect camera-same-as collapsed
+snap esc collapsed
