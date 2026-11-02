@@ -1197,7 +1197,7 @@ fn place(
         placer.take(open);
     }
     if nucleus.browsing() {
-        let hint = key_help::hint_rect(painter, painter.clip_rect());
+        let hint = key_help::hint_rect(painter, painter.clip_rect(), nucleus.expanded());
         placer.take(hint.union(hint.translate(egui::vec2(0.0, -NOTE_ABOVE))));
     }
     let mut labels: Vec<Label> = Vec::new();

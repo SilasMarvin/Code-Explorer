@@ -142,43 +142,25 @@ impl Nucleus {
     }
 
     /// Of the callers of `start`, the journey's start, those past the few nearest the
-    /// journey: those that call most of the journey's functions, then call the start
-    /// most often, then live in its module, are named; the rest fold into a count on
-    /// their module's name. Worked out from every caller and the journey at every
-    /// depth, so a new depth or the cursor never changes which.
+    /// journey ([`rank_callers`]) fold into a count on their module's name. Worked
+    /// out from every caller and the journey at every depth, so a new depth or the
+    /// cursor never changes which.
     fn fold_callers(
         &self,
         graph: &ForceGraph,
         start: usize,
         cluster_of: &impl Fn(usize) -> usize,
     ) -> HashSet<usize> {
+        let on_journey = |tile: usize| self.trail.whole.contains_key(&tile);
         // One the journey runs too is named as the journey's.
-        let mut callers: Vec<usize> = graph
-            .callers(start)
-            .filter(|t| !self.trail.whole.contains_key(t))
+        let mut callers: Vec<usize> = rank_callers(graph, start, on_journey, cluster_of)
+            .into_iter()
+            .filter(|&t| !on_journey(t))
             .collect();
         // Folding one or two away would save nothing.
         if callers.len() <= CALLERS_NAMED + 2 {
             return HashSet::new();
         }
-        let home = cluster_of(start);
-        callers.sort_by_cached_key(|&caller| {
-            let into_journey: HashSet<usize> = graph
-                .callees(caller)
-                .filter(|t| self.trail.whole.contains_key(t))
-                .collect();
-            let sites = graph
-                .sequence(caller)
-                .iter()
-                .filter(|&&t| t == start)
-                .count();
-            (
-                Reverse(into_journey.len()),
-                Reverse(sites),
-                cluster_of(caller) != home,
-                caller,
-            )
-        });
         callers.split_off(CALLERS_NAMED).into_iter().collect()
     }
 
@@ -439,6 +421,38 @@ impl Nucleus {
         }
         (points, shown)
     }
+}
+
+/// The functions that call `start`, the start itself aside, those nearest the journey
+/// first: those that call most of the functions it runs (`on_journey`), then call the
+/// start most often, then live in its module. The order the journey's callers are
+/// named in, and listed above its start in the panel.
+pub(crate) fn rank_callers(
+    graph: &ForceGraph,
+    start: usize,
+    on_journey: impl Fn(usize) -> bool,
+    cluster_of: impl Fn(usize) -> usize,
+) -> Vec<usize> {
+    let mut callers: Vec<usize> = graph.callers(start).filter(|&t| t != start).collect();
+    callers.sort_unstable();
+    callers.dedup();
+    let home = cluster_of(start);
+    callers.sort_by_cached_key(|&caller| {
+        let into_journey: HashSet<usize> =
+            graph.callees(caller).filter(|&t| on_journey(t)).collect();
+        let sites = graph
+            .sequence(caller)
+            .iter()
+            .filter(|&&t| t == start)
+            .count();
+        (
+            Reverse(into_journey.len()),
+            Reverse(sites),
+            cluster_of(caller) != home,
+            caller,
+        )
+    });
+    callers
 }
 
 /// How many calls each function `links` names is from `start`: its shallowest level

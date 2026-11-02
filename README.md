@@ -60,15 +60,20 @@ The journey panel docks along the foot: a bar per call, left to right as they ru
 row a level deeper, each filled like its node and numbered as the graph numbers it (`2`
 for the start's second call, `2.1` for that call's first). Dashed bars run only
 sometimes, and say when; pale ones were only guessed at, or are handed off to run later;
-a green end returns and a red one fails. Hovering a bar draws a line to its node.
+a green end returns and a red one fails. Hovering a bar draws a line to its node. Above
+the start's bar, a row of violet bars lists the functions that call the start.
 
 The cursor is one call of the journey. `↓`/`↑` go into a call and out to its caller,
 `←`/`→` move between the calls one caller makes, `[`/`]` step through them in the order
 they run; a click on a bar, or on a function the journey runs, moves it there. Nothing
 on screen moves but the highlight. A click on any other function selects it in place,
 with `not on this journey · Enter starts one here` in the top bar; an arrow or `Esc` goes
-back to the cursor. `I` brings in every function off the journey that calls one on it,
-faint, without moving anything already there, and `I` again takes them out. `Esc`
+back to the cursor. `↑` from the start goes up into the row of its callers, selecting
+the first in place (`calls … · Enter starts a journey here`); `←`/`→` move along the
+row, `Enter` opens that caller's journey and `↓` comes back to the start. A click on a
+caller's bar selects it the same way. `I` brings in every function off the journey that
+calls the cursor's, faint, without moving anything already there, and `I` again takes
+them out; with none, it says so. `Esc`
 leaves the journey for browsing, with the cursor's function selected, and puts the
 camera back where it stood before the journey.
 
@@ -79,7 +84,7 @@ began. Changing the depth is not a move of its own.
 
 ### Expand
 
-`X` flies into a module: the one under the pointer, else that of the selection, the
+`X` flies into a module (the top bar then reads `· inside` it): the one under the pointer, else that of the selection, the
 cursor or the start (`--expand` opens straight into it). A double click on a module, on
 one of its functions or anywhere on its sphere, does the same. The camera saves where
 it is and comes in until the module fills the view. In a journey the start's module is

@@ -88,10 +88,12 @@ pub(crate) enum Expect {
         field: String,
         value: String,
     },
-    /// The function selected, the journey's cursor or its start; `None` for none.
+    /// The function selected, the journey's cursor, its start, or the function set
+    /// aside in a journey; `None` for none.
     Selection(Option<String>),
     Cursor(Option<String>),
     Start(Option<String>),
+    Aside(Option<String>),
     /// The function's name is drawn on the graph.
     Named(String),
     /// The function's node is drawn on screen.
@@ -182,10 +184,11 @@ const VERBS: [&str; 22] = [
 ];
 
 /// What may follow `expect`.
-const EXPECTS: [&str; 9] = [
+const EXPECTS: [&str; 10] = [
     "selection",
     "cursor",
     "start",
+    "aside",
     "named",
     "drawn",
     "camera-same-as",
@@ -357,6 +360,7 @@ fn expect(text: &str, snaps: &[String]) -> Result<Expect, String> {
         "selection" => maybe().map(Expect::Selection),
         "cursor" => maybe().map(Expect::Cursor),
         "start" => maybe().map(Expect::Start),
+        "aside" => maybe().map(Expect::Aside),
         "named" => unit().map(Expect::Named),
         "drawn" => unit().map(Expect::Drawn),
         "nothing-moved" => Ok(Expect::NothingMoved),
@@ -589,6 +593,7 @@ impl Step {
                 Expect::Selection(Some(unit))
                 | Expect::Cursor(Some(unit))
                 | Expect::Start(Some(unit))
+                | Expect::Aside(Some(unit))
                 | Expect::Named(unit)
                 | Expect::Drawn(unit),
             ) => Some(Name::Unit(unit)),

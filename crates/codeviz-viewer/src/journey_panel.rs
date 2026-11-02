@@ -1,7 +1,8 @@
 //! The journey as a flame graph docked along the foot of the window: calls left to
-//! right in the order they run, each on the row below its caller. Each bar is painted
-//! the color of its node, and the cursor and what is hovered are shared with the
-//! graph, so a bar and its node light up together.
+//! right in the order they run, each on the row below its caller, and above the
+//! start's bar a row of the functions that call it. Each bar is painted the color of
+//! its node, and the cursor and what is hovered are shared with the graph, so a bar
+//! and its node light up together.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
@@ -9,7 +10,7 @@ use codeviz_core::SpanId;
 use codeviz_ir::ExitKind;
 
 use crate::{
-    colors::{CURSOR, ERROR, MUTED, OK, ON_FILL, egui_color},
+    colors::{CALLER, CURSOR, ERROR, MUTED, OK, ON_FILL, egui_color},
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
     graph_view::{look_color, role_look},
@@ -55,17 +56,18 @@ const DOCKED_ROWS: usize = 5;
 /// Opaque: the graph is drawn on under the panel.
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(11, 13, 19);
 
-/// The rows of bars the journey shows: a row a level, the start's included.
+/// The rows of bars the panel makes room for: the journey's, a row a level with the
+/// start's, up to a few, past which they scroll; and above them the start's callers.
 pub(crate) fn rows(explorer: &Explorer) -> usize {
-    explorer.disclosure().rows()
+    explorer.disclosure().rows().clamp(2, DOCKED_ROWS) + usize::from(explorer.start_called())
 }
 
 /// The graph's free area within `area`, and the strip along its foot the panel takes,
-/// with `rows` of bars to show: the panel as wide as the window less a margin round
-/// it, and as tall as the levels shown, up to a few, past which it scrolls.
+/// with `rows` of bars to show ([`rows`]): the panel as wide as the window less a
+/// margin round it, and as tall as the rows.
 pub(crate) fn split(area: egui::Rect, rows: usize) -> (egui::Rect, egui::Rect) {
     #[expect(clippy::cast_precision_loss, reason = "a handful of rows")]
-    let height = (HEADER + PAD * 2.0 + rows.clamp(2, DOCKED_ROWS) as f32 * (ROW + ROW_GAP))
+    let height = (HEADER + PAD * 2.0 + rows as f32 * (ROW + ROW_GAP))
         .min((area.height() * 0.4).max(140.0))
         .min(area.height() - MARGIN * 2.0);
     let top = area.max.y - height - MARGIN * 2.0;
@@ -223,15 +225,25 @@ fn title(ui: &mut egui::Ui, explorer: &Explorer) {
 #[expect(clippy::too_many_lines, reason = "one pass over the bars")]
 fn canvas(
     ui: &mut egui::Ui,
-    content: egui::Rect,
+    whole: egui::Rect,
     explorer: &mut Explorer,
     panel: &mut JourneyPanel,
 ) -> Tethers {
     let response = ui.interact(
-        content,
+        whole,
         ui.id().with("journey_canvas"),
         egui::Sense::click_and_drag(),
     );
+    // The start's callers in a row along the top; the journey's bars below.
+    let callers = explorer.start_callers();
+    let (above, content) = if callers.is_empty() {
+        (None, whole)
+    } else {
+        let row = egui::Rect::from_min_size(whole.min, egui::vec2(whole.width(), ROW));
+        let below =
+            egui::Rect::from_min_max(egui::pos2(whole.min.x, row.max.y + ROW_GAP), whole.max);
+        (Some(row), below)
+    };
     let painter = ui.painter_at(content);
     let track = explorer.track();
     let Some(journey) = track.journey() else {
@@ -378,7 +390,7 @@ fn canvas(
         if !bar.shown || !bar.rect.intersects(content) {
             continue;
         }
-        if mouse.is_some_and(|p| bar.rect.contains(p)) {
+        if mouse.is_some_and(|p| bar.rect.intersect(content).contains(p)) {
             hovered = Some(bar.span);
         }
         let tile = tile_of(bar.span);
@@ -493,6 +505,10 @@ fn canvas(
     if explorer.aside().is_some() {
         painter.rect_filled(content, 0.0, egui::Color32::from_black_alpha(140));
     }
+    let (caller_hovered, caller_bars) = above.map_or_else(
+        || (None, Vec::new()),
+        |row| callers_row(ui, row, explorer, &callers, mouse, graph_hover),
+    );
 
     if let Some(rect) = cursor.and_then(rect_of) {
         painter.line_segment(
@@ -529,6 +545,20 @@ fn canvas(
         painter.rect_filled(thumb, 1.5, egui::Color32::from_white_alpha(110));
     }
 
+    if let Some((tile, _)) = caller_hovered {
+        let start = explorer
+            .start()
+            .and_then(|s| explorer.tile_unit(s))
+            .map(|unit| explorer.function_name(unit))
+            .unwrap_or_default();
+        let name = explorer
+            .tile_unit(tile)
+            .map(|unit| explorer.function_name(unit))
+            .unwrap_or_default();
+        response.clone().on_hover_text(format!(
+            "{name} calls {start}\nclick: select it · Enter or Shift-click: start a journey there"
+        ));
+    }
     if let Some(span) = hovered {
         if let Some(rect) = rect_of(span) {
             painter.rect_stroke(
@@ -565,12 +595,16 @@ fn canvas(
             .map(|bar| (bar.span, bar.rect))
             .collect(),
         chips,
+        caller_bars,
     );
     let hovered_rect = hovered
         .and_then(rect_of)
-        .filter(|rect| content.intersects(*rect));
+        .filter(|rect| content.intersects(*rect))
+        .or(caller_hovered.map(|(_, rect)| rect));
     // Hovering a bar lights its node in the graph.
-    let hovered_tile = hovered.and_then(tile_of);
+    let hovered_tile = hovered
+        .and_then(tile_of)
+        .or(caller_hovered.map(|(tile, _)| tile));
     if hovered_tile.is_some() {
         if explorer.under_pointer != hovered_tile {
             explorer.under_pointer = hovered_tile;
@@ -584,7 +618,13 @@ fn canvas(
     // Only a pointer's click: egui also clicks a widget it focuses on Enter or Space,
     // and those keys belong to the graph.
     if response.clicked_by(egui::PointerButton::Primary) {
-        if let Some(span) = fold_hit {
+        if let Some((tile, _)) = caller_hovered {
+            if ui.input(|i| i.modifiers.shift) {
+                explorer.open_at(tile);
+            } else {
+                explorer.pick_caller(tile);
+            }
+        } else if let Some(span) = fold_hit {
             explorer.toggle_expanded(span);
         } else if let Some(span) = hovered {
             explorer.go_to(span);
@@ -595,11 +635,107 @@ fn canvas(
     }
 }
 
+/// A bar in the row of the start's callers: its function, and where it is.
+type CallerBar = (usize, egui::Rect);
+
+/// The row above the start's bar: the functions that call the start, violet, the one
+/// set aside white, as many across as fit at the narrowest a bar is drawn, from the
+/// first, or as far along as keeps the one set aside in view. Returns the caller under
+/// the pointer, and where each caller's bar is.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a count of bars across"
+)]
+fn callers_row(
+    ui: &egui::Ui,
+    row: egui::Rect,
+    explorer: &Explorer,
+    callers: &[usize],
+    mouse: Option<egui::Pos2>,
+    graph_hover: Option<usize>,
+) -> (Option<CallerBar>, Vec<CallerBar>) {
+    let painter = ui.painter_at(row.expand(2.0));
+    let across = callers
+        .len()
+        .min(((row.width() / MIN_SLOT) as usize).max(1));
+    let first = explorer
+        .aside_caller()
+        .map_or(0, |at| (at + 1).saturating_sub(across))
+        .min(callers.len() - across);
+    let slot = row.width() / across as f32;
+    let mut hovered = None;
+    let mut bars = Vec::new();
+    for (place, &tile) in callers.iter().skip(first).take(across).enumerate() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(row.min.x + place as f32 * slot, row.min.y),
+            egui::vec2(slot * (1.0 - BAR_GAP), ROW),
+        );
+        let aside = explorer.aside() == Some(tile);
+        let fill = if aside {
+            egui::Color32::WHITE
+        } else {
+            egui_color(CALLER)
+        };
+        painter.rect_filled(rect, 3.0, fill);
+        if aside || graph_hover == Some(tile) {
+            painter.rect_stroke(
+                rect.expand(1.5),
+                3.0,
+                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                egui::StrokeKind::Outside,
+            );
+        }
+        let name = explorer
+            .tile_unit(tile)
+            .map(|unit| explorer.function_name(unit))
+            .unwrap_or_default();
+        let room = rect.width() - 10.0;
+        let said = [BAR_TEXT, BAR_TEXT_SMALL]
+            .into_iter()
+            .find(|&size| text_width(&painter, &name, size) <= room)
+            .map(|size| (name.clone(), size))
+            .or_else(|| {
+                fit_text(&painter, &name, BAR_TEXT_SMALL, room).map(|t| (t, BAR_TEXT_SMALL))
+            });
+        if let Some((text, size)) = said {
+            painter.with_clip_rect(rect).text(
+                rect.left_center() + egui::vec2(5.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                text,
+                egui::FontId::proportional(size),
+                ON_FILL,
+            );
+        }
+        if mouse.is_some_and(|p| rect.contains(p)) {
+            hovered = Some((tile, rect));
+        }
+        bars.push((tile, rect));
+    }
+    // More than fit: a track along its foot shows which part is in view.
+    if callers.len() > across {
+        let track = egui::Rect::from_min_max(
+            egui::pos2(row.min.x, row.max.y + 1.0),
+            egui::pos2(row.max.x, row.max.y + 2.0),
+        );
+        let share = |at: usize| track.min.x + track.width() * at as f32 / callers.len() as f32;
+        let thumb = egui::Rect::from_min_max(
+            egui::pos2(share(first), track.min.y),
+            egui::pos2(share(first + across), track.max.y),
+        );
+        painter.rect_filled(track, 0.5, egui::Color32::from_white_alpha(18));
+        painter.rect_filled(thumb, 0.5, egui::Color32::from_white_alpha(110));
+    }
+    (hovered, bars)
+}
+
 /// What a bar says, in `room` points, and at what size: its number, then its
 /// function's name as the graph has it, with why the journey stops there and when it
 /// runs; then smaller; then without when it runs; then cut short with an ellipsis,
-/// keeping the number and a few letters; then the number alone. `None` where not even
-/// the number fits.
+/// keeping the number and a few letters; then the name alone, cut short as far as a
+/// few letters, as a deep call's bar is narrow; then the number alone. `None` where
+/// not even the number fits.
 fn bar_text(
     painter: &egui::Painter,
     explorer: &Explorer,
@@ -623,7 +759,7 @@ fn bar_text(
         name = format!("{name}  {note}");
     }
     let named = if number.is_empty() {
-        name
+        name.clone()
     } else {
         format!("{number}  {name}")
     };
@@ -645,6 +781,10 @@ fn bar_text(
     }
     fit_text(painter, &named, BAR_TEXT_SMALL, room)
         .filter(|cut| cut.chars().count() > number.chars().count() + 5)
+        .or_else(|| {
+            fit_text(painter, &name, BAR_TEXT_SMALL, room)
+                .filter(|cut| *cut == name || cut.chars().count() > 3)
+        })
         .or_else(|| {
             (text_width(painter, number, BAR_TEXT_SMALL) <= room).then(|| number.to_owned())
         })
@@ -784,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_bar_keeps_its_number() {
+    fn a_narrow_bar_keeps_its_name() {
         // main -> (a -> c), b
         let mut explorer = crate::explorer::tests::explorer();
         explorer.set_disclose(Disclose(2));
@@ -796,15 +936,16 @@ mod tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.painter();
             let number = text_width(painter, "1.1", BAR_TEXT_SMALL);
-            said = [400.0, number + 1.0, number - 1.0]
+            let name = text_width(painter, "c", BAR_TEXT_SMALL);
+            said = [400.0, number + 1.0, name - 1.0]
                 .map(|room| bar_text(painter, &explorer, c, room).map(|(text, _)| text))
                 .to_vec();
         });
         output.textures_delta.clear();
         assert_eq!(
             said,
-            [Some("1.1  c".to_owned()), Some("1.1".to_owned()), None],
-            "whole, then the number alone, then nothing where not even that fits"
+            [Some("1.1  c".to_owned()), Some("c".to_owned()), None],
+            "whole, then the name alone, then nothing where not even that fits"
         );
     }
 }
