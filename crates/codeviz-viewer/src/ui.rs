@@ -1502,9 +1502,7 @@ fn draw_graph_labels(
         // biggest, where there is room.
         let mut closed: Vec<(usize, usize)> = nucleus
             .balls()
-            .filter(|(_, ball)| {
-                matches!(ball.body, Body::Closed | Body::Faint) && nucleus.shows_body(ball.body)
-            })
+            .filter(|(_, ball)| ball.body == Body::Faint)
             .map(|(cluster, _)| (nucleus.count(cluster), cluster))
             .collect();
         closed.sort_unstable_by(|a, b| b.cmp(a));
@@ -1571,12 +1569,10 @@ fn draw_graph_labels(
                 Body::Nucleus | Body::Open => {
                     (0, 1, std::cmp::Reverse(nucleus.count(cluster)), cluster)
                 }
-                Body::Closed | Body::Faint
-                    if named.contains(&cluster) || left_out.contains_key(&cluster) =>
-                {
+                Body::Faint if named.contains(&cluster) || left_out.contains_key(&cluster) => {
                     (6, 0, std::cmp::Reverse(nucleus.count(cluster)), cluster)
                 }
-                Body::Closed | Body::Faint => continue,
+                Body::Faint | Body::Closed => continue,
             };
             order.push((rank, Named::Group(cluster)));
         }
@@ -1722,9 +1718,8 @@ fn draw_graph_labels(
                 };
                 let body = nucleus.ball(group).map(|b| b.body);
                 let color = egui_color(module_color(group)).gamma_multiply(match body {
-                    Some(Body::Nucleus | Body::Open) | None => 1.0,
                     Some(Body::Faint) => 0.5,
-                    Some(Body::Closed) => 0.35,
+                    _ => 1.0,
                 });
                 let label = explorer.cluster_name(group);
                 // An open module says how much of it is named, and how many callers
@@ -2012,7 +2007,8 @@ fn key_hint(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
         );
 }
 
-/// In a journey, how many of the modules it does not enter are named.
+/// In a journey, how many of the modules holding only callers from outside it are
+/// named.
 const CLOSED_NAMED: usize = 16;
 
 /// The tier of a name only the pointer asks for:

@@ -41,7 +41,8 @@ pub(crate) enum Body {
     Nucleus,
     /// Holds functions near the start: opened to show those alone, by name.
     Open,
-    /// Everything else: a small solid sphere, left out of a journey altogether.
+    /// In a journey, a module it does not run through: left out, where the map has
+    /// it.
     Closed,
     /// Browsing, a module nothing named lives in: faint glass, its functions specks.
     Faint,
@@ -345,8 +346,8 @@ pub(crate) struct Nucleus {
     /// Whether the graph is browsed, laid out as the atlas has it, rather than
     /// gathered round a journey.
     browse: bool,
-    /// The layout browsing uses, once worked out.
-    atlas: Option<Atlas>,
+    /// Where everything is browsing: one layout of the whole codebase.
+    atlas: Atlas,
     /// In a journey, whether every outside caller into it shows (I).
     outside: bool,
     /// The expanded layout, kept while the start stays.
@@ -358,11 +359,6 @@ pub(crate) struct Nucleus {
 }
 
 impl Nucleus {
-    #[cfg(test)]
-    pub(crate) fn new(graph: &ForceGraph, start: Option<usize>, trail: Trail) -> Self {
-        Self::gather(graph, start, trail, false)
-    }
-
     /// Gathers the graph round `start`'s module, naming its callers and `trail`, the
     /// open journey from it; or, to `browse`,
     /// lays every module out where the atlas has it, lighting what `start` touches.
@@ -401,10 +397,12 @@ impl Nucleus {
                 offsets[tile] = at;
             }
         }
+        let module_of: Vec<Option<usize>> = (0..tiles).map(|t| graph.cluster(t)).collect();
+        let atlas = atlas(&homes, &counts, &offsets, &module_of);
         let mut nucleus = Self {
             homes,
             counts,
-            module_of: (0..tiles).map(|t| graph.cluster(t)).collect(),
+            module_of,
             offsets,
             flows,
             expanded: None,
@@ -413,7 +411,7 @@ impl Nucleus {
             trail,
             cursor: None,
             browse,
-            atlas: None,
+            atlas,
             outside: false,
             laid: None,
             from: None,
@@ -1042,18 +1040,21 @@ impl Nucleus {
         let laid = self.reserve(&every, start, clusters, middle, &cluster_of);
         let columns = open_up(&links, start, clusters, middle, &cluster_of);
 
-        let mut balls: Vec<Ball> = (0..clusters)
-            .map(|c| Ball {
-                center: Vec3::ZERO,
-                radius: module_radius(self.counts[c]),
+        // What the journey does not run through stays where the map has it, unseen,
+        // so leaving the journey moves none of it.
+        let mut balls: Vec<Ball> = self
+            .atlas
+            .balls
+            .iter()
+            .map(|b| Ball {
                 body: Body::Closed,
+                ..*b
             })
             .collect();
-        balls[middle].body = Body::Nucleus;
-        let bearings = Bearings {
-            homes: &self.homes,
-            middle,
-            back: view_rotation() * Vec3::Z,
+        balls[middle] = Ball {
+            center: Vec3::ZERO,
+            radius: module_radius(self.counts[middle]),
+            body: Body::Nucleus,
         };
         for (cluster, column) in laid.iter().enumerate() {
             if cluster != middle && !column.is_empty() {
@@ -1062,7 +1063,6 @@ impl Nucleus {
         }
         let order = self.ring_order(&every, middle, &cluster_of);
         place_ring(&mut balls, &order, middle);
-        place_closed(&mut balls, &bearings);
         let (mut points, mut shown) = self.place_functions(&balls, &laid, middle, &cluster_of);
         // What only a deeper level names keeps its place, undrawn.
         for (cluster, column) in laid.iter().enumerate() {
@@ -1107,13 +1107,8 @@ impl Nucleus {
     /// module, and what `start` touches lit where it sits: its callers and its own
     /// calls, named, and their modules opened. Nothing moves for a new start: the
     /// atlas leaves each function room enough to be lit and named where it is.
-    fn arrange_browse(&mut self, graph: &ForceGraph, start: Option<usize>) -> Arrangement {
-        let (homes, counts) = (&self.homes, &self.counts);
-        let (offsets, module_of) = (&self.offsets, &self.module_of);
-        let atlas = self
-            .atlas
-            .get_or_insert_with(|| atlas(homes, counts, offsets, module_of))
-            .clone();
+    fn arrange_browse(&self, graph: &ForceGraph, start: Option<usize>) -> Arrangement {
+        let atlas = self.atlas.clone();
         let clusters = self.homes.len();
         let middle = start.and_then(|f| graph.cluster(f)).unwrap_or(0);
         let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(middle);
@@ -1304,9 +1299,6 @@ impl Nucleus {
             if cluster == middle {
                 ball.radius = core;
             } else {
-                // Out of the way by as much as the nucleus grew.
-                let out = ball.center.try_normalize().unwrap_or(Vec3::Y);
-                ball.center += out * (core - before);
                 ball.body = Body::Closed;
             }
         }
@@ -1440,47 +1432,6 @@ impl Nucleus {
             }
         }
         tubes
-    }
-}
-
-/// Which way each module lies from the one in the middle, by the stable layout of
-/// modules, as the usual view sees it from `back`.
-struct Bearings<'a> {
-    homes: &'a [Vec3],
-    middle: usize,
-    back: Vec3,
-}
-
-impl Bearings<'_> {
-    /// The way to a module's home, split into across the usual view and towards it.
-    fn split(&self, cluster: usize) -> (Vec3, f32) {
-        let full = (self.homes[cluster] - self.homes[self.middle])
-            .try_normalize()
-            .unwrap_or_else(|| fibonacci(cluster, self.homes.len()));
-        let toward = full.dot(self.back);
-        let across = (full - self.back * toward)
-            .try_normalize()
-            .unwrap_or_else(|| sideways(self.back));
-        (across, toward)
-    }
-
-    /// For the rest of the codebase: standing back behind the nucleus, a bowl seen
-    /// from the usual view, so it never crowds in front of what matters.
-    fn behind(&self, cluster: usize) -> Vec3 {
-        let (across, toward) = self.split(cluster);
-        (across - self.back * (0.3 + 0.7 * toward.abs())).normalize()
-    }
-
-    /// How far a module's home is from the middle's, against the typical module's.
-    fn remoteness(&self, cluster: usize) -> f32 {
-        let distance = |c: usize| self.homes[c].distance(self.homes[self.middle]);
-        let mut spans: Vec<f32> = (0..self.homes.len())
-            .filter(|&c| c != self.middle)
-            .map(distance)
-            .collect();
-        spans.sort_by(f32::total_cmp);
-        let typical = spans.get(spans.len() / 2).copied().unwrap_or(1.0).max(1.0);
-        distance(cluster) / typical
     }
 }
 
@@ -1714,17 +1665,29 @@ impl Nucleus {
             };
             beyond.push(*cluster);
         }
-        let views: Vec<Vec3> = [0.0, -1.0, 1.0]
-            .into_iter()
-            .map(|turn| turned_view(turn * std::f32::consts::FRAC_PI_4) * Vec3::Z)
+        // Kept off every sphere drawn, and off the places on the ring kept for what
+        // a deeper level names.
+        let among: Vec<usize> = (0..balls.len())
+            .filter(|&c| balls[c].body != Body::Closed || !reserved[c].is_empty())
             .collect();
-        relax(
-            balls,
-            |c, _| beyond.contains(&c),
-            (MARGIN, 0.0),
-            &views,
-            200,
-        );
+        let shares = |a: usize, b: usize| match (beyond.contains(&a), beyond.contains(&b)) {
+            (true, true) => Some((0.5, 0.5)),
+            (true, false) => Some((1.0, 0.0)),
+            (false, true) => Some((0.0, 1.0)),
+            (false, false) => None,
+        };
+        let apart = Apart {
+            margin: MARGIN,
+            slant: 0.0,
+            views: &browse_views(),
+            bound: None,
+        };
+        let mut centers: Vec<Vec3> = balls.iter().map(|b| b.center).collect();
+        let radii: Vec<f32> = balls.iter().map(|b| b.radius).collect();
+        push_apart(&mut centers, &radii, &among, shares, &apart, 200);
+        for (ball, center) in balls.iter_mut().zip(centers) {
+            ball.center = center;
+        }
         for (cluster, tiles) in &by_module {
             if beyond.contains(cluster) {
                 for &tile in tiles {
@@ -1762,24 +1725,6 @@ impl Nucleus {
         }
         (points, shown)
     }
-}
-
-/// Puts every module that names nothing further out than the ring, behind it, the
-/// farther the further its home is from the middle's.
-fn place_closed(balls: &mut [Ball], bearings: &Bearings) {
-    let outer = balls
-        .iter()
-        .filter(|b| b.body != Body::Closed)
-        .map(|b| b.center.length() + b.radius)
-        .fold(0.0, f32::max)
-        + 14.0;
-    for (cluster, ball) in balls.iter_mut().enumerate() {
-        if ball.body == Body::Closed {
-            let far = bearings.remoteness(cluster).min(2.5);
-            ball.center = bearings.behind(cluster) * (outer + 10.0 * far);
-        }
-    }
-    relax(balls, |_, b| b.body == Body::Closed, (1.5, 0.0), &[], 60);
 }
 
 /// [`lay_inside`] for a module's `members`, by tile, from `start`, with the `calls`
@@ -1824,35 +1769,20 @@ fn keep_apart(at: &mut [Vec3], hops: &[Option<i32>], size: f32, back: Vec3) {
     for &i in &near {
         at[i] -= back * at[i].dot(back) * 0.7;
     }
-    for _ in 0..200 {
-        let mut moved = false;
-        for (k, &i) in near.iter().enumerate() {
-            for &j in &near[k + 1..] {
-                let apart = at[j] - at[i];
-                let seen = apart - back * apart.dot(back);
-                let need = 2.0 * size;
-                let distance = seen.length();
-                if distance >= need {
-                    continue;
-                }
-                let away = seen
-                    .try_normalize()
-                    .unwrap_or_else(|| fibonacci(i * 31 + j, 97).cross(back).normalize_or(Vec3::X));
-                let gap = need - distance;
-                let (share_i, share_j) = match (hops[i], hops[j]) {
-                    (Some(0), _) => (0.0, 1.0),
-                    (_, Some(0)) => (1.0, 0.0),
-                    _ => (0.5, 0.5),
-                };
-                at[i] = (at[i] - away * gap * share_i).clamp_length_max(0.92);
-                at[j] = (at[j] + away * gap * share_j).clamp_length_max(0.92);
-                moved = true;
-            }
-        }
-        if !moved {
-            break;
-        }
-    }
+    let shares = |i: usize, j: usize| {
+        Some(match (hops[i], hops[j]) {
+            (Some(0), _) => (0.0, 1.0),
+            (_, Some(0)) => (1.0, 0.0),
+            _ => (0.5, 0.5),
+        })
+    };
+    let apart = Apart {
+        margin: 0.0,
+        slant: 0.0,
+        views: &[back],
+        bound: Some(0.92),
+    };
+    push_apart(at, &vec![size; at.len()], &near, shares, &apart, 200);
 }
 
 /// Puts the modules in `rim` on a ring just outside the expanded nucleus's wall, as
@@ -1999,17 +1929,25 @@ fn atlas_balls(homes: &[Vec3], counts: &[usize]) -> Vec<Ball> {
             }
         })
         .collect();
-    let views: Vec<Vec3> = [0.0, -1.0, 1.0]
-        .into_iter()
-        .map(|turn| turned_view(turn * std::f32::consts::FRAC_PI_4) * Vec3::Z)
-        .collect();
-    relax(
-        &mut balls,
-        |_, _| true,
-        (ATLAS_MARGIN, ATLAS_SLANT),
-        &views,
+    let apart = Apart {
+        margin: ATLAS_MARGIN,
+        slant: ATLAS_SLANT,
+        views: &browse_views(),
+        bound: None,
+    };
+    let mut centers: Vec<Vec3> = balls.iter().map(|b| b.center).collect();
+    let all: Vec<usize> = (0..clusters).collect();
+    push_apart(
+        &mut centers,
+        &radii,
+        &all,
+        |_, _| Some((0.5, 0.5)),
+        &apart,
         2000,
     );
+    for (ball, center) in balls.iter_mut().zip(centers) {
+        ball.center = center;
+    }
     #[expect(clippy::cast_precision_loss, reason = "a module count")]
     let middle = balls.iter().map(|b| b.center).sum::<Vec3>() / clusters.max(1) as f32;
     // As wide as a window is, against its height, as the usual view sees it: pulled
@@ -2293,59 +2231,60 @@ fn module_homes(count: usize, flows: &HashMap<(usize, usize), usize>) -> Vec<Vec
     at
 }
 
-/// Pushes overlapping spheres apart, moving only those `movable` picks: each pair is
-/// pulled apart along the line between them until `margin` clears between them.
-/// Given the directions views look from, they are kept apart as each of those views
-/// sees them, moving across it, and as the first of them sees them by `slant` more
-/// for each unit one lies behind the other, so a camera's perspective from there does
-/// not bring them together; given none, in space.
-fn relax(
-    balls: &mut [Ball],
-    movable: impl Fn(usize, &Ball) -> bool,
-    (margin, slant): (f32, f32),
-    views: &[Vec3],
+/// How [`push_apart`] keeps things apart: `margin` clear between every two as each
+/// of `views` (the directions they look from) sees them, moving across it, and as the
+/// first of them sees them by `slant` more for each unit one lies behind the other, so
+/// a camera's perspective from there does not bring them together; each kept within
+/// `bound` of the middle, when there is one.
+struct Apart<'a> {
+    margin: f32,
+    slant: f32,
+    views: &'a [Vec3],
+    bound: Option<f32>,
+}
+
+/// Pushes apart every two of `among`, indices into `at` in order, each as big as
+/// `radii` has it, that come nearer than [`Apart`] allows, again and again until none
+/// does or `rounds` run out: each of a pair moves away from the other by the share
+/// `shares` gives it, and a pair it gives none stays as it is.
+fn push_apart(
+    at: &mut [Vec3],
+    radii: &[f32],
+    among: &[usize],
+    shares: impl Fn(usize, usize) -> Option<(f32, f32)>,
+    apart: &Apart,
     rounds: usize,
 ) {
-    let in_space = [None];
-    let seen: Vec<Option<Vec3>> = if views.is_empty() {
-        in_space.to_vec()
-    } else {
-        views.iter().copied().map(Some).collect()
-    };
     for _ in 0..rounds {
         let mut moved = false;
-        for i in 0..balls.len() {
-            for j in i + 1..balls.len() {
-                let (move_a, move_b) = (movable(i, &balls[i]), movable(j, &balls[j]));
-                if !move_a && !move_b {
+        for (k, &i) in among.iter().enumerate() {
+            for &j in &among[k + 1..] {
+                let Some((share_i, share_j)) = shares(i, j) else {
                     continue;
-                }
-                for (view, &seen_from) in seen.iter().enumerate() {
-                    let (a, b) = (balls[i], balls[j]);
-                    let apart = b.center - a.center;
+                };
+                for (view, &back) in apart.views.iter().enumerate() {
+                    let between = at[j] - at[i];
                     // One further back shows nearer the middle of the view than it
                     // would side by side, so a gap in depth needs one across too.
-                    let deeper = match seen_from {
-                        Some(back) if view == 0 => apart.dot(back).abs(),
-                        _ => 0.0,
+                    let deeper = if view == 0 {
+                        between.dot(back).abs()
+                    } else {
+                        0.0
                     };
-                    let need = a.radius + b.radius + margin + slant * deeper;
-                    let apart = seen_from.map_or(apart, |back| apart - back * apart.dot(back));
-                    let distance = apart.length();
+                    let need = radii[i] + radii[j] + apart.margin + apart.slant * deeper;
+                    let seen = between - back * between.dot(back);
+                    let distance = seen.length();
                     if distance >= need {
                         continue;
                     }
-                    let away = apart.try_normalize().unwrap_or_else(|| {
-                        seen_from.map_or_else(|| fibonacci(i * 31 + j, 97), sideways)
-                    });
+                    let away = seen.try_normalize().unwrap_or_else(|| sideways(back));
                     let gap = need - distance;
-                    let (share_a, share_b) = match (move_a, move_b) {
-                        (true, true) => (0.5, 0.5),
-                        (true, false) => (1.0, 0.0),
-                        _ => (0.0, 1.0),
-                    };
-                    balls[i].center -= away * gap * share_a;
-                    balls[j].center += away * gap * share_b;
+                    at[i] -= away * gap * share_i;
+                    at[j] += away * gap * share_j;
+                    if let Some(bound) = apart.bound {
+                        at[i] = at[i].clamp_length_max(bound);
+                        at[j] = at[j].clamp_length_max(bound);
+                    }
                     moved = true;
                 }
             }
@@ -2354,6 +2293,12 @@ fn relax(
             break;
         }
     }
+}
+
+/// The directions the usual view, and that view turned an eighth of the way either
+/// side, look from: browsing, no sphere hides another from any of them.
+fn browse_views() -> [Vec3; 3] {
+    [0.0, -1.0, 1.0].map(|turn| turned_view(turn * std::f32::consts::FRAC_PI_4) * Vec3::Z)
 }
 
 /// Where the nucleus's functions sit inside a sphere of `radius`: as the settled graph
@@ -2417,11 +2362,9 @@ pub(crate) struct Looks {
     sphere: Handle<Mesh>,
     shaft: Handle<Mesh>,
     head: Handle<Mesh>,
-    /// By module color: glass for the nucleus, for an open module, and a
-    /// solid for a closed one.
+    /// By module color: glass for the nucleus, and for an open module.
     nucleus: Vec<Handle<StandardMaterial>>,
     open: Vec<Handle<StandardMaterial>>,
-    closed: Vec<Handle<StandardMaterial>>,
     /// Browsing, glass so faint the module only just reads as one, by color, for
     /// each of [`DEPTH_SHADES`] from the nearest to the furthest back.
     faint: Vec<Vec<Handle<StandardMaterial>>>,
@@ -2490,20 +2433,6 @@ pub(crate) fn create_looks(
         double_sided: true,
         ..default()
     };
-    let solid = |color: Color| {
-        let linear = LinearRgba::from(color);
-        StandardMaterial {
-            // Dark and matte, so the rest of the codebase stays back.
-            base_color: Color::from(LinearRgba::rgb(
-                linear.red * 0.14,
-                linear.green * 0.14,
-                linear.blue * 0.16,
-            )),
-            perceptual_roughness: 0.8,
-            reflectance: 0.15,
-            ..default()
-        }
-    };
     let see_through = |color: Color, alpha: f32| StandardMaterial {
         base_color: color.with_alpha(alpha),
         unlit: true,
@@ -2528,7 +2457,6 @@ pub(crate) fn create_looks(
             .iter()
             .map(|&c| materials.add(glass(c, 0.08)))
             .collect(),
-        closed: colors.iter().map(|&c| materials.add(solid(c))).collect(),
         faint: DEPTH_SHADES
             .iter()
             .map(|&alpha| {
@@ -2600,7 +2528,7 @@ pub(crate) fn place_bodies(
             commands.spawn((
                 ModuleSphere(cluster),
                 Mesh3d(looks.sphere.clone()),
-                MeshMaterial3d(looks.closed[module_shade(cluster)].clone()),
+                MeshMaterial3d(looks.faint[0][module_shade(cluster)].clone()),
                 Transform::default(),
                 Visibility::Hidden,
                 Pickable::IGNORE,
@@ -2754,8 +2682,8 @@ fn dress(
     let wanted = match body {
         Body::Nucleus => &looks.nucleus[color],
         Body::Open => &looks.open[color],
-        Body::Closed => &looks.closed[color],
-        Body::Faint => &looks.faint[shade][color],
+        // A closed sphere is hidden.
+        Body::Faint | Body::Closed => &looks.faint[shade][color],
     };
     if &material.0 != wanted {
         material.0 = wanted.clone();
@@ -2982,7 +2910,7 @@ mod tests {
     /// The nucleus round `id`, naming the journey from it `depth` calls down.
     fn around(graph: &ForceGraph, map: &CodebaseMap, id: &str, depth: u32) -> Nucleus {
         let start = tile(map, id);
-        Nucleus::new(graph, Some(start), trail(graph, start, depth))
+        Nucleus::gather(graph, Some(start), trail(graph, start, depth), false)
     }
 
     /// `core::start` calls `db::put`, which calls `db::deep`; nine functions call
@@ -3134,7 +3062,16 @@ mod tests {
             .expect("a sphere");
         assert_eq!(far.body, Body::Closed);
         assert!(!nucleus.shows_body(far.body), "and a journey leaves it out");
-        let balls: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
+        assert_eq!(
+            far.center,
+            nucleus.atlas.balls[module(&graph, &map, "far::alone")].center,
+            "where the map has it, to show there again browsing"
+        );
+        let balls: Vec<Ball> = nucleus
+            .balls()
+            .map(|(_, b)| b)
+            .filter(|b| nucleus.shows_body(b.body))
+            .collect();
         for (i, a) in balls.iter().enumerate() {
             for b in &balls[i + 1..] {
                 assert!(
@@ -3334,8 +3271,8 @@ mod tests {
     fn modules_keep_their_homes() {
         let (graph, _) = codebase();
         assert_eq!(
-            Nucleus::new(&graph, None, Trail::default()).homes,
-            Nucleus::new(&graph, None, Trail::default()).homes
+            Nucleus::gather(&graph, None, Trail::default(), true).homes,
+            Nucleus::gather(&graph, None, Trail::default(), true).homes
         );
     }
 

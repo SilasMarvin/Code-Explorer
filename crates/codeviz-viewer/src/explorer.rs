@@ -26,7 +26,7 @@ use crate::{
     disclosure::{self, Disclose, Disclosed},
     history::{History, Seen, View},
     module_names,
-    nucleus::{Body, Nucleus, Trail},
+    nucleus::{Nucleus, Trail},
 };
 
 /// How sure we are that a span really happens as drawn.
@@ -666,7 +666,7 @@ impl Explorer {
         let sphere = self.module_under_pointer.filter(|&cluster| {
             self.nucleus
                 .ball(cluster)
-                .is_some_and(|ball| self.browsing() || ball.body != Body::Closed)
+                .is_some_and(|ball| self.nucleus.shows_body(ball.body))
         });
         self.under_pointer
             .and_then(|tile| self.graph.cluster(tile))
