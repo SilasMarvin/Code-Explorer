@@ -2799,7 +2799,6 @@ pub(crate) fn draw(
         return;
     };
     draw_rims(nucleus, camera, &mut gizmos);
-    let zoom = nucleus.zoom();
     // Short of a function's surface, so the head stays visible.
     let short = |from: Vec3, to: Vec3, tile: usize| {
         if !nucleus.placed(tile) {
@@ -2834,9 +2833,11 @@ pub(crate) fn draw(
         let color = link_color(nucleus, link, bright);
         let end = short(*last_but_one, *last, link.to);
         gizmos.linestrip(route[..route.len() - 1].iter().copied(), color);
+        // Its head as big beside the function it ends at, however near the view.
+        let head = drawn_radius(&explorer, link.to, lens, view) * if bright { 3.0 } else { 2.2 };
         gizmos
             .arrow(*last_but_one, end, color)
-            .with_tip_length(if bright { 1.1 } else { 0.8 } * zoom);
+            .with_tip_length(head);
     }
 }
 

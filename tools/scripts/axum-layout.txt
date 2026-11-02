@@ -1,0 +1,44 @@
+#: view demo/out/axum-server.json
+# Sizing and placement on the small demo: one sizing rule for every sphere, dots
+# inside their spheres and apart, one size per role, a few text sizes; a click on a
+# lit function lights it where it is and moves nothing; in a journey, `.` and `i`
+# bring functions in where room was kept for them, inside their modules.
+snap open
+expect check sphere-sizes
+expect check dots-in-spheres
+expect check dots-apart
+expect check text-sizes
+
+click orders::place
+snap place
+expect check labels-clear
+
+click pricing::quote
+expect selection pricing::quote
+expect nothing-moved
+expect check dot-sizes
+snap quote lit by place
+
+key enter
+expect mode journey
+expect check sphere-sizes
+expect check text-sizes
+snap journey
+
+key .
+expect check nothing-moved
+expect check dots-in-spheres
+snap depth 2
+
+key i
+expect outside_callers true
+expect nothing-moved
+expect check dots-in-spheres
+snap outside callers
+
+key x
+expect nucleus expanded
+expect check sphere-sizes
+expect check dot-sizes
+expect check spheres-apart
+snap expanded

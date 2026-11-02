@@ -218,6 +218,7 @@ What a step may move decides which checks judge it:
 | `axum-journey`, `ord-journey` | Enter opens the journey; cursor by arrows, `[ ]`, a bar, a click on a call and on a name, nothing moving; `.` and `,` depth; `i` outside callers; Esc back to Browse and the camera from before; Back and Forward |
 | `axum-expand`, `ord-expand` | X expands to fill the view, wheel and orbit while expanded, X back to the saved camera; double-click a module; Esc collapses; the same in a journey and browsing |
 | `axum-camera` | double-click on a function expands its module; Back and Forward while expanded; F expanded; the wheel's near bound; X back exactly; a click on empty space moves no camera; in a journey X on another module, Esc collapses, R from the usual view, Esc back to browsing as it was |
+| `axum-layout` | one sizing rule for every sphere, dots inside their spheres and apart, one size per role, few text sizes; a click on a lit function moves nothing; in a journey `.` and `i` move nothing and keep dots inside their modules; expanded, spheres apart and sized alike |
 
 `tools/drive suite` checks every script's names, then runs them one window at a time and
 prints a table (failed steps, `expect`s passed, failing checks, verdict) and, for each
