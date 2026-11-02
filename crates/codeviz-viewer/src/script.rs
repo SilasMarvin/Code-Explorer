@@ -112,7 +112,7 @@ pub(crate) enum Kind {
     Expand,
     /// A wheel turn.
     Zoom,
-    /// `f`: frames the focus.
+    /// `f`: frames what the view is on.
     FrameFocus,
     /// `r`: frames everything from the front.
     FrameAll,

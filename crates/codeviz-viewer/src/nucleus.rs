@@ -1,23 +1,22 @@
-//! The graph gathered into module spheres, in one of two modes. Browsing, with no journey open, every module is a sphere at its place in
-//! one layout of the whole codebase, worked out once per document, with every one of
-//! its functions inside; a click lights the function clicked, white, its callers,
-//! violet, and its calls, blue, where they sit, and moves nothing. In a journey, the
-//! start's module is a large glass sphere in the middle and the modules the journey
-//! enters stand round it clockwise in the order it first enters them; shown are the
-//! start, what calls it, and the journey's calls down to the disclosed depth, the same
-//! depth the journey panel shows, and nothing else. Calls into the middle are violet;
-//! its own calls out blue, and every journey call further down amber, darker the
-//! deeper, function to function along thin arrows between modules. Space says only
-//! where things are: no axis stands for order, rank or distance in calls.
+//! The graph gathered into module spheres, in one of two modes. Browsing, with no
+//! journey open, every module is a sphere at its place in one layout of the whole
+//! codebase, worked out once per document, with every one of its functions inside; a
+//! click lights the selection, white, its callers, violet, and its calls, blue, where
+//! they sit, and moves nothing. In a journey, the start's module is a large glass
+//! sphere in the middle and the modules the journey enters stand round it clockwise in
+//! the order it first enters them; shown are the start, what calls it, and the
+//! journey's calls down to the disclosed depth, the same depth the journey panel
+//! shows, and nothing else. Calls into the start are violet; its own calls out blue,
+//! and every journey call further down amber, darker the deeper, function to function
+//! along thin arrows between modules. Space says only where things are: no axis
+//! stands for order, rank or distance in calls.
 //!
 //! Expanded (`X`, a double click on the nucleus, or `--expand`), the nucleus grows to
 //! several times its size as the camera comes in, and its functions are laid out by
 //! the calls among them, what is named in the middle, callers leaning one way and the
 //! journey the other, the rest small towards the wall. The same functions are named
 //! as in the module view: those in other modules sit in their module's sphere on a
-//! ring just outside the wall, and a call to one runs out through the wall. With the
-//! pointer over another function inside, that function's own calls in and out are
-//! drawn too, pale, and every end of them named.
+//! ring just outside the wall, and a call to one runs out through the wall.
 
 use std::{
     cmp::Reverse,
@@ -57,12 +56,12 @@ pub(crate) struct Ball {
     pub(crate) body: Body,
 }
 
-/// What a named call is, seen from the middle.
+/// What a named call is, seen from the start (or the selection).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Flow {
-    /// Calls the middle.
+    /// Calls the start.
     Into,
-    /// A call of the journey, this many levels below the middle: 1 for its own.
+    /// A call of the journey, this many levels below the start: 1 for its own.
     Journey(u32),
     /// A call into a function on the journey from a function off it (I).
     Outside,
@@ -70,17 +69,17 @@ pub(crate) enum Flow {
     Module,
 }
 
-/// Levels of the journey drawn in a shade of their own: the middle's calls blue, then
+/// Levels of the journey drawn in a shade of their own: the start's calls blue, then
 /// amber, darker a level at a time; deeper than this, as dark as the last.
 const SHADES: u32 = 4;
 
 impl Flow {
-    /// The journey's call this many levels below the middle.
+    /// The journey's call this many levels below the start.
     pub(crate) fn journey(level: u32) -> Self {
         Self::Journey(level.clamp(1, SHADES))
     }
 
-    /// Violet into the middle, blue for its own calls out, amber for the calls
+    /// Violet into the start, blue for its own calls out, amber for the calls
     /// further down the journey, darker the deeper; pale for a call in from outside.
     pub(crate) fn color(self) -> Color {
         match self {
@@ -95,7 +94,7 @@ impl Flow {
         }
     }
 
-    /// Which of two flows an arrow carrying both says: into the middle, else the
+    /// Which of two flows an arrow carrying both says: into the start, else the
     /// shallowest level, and a call in from outside last.
     fn rank(self) -> u32 {
         match self {
@@ -112,7 +111,7 @@ impl Flow {
 pub(crate) struct Call {
     pub(crate) from: usize,
     pub(crate) to: usize,
-    /// Levels below the middle: 1 for a call the middle makes.
+    /// Levels below the start: 1 for a call the start makes.
     pub(crate) level: u32,
 }
 
@@ -147,36 +146,31 @@ impl Trail {
     }
 }
 
-/// A function's numbers on its badge: its first call in the panel's order, nearest
-/// the root, and how many more times the journey runs it. Where the cursor is never
-/// changes it, and a deeper level disclosed only adds to the count.
-pub(crate) fn badge<'a>(numbers: impl IntoIterator<Item = &'a String>) -> Option<String> {
+/// A function's numbers on its badge: the call `at` names when given, the cursor's
+/// call, which the panel names too; else its first call in the panel's order, nearest
+/// the root; and how many more times the journey runs it. Where the cursor is never
+/// changes another function's badge, and a deeper level disclosed only adds to the
+/// count.
+pub(crate) fn badge<'a>(
+    numbers: impl IntoIterator<Item = &'a String>,
+    at: Option<&str>,
+) -> Option<String> {
     let mut numbers: Vec<&str> = numbers.into_iter().map(String::as_str).collect();
     numbers.sort_by_key(|n| number_order(n));
     numbers.dedup();
-    let (first, more) = numbers.split_first()?;
-    Some(if more.is_empty() {
-        (*first).to_owned()
-    } else {
-        format!("{first} +{}", more.len())
+    let first = match at {
+        Some(at) => at,
+        None => numbers.first()?,
+    };
+    Some(match numbers.iter().filter(|&&n| n != first).count() {
+        0 => first.to_owned(),
+        more => format!("{first} +{more}"),
     })
-}
-
-/// The cursor's function's numbers on its badge: the call the cursor is on, which the
-/// panel names too, and how many more times the journey runs it.
-pub(crate) fn badge_at<'a>(numbers: impl IntoIterator<Item = &'a String>, at: &str) -> String {
-    let mut numbers: Vec<&str> = numbers.into_iter().map(String::as_str).collect();
-    numbers.sort_by_key(|n| number_order(n));
-    numbers.dedup();
-    match numbers.iter().filter(|&&n| n != at).count() {
-        0 => at.to_owned(),
-        more => format!("{at} +{more}"),
-    }
 }
 
 /// Every call from one module to another, drawn as one arrow as thick as there are
 /// calls, whenever it carries a call this view names; colored as the call nearest the
-/// middle it carries.
+/// start it carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Tube {
     pub(crate) from: usize,
@@ -194,7 +188,7 @@ pub(crate) struct Link {
     pub(crate) flow: Flow,
 }
 
-/// Above this many functions named, only those within two calls of the middle keep
+/// Above this many functions lit, only those within two calls of the start keep
 /// their names; the rest are named under the pointer.
 const NAMED_ALL: usize = 60;
 /// Rows of names an open module stacks before it starts another column.
@@ -209,7 +203,7 @@ const NEAR_GAP: f32 = 15.0;
 const MARGIN: f32 = 6.0;
 /// Seconds a re-centering takes.
 const RECENTER_SECONDS: f32 = 0.9;
-/// How big a function is drawn, against its size in the flat graph.
+/// How big a function is drawn, against its size by `node_size`.
 const NODE_SCALE: f32 = 0.8;
 /// How big a function in the nucleus that relates to nothing named is drawn.
 const QUIET_SCALE: f32 = 0.3;
@@ -295,7 +289,7 @@ struct Arrangement {
     /// By cluster: the functions an open module names, in the order it lists them.
     columns: Vec<Vec<usize>>,
     /// By cluster: every function an open module could name in this journey, at any
-    /// depth, with every side shown, in the order its names are laid out.
+    /// depth, in the order its names are laid out.
     reserved: Vec<Vec<usize>>,
     /// The modules round the nucleus, clockwise from the top.
     ring: Vec<usize>,
@@ -321,7 +315,7 @@ struct Atlas {
     room: Vec<f32>,
 }
 
-/// The expanded nucleus's layout for one middle: where its functions sit in a sphere
+/// The expanded nucleus's layout for one start: where its functions sit in a sphere
 /// of radius one, and the angle round it of each module that could be named there.
 #[derive(Debug, Clone)]
 struct Laid {
@@ -343,7 +337,7 @@ pub(crate) struct Nucleus {
     counts: Vec<usize>,
     /// Each function's module, by tile.
     module_of: Vec<Option<usize>>,
-    /// How big each function is drawn, against its size in the flat graph, by tile.
+    /// How big each function is drawn, against its size by `node_size`, by tile.
     sizes: Vec<f32>,
     /// Calls from one module to another, by `(from, to)` cluster.
     flows: HashMap<(usize, usize), usize>,
@@ -668,7 +662,7 @@ impl Nucleus {
         self.trail.numbers.get(&tile).map_or(&[], Vec::as_slice)
     }
 
-    /// How big a function is drawn against its size in the flat graph: small when it
+    /// How big a function is drawn against its size by `node_size`: small when it
     /// relates to nothing named, and bigger inside the expanded nucleus.
     pub(crate) fn node_scale(&self, quiet: bool) -> f32 {
         let scale = if quiet { QUIET_SCALE } else { NODE_SCALE };
@@ -954,7 +948,7 @@ impl Nucleus {
         let middle = modules.middle;
         let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(middle);
         let before = modules.balls[middle].radius;
-        // Everything below the middle at any depth, and every caller.
+        // Everything below the start at any depth, and every caller.
         let mut reach: HashMap<usize, i32> = HashMap::new();
         if let Some(start) = modules.start {
             reach.extend(
@@ -963,7 +957,7 @@ impl Nucleus {
                     .iter()
                     .map(|(&t, &l)| (t, i32::try_from(l).unwrap_or(i32::MAX))),
             );
-            for caller in graph.callers(start).filter(|&t| t != start) {
+            for caller in graph.callers(start) {
                 reach.entry(caller).or_insert(-1);
             }
             reach.insert(start, 0);
@@ -977,7 +971,7 @@ impl Nucleus {
             .copied()
             .filter(|&(a, b)| a != b && cluster_of(a) == middle && cluster_of(b) == middle)
             .collect();
-        // From where the flat graph has them, in a sphere of radius one.
+        // From where the settled graph has them, in a sphere of radius one.
         let seeded: Vec<Vec3> = interior(graph, &members, 1.0)
             .into_iter()
             .map(|(_, at)| at)
@@ -1189,28 +1183,24 @@ impl Nucleus {
         tubes
     }
 
-    /// Browsing, the calls named round `start`: each of its callers' into it, then each
-    /// of its own calls, in the order written.
-    fn browse_calls(graph: &ForceGraph, start: usize) -> Vec<Link> {
-        let mut callers: Vec<usize> = graph.callers(start).filter(|&t| t != start).collect();
-        callers.sort_unstable();
-        callers.dedup();
-        let mut links: Vec<Link> = callers
-            .into_iter()
+    /// Each of `start`'s callers' calls into it, once.
+    fn calls_into(graph: &ForceGraph, start: usize) -> Vec<Link> {
+        graph
+            .callers(start)
             .map(|from| Link {
                 from,
                 to: start,
                 flow: Flow::Into,
             })
-            .collect();
-        let written = graph.sequence(start);
-        let calls: Vec<usize> = if written.is_empty() {
-            graph.callees(start).collect()
-        } else {
-            written.to_vec()
-        };
-        for to in calls {
-            if to != start && !links.iter().any(|l| l.from == start && l.to == to) {
+            .collect()
+    }
+
+    /// Browsing, the calls named round `start`: each of its callers' into it, then each
+    /// of its own calls, in the order written.
+    fn browse_calls(graph: &ForceGraph, start: usize) -> Vec<Link> {
+        let mut links = Self::calls_into(graph, start);
+        for &to in graph.sequence(start) {
+            if !links.iter().any(|l| l.from == start && l.to == to) {
                 links.push(Link {
                     from: start,
                     to,
@@ -1221,7 +1211,7 @@ impl Nucleus {
         links
     }
 
-    /// In a journey with I on, a call into each function shown on it, the middle
+    /// In a journey with I on, a call into each function shown on it, the start
     /// included, from each function that calls it and is not shown: of each module's
     /// such callers, only the few nearest the journey.
     fn outside_calls(&self, graph: &ForceGraph, links: &[Link], start: Option<usize>) -> Vec<Link> {
@@ -1243,7 +1233,7 @@ impl Nucleus {
 
     /// The calls in from outside the journey that are drawn, and how many callers
     /// each module holds beyond them. A module's callers are ranked by the shallowest
-    /// function on the journey they call, the middle first, then by how many of its
+    /// function on the journey they call, the start first, then by how many of its
     /// functions they call.
     fn outside_split(
         &self,
@@ -1254,7 +1244,7 @@ impl Nucleus {
         let Some(start) = start.filter(|_| self.outside && !self.browse) else {
             return (Vec::new(), HashMap::new());
         };
-        // Each function on the journey, with its level: the middle's 0.
+        // Each function on the journey, with its level: the start's 0.
         let mut on: Vec<(usize, u32)> = vec![(start, 0)];
         for link in links {
             if let Flow::Journey(level) = link.flow {
@@ -1274,10 +1264,7 @@ impl Nucleus {
         // calls.
         let mut near: HashMap<usize, (u32, usize)> = HashMap::new();
         for &(to, level) in &on {
-            let mut callers: Vec<usize> =
-                graph.callers(to).filter(|c| !shown.contains(c)).collect();
-            callers.sort_unstable();
-            callers.dedup();
+            let callers: Vec<usize> = graph.callers(to).filter(|c| !shown.contains(c)).collect();
             for &from in &callers {
                 let known = near.entry(from).or_insert((level, 0));
                 known.0 = known.0.min(level);
@@ -1391,18 +1378,18 @@ impl Nucleus {
     /// journey: those that call most of the journey's functions, then call the start
     /// most often, then live in its module, are named; the rest fold into a count on
     /// their module's name. Worked out from every caller and the journey at every
-    /// depth, so a new depth, a hidden side or the cursor never changes which.
+    /// depth, so a new depth or the cursor never changes which.
     fn fold_callers(
         &self,
         graph: &ForceGraph,
         start: usize,
         cluster_of: &impl Fn(usize) -> usize,
     ) -> HashSet<usize> {
-        let mut callers: Vec<usize> = graph.callers(start).filter(|&t| t != start).collect();
-        callers.sort_unstable();
-        callers.dedup();
         // One the journey runs too is named as the journey's.
-        callers.retain(|t| !self.trail.whole.contains_key(t));
+        let mut callers: Vec<usize> = graph
+            .callers(start)
+            .filter(|t| !self.trail.whole.contains_key(t))
+            .collect();
         // Folding one or two away would save nothing.
         if callers.len() <= CALLERS_NAMED + 2 {
             return HashSet::new();
@@ -1431,17 +1418,7 @@ impl Nucleus {
     /// The calls named round `start`: each of its callers' into it, then each of the
     /// open journey's from it, in the journey's order.
     fn named_calls(&self, graph: &ForceGraph, start: usize) -> Vec<Link> {
-        let mut callers: Vec<usize> = graph.callers(start).filter(|&t| t != start).collect();
-        callers.sort_unstable();
-        callers.dedup();
-        let mut links: Vec<Link> = callers
-            .into_iter()
-            .map(|from| Link {
-                from,
-                to: start,
-                flow: Flow::Into,
-            })
-            .collect();
+        let mut links = Self::calls_into(graph, start);
         for call in &self.trail.calls {
             if call.from != call.to && !links.iter().any(|l| l.from == call.from && l.to == call.to)
             {
@@ -1466,7 +1443,7 @@ impl Nucleus {
                 continue;
             }
             match tubes.iter_mut().find(|t| t.from == from && t.to == to) {
-                // The call nearest the middle colors the arrow.
+                // The call nearest the start colors the arrow.
                 Some(tube) if link.flow.rank() < tube.flow.rank() => tube.flow = link.flow,
                 Some(_) => {}
                 None => tubes.push(Tube {
@@ -1545,7 +1522,7 @@ fn distances(links: &[Link], start: Option<usize>) -> HashMap<usize, i32> {
     named
 }
 
-/// The functions each module outside the middle opens to name, by cluster, in the
+/// The functions each module outside the middle one opens to name, by cluster, in the
 /// order `links` reaches them.
 fn open_up(
     links: &[Link],
@@ -1567,7 +1544,7 @@ fn open_up(
 }
 
 impl Nucleus {
-    /// Every function below the middle at any depth, in the order the journey first
+    /// Every function below the start at any depth, in the order the journey first
     /// runs it, then any `links` name that the trail's order leaves out.
     fn journey_order<'a>(&'a self, links: &'a [Link]) -> impl Iterator<Item = usize> + 'a {
         self.trail.order.iter().copied().chain(
@@ -1578,9 +1555,9 @@ impl Nucleus {
         )
     }
 
-    /// The functions each module outside the middle could ever name in this journey,
-    /// by cluster: the middle's callers in `links` first, then everything the journey
-    /// runs below the middle at any depth, the shallowest first and, level by level,
+    /// The functions each module outside the middle one could ever name in this
+    /// journey, by cluster: the start's callers in `links` first, then everything the
+    /// journey runs below the start at any depth, the shallowest first and, level by level,
     /// in the order the journey first runs them. Each module is laid out for all of
     /// them once, so a level more or less shows or hides names in place, and the
     /// names a shallower depth shows come first, at the top.
@@ -1616,7 +1593,7 @@ impl Nucleus {
 
     /// The modules round the nucleus, in order: those the journey enters at any
     /// depth, in the order it first enters them, the shallower first; then those
-    /// holding only callers of the middle, from `links`. The same at every depth,
+    /// holding only callers of the start, from `links`. The same at every depth,
     /// collapsed or expanded.
     fn ring_order(
         &self,
@@ -1789,7 +1766,7 @@ fn place_closed(balls: &mut [Ball], bearings: &Bearings) {
     relax(balls, |_, b| b.body == Body::Closed, (1.5, 0.0), &[], 60);
 }
 
-/// Where each function is drawn, and whether it is: the nucleus's own where the flat
+/// Where each function is drawn, and whether it is: the nucleus's own where the settled
 /// graph has them, filling its sphere; those an open module names in columns down
 /// its middle; the rest folded away at their module's middle.
 fn place_functions(
@@ -1992,7 +1969,7 @@ fn lay_inside(
 /// Browsing, where every module and function sits: each module where the stable
 /// layout of modules has it, spread so each holds all its functions with room between
 /// and none hides another as the usual view, or one turned an eighth of the way
-/// either side, sees them; each module's functions inside it where the flat graph has
+/// either side, sees them; each module's functions inside it where the settled graph has
 /// them about its middle.
 fn atlas(graph: &ForceGraph, homes: &[Vec3], counts: &[usize]) -> Atlas {
     let clusters = homes.len();
@@ -2431,7 +2408,7 @@ fn relax(
     }
 }
 
-/// Where the nucleus's functions sit inside a sphere of `radius`: as the flat graph
+/// Where the nucleus's functions sit inside a sphere of `radius`: as the settled graph
 /// has them about their middle, stretched to fill the sphere in all three
 /// directions, so the module's own map is kept.
 fn interior(graph: &ForceGraph, members: &[usize], radius: f32) -> Vec<(usize, Vec3)> {
@@ -3169,13 +3146,13 @@ mod tests {
     #[test]
     fn the_cursor_badge_leads_with_the_call_it_is_on() {
         let numbers: Vec<String> = ["1.1", "3.1.1", "1.1"].map(str::to_owned).to_vec();
-        assert_eq!(badge(&numbers).as_deref(), Some("1.1 +1"));
-        assert_eq!(badge_at(&numbers, "3.1.1"), "3.1.1 +1");
-        assert_eq!(badge_at(&numbers[..1], "1.1"), "1.1");
+        assert_eq!(badge(&numbers, None).as_deref(), Some("1.1 +1"));
+        assert_eq!(badge(&numbers, Some("3.1.1")).as_deref(), Some("3.1.1 +1"));
+        assert_eq!(badge(&numbers[..1], Some("1.1")).as_deref(), Some("1.1"));
     }
 
     #[test]
-    fn the_focus_module_sits_in_the_middle_holding_all_its_functions() {
+    fn the_start_module_sits_in_the_middle_holding_all_its_functions() {
         let (graph, map) = codebase();
         let nucleus = around(&graph, &map, "core::run", 2);
         let core = module(&graph, &map, "core::run");
@@ -3193,7 +3170,7 @@ mod tests {
     }
 
     #[test]
-    fn modules_near_the_focus_open_and_the_rest_stay_closed_further_out() {
+    fn modules_near_the_start_open_and_the_rest_stay_closed_further_out() {
         let (graph, map) = codebase();
         let nucleus = around(&graph, &map, "core::run", 2);
         for id in ["web::route", "db::put", "log::say", "disk::write"] {
@@ -3278,7 +3255,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_focus_recenters_easing_there() {
+    fn a_new_start_recenters_easing_there() {
         let (graph, map) = codebase();
         let mut nucleus = around(&graph, &map, "core::run", 1);
         let db = module(&graph, &map, "db::put");
@@ -3763,11 +3740,15 @@ mod tests {
         assert_eq!(trail.calls.len(), 4);
         assert_eq!(trail.numbers[&1], ["1", "2.1"]);
         assert_eq!(trail.numbers[&3], ["1.9", "1.10"], "in the journey's order");
-        assert_eq!(badge(&trail.numbers[&1]).as_deref(), Some("1 +1"));
-        assert_eq!(badge(&trail.numbers[&2]).as_deref(), Some("2"));
-        assert_eq!(badge(&[]), None);
+        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("1 +1"));
+        assert_eq!(badge(&trail.numbers[&2], None).as_deref(), Some("2"));
+        assert_eq!(badge(&[], None), None);
         let both = ["1.1".to_owned(), "2".to_owned(), "2".to_owned()];
-        assert_eq!(badge(&both).as_deref(), Some("2 +1"), "sorted, once each");
+        assert_eq!(
+            badge(&both, None).as_deref(),
+            Some("2 +1"),
+            "sorted, once each"
+        );
     }
 
     #[test]
@@ -3776,10 +3757,10 @@ mod tests {
         trail.add(0, 1, 2, "1.1");
         trail.add(0, 1, 1, "2");
         assert_eq!(trail.numbers[&1], ["2", "1.1"], "the shallower first");
-        assert_eq!(badge(&trail.numbers[&1]).as_deref(), Some("2 +1"));
+        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("2 +1"));
         // A level deeper adds a run further down, and the number stays.
         trail.add(1, 1, 3, "1.1.4");
-        assert_eq!(badge(&trail.numbers[&1]).as_deref(), Some("2 +2"));
+        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("2 +2"));
     }
 
     #[test]

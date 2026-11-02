@@ -1396,7 +1396,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_node_off_the_journey_is_the_focus_until_followed_or_left() {
+    fn a_node_set_aside_stays_aside_until_followed_or_left() {
         let mut explorer = explorer();
         explorer.open_at(tile(&explorer, "a"));
         explorer.forget_history();
@@ -1554,7 +1554,7 @@ pub(crate) mod tests {
         assert_eq!(
             explorer.nucleus().start(),
             explorer.current(),
-            "following the focus re-centers on it"
+            "following the function set aside re-centers on it"
         );
     }
 

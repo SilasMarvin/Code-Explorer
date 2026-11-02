@@ -137,13 +137,16 @@ scene's units.
 
 - `window`, `graph_area` (the graph's part of the window, under the top bar), `camera`
   (`at`, `facing`), `snap`.
-- `state`: `mode` (`browse`, `journey`), `selection`, `focus`, `centre`, `centre_module`,
-  `nucleus` (`modules`, `expanded`), `journey_start`, `cursor` (`number`, `name`),
-  `aside`, `depth`, `outside_callers`, `pointed` (the function the view counts
-  as under the pointer) and `under_pointer` (raw), `search`, `help`, `back`, `forward`,
-  `camera` (`target`, `distance`, `yaw`, `pitch`), `pointer`.
-- `nodes`: every function drawn: `name`, `unit`, `module`, `roles` (`centre`, `start`,
-  `cursor`, `caller`, `journey level N`, `callee`, `on the open journey`, `hovered`,
+- `state`: `mode` (`browse`, `journey`), `selection` (browsing), `start` (the
+  journey's), `start_module` (the module in the middle: the start's, or the
+  selection's), `cursor` (`number`, `name`), `aside` (the function set aside in a
+  journey), `centre` (expanded, the function the view centres on), `nucleus`
+  (`modules`, `expanded`), `depth`, `outside_callers`, `hovered` (the function the
+  pointer has rested on, as drawn) and `under_pointer` (what the pointer is on now),
+  `search`, `help`, `back`, `forward`, `camera` (`target`, `distance`, `yaw`, `pitch`),
+  `pointer`.
+- `nodes`: every function drawn: `name`, `unit`, `module`, `roles` (`start`,
+  `selection`, `centre`, `cursor`, `aside`, `caller`, `journey level N`, `hovered`,
   `speck` for a faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
   screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `crowded_by`.
 - `modules`: each sphere: `name`, `body` (`nucleus`, `open`, `closed`, `faint`), `shown`,
@@ -157,8 +160,8 @@ scene's units.
 - `bars`: journey bars in view: `number`, `name`, `unit`, `rect`, `cursor`, `lit`,
   `cut_off`. `buttons`: `text`, `rect`, `enabled`, `cut_off`. `overlays`: `name`, `rect`,
   `clipped`. `text`: every other text drawn, with `rect` and `size`.
-- `content`: what the view means to show: focus, callers, the disclosed calls with numbers
-  and modules.
+- `content`: what the view means to show: the `start` or the `selection`, its
+  callers, the disclosed calls with numbers and modules.
 - `moved`: against the snap before: `since`, `camera`, `nodes` (`compared`,
   `moved_in_world`, `moved_on_screen`, `most_world`, `most_screen`, `examples`),
   `modules`, `labels`, `appeared`, `gone`.

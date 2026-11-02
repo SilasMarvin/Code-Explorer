@@ -1709,7 +1709,7 @@ fn draw_graph_labels(
                 let again = (start == Some(tile))
                     .then(|| {
                         let panel = journey.get(&tile).map_or(&[][..], Vec::as_slice);
-                        nucleus::badge(nucleus.numbers(tile).iter().chain(panel))
+                        nucleus::badge(nucleus.numbers(tile).iter().chain(panel), None)
                     })
                     .flatten()
                     .map(|again| format!("start · again at {again}"));
@@ -1739,10 +1739,7 @@ fn draw_graph_labels(
                 } else {
                     let panel = journey.get(&tile).map_or(&[][..], Vec::as_slice);
                     let numbers = nucleus.numbers(tile).iter().chain(panel);
-                    match cursor_number.filter(|_| cursor == Some(tile)) {
-                        Some(at) => Some(nucleus::badge_at(numbers, at)),
-                        None => nucleus::badge(numbers),
-                    }
+                    nucleus::badge(numbers, cursor_number.filter(|_| cursor == Some(tile)))
                 };
                 // A click on the name goes to the call it leads with; on the start's,
                 // to the start.
