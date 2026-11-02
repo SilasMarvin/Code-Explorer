@@ -10,8 +10,10 @@ use bevy_egui::{
 use codeviz_ir::UnitId;
 
 use crate::{
+    arrows,
     camera::OrbitCamera,
     colors::{CALLER_TEXT, MUTED},
+    drive::Marks,
     explorer::Explorer,
     framing::GraphView,
     idle::Awake,
@@ -143,7 +145,7 @@ fn draw_ui(
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut graph_view: ResMut<GraphView>,
-    mut moved: Local<u64>,
+    mut marks: ResMut<Marks>,
     mut awake: ResMut<Awake>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
@@ -165,7 +167,7 @@ fn draw_ui(
     // the search box and the framing keep to the free area above the panel.
     graph_view.0 = Some(central);
     let (graph_area, panel_area) = areas(central, &explorer);
-    if let Ok((mut camera, transform, orbit)) = cameras.single_mut() {
+    if let Ok((mut camera, transform, _)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, central);
         let to_screen = |position: Vec3| {
             camera
@@ -177,16 +179,10 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
-        // A label new to the scene keeps its place once nothing moves any more.
-        let settled = !orbit.easing() && *moved == explorer.moved();
-        *moved = explorer.moved();
-        draw_graph_labels(
-            &painter,
-            &to_screen,
-            &explorer,
-            (transform.up().into(), transform.right().into()),
-            settled,
-        );
+        // The calls under the names, on under the journey panel as the spheres are.
+        let under = painter.with_clip_rect(central);
+        arrows::draw(&under, &explorer, (&camera, transform), &mut marks);
+        draw_graph_labels(&painter, &to_screen, &explorer, transform.up().into());
         let opening = chrome.search && !search.was_open;
         search.was_open = chrome.search;
         if chrome.search {

@@ -265,6 +265,7 @@ such a camera alone.
 | `ord-camera` | the wheel's near bound and out to the whole map in the middle; a journey framed into the free area by Enter, F and the panel's Fit alike; expanded, the cursor kept in view and a level less moving nothing; R expanded shrinks back first; X with nothing selected expands the module in the middle; a double click keeps the selection |
 | `axum-steps` | the harness's own steps: `search-pick`, `bar` by function, `chip`, `frames`, `button Fit` judged as F, `pan`; `map-on-screen` after R |
 | `axum-layout` | one sizing rule for every sphere, dots inside their spheres and apart, one size per role, few text sizes; a click on a lit function moves nothing; in a journey `.` and `i` move nothing and keep dots inside their modules; expanded, spheres apart and sized alike |
+| `axum-look`, `ord-look` | how the graph is drawn: arrow sizes, module names above their spheres, names wherever they fit (browsing too), hover unlike the selection, an expanded module showing and naming all its functions, a depth change and `i` taking no name away |
 | `axum-search` | search: ↓ and Enter take the row highlighted; a route found by its path and its function's name, listed once; reopened, the last query is selected and typing replaces it; Esc from a journey selects its start |
 | `ord-panel` | the panel on a crowded journey: bars keep their numbers, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk) |
 
@@ -293,9 +294,9 @@ tools/test_drive.py` tests the runner's own logic.
 - `click` aims at a dot's centre; a dot mostly hidden behind another is clicked where the
   other is, and `trouble` says so. `click-label` aims at the name instead.
 - Checks see what the snap's JSON reports: a dot drawn but missing from the JSON is
-  beyond them. Arrows and rings are drawn as gizmos the scene cannot give back, so the
-  systems that draw them note each in `drive::Marks` (`nucleus::draw`,
-  `nucleus::place_bodies`, `graph_view::draw_graph`); the journey panel notes its bars
+  beyond them. Arrows are painted on screen and rings drawn as gizmos, neither of
+  which the scene can give back, so what draws them notes each in `drive::Marks`
+  (`arrows::draw`, `graph_view::draw_graph`); the journey panel notes its bars
   and badges (`drive::note_bars`) and the search box its rows
   (`drive::note_search_rows`). A new way of drawing these must note them too, or the
   JSON loses them. Idle CPU is not checked.

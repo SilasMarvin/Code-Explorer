@@ -11,6 +11,7 @@
     reason = "Bevy system parameters are taken by value"
 )]
 
+mod arrows;
 mod camera;
 mod checks;
 mod colors;

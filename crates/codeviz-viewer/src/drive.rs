@@ -646,8 +646,6 @@ pub(crate) struct Screen {
     pub(crate) labels: Vec<(egui::Rect, usize)>,
     /// The search box's rows, while it shows.
     pub(crate) search: Option<SearchRows>,
-    /// Pixels to a point.
-    pub(crate) scale: f32,
 }
 
 impl Default for Screen {
@@ -661,7 +659,6 @@ impl Default for Screen {
             overlays: Vec::new(),
             labels: Vec::new(),
             search: None,
-            scale: 1.0,
         }
     }
 }
@@ -717,8 +714,9 @@ pub(crate) fn note_bars(
 }
 
 /// What the graph drew this frame that a snapshot cannot read back from the scene:
-/// the calls drawn as lines, the arrows between modules, and the rings round
-/// functions, each noted by the system that draws it, in the world.
+/// the calls drawn as lines, the lines between modules, and the rings round
+/// functions, each noted by the system that draws it: the arrows on screen, the
+/// rings in the world.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct Marks {
     pub(crate) calls: Vec<CallMark>,
@@ -726,29 +724,31 @@ pub(crate) struct Marks {
     pub(crate) rings: Vec<RingMark>,
 }
 
-/// A call drawn from function to function: a line of the gizmos' width, and its head.
+/// A call drawn from function to function.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CallMark {
     pub(crate) from: usize,
     pub(crate) to: usize,
     pub(crate) flow: Flow,
     pub(crate) color: Color,
-    /// Where the head starts, along the line, and where its tip is.
-    pub(crate) back: Vec3,
-    pub(crate) tip: Vec3,
-    /// How far each of its barbs reaches out from the line, in the world.
-    pub(crate) spread: f32,
+    pub(crate) shape: ArrowShape,
 }
 
-/// An arrow between two modules, by its index among the nucleus's: its shaft's
-/// radius, and its head, a cone from `back` to `tip` as wide as `spread` either side.
+/// A line between two modules, by its index among the nucleus's.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TubeMark {
     pub(crate) index: usize,
-    pub(crate) radius: f32,
-    pub(crate) back: Vec3,
-    pub(crate) tip: Vec3,
-    pub(crate) spread: f32,
+    pub(crate) shape: ArrowShape,
+}
+
+/// How an arrow shows on screen, in points: its line's width, its head's length and
+/// width, and where its tip is.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ArrowShape {
+    pub(crate) width: f32,
+    pub(crate) head: f32,
+    pub(crate) head_width: f32,
+    pub(crate) tip: Vec2,
 }
 
 /// A ring round a function, so big in the world, in a color.
@@ -859,7 +859,6 @@ fn record(
         overlays,
         labels: crate::labels::drawn_labels(&ctx),
         search,
-        scale: window.scale_factor(),
     };
 }
 
@@ -924,7 +923,6 @@ pub(crate) struct View<'w, 's> {
     pub(crate) chrome: Res<'w, Chrome>,
     pub(crate) screen: Res<'w, Screen>,
     pub(crate) marks: Res<'w, Marks>,
-    gizmos: Res<'w, GizmoConfigStore>,
     materials: Res<'w, Assets<StandardMaterial>>,
     tiles: Query<
         'w,
@@ -994,12 +992,6 @@ impl View<'_, '_> {
             .collect();
         drawn.sort_by_key(|d| d.tile);
         drawn
-    }
-
-    /// How wide the calls drawn as lines are, in points.
-    pub(crate) fn line_width(&self) -> f32 {
-        let (config, _) = self.gizmos.config::<DefaultGizmoConfigGroup>();
-        config.line.width / self.screen.scale.max(f32::EPSILON)
     }
 
     /// One function as drawn, or why it is not.

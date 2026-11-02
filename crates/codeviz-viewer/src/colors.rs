@@ -32,18 +32,17 @@ pub(crate) const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 /// Text on a bar or a badge filled with a node's color.
 pub(crate) const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
 
-/// Module colors: a node's fill, its module's sphere and name, and its journey bar,
-/// distinct enough from the next that neighbouring modules read apart. Muted greens,
-/// teals and earths only, so none reads as white, violet, blue, amber or pink.
-const MODULES: [Color; 8] = [
-    Color::srgb(0.36, 0.80, 0.72),
-    Color::srgb(0.76, 0.80, 0.36),
-    Color::srgb(0.50, 0.84, 0.66),
-    Color::srgb(0.70, 0.70, 0.60),
-    Color::srgb(0.48, 0.82, 0.48),
-    Color::srgb(0.56, 0.62, 0.40),
-    Color::srgb(0.66, 0.78, 0.60),
-    Color::srgb(0.62, 0.80, 0.36),
+/// Module colors: a module's sphere, its rim and its name. Six hues far enough apart
+/// to tell neighbouring modules by, all muted and none near a role's color: teal,
+/// lime, brick, green, stone and sand read as none of white, violet, blue, amber or
+/// pink.
+const MODULES: [Color; 6] = [
+    Color::srgb(0.36, 0.74, 0.76),
+    Color::srgb(0.66, 0.80, 0.34),
+    Color::srgb(0.84, 0.50, 0.42),
+    Color::srgb(0.44, 0.78, 0.44),
+    Color::srgb(0.66, 0.66, 0.62),
+    Color::srgb(0.78, 0.76, 0.54),
 ];
 
 /// How many module colors there are: what is drawn in one is made once for each.

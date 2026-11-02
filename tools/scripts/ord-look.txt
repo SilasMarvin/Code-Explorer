@@ -1,0 +1,36 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json
+# How the graph is drawn on this repo: the whole map's module links thin and
+# faint, module names above their spheres; a big expanded module spreads its
+# functions so their names sit by their own dots; in a journey a depth change and
+# `i` take no name away and move nothing.
+snap open
+expect check arrow-sizes pass
+expect check module-names pass
+
+click Explorer::spotlit
+key x
+expect expanded explorer
+expect check arrow-sizes pass
+expect check labels-clear pass
+expect check labels-near pass
+expect named Explorer::spotlight
+expect named Track::root
+snap explorer expanded
+
+key x
+key enter
+expect mode journey
+snap journey
+
+key .
+expect nothing-moved
+snap depth 2
+
+key down
+key i
+expect nothing-moved
+snap outside callers
+
+key .
+expect nothing-moved
+snap depth 3 with outside callers

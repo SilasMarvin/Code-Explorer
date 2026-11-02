@@ -19,14 +19,12 @@
 //! ring just outside the wall, and a call to one runs out through the wall.
 //!
 //! This file holds what the nucleus is and answers; [`browse`], [`journey`] and
-//! [`inside`] arrange it for each mode, [`route`] runs the calls, and [`draw`] puts
-//! it in the scene. The browsing map itself is [`codeviz_layout::atlas`]'s.
+//! [`inside`] arrange it for each mode, and [`draw`] puts it in the scene. The browsing map itself is [`codeviz_layout::atlas`]'s.
 
 mod browse;
 mod draw;
 mod inside;
 mod journey;
-mod route;
 #[cfg(test)]
 mod tests;
 
@@ -78,8 +76,8 @@ pub(crate) enum Flow {
     Journey(u32),
     /// A call into a function on the journey from a function off it (I).
     Outside,
-    /// Browsing with nothing selected, every call from one module to another.
-    Module,
+    /// A call between two functions of the module expanded that no other flow names.
+    Inner,
 }
 
 /// Levels of the journey drawn in a shade of their own: the start's calls blue, then
@@ -103,18 +101,7 @@ impl Flow {
                 let deeper = (level.min(SHADES) - 2) as f32;
                 DEEPER.mix(&Color::BLACK, 0.2 * deeper)
             }
-            Self::Outside | Self::Module => FURTHER,
-        }
-    }
-
-    /// Which of two flows an arrow carrying both says: into the start, else the
-    /// shallowest level, and a call in from outside last.
-    fn rank(self) -> u32 {
-        match self {
-            Self::Into => 0,
-            Self::Journey(level) => level,
-            Self::Outside => SHADES + 1,
-            Self::Module => SHADES + 2,
+            Self::Outside | Self::Inner => FURTHER,
         }
     }
 }
@@ -174,16 +161,14 @@ pub(crate) fn badge<'a>(
     })
 }
 
-/// Every call from one module to another, drawn as one arrow as thick as there are
-/// calls, whenever it carries a call this view names; colored as the call nearest the
-/// start it carries.
+/// Browsing with nothing selected, every call from one module to another, drawn as
+/// one faint line between their spheres.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Tube {
     pub(crate) from: usize,
     pub(crate) to: usize,
-    /// Every call from one module to the other, named or not.
+    /// Every call from one module to the other.
     pub(crate) calls: usize,
-    pub(crate) flow: Flow,
 }
 
 /// A call this view names, from function to function.
@@ -194,9 +179,6 @@ pub(crate) struct Link {
     pub(crate) flow: Flow,
 }
 
-/// Above this many functions lit, only those within two calls of the start keep
-/// their names; the rest are named under the pointer.
-const NAMED_ALL: usize = 60;
 /// The angle the camera turns to when the nucleus opens.
 pub(crate) const VIEW: atlas::View = (-0.45, -0.38);
 /// Browsing, how far the camera may turn off [`VIEW`], in yaw and in pitch: the map
@@ -237,9 +219,6 @@ struct Arrangement {
     /// In a journey, the start's callers beyond the few nearest it: drawn quietly and
     /// named only under the pointer, counted on their module's name instead.
     folded: HashSet<usize>,
-    /// In a journey, the places each open module keeps free for its callers from
-    /// outside it, which names keep off so those come and go covering none.
-    free: Vec<Vec3>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
 }
@@ -393,44 +372,46 @@ impl Nucleus {
         self.expanded
     }
 
-    /// Whether expanding `cluster` lays it out afresh: in a journey, the start's
-    /// module; anything else expands where it is.
-    fn lays_out(&self, cluster: Option<usize>) -> bool {
-        !self.browse && cluster.is_some() && cluster == Some(self.now.middle)
-    }
-
     /// Expands `cluster`, or with none shrinks back what is expanded, easing there.
     pub(crate) fn expand(&mut self, graph: &ForceGraph, cluster: Option<usize>) {
         if cluster == self.expanded {
             return;
         }
-        let relayout = self.lays_out(self.expanded) || self.lays_out(cluster);
         self.expanded = cluster;
-        if relayout {
-            self.recenter(graph, self.now.start);
-        }
+        self.recenter(graph, self.now.start);
     }
 
-    /// Whether a function is one of the functions of a module expanded where it is
-    /// while browsing: drawn plainly and named, as the module opens.
+    /// Whether a function is one of the module expanded's: every one of them is
+    /// drawn, those nothing lights plainly, as the module opens.
     pub(crate) fn opened_up(&self, tile: usize) -> bool {
-        self.browse
-            && self.expanded.is_some()
-            && self.module_of.get(tile).copied().flatten() == self.expanded
+        self.expanded.is_some() && self.module_of.get(tile).copied().flatten() == self.expanded
     }
 
     /// Arranges everything around `start` instead, easing there from wherever things
     /// are now.
     pub(crate) fn recenter(&mut self, graph: &ForceGraph, start: Option<usize>) {
-        let balls = (0..self.now.balls.len())
+        let mut balls: Vec<Ball> = (0..self.now.balls.len())
             .filter_map(|c| self.ball(c))
             .collect();
-        let points = (0..self.now.points.len())
+        let mut points: Vec<Vec3> = (0..self.now.points.len())
             .filter_map(|t| self.point(t))
             .collect();
-        self.from = Some((balls, points));
+        let placed: Vec<bool> = (0..points.len()).map(|t| self.placed(t)).collect();
+        let shown: Vec<bool> = balls.iter().map(|b| self.shows_body(b.body)).collect();
         self.progress = 0.0;
         self.now = self.arrange(graph, start);
+        // What was not drawn before shows where it goes, rather than flying in.
+        for (tile, point) in points.iter_mut().enumerate() {
+            if !placed[tile] {
+                *point = self.now.points.get(tile).copied().unwrap_or(*point);
+            }
+        }
+        for (cluster, ball) in balls.iter_mut().enumerate() {
+            if !shown[cluster] {
+                *ball = self.now.balls.get(cluster).copied().unwrap_or(*ball);
+            }
+        }
+        self.from = Some((balls, points));
     }
 
     /// Names the open journey from the start instead, easing there. Returns whether
@@ -470,12 +451,6 @@ impl Nucleus {
         }
     }
 
-    /// In a journey, the places the open modules keep free for callers from outside
-    /// it, as they will be once a re-centering ends.
-    pub(crate) fn kept_free(&self) -> &[Vec3] {
-        &self.now.free
-    }
-
     /// Whether a function is an outside caller into the journey, shown.
     pub(crate) fn outside(&self, tile: usize) -> bool {
         self.now.outside.contains(&tile)
@@ -487,22 +462,17 @@ impl Nucleus {
         self.now.folded.contains(&tile)
     }
 
-    /// How many of a module's functions are the start's callers folded into a count.
-    pub(crate) fn folded_in(&self, cluster: usize) -> usize {
-        self.now
-            .folded
-            .iter()
-            .filter(|&&t| self.module_of.get(t).copied().flatten() == Some(cluster))
-            .count()
-    }
-
-    /// Marks the journey's cursor where it sits, without moving anything else.
-    /// Returns whether that changed.
-    pub(crate) fn set_cursor(&mut self, tile: Option<usize>) -> bool {
+    /// Marks the journey's cursor where it sits, without moving anything else; with
+    /// I on, brings in the callers from off the journey of the function it is on
+    /// instead. Returns whether that changed.
+    pub(crate) fn set_cursor(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
         if tile == self.cursor {
             return false;
         }
         self.cursor = tile;
+        if self.outside && !self.browse {
+            self.recenter(graph, self.now.start);
+        }
         true
     }
 
@@ -550,18 +520,6 @@ impl Nucleus {
     /// the start, and lit by nothing.
     pub(crate) fn speck(&self, tile: usize) -> bool {
         self.placed(tile) && !self.lit(tile) && self.now.start != Some(tile)
-    }
-
-    /// Whether a function carries its name without the pointer on it: every lit one
-    /// does, unless so many are lit that only those within two calls of the start
-    /// keep theirs; and none of the start's callers folded into a count. The one
-    /// test of what is named.
-    pub(crate) fn named(&self, tile: usize) -> bool {
-        self.opened_up(tile)
-            || !self.folded(tile)
-                && self
-                    .level(tile)
-                    .is_some_and(|level| self.now.named.len() <= NAMED_ALL || level.abs() <= 2)
     }
 
     /// Moves a re-centering along by `dt` seconds. Returns whether anything moved.
@@ -660,7 +618,7 @@ impl Nucleus {
 
     /// Whether a function is placed where it shows, rather than folded away inside
     /// its module: what the arrangement shows, and the cursor wherever it is.
-    fn placed(&self, tile: usize) -> bool {
+    pub(crate) fn placed(&self, tile: usize) -> bool {
         self.is_cursor(tile) || self.now.shown.get(tile).copied().unwrap_or(false)
     }
 
@@ -691,6 +649,12 @@ impl Nucleus {
     /// How many functions an open module names.
     pub(crate) fn opened(&self, cluster: usize) -> usize {
         self.now.columns.get(cluster).map_or(0, Vec::len)
+    }
+
+    /// In a journey, the modules round the nucleus at any depth, clockwise from the
+    /// top.
+    pub(crate) fn ring(&self) -> &[usize] {
+        &self.now.ring
     }
 
     pub(crate) fn tubes(&self) -> &[Tube] {
@@ -757,18 +721,24 @@ impl Nucleus {
             .collect()
     }
 
-    /// Everything placed around `start`, the nucleus expanded or not, or browsing.
+    /// Everything placed around `start`, the nucleus expanded or not, or browsing;
+    /// and the module expanded opened out.
     fn arrange(&mut self, graph: &ForceGraph, start: Option<usize>) -> Arrangement {
-        if self.browse {
-            return self.arrange_browse(graph, start);
-        }
-        let modules = self.arrange_modules(graph, start);
-        if self.expanded == Some(modules.middle) {
-            let laid = self.laid_out(graph, &modules);
-            self.arrange_inside(graph, modules, &laid)
+        let mut now = if self.browse {
+            self.arrange_browse(graph, start)
         } else {
-            modules
+            let modules = self.arrange_modules(graph, start);
+            if self.expanded == Some(modules.middle) {
+                let laid = self.laid_out(graph, &modules);
+                self.arrange_inside(graph, modules, &laid)
+            } else {
+                modules
+            }
+        };
+        if let Some(cluster) = self.expanded {
+            self.open_out(graph, cluster, &mut now);
         }
+        now
     }
 }
 
