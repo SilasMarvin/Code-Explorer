@@ -1,0 +1,52 @@
+#: view demo/out/axum-server.json
+# How the graph is drawn on the small demo: arrows thin with one small head each;
+# module names centred above their spheres; every function named where it fits,
+# browsing too; hover never looks like the selection; an expanded module shows all
+# its functions, named, with the calls among them; a depth change or `i` takes no
+# name away and moves nothing.
+snap open
+expect check arrow-sizes pass
+expect check module-names pass
+expect check named-when-room pass
+expect named pricing::unit_price
+expect named users::register
+
+click orders::place
+expect check arrow-sizes pass
+expect check labels-clear pass
+snap place
+
+hover pricing::quote
+expect check colours pass
+expect nothing-moved
+snap hover
+
+key enter
+expect mode journey
+snap journey
+
+key .
+expect nothing-moved
+expect check named-when-room pass
+snap depth 2
+
+key .
+expect nothing-moved
+snap depth 3
+
+key down
+key i
+expect outside_callers true
+expect nothing-moved
+expect check spheres-apart pass
+snap outside callers of the cursor
+
+key i
+doubleclick-module store
+expect expanded store
+expect drawn Store::seeded
+expect drawn Store::email_taken
+expect named Store::seeded
+expect check labels-clear pass
+expect check arrow-sizes pass
+snap store expanded

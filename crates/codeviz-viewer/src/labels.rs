@@ -1,11 +1,14 @@
 //! Names on the graph: who is named and in what order, what each name says and how
 //! it looks, and where it goes. Every function and module is named where its name
 //! fits, placed afresh each frame, greedily, in one fixed order of importance: the
-//! start, the cursor, the selection, the modules, the journey's numbered calls in
-//! number order, the callers, whatever else is lit, then the rest. A name lower in
-//! that order never displaces a higher one, and the same view always shows the same
-//! names in the same places, whatever came before. What the pointer is on is named
-//! over the rest, taking no room, so pointing never moves or hides another name.
+//! start, the cursor, the selection, the modules, the journey's numbered calls level
+//! by level in number order, the callers, whatever else is lit, then the rest. A name
+//! lower in that order never displaces a higher one, and the same view always shows
+//! the same names in the same places, whatever came before. In a journey a module
+//! round the nucleus keeps the room for its name at every depth, shown or not, and
+//! what I brings in comes after everything else lit, so neither a depth nor I moves a
+//! name. What the pointer is on is named over the rest, taking no room, so pointing
+//! never moves or hides another name.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -42,7 +45,8 @@ const CLEAR: f32 = 1.0;
 const CHAR_WIDTH: f32 = 0.5;
 
 /// A function's name as the graph and the journey panel both show it: an entry
-/// point's route; a method's with its type's (`Explorer.spotlit`); any other
+/// point's route; a method's with its type's (`Track.root`), unless the type is
+/// named as its module is (`spotlit` of `Explorer` in `explorer`); any other
 /// function's alone, as its module's sphere names the module.
 pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
     let Some(unit) = explorer.tile_unit(tile) else {
@@ -55,8 +59,17 @@ pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
     let Some(own) = system.unit(unit) else {
         return unit.to_string();
     };
+    let module = explorer
+        .graph()
+        .cluster(tile)
+        .and_then(|c| explorer.graph().cluster_unit(c))
+        .and_then(|id| system.unit(id))
+        .map(|m| m.name.replace('_', ""));
     match own.parent.as_ref().and_then(|p| system.unit(p)) {
-        Some(parent) if !matches!(parent.kind.as_str(), "module" | "crate") => {
+        Some(parent)
+            if !matches!(parent.kind.as_str(), "module" | "crate")
+                && module.is_none_or(|m| !m.eq_ignore_ascii_case(&parent.name)) =>
+        {
             format!("{}.{}", parent.name, own.name)
         }
         _ => own.name.clone(),
@@ -243,7 +256,7 @@ impl Placer {
         reach: f32,
         size: egui::Vec2,
         lit: bool,
-    ) -> Option<egui::Rect> {
+    ) -> Option<(usize, egui::Rect)> {
         let keeps: &[Keep] = if lit {
             &[Keep::EveryDot, Keep::LitDots]
         } else {
@@ -251,24 +264,30 @@ impl Placer {
         };
         keeps.iter().find_map(|&keep| {
             (0..SPOTS.len())
-                .map(|i| spot(i, node, reach, size))
-                .find(|&pill| self.fits(pill, own, keep))
+                .map(|i| (i, spot(i, node, reach, size)))
+                .find(|&(_, pill)| self.fits(pill, own, keep))
         })
     }
 
     /// Where a name that must show goes when no spot fits: on the graph, over the
     /// fewest lit dots, then the fewest names.
-    fn least_over(&self, own: usize, node: egui::Pos2, reach: f32, size: egui::Vec2) -> egui::Rect {
+    fn least_over(
+        &self,
+        own: usize,
+        node: egui::Pos2,
+        reach: f32,
+        size: egui::Vec2,
+    ) -> (usize, egui::Rect) {
         (0..SPOTS.len())
-            .map(|i| spot(i, node, reach, size))
-            .min_by_key(|&pill| {
+            .map(|i| (i, spot(i, node, reach, size)))
+            .min_by_key(|&(_, pill)| {
                 (
                     !self.bounds.contains_rect(pill),
                     self.over_dots(pill, own, Keep::LitDots),
                     self.over_names(pill),
                 )
             })
-            .unwrap_or_else(|| spot(0, node, reach, size))
+            .unwrap_or_else(|| (0, spot(0, node, reach, size)))
     }
 
     /// Whether a module's name at `pill` fits: on the graph, over no name, over no
@@ -290,6 +309,8 @@ impl Placer {
 /// A name ready to paint: its pill, its text and border.
 struct Label {
     named: Named,
+    /// A function's name: which of [`SPOTS`] round its dot it took.
+    side: Option<usize>,
     pill: egui::Rect,
     galley: Arc<egui::Galley>,
     stroke: Option<egui::Color32>,
@@ -363,9 +384,14 @@ enum Tier {
     Cursor,
     Selection,
     Module,
+    /// The start's own calls, numbered.
     Numbered,
     Caller,
+    /// The journey's calls further down, numbered, level by level.
+    Deeper,
     Lit,
+    /// A module brought in from off the journey (I).
+    Beyond,
     Plain,
 }
 
@@ -458,8 +484,9 @@ impl<'a> Naming<'a> {
         naming
     }
 
-    /// Every dot on the graph as names keep off it: as big as it is drawn.
-    fn dots(&self) -> Vec<Disc> {
+    /// Every dot on the graph as names keep off it: as big as it is drawn, or for
+    /// the `neutral` view at least as big as a lit one.
+    fn dots(&self, neutral: bool) -> Vec<Disc> {
         let nucleus = self.nucleus;
         self.discs
             .iter()
@@ -470,10 +497,17 @@ impl<'a> Naming<'a> {
                 let world = self.explorer.tile_point(tile)?;
                 let edge = (self.to_screen)(world + self.up * nucleus.dot_radius(dot))
                     .map_or(2.0, |p| p.distance(at));
+                let lit_edge = (self.to_screen)(world + self.up * nucleus.dot_radius(Dot::Lit))
+                    .map_or(2.0, |p| p.distance(at));
+                let radius = if neutral {
+                    dot.clamp(edge).max(Dot::Lit.clamp(lit_edge))
+                } else {
+                    dot.clamp(edge)
+                };
                 Some(Disc {
                     tile,
                     at,
-                    radius: dot.clamp(edge),
+                    radius,
                     lit: dot != Dot::Speck,
                 })
             })
@@ -511,19 +545,28 @@ impl<'a> Naming<'a> {
             .collect()
     }
 
-    /// The tier a function's name is placed in, if it is named at all.
-    fn tier(&self, tile: usize) -> Tier {
+    /// The tier a function's name is placed in; in the `neutral` view, as though
+    /// browsing selected nothing and the journey's cursor and selection were on none.
+    fn tier(&self, tile: usize, neutral: bool) -> Tier {
         let nucleus = self.nucleus;
-        if self.start == Some(tile) || (self.start.is_none() && self.white == Some(tile)) {
+        if neutral && nucleus.browsing() {
+            Tier::Plain
+        } else if self.start == Some(tile) || (self.start.is_none() && self.white == Some(tile)) {
             Tier::Start
-        } else if self.cursor == Some(tile) {
+        } else if self.cursor == Some(tile) && !neutral {
             Tier::Cursor
-        } else if self.aside == Some(tile) {
+        } else if self.aside == Some(tile) && !neutral {
             Tier::Selection
         } else if nucleus.folded(tile) {
             Tier::Plain
         } else if self.disclosed.tiles().contains_key(&tile) {
-            Tier::Numbered
+            // Callers before the levels a depth brings in, so a new depth takes no
+            // name away.
+            if nucleus.level(tile).is_some_and(|l| l > 1) {
+                Tier::Deeper
+            } else {
+                Tier::Numbered
+            }
         } else if nucleus.level(tile) == Some(-1) {
             Tier::Caller
         } else if nucleus.level(tile).is_some() || nucleus.outside(tile) {
@@ -536,7 +579,7 @@ impl<'a> Naming<'a> {
     /// Everything that may be named, in the order names are placed: by tier; the
     /// journey's calls in number order; modules biggest first; plain functions those
     /// with most calls first; then by tile, so the order never hangs on anything else.
-    fn order(&self) -> Vec<((Tier, usize, usize), Named)> {
+    fn order(&self, neutral: bool) -> Vec<((Tier, usize, usize), Named)> {
         let rungs: HashMap<usize, usize> = self
             .ladder
             .iter()
@@ -548,19 +591,25 @@ impl<'a> Naming<'a> {
             if disc.is_none() {
                 continue;
             }
-            let tier = self.tier(tile);
+            let tier = self.tier(tile, neutral);
             let within = match tier {
-                Tier::Numbered => rungs.get(&tile).copied().unwrap_or(usize::MAX),
+                Tier::Numbered | Tier::Deeper => rungs.get(&tile).copied().unwrap_or(usize::MAX),
                 Tier::Plain => usize::MAX - self.explorer.graph().degree(tile),
                 _ => 0,
             };
             order.push(((tier, within, tile), Named::Node(tile)));
         }
-        for (cluster, ball) in self.nucleus.balls() {
-            if self.nucleus.shows_body(ball.body) {
-                let within = usize::MAX - self.nucleus.count(cluster);
-                order.push(((Tier::Module, within, cluster), Named::Group(cluster)));
-            }
+        let nucleus = self.nucleus;
+        for (cluster, ball) in nucleus.balls() {
+            let tier = match ball.body {
+                Body::Faint if !nucleus.browsing() => Tier::Beyond,
+                _ if nucleus.shows_body(ball.body) || nucleus.ring().contains(&cluster) => {
+                    Tier::Module
+                }
+                _ => continue,
+            };
+            let within = usize::MAX - nucleus.count(cluster);
+            order.push(((tier, within, cluster), Named::Group(cluster)));
         }
         order.sort_by_key(|&(rank, _)| rank);
         order
@@ -703,6 +752,7 @@ impl<'a> Naming<'a> {
             .module_fits(cluster, &self.own_dots(cluster), pill)
             .then_some(Label {
                 named: Named::Group(cluster),
+                side: None,
                 pill,
                 galley,
                 stroke: None,
@@ -711,16 +761,43 @@ impl<'a> Naming<'a> {
     }
 
     /// A function's name beside its dot, of `tier`, where it fits; one that must show
-    /// wherever it covers least.
+    /// wherever it covers least. With the `sides` names took in the neutral view, a
+    /// name goes on its side there, so a click or a step that lights or unlights
+    /// others never moves it: where that is taken, a plain name goes unnamed and a lit
+    /// one takes the first side free.
     fn function_name(
         &self,
         painter: &egui::Painter,
         placer: &Placer,
-        tile: usize,
-        tier: Tier,
+        (tile, tier): (usize, Tier),
+        sides: Option<&HashMap<usize, usize>>,
     ) -> Option<Label> {
         let (node, reach) = self.discs[tile]?;
         let (job, stroke, number) = self.function_label(tile, tier);
+        let lit = tier != Tier::Plain;
+        if let Some(sides) = sides {
+            let held = sides.get(&tile).and_then(|&side| {
+                let keep = if lit { Keep::LitDots } else { Keep::EveryDot };
+                let (galley, size) = pill_of(painter, job.clone());
+                let pill = spot(side, node, reach, size);
+                placer
+                    .fits(pill, tile, keep)
+                    .then_some((side, pill, galley))
+            });
+            if let Some((side, pill, galley)) = held {
+                return Some(Label {
+                    named: Named::Node(tile),
+                    side: Some(side),
+                    pill,
+                    galley,
+                    stroke,
+                    number,
+                });
+            }
+            if !lit {
+                return None;
+            }
+        }
         if tier == Tier::Plain {
             // Most plain names have no room: see whether one could, before laying it
             // out.
@@ -732,13 +809,14 @@ impl<'a> Naming<'a> {
             placer.find(tile, node, reach, guess, false)?;
         }
         let (galley, size) = pill_of(painter, job);
-        let pill = match placer.find(tile, node, reach, size, tier != Tier::Plain) {
-            Some(pill) => pill,
+        let (taken, pill) = match placer.find(tile, node, reach, size, lit) {
+            Some(found) => found,
             None if tier.always() => placer.least_over(tile, node, reach, size),
             None => return None,
         };
         Some(Label {
             named: Named::Node(tile),
+            side: Some(taken),
             pill,
             galley,
             stroke,
@@ -755,13 +833,14 @@ impl<'a> Naming<'a> {
         if let Some(tile) = self.hovered.filter(|&t| !named(Named::Node(t)))
             && let Some((node, reach)) = self.discs[tile]
         {
-            let (job, stroke, number) = self.function_label(tile, self.tier(tile));
+            let (job, stroke, number) = self.function_label(tile, self.tier(tile, false));
             let (galley, size) = pill_of(painter, job);
-            let pill = placer
+            let (taken, pill) = placer
                 .find(tile, node, reach, size, true)
                 .unwrap_or_else(|| placer.least_over(tile, node, reach, size));
             over.push(Label {
                 named: Named::Node(tile),
+                side: Some(taken),
                 pill,
                 galley,
                 stroke,
@@ -783,6 +862,7 @@ impl<'a> Naming<'a> {
             let (galley, size) = pill_of(painter, self.module_label(cluster));
             over.push(Label {
                 named: Named::Group(cluster),
+                side: None,
                 pill: above(middle, edge, size),
                 galley,
                 stroke: None,
@@ -823,25 +903,17 @@ pub(crate) fn draw_graph_labels(
 ) {
     let naming = Naming::new(explorer, to_screen, up);
     let nucleus = naming.nucleus;
-    let mut placer = Placer::new(painter.clip_rect(), naming.dots(), naming.spheres());
-    // Names keep off the search box, as last laid out.
-    if let Some(search) = painter
-        .ctx()
-        .memory(|m| m.area_rect(egui::Id::new("search")))
-    {
-        placer.take(search);
-    }
-    let mut labels: Vec<Label> = Vec::new();
-    for ((tier, ..), named) in naming.order() {
-        let label = match named {
-            Named::Group(cluster) => naming.module_name(painter, &placer, cluster),
-            Named::Node(tile) => naming.function_name(painter, &placer, tile, tier),
-        };
-        if let Some(label) = label {
-            placer.take(label.pill);
-            labels.push(label);
-        }
-    }
+    // First as though nothing were selected and the cursor on no call, for the side
+    // each name takes, then as the view is.
+    let (neutral, _) = place(&naming, painter, None);
+    let sides: HashMap<usize, usize> = neutral
+        .iter()
+        .filter_map(|l| match (l.named, l.side) {
+            (Named::Node(tile), Some(side)) => Some((tile, side)),
+            _ => None,
+        })
+        .collect();
+    let (mut labels, placer) = place(&naming, painter, Some(&sides));
     let over = naming.pointed(painter, &placer, &labels);
     // Every function lit and on screen is named, or counted here as not.
     let lit: Vec<usize> = (0..naming.discs.len())
@@ -895,6 +967,46 @@ fn paint(painter: &egui::Painter, labels: &[Label]) {
         .data_mut(|d| d.insert_temp(label_hits_id(), hits));
 }
 
+/// Every name in [`Naming::order`] where it fits, as the view is, or with no `sides`
+/// held, in the neutral view; and what they took.
+fn place(
+    naming: &Naming,
+    painter: &egui::Painter,
+    sides: Option<&HashMap<usize, usize>>,
+) -> (Vec<Label>, Placer) {
+    let nucleus = naming.nucleus;
+    let neutral = sides.is_none();
+    let mut placer = Placer::new(painter.clip_rect(), naming.dots(neutral), naming.spheres());
+    // Names keep off the search box, as last laid out.
+    if let Some(search) = painter
+        .ctx()
+        .memory(|m| m.area_rect(egui::Id::new("search")))
+    {
+        placer.take(search);
+    }
+    let mut labels: Vec<Label> = Vec::new();
+    for ((tier, ..), named) in naming.order(neutral) {
+        let label = match named {
+            Named::Group(cluster) => naming.module_name(painter, &placer, cluster),
+            Named::Node(tile) => naming.function_name(painter, &placer, (tile, tier), sides),
+        };
+        if let Some(label) = label {
+            placer.take(label.pill);
+            // A module on the ring not shown at this depth keeps its name's room.
+            let shown = match named {
+                Named::Group(cluster) => nucleus
+                    .ball(cluster)
+                    .is_some_and(|b| nucleus.shows_body(b.body)),
+                Named::Node(_) => true,
+            };
+            if shown {
+                labels.push(label);
+            }
+        }
+    }
+    (labels, placer)
+}
+
 /// How many of the functions lit had no room for their names, at the graph's foot
 /// above the hint at the keys.
 fn unnamed_note(painter: &egui::Painter, unnamed: usize, lit: usize) {
@@ -934,9 +1046,10 @@ mod tests {
     #[test]
     fn a_name_goes_right_of_its_dot_when_that_is_free() {
         let placer = Placer::new(bounds(), vec![disc(0, 100.0, 100.0, true)], Vec::new());
-        let pill = placer
+        let (side, pill) = placer
             .find(0, egui::pos2(100.0, 100.0), 12.0, SIZE, true)
             .expect("room");
+        assert_eq!(side, 0);
         assert!(pill.min.x > 100.0 && (pill.center().y - 100.0).abs() < 0.5);
     }
 
@@ -949,13 +1062,13 @@ mod tests {
         );
         let right = spot(0, egui::pos2(100.0, 100.0), 12.0, SIZE);
         assert!(!placer.fits(right, 0, Keep::LitDots), "over the other dot");
-        let pill = placer
+        let (side, pill) = placer
             .find(0, egui::pos2(100.0, 100.0), 12.0, SIZE, true)
             .expect("room on the left");
         assert!(pill.max.x < 100.0);
         placer.take(pill);
         let again = placer.find(0, egui::pos2(100.0, 100.0), 12.0, SIZE, true);
-        assert_ne!(again, Some(pill), "its place is taken now");
+        assert_ne!(again, Some((side, pill)), "its place is taken now");
     }
 
     #[test]
@@ -1013,7 +1126,8 @@ mod tests {
     fn names_are_placed_in_one_order_of_importance() {
         assert!(Tier::Start < Tier::Cursor && Tier::Cursor < Tier::Selection);
         assert!(Tier::Selection < Tier::Module && Tier::Module < Tier::Numbered);
-        assert!(Tier::Numbered < Tier::Caller && Tier::Caller < Tier::Lit);
+        assert!(Tier::Numbered < Tier::Caller && Tier::Caller < Tier::Deeper);
+        assert!(Tier::Deeper < Tier::Lit);
         assert!(Tier::Lit < Tier::Plain);
         assert!(Tier::Selection.always() && !Tier::Numbered.always());
     }

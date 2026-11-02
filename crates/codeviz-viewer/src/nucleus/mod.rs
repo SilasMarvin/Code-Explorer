@@ -620,6 +620,12 @@ impl Nucleus {
         self.now.columns.get(cluster).map_or(0, Vec::len)
     }
 
+    /// In a journey, the modules round the nucleus at any depth, clockwise from the
+    /// top.
+    pub(crate) fn ring(&self) -> &[usize] {
+        &self.now.ring
+    }
+
     pub(crate) fn tubes(&self) -> &[Tube] {
         &self.now.tubes
     }

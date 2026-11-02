@@ -195,7 +195,7 @@ fn lay_members(
 /// disc its functions spread over.
 const UNIT_DISC: f32 = 0.88;
 /// How much further apart two places along a row are than two rows.
-const ROW_WIDE: f32 = 2.6;
+const ROW_WIDE: f32 = 4.0;
 
 impl Nucleus {
     /// Opens `cluster`, the module expanded, in `now`: every one of its functions
