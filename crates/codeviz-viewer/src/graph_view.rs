@@ -11,24 +11,11 @@ use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
     camera::OrbitCamera,
+    colors::{CURSOR, MODULE_SHADES, module_color, module_shade},
     explorer::Explorer,
     nucleus,
-    scene::{PALETTE, Tile, lane_color},
+    scene::Tile,
 };
-
-/// Calls into the focus.
-pub(crate) const CALLER: Color = Color::srgb(0.74, 0.52, 1.0);
-/// Calls out of the focus.
-pub(crate) const CALLEE: Color = Color::srgb(0.3, 0.72, 1.0);
-/// Calls of the journey past the focus's own: one color for every level below the
-/// first, so blue only ever means the focus's own calls.
-pub(crate) const DEEPER: Color = Color::srgb(1.0, 0.7, 0.22);
-/// The journey's cursor, where it is not the focus: its node, its name and the call
-/// into it. White stays the focus's.
-pub(crate) const CURSOR: Color = Color::srgb(1.0, 0.36, 0.72);
-/// Calls further up from the focus, which do not touch it: an arrow, but no color, so
-/// violet only ever means into the focus.
-pub(crate) const FURTHER: Color = Color::srgb(0.82, 0.85, 0.92);
 
 /// Calls away from the focus that still get their own shade; further is drawn as this.
 const FARTHEST_SHADE: u32 = 3;
@@ -110,16 +97,16 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
                 linear.blue * shade,
             ))
         };
-        for color in 0..PALETTE.len() {
+        for color in 0..MODULE_SHADES {
             table.insert(
                 NodeLook::Near(color, hops),
                 // Enough glow to stand out, little enough that the hue holds.
-                glow(darken(lane_color(color)), strength * 0.3),
+                glow(darken(module_color(color)), strength * 0.3),
             );
         }
     }
-    for color in 0..PALETTE.len() {
-        let base = lane_color(color);
+    for color in 0..MODULE_SHADES {
+        let base = module_color(color);
         table.insert(NodeLook::Plain(color), glow(base, 0.6));
         table.insert(
             NodeLook::Faded(color),
@@ -170,7 +157,7 @@ pub(crate) fn hidden_speck(explorer: &Explorer, tile: usize) -> bool {
 }
 
 pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
-    let color = explorer.tile_color(tile) % PALETTE.len();
+    let color = module_shade(explorer.graph().cluster(tile).unwrap_or_default());
     // The journey's cursor is the one pink node, wherever it is.
     if explorer.cursor_mark() == Some(tile) {
         return NodeLook::Cursor;
@@ -214,7 +201,7 @@ pub(crate) fn node_color(explorer: &Explorer, tile: usize) -> Color {
     if explorer.lit_focus() == Some(tile) {
         return Color::WHITE;
     }
-    lane_color(explorer.tile_color(tile) % PALETTE.len())
+    module_color(explorer.graph().cluster(tile).unwrap_or_default())
 }
 
 /// Keeps what reaches the focus current.

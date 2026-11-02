@@ -29,11 +29,11 @@ use codeviz_layout::ForceGraph;
 
 use crate::{
     camera::{Bounds, OrbitCamera},
+    colors::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, MODULE_SHADES, module_color, module_shade},
     disclosure::Disclose,
     explorer::Explorer,
-    graph_view::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, fit_distance, hidden_speck, node_size},
+    graph_view::{fit_distance, hidden_speck, node_size},
     idle::Awake,
-    scene::{PALETTE, lane_color},
 };
 
 /// How a module shows.
@@ -2885,7 +2885,7 @@ pub(crate) struct Looks {
     sphere: Handle<Mesh>,
     shaft: Handle<Mesh>,
     head: Handle<Mesh>,
-    /// By color in [`PALETTE`]: glass for the nucleus, for an open module, and a
+    /// By module color: glass for the nucleus, for an open module, and a
     /// solid for a closed one.
     nucleus: Vec<Handle<StandardMaterial>>,
     open: Vec<Handle<StandardMaterial>>,
@@ -2978,7 +2978,7 @@ pub(crate) fn create_looks(
         alpha_mode: AlphaMode::Blend,
         ..default()
     };
-    let colors: Vec<Color> = (0..PALETTE.len()).map(lane_color).collect();
+    let colors: Vec<Color> = (0..MODULE_SHADES).map(module_color).collect();
     let flows: Vec<Flow> = [Flow::Into, Flow::Outside, Flow::Module]
         .into_iter()
         .chain((1..=SHADES).map(Flow::Journey))
@@ -3075,7 +3075,7 @@ pub(crate) fn place_bodies(
             commands.spawn((
                 ModuleSphere(cluster),
                 Mesh3d(looks.sphere.clone()),
-                MeshMaterial3d(looks.closed[cluster % PALETTE.len()].clone()),
+                MeshMaterial3d(looks.closed[module_shade(cluster)].clone()),
                 Transform::default(),
                 Visibility::Hidden,
                 Pickable::IGNORE,
@@ -3218,7 +3218,7 @@ fn dress(
     depth: f32,
     material: &mut MeshMaterial3d<StandardMaterial>,
 ) {
-    let color = cluster % PALETTE.len();
+    let color = module_shade(cluster);
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -3305,7 +3305,7 @@ fn draw_rims(nucleus: &Nucleus, camera: &Transform, gizmos: &mut Gizmos) {
             .as_ref()
             .and_then(|d| d.get(cluster))
             .map_or(1.0, |depth| 1.0 - 0.8 * depth);
-        let color = lane_color(cluster % PALETTE.len());
+        let color = module_color(cluster);
         // One rim, so the glass's edge reads as one outline.
         let alpha = match ball.body {
             Body::Nucleus => 0.85,

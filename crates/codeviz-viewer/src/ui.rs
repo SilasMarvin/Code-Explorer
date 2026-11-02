@@ -12,11 +12,14 @@ use codeviz_ir::{Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
+    colors::{
+        CALLEE, CALLEE_TEXT, CALLER, CALLER_TEXT, CURSOR, CURSOR_TEXT, DEEPER, DEEPER_TEXT, MUTED,
+        ON_FILL, egui_color, module_color,
+    },
     explorer::Explorer,
-    graph_view::{self, CALLEE, CALLER, CURSOR, DEEPER},
+    graph_view,
     journey_panel::{self, JourneyPanel},
     nucleus::{self, Body, Flow},
-    scene::{PALETTE, lane_color},
 };
 
 pub(crate) struct UiPlugin;
@@ -95,8 +98,6 @@ pub(crate) struct KeyHelp(pub(crate) bool);
 struct Search {
     query: String,
 }
-
-pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 
 /// Whether the search box is open.
 #[derive(Resource, Default)]
@@ -498,12 +499,6 @@ pub(crate) fn journey_title(explorer: &Explorer) -> String {
         .map_or_else(|| explorer.unit_name(root), |e| e.label.clone())
 }
 
-const CALLER_TEXT: egui::Color32 = egui::Color32::from_rgb(206, 170, 255);
-const CALLEE_TEXT: egui::Color32 = egui::Color32::from_rgb(130, 196, 255);
-const DEEPER_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 204, 128);
-const CURSOR_TEXT: egui::Color32 = egui::Color32::from_rgb(255, 160, 210);
-/// Text on a bar or a badge filled with a node's color.
-const ON_FILL: egui::Color32 = egui::Color32::from_rgb(14, 16, 22);
 const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
 /// The dotted thread from a name to its node: grey, as no call is drawn.
 const THREAD: egui::Color32 = egui::Color32::from_rgba_premultiplied(120, 124, 134, 190);
@@ -1640,12 +1635,11 @@ fn draw_graph_labels(
                     continue;
                 };
                 let body = nucleus.ball(group).map(|b| b.body);
-                let color =
-                    egui_color(lane_color(group % PALETTE.len())).gamma_multiply(match body {
-                        Some(Body::Nucleus | Body::Open) | None => 1.0,
-                        Some(Body::Faint) => 0.5,
-                        Some(Body::Closed) => 0.35,
-                    });
+                let color = egui_color(module_color(group)).gamma_multiply(match body {
+                    Some(Body::Nucleus | Body::Open) | None => 1.0,
+                    Some(Body::Faint) => 0.5,
+                    Some(Body::Closed) => 0.35,
+                });
                 let label = explorer.cluster_name(group);
                 // An open module says how much of it is named, and how many callers
                 // from outside the journey it holds beyond those drawn. Browsing, only
@@ -2338,7 +2332,7 @@ fn more_below(ui: &egui::Ui, scroll: &egui::scroll_area::ScrollAreaOutput<()>) {
     let galley = ui.painter().layout_no_wrap(
         "▼ more below: scroll".to_owned(),
         egui::FontId::proportional(12.0),
-        CURSOR_TEXT,
+        egui::Color32::WHITE,
     );
     let at = egui::pos2(
         foot.center().x - galley.size().x / 2.0,
@@ -2346,7 +2340,7 @@ fn more_below(ui: &egui::Ui, scroll: &egui::scroll_area::ScrollAreaOutput<()>) {
     );
     let pill = egui::Rect::from_min_size(at, galley.size()).expand2(PILL_PAD);
     ui.painter().rect_filled(pill, 4.0, PILL);
-    ui.painter().galley(at, galley, CURSOR_TEXT);
+    ui.painter().galley(at, galley, egui::Color32::WHITE);
 }
 
 /// One group of keys, each key in a fixed column and what it does wrapping beside it.
@@ -2378,11 +2372,6 @@ pub(crate) fn short(text: &str, max: usize) -> String {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_owned(),
     }
-}
-
-pub(crate) fn egui_color(color: Color) -> egui::Color32 {
-    let [r, g, b, a] = color.to_srgba().to_u8_array();
-    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
 #[cfg(test)]

@@ -9,10 +9,11 @@ use codeviz_core::SpanId;
 use codeviz_ir::ExitKind;
 
 use crate::{
+    colors::{ERROR, MUTED, OK, ON_FILL, egui_color},
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
     graph_view::node_color,
-    ui::{egui_color, journey_title, short},
+    ui::{journey_title, short},
 };
 
 /// How the panel is zoomed and scrolled.
@@ -44,9 +45,6 @@ const BAR_TEXT_SMALL: f32 = 11.0;
 const DOCKED_ROWS: usize = 5;
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgba_premultiplied(11, 13, 19, 238);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
-const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
-const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 
 /// The rows of bars the journey shows: a row a level, the start's included.
 pub(crate) fn rows(explorer: &Explorer) -> usize {
@@ -363,7 +361,7 @@ fn canvas(
         let (fill, text) = if faint {
             (base.gamma_multiply(0.22), MUTED)
         } else {
-            (base, egui::Color32::from_rgb(14, 16, 22))
+            (base, ON_FILL)
         };
         painter.rect_filled(bar.rect, 3.0, fill);
 

@@ -62,26 +62,6 @@ impl Plugin for ScenePlugin {
 #[derive(Component, Debug)]
 pub(crate) struct Tile(pub(crate) usize);
 
-/// Module colors: a node's fill, its module's ring and its journey bar, distinct
-/// enough that a bar finds its node by color. None is near the violet and blue that
-/// links use to say which way a call runs, nor the orange and red that mark the
-/// journey and removals, so a module's color never reads as one of those.
-pub(crate) const PALETTE: [(f32, f32, f32); 8] = [
-    (0.36, 0.80, 0.72),
-    (0.93, 0.56, 0.72),
-    (0.76, 0.80, 0.36),
-    (0.66, 0.78, 0.60),
-    (0.70, 0.70, 0.60),
-    (0.90, 0.84, 0.50),
-    (0.48, 0.82, 0.48),
-    (0.96, 0.74, 0.86),
-];
-
-pub(crate) fn lane_color(lane: usize) -> Color {
-    let (r, g, b) = PALETTE[lane % PALETTE.len()];
-    Color::srgb(r, g, b)
-}
-
 /// A sphere per function, sized by how connected it is.
 fn spawn_nodes(
     mut commands: Commands,

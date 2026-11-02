@@ -989,11 +989,6 @@ impl Explorer {
         true
     }
 
-    /// The color index for a node: its module's, so each module reads as one region.
-    pub(crate) fn tile_color(&self, tile: usize) -> usize {
-        self.graph.cluster(tile).unwrap_or_default()
-    }
-
     /// A module cluster's name: the module's own, else its container's.
     /// A module's name, with as much of its path as tells it from another module's of
     /// the same name.

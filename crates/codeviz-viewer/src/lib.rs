@@ -12,6 +12,7 @@
 
 mod camera;
 mod checks;
+mod colors;
 mod disclosure;
 mod drive;
 mod explorer;
