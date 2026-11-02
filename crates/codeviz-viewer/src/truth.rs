@@ -482,7 +482,12 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
 
 /// A function's numbers in the open journey.
 fn numbers(explorer: &Explorer, tile: usize) -> Vec<String> {
-    explorer.nucleus().numbers(tile).to_vec()
+    explorer
+        .disclosure()
+        .tiles()
+        .get(&tile)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// What an arrow's color says.

@@ -32,7 +32,6 @@ use crate::{
     disclosure::number_order,
     explorer::Explorer,
     graph_view::{Dot, drawn_radius},
-    idle::Awake,
 };
 
 /// How a module shows.
@@ -115,12 +114,11 @@ pub(crate) struct Call {
     pub(crate) level: u32,
 }
 
-/// The open journey from its start down to the disclosed depth: each call once, in
-/// the journey's order, and each function's numbers in it, as the panel numbers them.
+/// The open journey from its start down to the disclosed depth, each call once, in
+/// the journey's order.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Trail {
     pub(crate) calls: Vec<Call>,
-    pub(crate) numbers: HashMap<usize, Vec<String>>,
     /// Every function below the start at any depth, with the fewest calls it is
     /// from it: what the expanded nucleus is laid out for, so a new depth moves
     /// nothing.
@@ -131,17 +129,11 @@ pub(crate) struct Trail {
 }
 
 impl Trail {
-    /// Adds a call the journey makes, numbered `number`; one already there keeps its
-    /// shallowest level.
-    pub(crate) fn add(&mut self, from: usize, to: usize, level: u32, number: &str) {
+    /// Adds a call the journey makes; one already there keeps its shallowest level.
+    pub(crate) fn add(&mut self, from: usize, to: usize, level: u32) {
         match self.calls.iter_mut().find(|c| c.from == from && c.to == to) {
             Some(call) => call.level = call.level.min(level),
             None => self.calls.push(Call { from, to, level }),
-        }
-        let numbers = self.numbers.entry(to).or_default();
-        if !numbers.iter().any(|n| n == number) {
-            numbers.push(number.to_owned());
-            numbers.sort_by_key(|n| number_order(n));
         }
     }
 }
@@ -495,11 +487,11 @@ impl Nucleus {
 
     /// Names the open journey from the start instead, easing there. Returns whether
     /// that changed anything.
-    pub(crate) fn retrace(&mut self, graph: &ForceGraph, trail: Trail) -> bool {
-        if trail == self.trail {
+    pub(crate) fn retrace(&mut self, graph: &ForceGraph, trail: &Trail) -> bool {
+        if *trail == self.trail {
             return false;
         }
-        self.trail = trail;
+        self.trail = trail.clone();
         self.recenter(graph, self.now.start);
         true
     }
@@ -697,11 +689,6 @@ impl Nucleus {
     /// shallowest level in the journey.
     pub(crate) fn level(&self, tile: usize) -> Option<i32> {
         self.now.named.get(&tile).copied()
-    }
-
-    /// A function's numbers in the open journey from the start, in order.
-    pub(crate) fn numbers(&self, tile: usize) -> &[String] {
-        self.trail.numbers.get(&tile).map_or(&[], Vec::as_slice)
     }
 
     /// How big a function of `dot`'s role is drawn in the world, before the bounds
@@ -2403,16 +2390,11 @@ fn interior(graph: &ForceGraph, members: &[usize], radius: f32) -> Vec<(usize, V
         .collect()
 }
 
-/// Re-centers on the start's module when the start moves, and eases the spheres
-/// there.
-pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake: ResMut<Awake>) {
-    if explorer
+/// Eases the spheres and the functions to where the nucleus now has them.
+pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>) {
+    explorer
         .bypass_change_detection()
-        .ease_nucleus(frame_time(&time))
-    {
-        explorer.set_changed();
-        awake.0 = true;
-    }
+        .ease_nucleus(frame_time(&time));
 }
 
 /// A module's sphere in the scene.
@@ -2959,12 +2941,11 @@ mod tests {
         }
     }
 
-    /// What the graph says `from` calls, `depth` calls down, numbered as a journey
-    /// would number it.
+    /// What the graph says `from` calls, `depth` calls down, as a journey would run it.
     fn trail(graph: &ForceGraph, from: usize, depth: u32) -> Trail {
         let mut trail = Trail::default();
-        let mut stack = vec![(from, 0, String::new())];
-        while let Some((tile, level, number)) = stack.pop() {
+        let mut stack = vec![(from, 0)];
+        while let Some((tile, level)) = stack.pop() {
             if level == depth {
                 continue;
             }
@@ -2974,14 +2955,9 @@ mod tests {
                     callees.push(callee);
                 }
             }
-            for (index, callee) in callees.into_iter().enumerate() {
-                let number = if number.is_empty() {
-                    format!("{}", index + 1)
-                } else {
-                    format!("{number}.{}", index + 1)
-                };
-                trail.add(tile, callee, level + 1, &number);
-                stack.push((callee, level + 1, number));
+            for callee in callees {
+                trail.add(tile, callee, level + 1);
+                stack.push((callee, level + 1));
             }
         }
         // Everything below in the order a journey runs it, first calls first.
@@ -3517,8 +3493,11 @@ mod tests {
             Some(Body::Closed)
         );
 
-        assert!(nucleus.retrace(&graph, trail(&graph, run, 2)));
-        assert!(!nucleus.retrace(&graph, trail(&graph, run, 2)), "no change");
+        assert!(nucleus.retrace(&graph, &trail(&graph, run, 2)));
+        assert!(
+            !nucleus.retrace(&graph, &trail(&graph, run, 2)),
+            "no change"
+        );
         while nucleus.advance(0.1) {}
         assert!(
             nucleus.level(disk).is_some() && nucleus.level(idle).is_some(),
@@ -3549,7 +3528,7 @@ mod tests {
             "on the ring round the wall"
         );
 
-        assert!(nucleus.retrace(&graph, trail(&graph, run, 1)));
+        assert!(nucleus.retrace(&graph, &trail(&graph, run, 1)));
         assert!(nucleus.level(disk).is_none(), "a smaller depth lets it go");
         assert_eq!(
             nucleus.ball(disk_module).map(|b| b.body),
@@ -3577,7 +3556,7 @@ mod tests {
         let before = at(&nucleus);
         let settle = |nucleus: &mut Nucleus| while nucleus.advance(0.1) {};
 
-        assert!(nucleus.retrace(&graph, trail(&graph, run, 2)));
+        assert!(nucleus.retrace(&graph, &trail(&graph, run, 2)));
         settle(&mut nucleus);
         assert_eq!(at(&nucleus), before, "a new depth");
         nucleus.hover(Some(tile(&map, "core::idle")));
@@ -3607,13 +3586,13 @@ mod tests {
         let (before, shown) = (places(&nucleus), nucleus.placed(tile(&map, "db::put")));
         assert!(shown);
 
-        assert!(nucleus.retrace(&graph, trail(&graph, run, 2)));
+        assert!(nucleus.retrace(&graph, &trail(&graph, run, 2)));
         while nucleus.advance(0.1) {}
         assert!(drawn(&nucleus, disk), "a level more brings disk in");
         assert!(nucleus.placed(tile(&map, "disk::write")));
         assert_eq!(places(&nucleus), before, "where it was kept for it");
 
-        assert!(nucleus.retrace(&graph, trail(&graph, run, 1)));
+        assert!(nucleus.retrace(&graph, &trail(&graph, run, 1)));
         while nucleus.advance(0.1) {}
         assert!(!drawn(&nucleus, disk), "and a level less takes it out");
         assert_eq!(places(&nucleus), before, "moving nothing");
@@ -3662,16 +3641,21 @@ mod tests {
     #[test]
     fn a_function_run_twice_shows_once_with_both_numbers() {
         let mut trail = Trail::default();
-        trail.add(0, 1, 1, "1");
-        trail.add(0, 2, 1, "2");
-        trail.add(2, 1, 2, "2.1");
-        trail.add(1, 3, 2, "1.10");
-        trail.add(1, 3, 2, "1.9");
-        assert_eq!(trail.calls.len(), 4);
-        assert_eq!(trail.numbers[&1], ["1", "2.1"]);
-        assert_eq!(trail.numbers[&3], ["1.9", "1.10"], "in the journey's order");
-        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("1 +1"));
-        assert_eq!(badge(&trail.numbers[&2], None).as_deref(), Some("2"));
+        trail.add(0, 1, 1);
+        trail.add(0, 2, 1);
+        trail.add(2, 1, 2);
+        trail.add(1, 3, 3);
+        trail.add(1, 3, 2);
+        assert_eq!(trail.calls.len(), 4, "each call once");
+        assert_eq!(trail.calls[3].level, 2, "at its shallowest");
+        let numbers: Vec<String> = ["2.1", "1"].map(str::to_owned).to_vec();
+        assert_eq!(badge(&numbers, None).as_deref(), Some("1 +1"));
+        let numbers: Vec<String> = ["1.10", "1.9"].map(str::to_owned).to_vec();
+        assert_eq!(
+            badge(&numbers, None).as_deref(),
+            Some("1.9 +1"),
+            "in the journey's order"
+        );
         assert_eq!(badge(&[], None), None);
         let both = ["1.1".to_owned(), "2".to_owned(), "2".to_owned()];
         assert_eq!(
@@ -3683,14 +3667,15 @@ mod tests {
 
     #[test]
     fn a_badge_keeps_the_call_nearest_the_root_wherever_the_cursor_is() {
-        let mut trail = Trail::default();
-        trail.add(0, 1, 2, "1.1");
-        trail.add(0, 1, 1, "2");
-        assert_eq!(trail.numbers[&1], ["2", "1.1"], "the shallower first");
-        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("2 +1"));
+        let mut numbers: Vec<String> = ["1.1", "2"].map(str::to_owned).to_vec();
+        assert_eq!(
+            badge(&numbers, None).as_deref(),
+            Some("2 +1"),
+            "the shallower first"
+        );
         // A level deeper adds a run further down, and the number stays.
-        trail.add(1, 1, 3, "1.1.4");
-        assert_eq!(badge(&trail.numbers[&1], None).as_deref(), Some("2 +2"));
+        numbers.push("1.1.4".to_owned());
+        assert_eq!(badge(&numbers, None).as_deref(), Some("2 +2"));
     }
 
     #[test]
