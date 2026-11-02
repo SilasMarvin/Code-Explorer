@@ -214,7 +214,7 @@ constant at the top of that file.
 | `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius | always |
 | `spheres-apart` | no two spheres intersect, in the world | two spheres or more |
 | `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion (the expanded one aside) | always |
-| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other lit dot is nearer it (by over 1 point); every module's name within 40 points of its sphere's rim | always |
+| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other lit dot is nearer it (by over 2 points); every module's name within 40 points of its sphere's rim | always |
 | `labels-clear` | no name overlaps another, and a function's name covers no other lit dot | always |
 | `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel, search) | unless the key help is open |
 | `text-sizes` | function names are 11 to 18 points; at most 4 font sizes show at once | always |
@@ -224,11 +224,11 @@ constant at the top of that file.
 | `zoom-to-pointer` | the sphere nearest the pointer (else any sphere, else any dot, drawn in both snaps) moved as a zoom about the pointer moves it (within 4 points plus 5% of its distance) | one wheel turn, nothing else that moves, since the snap before |
 | `zoom-bounds` | some of the map is on screen, and zoomed out it still spans 40% of the free area | after a wheel turn |
 | `nothing-moved` | no dot, sphere or name moved, nor the camera, since the snap before (names matched by function, not by what they say), and no name went while its dot or sphere still shows (unless a click selected another function); after `,` `.` or a badge the camera may only draw back, and only when something that came in would have been off the free area from where it was; the world may not move | every step since is one that must move nothing |
-| `focus-on-screen` | the selection, the start and the cursor, where drawn, lie inside the free area | unless the camera is where the user's hands put it |
+| `focus-on-screen` | the selection, the start and the cursor, where drawn, lie inside the free area | unless the camera is where the user's hands put it, or an expand since framed a module |
 | `camera-outside` | the camera is inside no sphere | always |
 | `map-on-screen` | when the whole map would fit in the free area, 90% of it (by sphere area) is there | after a wheel turn out, or R |
 | `spheres-unclipped` | no sphere is cut by an edge of the graph's part of the window that lies in open window (not the window's edge, not where a panel starts); one bigger than the free area aside | always |
-| `arrow-sizes` | every arrow on screen is at most 2.5 points wide (3.5 for a module arrow of 10 calls or more), with a head 5 to 12 points long (or half as wide, seen end on); a module arrow has no head of its own where a call drawn along it goes on to its dot | an arrow on screen |
+| `arrow-sizes` | every arrow on screen is at most 2.5 points wide (3.5 for a module arrow of 10 calls or more), with a head 5 to 12 points long (or half as wide, seen end on; the whole map's faint module links need no head, but none over 12); a module arrow has no head of its own where a call drawn along it goes on to its dot | an arrow on screen |
 | `module-names` | a module's name is centred over its sphere (within 3 points) just above its top edge (2 below to 8 above), over no other sphere and none of its own dots | a module named |
 | `named-when-room` | a lit function with no name would have no room for one on any side of its dot, clear of the free area's edge, overlays, names and other lit dots; a shown module with no name, none above its sphere (the width a name takes from the names drawn) | always |
 | `journey-fills` | the journey's lit dots (start, calls, callers) and their names span at least 70% of the free area across or down, whichever they come nearer filling, and the dots lie inside it | in a journey, not expanded, after it opens, a depth change, R, F or Fit, unless the camera is where the user's hands put it |

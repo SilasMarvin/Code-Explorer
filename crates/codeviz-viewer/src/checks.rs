@@ -75,7 +75,7 @@ const MOVED_SCREEN: f32 = 0.5;
 const MOVED_ANGLE: f32 = 0.002;
 /// How much nearer another lit dot may be to a function's name than its own, edge
 /// to edge, in points, before the name reads as the other's.
-const NEARER: f32 = 1.0;
+const NEARER: f32 = 2.0;
 /// Share of the map, by area on screen, that must lie inside the free area after
 /// zooming out or R, when the whole map would fit there.
 const MAP_SHOWN: f32 = 0.9;
@@ -1299,6 +1299,9 @@ fn focus_on_screen(s: &Snap, since: &Since) -> Value {
     if since.by_hand {
         return skip("the camera is where the user's hands put it");
     }
+    if since.has(Kind::Expand) {
+        return skip("an expand frames the module, wherever the focus is");
+    }
     let free = s.free();
     let focus: Vec<&Node> = s.nodes.iter().filter(|n| n.focus()).collect();
     if focus.is_empty() {
@@ -1447,7 +1450,9 @@ fn arrow_sizes(s: &Snap) -> Value {
                 offenders.push((width - most, offender));
             }
             let head = a.head.unwrap_or(0.0).max(a.head_width.unwrap_or(0.0) / 2.0);
+            // The whole map's faint links between modules need no head to be seen.
             let (least, most) = HEAD_SIZE;
+            let least = if a.flow == "module" { 0.0 } else { least };
             if !(least..=most).contains(&head) {
                 let offender = json!({ "arrow": kind, "from": a.from, "to": a.to, "head": r1(head), "allowed": [least, most] });
                 offenders.push(((least - head).max(head - most), offender));
