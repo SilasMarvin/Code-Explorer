@@ -391,9 +391,6 @@ pub(crate) struct Nucleus {
     /// The journey's cursor, when it is not the middle: marked where it sits, and
     /// drawn there though the arrangement folds it away.
     marked: Option<usize>,
-    /// Whether the functions named by nothing are left out altogether, rather than
-    /// drawn as faint specks: in a journey's module view, expanded, and browsing.
-    specks_hidden: [bool; 3],
     /// Whether the graph is browsed, laid out as the atlas has it, rather than
     /// gathered round a journey.
     browse: bool,
@@ -452,9 +449,6 @@ impl Nucleus {
             hovered: None,
             trail,
             marked: None,
-            // In a journey, only the journey shows; browsing, every function does, to
-            // be clicked.
-            specks_hidden: [true, true, false],
             browse,
             atlas: None,
             outside: false,
@@ -514,26 +508,11 @@ impl Nucleus {
         true
     }
 
-    /// Whether the functions named by nothing are left out altogether in the view
-    /// the nucleus is in, rather than drawn as faint specks.
+    /// Whether the functions named by nothing are left out altogether, rather than
+    /// drawn as faint specks: in a journey only the journey shows; browsing, every
+    /// function does, to be clicked.
     pub(crate) fn specks_hidden(&self) -> bool {
-        self.specks_hidden[self.view_slot()]
-    }
-
-    /// Leaves out the functions named by nothing, or draws them again as specks, in
-    /// the view the nucleus is in.
-    pub(crate) fn toggle_specks(&mut self) {
-        let slot = self.view_slot();
-        self.specks_hidden[slot] = !self.specks_hidden[slot];
-    }
-
-    /// Which view the nucleus is in: a journey's modules, expanded, or browsing.
-    fn view_slot(&self) -> usize {
-        if self.browse {
-            2
-        } else {
-            usize::from(self.expanded)
-        }
+        !self.browse
     }
 
     /// Whether the graph is browsed rather than gathered round a journey.
@@ -2540,12 +2519,8 @@ fn interior(graph: &ForceGraph, members: &[usize], radius: f32) -> Vec<(usize, V
         .collect()
 }
 
-/// X expands the nucleus, or shrinks it back; N leaves out the functions named by
-/// nothing, or draws them again as specks.
+/// X expands the nucleus, or shrinks it back.
 pub(crate) fn toggle(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer) {
-    if keys.just_pressed(KeyCode::KeyN) {
-        explorer.toggle_specks();
-    }
     if keys.just_pressed(KeyCode::KeyX) {
         let on = !explorer.nucleus().expanded();
         explorer.expand_nucleus(on);
@@ -3897,11 +3872,7 @@ mod tests {
         let mut nucleus = around(&graph, &map, "core::run", 1);
         assert!(nucleus.specks_hidden(), "a journey shows only itself");
         nucleus.expand(&graph, true);
-        assert!(nucleus.specks_hidden());
-        nucleus.toggle_specks();
-        assert!(!nucleus.specks_hidden());
-        nucleus.expand(&graph, false);
-        assert!(nucleus.specks_hidden(), "each view keeps its own");
+        assert!(nucleus.specks_hidden(), "expanded too");
         nucleus.set_browse(&graph, true);
         assert!(!nucleus.specks_hidden(), "browsing, every function shows");
     }

@@ -166,12 +166,6 @@ impl OrbitCamera {
         Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)
     }
 
-    /// Eases round by `yaw` from wherever it is turning to.
-    pub(crate) fn turn_by(&mut self, yaw: f32) {
-        let (from, pitch) = self.goal_angles.unwrap_or((self.yaw, self.pitch));
-        self.goal_angles = Some(self.held((from + yaw, pitch)));
-    }
-
     /// Eases round to `(yaw, pitch)`, or as near it as the bounds allow.
     pub(crate) fn turn_to(&mut self, angles: (f32, f32)) {
         let (yaw, pitch) = self.held(angles);

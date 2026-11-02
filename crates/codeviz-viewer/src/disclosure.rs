@@ -1,6 +1,5 @@
 //! How much of the journey shows. A journey opens with only what its root calls
-//! directly; more opens a level at a time, under one call by hand, or call by call as
-//! the cursor moves through time. A closure is part of the function that defines it:
+//! directly; more opens a level at a time, or under one call by hand. A closure is part of the function that defines it:
 //! it takes no level of its own, and the calls made inside it count as its caller's.
 //!
 //! Every disclosed call has a number, `2` for the root's second call and `2.1` for that
@@ -17,19 +16,13 @@ use crate::{
     nucleus::Trail,
 };
 
-/// How much of the journey shows.
+/// How much of the journey shows: calls this many levels below the root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Disclose {
-    /// Calls this many levels below the root.
-    Depth(u32),
-    /// Everything entered up to the cursor, so stepping through time reveals the
-    /// journey call by call.
-    Time,
-}
+pub(crate) struct Disclose(pub(crate) u32);
 
 impl Default for Disclose {
     fn default() -> Self {
-        Self::Depth(1)
+        Self(1)
     }
 }
 
@@ -68,10 +61,7 @@ impl Disclosed {
             return disclosed;
         };
         let tile = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
-        let cursor = track
-            .selected()
-            .and_then(|s| journey.span(s))
-            .map_or(0, |s| s.enter);
+        let Disclose(depth) = disclose;
         let root = journey.root();
         disclosed.shown.insert(root);
         disclosed.numbers.insert(root, String::new());
@@ -84,11 +74,7 @@ impl Disclosed {
             let (children, inside) = calls_of(journey, &tile, span);
             disclosed.shown.extend(inside);
             for (index, &child) in children.iter().enumerate() {
-                let open = match disclose {
-                    Disclose::Time => journey.span(child).is_some_and(|s| s.enter <= cursor),
-                    Disclose::Depth(depth) => level < depth || expanded.contains(&span),
-                };
-                if !open {
+                if level >= depth && !expanded.contains(&span) {
                     continue;
                 }
                 let child_number = if number.is_empty() {
@@ -376,10 +362,7 @@ pub(crate) fn trail(
             .copied()
             // As deep as the depth, and wherever a call was opened by hand or for the
             // cursor.
-            .filter(|&child| match disclose {
-                Disclose::Depth(depth) => level <= depth || disclosed.shows(child),
-                Disclose::Time => disclosed.shows(child),
-            })
+            .filter(|&child| level <= disclose.0 || disclosed.shows(child))
             .collect();
         for &child in &open {
             if let (Some(to), Some(number)) = (tile(child), numbers.get(&child)) {

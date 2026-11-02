@@ -14,7 +14,6 @@ use bevy_egui::egui;
 use serde_json::{Value, json};
 
 use crate::{
-    disclosure::Disclose,
     drive::{Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
     nucleus::{Flow, Nucleus},
@@ -98,13 +97,7 @@ pub(crate) fn state(view: &View) -> Value {
             "name": explorer.label(span),
         })),
         "aside": explorer.aside().map(name),
-        "depth": match explorer.disclose() {
-            Disclose::Depth(depth) => json!(depth),
-            Disclose::Time => json!("time"),
-        },
-        "hidden": {
-            "specks": nucleus.specks_hidden(),
-        },
+        "depth": explorer.disclose().0,
         "outside_callers": explorer.outside_shown(),
         "pointed": explorer.pointed().map(name),
         "under_pointer": explorer.hovered_tile.map(name),
@@ -775,7 +768,7 @@ mod tests {
             ],
             "price fails under quote, folded away"
         );
-        explorer.set_disclose(crate::disclosure::Disclose::Depth(2));
+        explorer.set_disclose(crate::disclosure::Disclose(2));
         assert_eq!(
             marks(&explorer),
             [

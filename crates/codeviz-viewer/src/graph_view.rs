@@ -418,8 +418,7 @@ const MIN_ORBIT_DISTANCE: f32 = 25.0;
 
 /// F turns back to the usual three-quarter view, framed as it was when the view was
 /// pointed there; R frames that same view from the angle the camera has, or browsing,
-/// turns back to the usual view of the whole codebase; Q and E turn the view an eighth
-/// of the way round, left and right.
+/// turns back to the usual view of the whole codebase.
 pub(crate) fn graph_keys(
     keys: Res<ButtonInput<KeyCode>>,
     explorer: Res<Explorer>,
@@ -433,14 +432,6 @@ pub(crate) fn graph_keys(
             let (yaw, pitch) = nucleus::VIEW;
             let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0);
             nucleus::fit(gathered, cursor, &mut camera, rotation, projection);
-        }
-        for (key, turn) in [(KeyCode::KeyQ, 1.0), (KeyCode::KeyE, -1.0)] {
-            if keys.just_pressed(key) {
-                camera.turn_by(turn * std::f32::consts::FRAC_PI_4);
-                // The nucleus refits to what the new angle sees.
-                let rotation = camera.aim_rotation();
-                nucleus::fit(gathered, cursor, &mut camera, rotation, projection);
-            }
         }
         if keys.just_pressed(KeyCode::KeyR) {
             if gathered.browsing() {

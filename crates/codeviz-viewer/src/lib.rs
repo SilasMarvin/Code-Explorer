@@ -35,10 +35,7 @@ use bevy_egui::EguiPlugin;
 use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::UnitId;
 
-use crate::{
-    explorer::{Autoplay, Explorer},
-    journey_panel::JourneyPanel,
-};
+use crate::{explorer::Explorer, journey_panel::JourneyPanel};
 
 /// Configures and launches the viewer window.
 #[derive(Debug)]
@@ -52,7 +49,6 @@ pub struct Viewer {
     /// A session's steps, each with its line; with one, the screenshot path is the
     /// directory its snapshots go in.
     script: Option<Vec<(String, script::Step)>>,
-    step: usize,
     focus: Option<UnitId>,
     /// The function a screenshot puts the pointer over.
     hover: Option<UnitId>,
@@ -64,7 +60,7 @@ pub struct Viewer {
     expanded: bool,
 }
 
-/// A session's steps, read from a script a step per line: `key shift+i`, `click
+/// A session's steps, read from a script a step per line: `key i`, `click
 /// Explorer::spotlit`, `hover`, `doubleclick`, `bar 1.2`, `button close`, `drag 100 0`,
 /// `scroll 2`, `wait 300`, `snap label`.
 #[derive(Debug)]
@@ -95,20 +91,12 @@ impl Viewer {
             screenshot: None,
             keys: Vec::new(),
             script: None,
-            step: 0,
             focus: None,
             hover: None,
             depth: None,
             bare: false,
             expanded: false,
         }
-    }
-
-    /// Opens with the cursor this many steps into the journey.
-    #[must_use]
-    pub fn with_step(mut self, step: usize) -> Self {
-        self.step = step;
-        self
     }
 
     /// Opens the journey that starts at this function; without one, the view opens
@@ -195,12 +183,6 @@ impl Viewer {
     fn explorer(&mut self) -> Explorer {
         let mut explorer =
             Explorer::new(std::mem::take(&mut self.system), None, self.options.clone());
-        if self.step > 0 {
-            explorer.select(explorer.journey().map(codeviz_core::Journey::root));
-            for _ in 0..self.step {
-                explorer.step(explorer::Step::Into);
-            }
-        }
         let focus = self
             .focus
             .take()
@@ -226,7 +208,7 @@ impl Viewer {
     pub fn run(mut self) -> AppExit {
         let mut explorer = self.explorer();
         if let Some(depth) = self.depth {
-            explorer.set_disclose(disclosure::Disclose::Depth(depth));
+            explorer.set_disclose(disclosure::Disclose(depth));
         }
         // Back starts from the view as it opens.
         explorer.forget_history();
@@ -252,7 +234,6 @@ impl Viewer {
             bare: self.bare,
             ..default()
         })
-        .init_resource::<Autoplay>()
         .init_resource::<idle::Awake>();
         if let (Some(dir), Some(steps)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.

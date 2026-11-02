@@ -25,9 +25,6 @@ struct Display {
     /// Start with summaries, or the units they refine.
     #[arg(long, value_enum, default_value_t = crate::journey::ZoomArg::Summary)]
     zoom: crate::journey::ZoomArg,
-    /// Open with the cursor this many steps into the journey.
-    #[arg(long, default_value_t = 0)]
-    step: usize,
     /// Open the journey that starts at this function (entry label or unit id suffix).
     /// Without it, the view opens browsing the whole codebase.
     #[arg(long, value_name = "UNIT")]
@@ -111,7 +108,6 @@ fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result
     if let Some(hover) = hover {
         viewer = viewer.with_hover(hover);
     }
-    viewer = viewer.with_step(args.step);
     if let Some(depth) = args.depth {
         viewer = viewer.with_depth(depth);
     }

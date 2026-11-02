@@ -12,11 +12,7 @@ use bevy::{
 
 use codeviz_core::SpanId;
 
-use crate::{
-    camera::OrbitCamera,
-    disclosure::Disclose,
-    explorer::{Autoplay, Explorer},
-};
+use crate::{camera::OrbitCamera, disclosure::Disclose, explorer::Explorer};
 
 pub(crate) struct IdlePlugin;
 
@@ -47,7 +43,6 @@ type Shown = (
 
 fn keep_awake(
     mut awake: ResMut<Awake>,
-    autoplay: Res<Autoplay>,
     cameras: Query<&OrbitCamera>,
     explorer: Option<Res<Explorer>>,
     mut shown: Local<Option<Shown>>,
@@ -66,10 +61,7 @@ fn keep_awake(
     });
     let moved = now != *shown;
     *shown = now;
-    let busy = std::mem::take(&mut awake.0)
-        || moved
-        || autoplay.playing
-        || cameras.iter().any(OrbitCamera::easing);
+    let busy = std::mem::take(&mut awake.0) || moved || cameras.iter().any(OrbitCamera::easing);
     if busy {
         redraw.write(RequestRedraw);
     }

@@ -2093,31 +2093,16 @@ const KEYS: [KeyGroup; 7] = [
                 "back / forward one call, in the order they run",
                 When::Journey,
             ),
-            ("Shift ]", "step over this call's own calls", When::Journey),
-            (
-                "Shift ↑",
-                "step out to what runs after its caller",
-                When::Journey,
-            ),
-            ("1 – 9", "to the call with that number", When::Journey),
             ("click a bar", "to that call", When::Journey),
-            ("Space", "play forward through the journey", When::Journey),
         ],
     ),
     (
         "Journey depth",
-        &[
-            (
-                ",  .",
-                "show a level less / more of the journey",
-                When::Journey,
-            ),
-            (
-                "V",
-                "show calls by level / only as far as the cursor ran",
-                When::Journey,
-            ),
-        ],
+        &[(
+            ",  .",
+            "show a level less / more of the journey",
+            When::Journey,
+        )],
     ),
     (
         "Calls in",
@@ -2129,14 +2114,11 @@ const KEYS: [KeyGroup; 7] = [
     ),
     (
         "Spheres",
-        &[
-            (
-                "X, dbl-click",
-                "expand the start's module / shrink it back; inside, a click centres it",
-                When::Journey,
-            ),
-            ("N", "hide / show the unnamed specks", When::Always),
-        ],
+        &[(
+            "X, dbl-click",
+            "expand the start's module / shrink it back; inside, a click centres it",
+            When::Journey,
+        )],
     ),
     (
         "Camera",
@@ -2152,7 +2134,6 @@ const KEYS: [KeyGroup; 7] = [
                 "zoom towards the pointer (or Ctrl two fingers)",
                 When::Always,
             ),
-            ("Q  E", "turn an eighth of the way round", When::Always),
             (
                 "F",
                 "back to the usual view, round what is lit",
@@ -2208,9 +2189,8 @@ fn reading(browsing: bool) -> &'static [&'static str] {
          set apart keeps a dotted grey thread to its function. Two functions of one name \
          show their types (Explorer.root, Track.root).",
         "The panel: a bar per call, left to right as they run, a row a level deeper. \
-         Dashed: runs only sometimes, and says when (if …, in a loop). Dimmed: runs after \
-         the cursor, as you step. Pale: a call only guessed at, or handed off to run \
-         later. A triangle and a count: calls folded under it; a click opens them. A \
+         Dashed: runs only sometimes, and says when (if …, in a loop). Pale: a call only \
+         guessed at, or handed off to run later. A triangle and a count: calls folded under it; a click opens them. A \
          green end returns, a red one fails.",
     ]
 }
