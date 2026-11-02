@@ -12,6 +12,7 @@ use bevy_egui::egui;
 use serde_json::{Value, json};
 
 use crate::{
+    checks::LABEL_REACH,
     drive::{Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
     labels::node_name,
@@ -140,12 +141,12 @@ pub(crate) fn scene(view: &View) -> Value {
         })
         .collect();
     let named = match_labels(explorer, &labels, &drawn, &balls);
-    let label_of = |what: Named| named.iter().position(|&n| n == Some(what));
+    let label_of = |what: Labelled| named.iter().position(|&n| n == Some(what));
 
     let nodes: Vec<Value> = drawn
         .iter()
         .map(|d| {
-            let label = label_of(Named::Node(d.tile));
+            let label = label_of(Labelled::Node(d.tile));
             json!({
                 "name": node_name(explorer, d.tile),
                 "unit": explorer.tile_unit(d.tile).map(ToString::to_string),
@@ -168,7 +169,7 @@ pub(crate) fn scene(view: &View) -> Value {
         .filter_map(|&(cluster, at, radius)| {
             let n = nucleus;
             let ball = n.ball(cluster)?;
-            let label = label_of(Named::Module(cluster));
+            let label = label_of(Labelled::Module(cluster));
             Some(json!({
                 "name": explorer.cluster_name(cluster),
                 "body": format!("{:?}", ball.body).to_lowercase(),
@@ -239,7 +240,7 @@ fn label_entries(
     explorer: &Explorer,
     screen: &Screen,
     labels: &[&Painted],
-    named: &[Option<Named>],
+    named: &[Option<Labelled>],
 ) -> Vec<Value> {
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, screen.window);
     labels
@@ -261,8 +262,8 @@ fn label_entries(
                 .map(|(name, _)| name.as_str())
                 .collect();
             let (kind, of) = match named[index] {
-                Some(Named::Node(tile)) => ("function", Some(node_name(explorer, tile))),
-                Some(Named::Module(cluster)) => ("module", Some(explorer.cluster_name(cluster))),
+                Some(Labelled::Node(tile)) => ("function", Some(node_name(explorer, tile))),
+                Some(Labelled::Module(cluster)) => ("module", Some(explorer.cluster_name(cluster))),
                 None => ("other", None),
             };
             json!({
@@ -287,7 +288,7 @@ fn label_entries(
 fn mislabelled(
     explorer: &Explorer,
     labels: &[&Painted],
-    named: &[Option<Named>],
+    named: &[Option<Labelled>],
     drawn: &[Drawn],
 ) -> Vec<Value> {
     let gap = |rect: egui::Rect, d: &Drawn| {
@@ -301,7 +302,7 @@ fn mislabelled(
         .iter()
         .zip(named)
         .filter_map(|(label, what)| {
-            let Some(Named::Node(tile)) = *what else {
+            let Some(Labelled::Node(tile)) = *what else {
                 return None;
             };
             let own = drawn.iter().find(|d| d.tile == tile)?;
@@ -321,7 +322,7 @@ fn mislabelled(
                 })),
                 // Far from every node, its own included, it names nothing a reader
                 // can see.
-                _ if mine > FAR_LABEL => Some(json!({
+                _ if mine > LABEL_REACH => Some(json!({
                     "text": label.text,
                     "of": node_name(explorer, tile),
                     "nearer": Value::Null,
@@ -333,10 +334,6 @@ fn mislabelled(
         .collect()
 }
 
-/// How far, in points, a function's label may sit from its node before it counts as
-/// naming nothing a reader can see.
-const FAR_LABEL: f32 = 40.0;
-
 /// Whether a function is drawn only as a faint speck, and not hovered.
 fn speck(explorer: &Explorer, tile: usize) -> bool {
     let n = explorer.nucleus();
@@ -345,7 +342,7 @@ fn speck(explorer: &Explorer, tile: usize) -> bool {
 
 /// What a label on the graph names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Named {
+enum Labelled {
     Node(usize),
     Module(usize),
 }
@@ -357,12 +354,12 @@ fn match_labels(
     labels: &[&Painted],
     drawn: &[Drawn],
     balls: &[(usize, Vec2, f32)],
-) -> Vec<Option<Named>> {
+) -> Vec<Option<Labelled>> {
     // How far a label may sit from what it names, past its edge: the placer nudges a
     // crowded one a few rows along.
     const REACH: f32 = 160.0;
-    let mut pairs: Vec<(f32, usize, Named)> = Vec::new();
-    let mut consider = |what: Named, name: &str, at: Vec2, edge: f32| {
+    let mut pairs: Vec<(f32, usize, Labelled)> = Vec::new();
+    let mut consider = |what: Labelled, name: &str, at: Vec2, edge: f32| {
         for (i, label) in labels.iter().enumerate() {
             if !carries(&label.text, name) {
                 continue;
@@ -375,7 +372,7 @@ fn match_labels(
     };
     for d in drawn {
         consider(
-            Named::Node(d.tile),
+            Labelled::Node(d.tile),
             &node_name(explorer, d.tile),
             d.at,
             d.radius,
@@ -383,12 +380,12 @@ fn match_labels(
     }
     for &(cluster, at, radius) in balls {
         let name = explorer.cluster_name(cluster).to_uppercase();
-        consider(Named::Module(cluster), &name, at, radius);
+        consider(Labelled::Module(cluster), &name, at, radius);
     }
     // Module names first: theirs are in capitals and hold counts, so a function named
     // like a word in one (`of` in `EXPLORER 3 of 106`) must not take it.
     pairs.sort_by(|a, b| {
-        let node = |what: &Named| matches!(what, Named::Node(_));
+        let node = |what: &Labelled| matches!(what, Labelled::Node(_));
         node(&a.2).cmp(&node(&b.2)).then(a.0.total_cmp(&b.0))
     });
     let mut named = vec![None; labels.len()];
