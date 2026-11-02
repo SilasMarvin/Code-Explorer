@@ -44,7 +44,8 @@ const ABOVE: f32 = 2.0;
 const CLEAR: f32 = 1.0;
 /// How much nearer than its own another dot may lie to a name, in points: a name
 /// level with its own dot still reads as its own beside a dot as near above or below.
-const NEARER: f32 = 2.0;
+/// Half a point under labels-near's, for where the text lands once rounded to pixels.
+const NEARER: f32 = 1.5;
 /// The least radius a sphere shows with, and the least room each of its dots has
 /// across, for its plain functions to be named, in points.
 const PLAIN_SPHERE: f32 = 40.0;
@@ -642,8 +643,8 @@ impl<'a> Naming<'a> {
     }
 
     /// Where the journey's functions not drawn at this depth would show, as big as
-    /// lit: names keep off them as off the dots drawn, but may cover them, so a name
-    /// takes the same side at every depth, and a level more takes away no room.
+    /// lit: names keep off them as off the lit dots drawn, so a name takes the same
+    /// side at every depth, and a level more takes away no room.
     fn ghosts(&self) -> impl Iterator<Item = Disc> + '_ {
         let nucleus = self.nucleus;
         nucleus
@@ -660,7 +661,7 @@ impl<'a> Naming<'a> {
                     at,
                     radius,
                     steady: radius,
-                    lit: false,
+                    lit: true,
                     outside: false,
                     may_light: true,
                 })
