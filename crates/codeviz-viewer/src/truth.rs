@@ -15,8 +15,7 @@ use crate::{
     disclosure::Disclose,
     drive::{Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
-    graph_view::FURTHER,
-    nucleus::{End, Flow, Nucleus},
+    nucleus::{Flow, Nucleus},
     ui::node_name,
 };
 
@@ -80,7 +79,6 @@ pub(crate) fn state(view: &View) -> Value {
     let name = |tile: usize| node_name(explorer, tile);
     let nucleus = explorer.nucleus();
     let disclosed = explorer.disclosure();
-    let hidden = explorer.hidden();
     // Expanded in a journey, the view centres on the cursor; the module in the middle
     // is the start's still.
     let centre = nucleus.centre();
@@ -103,12 +101,9 @@ pub(crate) fn state(view: &View) -> Value {
             Disclose::Time => json!("time"),
         },
         "hidden": {
-            "callers": hidden.callers,
-            "journey": hidden.callees,
             "specks": nucleus.specks_hidden(),
         },
         "outside_callers": explorer.outside_shown(),
-        "spotlight": explorer.spotlight().map(|(side, _)| format!("{side:?}").to_lowercase()),
         "pointed": explorer.pointed().map(name),
         "under_pointer": explorer.hovered_tile.map(name),
         "search": view.chrome.search,
@@ -478,9 +473,6 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     if n.hovered() == Some(tile) {
         roles.push("hovered".to_owned());
     }
-    if n.touched(tile) {
-        roles.push("end of hovered's call".to_owned());
-    }
     if roles.is_empty() {
         roles.push("speck".to_owned());
     }
@@ -503,16 +495,11 @@ fn flow_role(flow: Flow) -> String {
     }
 }
 
-/// Every call drawn as an arrow, function to function: those the nucleus names and
-/// those of the function under the pointer.
+/// Every call drawn as an arrow, function to function: those the nucleus names.
 fn arrows(view: &View) -> Vec<Value> {
     let explorer = &*view.explorer;
     let name = |tile: usize| node_name(explorer, tile);
     let n = explorer.nucleus();
-    let end = |end: End| match end {
-        End::Function(tile) => name(tile),
-        End::Module(cluster) => format!("module {}", explorer.cluster_name(cluster)),
-    };
     n.links()
         .iter()
         .map(|link| {
@@ -523,14 +510,6 @@ fn arrows(view: &View) -> Vec<Value> {
                 "color": hex(link.flow.color()),
             })
         })
-        .chain(n.touches().iter().map(|touch| {
-            json!({
-                "from": end(touch.from),
-                "to": end(touch.to),
-                "role": "a call of the function under the pointer (pale)",
-                "color": hex(FURTHER),
-            })
-        }))
         .collect()
 }
 

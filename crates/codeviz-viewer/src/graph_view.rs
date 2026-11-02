@@ -11,7 +11,7 @@ use codeviz_layout::{ForceGraph, Reach};
 
 use crate::{
     camera::OrbitCamera,
-    explorer::{Explorer, Side},
+    explorer::Explorer,
     idle::Awake,
     nucleus,
     scene::{PALETTE, Tile, lane_color},
@@ -157,15 +157,6 @@ pub(crate) fn relation(reach: &Reach, tile: usize) -> Option<Relation> {
     }
 }
 
-/// [`relation`], but none on a side of the focus that is hidden.
-pub(crate) fn shown_relation(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<Relation> {
-    let hidden = explorer.hidden();
-    relation(reach, tile).filter(|r| match r {
-        Relation::Upstream(_) => !hidden.callers,
-        Relation::Downstream(_) => !hidden.callees,
-    })
-}
-
 /// Whether a function is drawn only as a small, faint speck: shown, but not the
 /// middle and named by nothing.
 pub(crate) fn speck(explorer: &Explorer, tile: usize) -> bool {
@@ -197,19 +188,18 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
 
 /// How many calls from the focus a node is, when it is near enough to light: with a
 /// journey open, what the focus calls lights as far as the journey is disclosed, and
-/// only its direct callers light above it. The spotlight lights what it picks out.
+/// only its direct callers light above it.
 pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u32> {
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     let opened = disclosed.opened();
     // Whatever the nucleus names lights.
     let named = explorer.nucleus().names(tile);
-    match shown_relation(explorer, reach, tile) {
+    match relation(reach, tile) {
         Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
         Some(Relation::Upstream(hops) | Relation::Downstream(hops)) if named => Some(hops),
         Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
         _ if journey.contains_key(&tile) => Some(2),
-        _ if explorer.spotlit().contains(&tile) => Some(1),
         _ => None,
     }
     .map(|hops| hops.clamp(1, FARTHEST_SHADE))
@@ -307,7 +297,7 @@ pub(crate) fn create_node_materials(
     commands.insert_resource(NodeMaterials(node_materials(&mut materials)));
 }
 
-/// Every call as a link, then the spotlight, the focus and the node under the pointer.
+/// The rings round the focus, the cursor and the node under the pointer.
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     clock: Res<Time>,
@@ -316,7 +306,6 @@ pub(crate) fn draw_graph(
     mut awake: ResMut<Awake>,
 ) {
     let time = clock.elapsed_secs();
-    draw_spotlight(&explorer, time, &mut gizmos);
     // The cursor pulses for a moment wherever it lands.
     let cursor = explorer.cursor_mark();
     if cursor != marked.map(|(tile, _)| tile) {
@@ -356,38 +345,6 @@ pub(crate) fn flow(gizmos: &mut Gizmos, a: Vec3, b: Vec3, color: Color, time: f3
             0.22,
             color.with_alpha((color.alpha() + 0.15).min(1.0)),
         );
-    }
-}
-
-/// What the spotlight picks out, ringed in its side's color: three quick pulses when
-/// it comes on, then a steady ring.
-fn draw_spotlight(explorer: &Explorer, time: f32, gizmos: &mut Gizmos) {
-    let Some((side, since)) = explorer.spotlight() else {
-        return;
-    };
-    let color = match side {
-        Side::Callers => CALLER,
-        Side::Callees => CALLEE,
-    };
-    let age = time - since;
-    let pulse = if age < 1.8 {
-        0.5 + 0.5 * (age * std::f32::consts::TAU / 0.6).cos()
-    } else {
-        0.0
-    };
-    for tile in explorer.spotlit() {
-        let Some(at) = explorer.tile_point(tile) else {
-            continue;
-        };
-        let radius = node_size(explorer.graph(), tile) * 0.5 + 0.7 + pulse * 1.2;
-        // Two rings, so it reads as a mark rather than a stray line.
-        for (grow, alpha) in [(0.0, 0.9), (0.45, 0.45)] {
-            gizmos.sphere(
-                Isometry3d::from_translation(at),
-                radius + grow,
-                color.with_alpha(alpha * (0.7 + 0.3 * pulse)),
-            );
-        }
     }
 }
 

@@ -12,10 +12,10 @@ use codeviz_ir::{Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
-    explorer::{Explorer, Hidden, Side},
+    explorer::Explorer,
     graph_view::{self, CALLEE, CALLER, CURSOR, DEEPER},
     journey_panel::{self, JourneyPanel},
-    nucleus::{self, Body, End, Flow},
+    nucleus::{self, Body, Flow},
     scene::{PALETTE, lane_color},
 };
 
@@ -114,7 +114,6 @@ fn draw_ui(
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
-    time: Res<Time>,
     mut cameras: Query<(&mut Camera, &GlobalTransform, &mut OrbitCamera)>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut moved: Local<u64>,
@@ -131,12 +130,7 @@ fn draw_ui(
     let top = if chrome.bare {
         0.0
     } else {
-        top_bar(
-            &mut root_ui,
-            &mut explorer,
-            &mut chrome,
-            time.elapsed_secs(),
-        )
+        top_bar(&mut root_ui, &mut explorer, &mut chrome)
     };
 
     let screen = ctx.viewport_rect();
@@ -205,7 +199,7 @@ fn draw_ui(
 
 /// The bar along the top: Back and Forward and which mode the view is in on the left;
 /// search and what the focus is on the right. Returns how tall it is.
-fn top_bar(root_ui: &mut egui::Ui, explorer: &mut Explorer, chrome: &mut Chrome, now: f32) -> f32 {
+fn top_bar(root_ui: &mut egui::Ui, explorer: &mut Explorer, chrome: &mut Chrome) -> f32 {
     egui::Panel::top("stack")
         .show(root_ui, |ui| {
             ui.horizontal(|ui| {
@@ -217,7 +211,7 @@ fn top_bar(root_ui: &mut egui::Ui, explorer: &mut Explorer, chrome: &mut Chrome,
                     {
                         chrome.search = !chrome.search;
                     }
-                    focus_sides(ui, explorer, now);
+                    aside_chip(ui, explorer);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         history_buttons(ui, explorer);
                         mode_label(ui, explorer);
@@ -445,6 +439,32 @@ fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
     Some(3)
 }
 
+/// With a function selected off the journey, a chip that says so; a click on it, as
+/// Enter does, starts a journey there.
+fn aside_chip(ui: &mut egui::Ui, explorer: &mut Explorer) {
+    if explorer.aside().is_none() {
+        return;
+    }
+    let chip = egui::Button::new(
+        egui::RichText::new("not on this journey · Enter starts one here")
+            .size(13.0)
+            .color(egui::Color32::WHITE),
+    )
+    .fill(egui::Color32::from_rgb(70, 52, 104))
+    .stroke(egui::Stroke::new(1.0, CALLER_TEXT))
+    .corner_radius(8.0);
+    if ui
+        .add(chip)
+        .on_hover_text(
+            "Selected off the journey, in place. Enter, or a click here, starts a journey \
+             here; an arrow or Esc goes back to the journey's cursor",
+        )
+        .clicked()
+    {
+        explorer.trace_from_focus();
+    }
+}
+
 /// Restricts 3D rendering to the area between the panels.
 fn fit_viewport(camera: &mut Camera, window: &Window, central: egui::Rect) {
     let scale = window.scale_factor();
@@ -522,8 +542,6 @@ pub(crate) fn node_name(explorer: &Explorer, tile: usize) -> String {
 enum Named {
     Node(usize),
     Group(usize),
-    /// Where a call leaves the expanded nucleus towards a module, by cluster.
-    Wall(usize),
 }
 
 /// Tier, then nearer the journey's start (a module first or last within its tier),
@@ -883,7 +901,7 @@ impl<'a> Placer<'a> {
         }
         let own = match key {
             Named::Node(tile) => Some(tile),
-            Named::Group(_) | Named::Wall(_) => None,
+            Named::Group(_) => None,
         };
         let pill = rect.expand2(PILL_PAD);
         self.blocking
@@ -1067,7 +1085,7 @@ impl<'a> Placer<'a> {
     fn misread(&self, key: Named, rect: egui::Rect, node: egui::Pos2, edge: f32) -> u32 {
         match key {
             Named::Node(tile) => misread_by(rect, tile, node, edge, &self.nodes),
-            Named::Group(_) | Named::Wall(_) => 0,
+            Named::Group(_) => 0,
         }
     }
 
@@ -1314,7 +1332,6 @@ fn draw_graph_labels(
     let aside = explorer.aside();
     let aside_tile = aside;
     let hovered = explorer.pointed();
-    let spotlit = explorer.spotlit();
     let disclosed = explorer.disclosure();
     let journey = disclosed.tiles();
     // The number of the call the cursor is on.
@@ -1375,8 +1392,8 @@ fn draw_graph_labels(
         }
         // One rule: the middle and the cursor, then what the nucleus names, the
         // journey's first calls before its callers, so the journey has room first,
-        // then the open journey round a middle off it; what the pointer is on and its
-        // calls' ends come last, so pointing never moves another name.
+        // then the open journey round a middle off it; what the pointer is on comes
+        // last, so pointing never moves another name.
         // The cursor is named where it would be anyway, so where it is never decides
         // what else is: it is only drawn over the rest.
         let tier = match () {
@@ -1388,7 +1405,7 @@ fn draw_graph_labels(
             // The few calls in from outside the journey drawn for each module, those
             // nearest it, are named after all the journey's own names.
             () if nucleus.outside(tile) => 6,
-            () if hovered == Some(tile) || nucleus.touched(tile) => POINTED,
+            () if hovered == Some(tile) => POINTED,
             () => continue,
         };
         let rung = rungs.get(&tile).copied().unwrap_or(usize::MAX);
@@ -1415,7 +1432,6 @@ fn draw_graph_labels(
         .into_iter()
         .find_map(to_screen)
     };
-    let wall = |cluster: usize| to_screen(nucleus.wall(cluster)?);
     // A sphere's middle on screen and how far its edge is from it.
     let sphere_on_screen = |ball: nucleus::Ball| {
         let middle = to_screen(ball.center)?;
@@ -1480,26 +1496,6 @@ fn draw_graph_labels(
             .take(if browsing { usize::MAX } else { CLOSED_NAMED })
             .map(|&(_, cluster)| cluster)
             .collect();
-        // A call from the function under the pointer that leaves for a module off the
-        // ring is named where it leaves.
-        let mut walls: Vec<usize> = nucleus
-            .touches()
-            .iter()
-            .flat_map(|t| [t.from, t.to])
-            .filter_map(|end| match end {
-                End::Module(cluster) => Some(cluster),
-                End::Function(_) => None,
-            })
-            .filter(|&c| nucleus.ball(c).is_some_and(|b| b.body == Body::Closed))
-            .collect();
-        walls.sort_unstable();
-        walls.dedup();
-        for cluster in walls {
-            order.push((
-                (1, 0, std::cmp::Reverse(nucleus.count(cluster)), cluster),
-                Named::Wall(cluster),
-            ));
-        }
         for (cluster, ball) in nucleus.balls() {
             let rank = match ball.body {
                 // Browsing, the one the pointer is over is named last, over the rest.
@@ -1613,7 +1609,7 @@ fn draw_graph_labels(
             .iter()
             .filter_map(|&(_, named)| match named {
                 Named::Node(tile) => discs[tile].map(|(node, edge)| (tile, node, edge)),
-                Named::Group(_) | Named::Wall(_) => None,
+                Named::Group(_) => None,
             })
             .collect(),
     );
@@ -1709,15 +1705,6 @@ fn draw_graph_labels(
                     Force::Never
                 };
                 placer.place(named, at, 0.0, job, None, force);
-            }
-            Named::Wall(group) => {
-                let Some(at) = wall(group) else {
-                    continue;
-                };
-                let color = egui_color(lane_color(group % PALETTE.len()));
-                let label = explorer.cluster_name(group).to_uppercase();
-                let job = label_job(None, &label, None, color, 10.5);
-                placer.place(named, at, 4.0, job, None, Force::Always);
             }
             Named::Node(tile) => {
                 let Some((node, edge)) = discs[tile] else {
@@ -1830,7 +1817,7 @@ fn draw_graph_labels(
                 // everything the nucleus names, wherever there is room.
                 let force = if tier == 0 || hovered == Some(tile) {
                     Force::Always
-                } else if spotlit.contains(&tile) || tier <= 2 || nucleus.outside(tile) {
+                } else if tier <= 2 || nucleus.outside(tile) {
                     Force::Free
                 } else {
                     Force::Never
@@ -1880,7 +1867,6 @@ fn draw_graph_labels(
     placer.finish(|named| match named {
         Named::Node(tile) => discs.get(tile).copied().flatten().map(|(node, _)| node),
         Named::Group(group) => ring_top(group),
-        Named::Wall(group) => wall(group),
     });
     if !chosen.is_empty() {
         painter.ctx().data_mut(|d| {
@@ -1967,132 +1953,6 @@ fn unnamed_note(painter: &egui::Painter, unnamed: usize, lit: usize) {
     painter.galley(at, galley, MUTED);
 }
 
-/// The focus by name, then a button for each side of it: what calls it (I) and what it
-/// calls (O), each in the color its links are drawn in. A button puts its side in the
-/// spotlight, which frames everything it picks out. The name says what those keys, and
-/// Enter, act on: the focus moves with the journey's cursor.
-fn focus_sides(ui: &mut egui::Ui, explorer: &mut Explorer, now: f32) {
-    let Some(focus) = explorer.graph_focus() else {
-        return;
-    };
-    let calling = explorer.callers_of(focus).len();
-    let mut called: Vec<usize> = explorer
-        .graph()
-        .callees(focus)
-        .filter(|&t| t != focus)
-        .collect();
-    called.sort_unstable();
-    called.dedup();
-    let lit = explorer.spotlight().map(|(side, _)| side);
-    let hidden = explorer.hidden();
-    let outside = explorer.outside_shown();
-    let gathered_journey = !explorer.browsing();
-    let mut pressed = None;
-    let mut follow = false;
-    let mut unhide = None;
-    ui.horizontal(|ui| {
-        unhide = hidden_chips(ui, hidden);
-        for (side, count, noun, key, color) in [
-            (Side::Callers, calling, "caller", "I", CALLER),
-            (Side::Callees, called.len(), "call", "O", CALLEE),
-        ] {
-            let plural = if count == 1 { "" } else { "s" };
-            let text = egui::RichText::new(format!("● {count} {noun}{plural}  {key}"))
-                .color(egui_color(color));
-            let hint = match side {
-                Side::Callers if gathered_journey => {
-                    "Bring in every function off the journey that calls one on it (I)"
-                }
-                Side::Callers => "Pick out what calls it (I)",
-                Side::Callees => "Pick out what it calls (O)",
-            };
-            let on = lit == Some(side) || (side == Side::Callers && outside);
-            if ui
-                .add_enabled(count > 0, egui::Button::selectable(on, text))
-                .on_hover_text(hint)
-                .clicked()
-            {
-                pressed = Some(side);
-            }
-        }
-        ui.label(
-            egui::RichText::new(node_name(explorer, focus))
-                .strong()
-                .color(egui::Color32::WHITE),
-        )
-        .on_hover_text(
-            "The focus: what I, O and Enter act on. Browsing, the function clicked; in a \
-             journey, its cursor, or a function clicked off it",
-        );
-        ui.label(
-            egui::RichText::new(if explorer.browsing() {
-                "selected"
-            } else {
-                "focus"
-            })
-            .small()
-            .color(MUTED),
-        );
-        if explorer.aside().is_some() {
-            let chip = egui::Button::new(
-                egui::RichText::new("not on this journey · Enter starts one here")
-                    .size(13.0)
-                    .color(egui::Color32::WHITE),
-            )
-            .fill(egui::Color32::from_rgb(70, 52, 104))
-            .stroke(egui::Stroke::new(1.0, CALLER_TEXT))
-            .corner_radius(8.0);
-            if ui
-                .add(chip)
-                .on_hover_text(
-                    "Selected off the journey, in place. Enter, or a click here, starts a \
-                     journey here; an arrow or Esc goes back to the journey's cursor",
-                )
-                .clicked()
-            {
-                follow = true;
-            }
-        }
-    });
-    match pressed {
-        Some(Side::Callers) => explorer.press_callers(now),
-        Some(side) => explorer.toggle_spotlight(side, now),
-        None => {}
-    }
-    if let Some(side) = unhide {
-        explorer.toggle_hidden(side);
-    }
-    if follow {
-        explorer.trace_from_focus();
-    }
-}
-
-/// What Shift+I and Shift+O left out, said where the sides are; returns the side
-/// whose chip was clicked, to bring it back.
-fn hidden_chips(ui: &mut egui::Ui, hidden: Hidden) -> Option<Side> {
-    let mut unhide = None;
-    for (side, on, text) in [
-        (Side::Callees, hidden.callees, "calls hidden · Shift+O"),
-        (Side::Callers, hidden.callers, "callers hidden · Shift+I"),
-    ] {
-        let chip = egui::Button::new(
-            egui::RichText::new(text)
-                .small()
-                .color(egui::Color32::WHITE),
-        )
-        .corner_radius(8.0);
-        if on
-            && ui
-                .add(chip)
-                .on_hover_text("Left out of the view; a click, or the key, brings them back")
-                .clicked()
-        {
-            unhide = Some(side);
-        }
-    }
-    unhide
-}
-
 /// A hint at the keys along `foot`.
 fn legend(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
     ctx.layer_painter(egui::LayerId::background())
@@ -2102,7 +1962,7 @@ fn legend(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
             egui::Align2::LEFT_BOTTOM,
             if view.browsing {
                 "Browsing · click a function to select it, nothing moves · Enter opens its \
-                 journey · I callers · O calls · Backspace back · / search · R whole map · H keys"
+                 journey · Backspace back · / search · R whole map · H keys"
             } else {
                 "Journey · click a call to move the cursor there · ] [ ↓ ↑ ← → step · , . \
                  less or more · I calls in from outside · Esc leaves for browsing · H keys"
@@ -2159,7 +2019,7 @@ type KeyGroup = (&'static str, &'static [(&'static str, &'static str, When)]);
 
 /// Every key, grouped by what it moves, each saying what it does in the view it
 /// applies in; H lists those that apply to the view open.
-const KEYS: [KeyGroup; 8] = [
+const KEYS: [KeyGroup; 7] = [
     (
         "Browse and journey",
         &[
@@ -2201,15 +2061,11 @@ const KEYS: [KeyGroup; 8] = [
             ),
             (
                 "Esc",
-                "close search, this list, the spotlight, a function selected off the \
-                 journey; then leave the journey for browsing",
+                "close search, this list, a function selected off the journey; then \
+                 leave the journey for browsing",
                 When::Journey,
             ),
-            (
-                "Esc",
-                "close search, this list, the spotlight, the side panel",
-                When::Browse,
-            ),
+            ("Esc", "close search, this list", When::Browse),
             (
                 "Backspace",
                 "back: the selection before, or across into the journey before (← Back)",
@@ -2264,26 +2120,12 @@ const KEYS: [KeyGroup; 8] = [
         ],
     ),
     (
-        "Calls in and out",
-        &[
-            ("I", "ring everything that calls the focus", When::Browse),
-            (
-                "I",
-                "bring in every function off the journey that calls one on it, pale",
-                When::Journey,
-            ),
-            ("O", "ring everything the focus calls", When::Always),
-            (
-                "Shift I",
-                "hide / show the callers (violet); the top bar says when they are hidden",
-                When::Always,
-            ),
-            (
-                "Shift O",
-                "hide / show the calls out (blue, amber)",
-                When::Always,
-            ),
-        ],
+        "Calls in",
+        &[(
+            "I",
+            "bring in every function off the journey that calls one on it, pale",
+            When::Journey,
+        )],
     ),
     (
         "Spheres",
@@ -2294,14 +2136,8 @@ const KEYS: [KeyGroup; 8] = [
                 When::Journey,
             ),
             ("N", "hide / show the unnamed specks", When::Always),
-            (
-                "point",
-                "expanded: rest on a function to draw its own calls, pale",
-                When::Journey,
-            ),
         ],
     ),
-    ("Graph", &[]),
     (
         "Camera",
         &[
@@ -2330,15 +2166,7 @@ const KEYS: [KeyGroup; 8] = [
             ("R", "frame the journey from this angle", When::Journey),
         ],
     ),
-    (
-        "Layout",
-        &[
-            ("J", "show / hide the journey", When::Journey),
-            ("M", "swap graph and journey", When::Journey),
-            ("S", "show / hide the side panel", When::Always),
-            ("H", "this list", When::Always),
-        ],
-    ),
+    ("Layout", &[("H", "this list", When::Always)]),
 ];
 
 /// What each color means, as the help leads with it.

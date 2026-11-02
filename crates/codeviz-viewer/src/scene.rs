@@ -10,7 +10,7 @@ use bevy_egui::{
 use crate::{
     camera,
     disclosure::Disclose,
-    explorer::{Autoplay, Explorer, Side, Step},
+    explorer::{Autoplay, Explorer, Step},
     graph_view::{self, NodeMaterials},
     idle::Awake,
     notice, nucleus, pick,
@@ -204,7 +204,6 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
 
 fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
     mut explorer: ResMut<Explorer>,
     mut autoplay: ResMut<Autoplay>,
     mut help: ResMut<KeyHelp>,
@@ -219,22 +218,10 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Escape) {
         close_topmost(&mut explorer, &mut help, &mut chrome);
     }
-    // I and O pick out what calls into the focus and what it calls out to; in a
-    // journey gathered round its start, I brings in every outside caller into it.
-    // With Shift, they hide that side, or show it again.
-    for (key, side) in [
-        (KeyCode::KeyI, Side::Callers),
-        (KeyCode::KeyO, Side::Callees),
-    ] {
-        if keys.just_pressed(key) {
-            if shift {
-                explorer.toggle_hidden(side);
-            } else if side == Side::Callers {
-                explorer.press_callers(time.elapsed_secs());
-            } else {
-                explorer.toggle_spotlight(side, time.elapsed_secs());
-            }
-        }
+    // In a journey, I brings in every function off it that calls one on it, or leaves
+    // them out again.
+    if keys.just_pressed(KeyCode::KeyI) {
+        explorer.toggle_outside();
     }
     if keys.just_pressed(KeyCode::Space) {
         autoplay.playing = !autoplay.playing;
@@ -251,7 +238,7 @@ fn keyboard(
     }
 }
 
-/// Escape closes whatever is on top: the search box, the key list, the spotlight, a
+/// Escape closes whatever is on top: the search box, the key list, a
 /// function selected off the journey, then the journey itself, for browsing with the
 /// cursor's function selected.
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
@@ -259,8 +246,6 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         chrome.search = false;
     } else if help.0 {
         help.0 = false;
-    } else if explorer.spotlight().is_some() {
-        explorer.clear_spotlight();
     } else if explorer.aside().is_some() {
         explorer.clear_aside();
     } else if !explorer.browsing() {

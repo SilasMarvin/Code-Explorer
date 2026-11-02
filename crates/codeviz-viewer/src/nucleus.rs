@@ -30,7 +30,7 @@ use codeviz_layout::ForceGraph;
 use crate::{
     camera::{Bounds, OrbitCamera},
     disclosure::Disclose,
-    explorer::{Explorer, Hidden, Side},
+    explorer::Explorer,
     graph_view::{
         CALLEE, CALLER, CURSOR, DEEPER, FURTHER, fit_distance, flow, hidden_speck, node_size,
     },
@@ -368,22 +368,6 @@ struct Laid {
     angles: HashMap<usize, f32>,
 }
 
-/// One end of a call the function under the pointer makes or takes, expanded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum End {
-    /// A function drawn: inside the nucleus, or named on the ring round it.
-    Function(usize),
-    /// Another module, where the call leaves the nucleus towards it.
-    Module(usize),
-}
-
-/// A call the function under the pointer makes or takes, expanded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Touch {
-    pub(crate) from: End,
-    pub(crate) to: End,
-}
-
 /// The graph gathered round the focus's module.
 #[derive(Debug, Clone)]
 pub(crate) struct Nucleus {
@@ -400,11 +384,8 @@ pub(crate) struct Nucleus {
     /// Whether the focus's module is expanded to show how calls run inside it.
     expanded: bool,
     now: Arrangement,
-    /// The function under the pointer, and, expanded, the calls it makes or takes.
+    /// The function under the pointer.
     hovered: Option<usize>,
-    touches: Vec<Touch>,
-    /// Which sides of the middle are left out: its callers, or the journey.
-    hidden: Hidden,
     /// The open journey from the middle.
     trail: Trail,
     /// The journey's cursor, when it is not the middle: marked where it sits, and
@@ -431,16 +412,15 @@ pub(crate) struct Nucleus {
 impl Nucleus {
     #[cfg(test)]
     pub(crate) fn new(graph: &ForceGraph, focus: Option<usize>, trail: Trail) -> Self {
-        Self::gather(graph, focus, Hidden::default(), trail, false)
+        Self::gather(graph, focus, trail, false)
     }
 
     /// Gathers the graph round `focus`'s module, naming its callers and `trail`, the
-    /// open journey from it, but for the sides `hidden` leaves out; or, to `browse`,
+    /// open journey from it; or, to `browse`,
     /// lays every module out where the atlas has it, lighting what `focus` touches.
     pub(crate) fn gather(
         graph: &ForceGraph,
         focus: Option<usize>,
-        hidden: Hidden,
         trail: Trail,
         browse: bool,
     ) -> Self {
@@ -470,8 +450,6 @@ impl Nucleus {
             expanded: false,
             now: Arrangement::default(),
             hovered: None,
-            touches: Vec::new(),
-            hidden,
             trail,
             marked: None,
             // In a journey, only the journey shows; browsing, every function does, to
@@ -523,7 +501,6 @@ impl Nucleus {
         self.from = Some((balls, points));
         self.progress = 0.0;
         self.now = self.arrange(graph, focus);
-        self.touches = self.touching(graph, self.hovered);
     }
 
     /// Names the open journey from the middle instead, easing there. Returns whether
@@ -535,15 +512,6 @@ impl Nucleus {
         self.trail = trail;
         self.recenter(graph, self.now.focus);
         true
-    }
-
-    /// Leaves out a side of the middle, with its calls, or brings it back, easing
-    /// there.
-    pub(crate) fn set_hidden(&mut self, graph: &ForceGraph, hidden: Hidden) {
-        if hidden != self.hidden {
-            self.hidden = hidden;
-            self.recenter(graph, self.now.focus);
-        }
     }
 
     /// Whether the functions named by nothing are left out altogether in the view
@@ -618,13 +586,11 @@ impl Nucleus {
 
     /// Marks the journey's cursor where it sits, without moving anything else.
     /// Returns whether that changed.
-    pub(crate) fn mark(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
+    pub(crate) fn mark(&mut self, tile: Option<usize>) -> bool {
         if tile == self.marked {
             return false;
         }
         self.marked = tile;
-        // A call of the function under the pointer may now end at it.
-        self.touches = self.touching(graph, self.hovered);
         true
     }
 
@@ -639,68 +605,18 @@ impl Nucleus {
     }
 
     /// Marks the function under the pointer. Returns whether that changed.
-    pub(crate) fn hover(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
+    pub(crate) fn hover(&mut self, tile: Option<usize>) -> bool {
         if tile == self.hovered {
             return false;
         }
         self.hovered = tile;
-        self.touches = self.touching(graph, tile);
         true
     }
 
-    /// Expanded, the calls `tile` makes or takes when it is a function inside the
-    /// nucleus other than the focus, whose own are drawn already; one for each
-    /// function, or each other module where the far end is folded away.
-    fn touching(&self, graph: &ForceGraph, tile: Option<usize>) -> Vec<Touch> {
-        let Some(tile) = tile.filter(|&t| {
-            self.now.expanded
-                && Some(t) != self.now.focus
-                && self.module_of.get(t).copied().flatten() == Some(self.now.center)
-        }) else {
-            return Vec::new();
-        };
-        let mut touches = Vec::new();
-        for &(from, to) in &graph.calls {
-            let other = match () {
-                () if from == tile && to != tile => to,
-                () if to == tile && from != tile => from,
-                () => continue,
-            };
-            if Some(other) == self.now.focus {
-                continue;
-            }
-            let end = match self.module_of.get(other).copied().flatten() {
-                _ if self.shows(other) => End::Function(other),
-                Some(cluster) => End::Module(cluster),
-                None => continue,
-            };
-            let touch = if from == tile {
-                Touch {
-                    from: End::Function(tile),
-                    to: end,
-                }
-            } else {
-                Touch {
-                    from: end,
-                    to: End::Function(tile),
-                }
-            };
-            if !touches.contains(&touch) {
-                touches.push(touch);
-            }
-        }
-        touches
-    }
-
     /// Whether a function is drawn full size: named, the journey's cursor, the open
-    /// journey's with the middle off it, an outside caller into the journey, or an end
-    /// of a call the function under the pointer makes or takes.
+    /// journey's with the middle off it, or an outside caller into the journey.
     pub(crate) fn lit(&self, tile: usize) -> bool {
-        self.names(tile)
-            || self.marks(tile)
-            || self.context(tile)
-            || self.outside(tile)
-            || self.touched(tile)
+        self.names(tile) || self.marks(tile) || self.context(tile) || self.outside(tile)
     }
 
     /// With the middle off the journey, whether a function is one of the open
@@ -717,44 +633,6 @@ impl Nucleus {
     /// With the middle off the journey, whether the journey runs one of its calls.
     pub(crate) fn on_journey(&self, tile: usize) -> bool {
         self.trail.aside && self.trail.journey.contains(&tile)
-    }
-
-    /// Expanded, the calls the function under the pointer makes or takes.
-    pub(crate) fn touches(&self) -> &[Touch] {
-        &self.touches
-    }
-
-    /// Whether a function is an end of a call the function under the pointer makes or
-    /// takes.
-    pub(crate) fn touched(&self, tile: usize) -> bool {
-        self.touches
-            .iter()
-            .any(|t| t.from == End::Function(tile) || t.to == End::Function(tile))
-    }
-
-    /// Where a call the function under the pointer makes or takes ends, as drawn now,
-    /// coming from `toward`: at a function, at the near side of a module on the ring,
-    /// or else on the nucleus's wall on the way to that module.
-    pub(crate) fn end_point(&self, end: End, toward: Vec3) -> Option<Vec3> {
-        match end {
-            End::Function(tile) => self.point(tile),
-            End::Module(cluster) => {
-                let ball = self.ball(cluster)?;
-                if ball.body == Body::Open {
-                    let back = (toward - ball.center).normalize_or_zero();
-                    return Some(ball.center + back * ball.radius);
-                }
-                self.wall(cluster)
-            }
-        }
-    }
-
-    /// Where the nucleus's wall faces a module, as drawn now.
-    pub(crate) fn wall(&self, cluster: usize) -> Option<Vec3> {
-        let core = self.ball(self.now.center)?;
-        let ball = self.ball(cluster)?;
-        let out = (ball.center - core.center).try_normalize()?;
-        Some(core.center + out * core.radius)
     }
 
     /// Moves a re-centering along by `dt` seconds. Returns whether anything moved.
@@ -1216,13 +1094,13 @@ impl Nucleus {
         let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(center);
         // Laid out for every side and every depth, so hiding a side or showing a level
         // more or less only draws or stops drawing, and moves nothing.
-        let every = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f, Hidden::default()));
-        let mut links = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f, self.hidden));
+        let mut links = focus.map_or_else(Vec::new, |f| self.named_calls(graph, f));
+        let every = links.clone();
         let named = distances(&links, focus);
         let folded = focus.map_or_else(HashSet::new, |f| self.fold_callers(graph, f, &cluster_of));
         let laid = self.reserve(&every, focus, clusters, center, &cluster_of);
         let columns = open_up(&links, focus, clusters, center, &cluster_of);
-        let context = if self.trail.aside && !self.hidden.hides(Side::Callees) {
+        let context = if self.trail.aside {
             self.trail
                 .journey
                 .iter()
@@ -1263,7 +1141,7 @@ impl Nucleus {
         place_ring(&mut balls, &order, center);
         place_closed(&mut balls, &bearings);
         let (mut points, mut shown) = place_functions(graph, &balls, &laid, center, &cluster_of);
-        // What a hidden side alone named keeps its place, undrawn.
+        // What only a deeper level names keeps its place, undrawn.
         for (cluster, column) in laid.iter().enumerate() {
             for tile in column.iter().filter(|t| !columns[cluster].contains(t)) {
                 shown[*tile] = false;
@@ -1315,7 +1193,7 @@ impl Nucleus {
         let clusters = self.homes.len();
         let center = focus.and_then(|f| graph.cluster(f)).unwrap_or(0);
         let cluster_of = |tile: usize| graph.cluster(tile).unwrap_or(center);
-        let links = focus.map_or_else(Vec::new, |f| self.browse_calls(graph, f));
+        let links = focus.map_or_else(Vec::new, |f| Self::browse_calls(graph, f));
         let named = distances(&links, focus);
         // Every module counts what it names, the focus's own among them.
         let columns = open_up(&links, focus, clusters, usize::MAX, &cluster_of);
@@ -1387,34 +1265,32 @@ impl Nucleus {
     }
 
     /// Browsing, the calls named round `focus`: each of its callers' into it, then each
-    /// of its own calls, in the order written; none on a side `hidden` leaves out.
-    fn browse_calls(&self, graph: &ForceGraph, focus: usize) -> Vec<Link> {
-        let mut links: Vec<Link> = Vec::new();
-        if !self.hidden.hides(Side::Callers) {
-            let mut callers: Vec<usize> = graph.callers(focus).filter(|&t| t != focus).collect();
-            callers.sort_unstable();
-            callers.dedup();
-            links.extend(callers.into_iter().map(|from| Link {
+    /// of its own calls, in the order written.
+    fn browse_calls(graph: &ForceGraph, focus: usize) -> Vec<Link> {
+        let mut callers: Vec<usize> = graph.callers(focus).filter(|&t| t != focus).collect();
+        callers.sort_unstable();
+        callers.dedup();
+        let mut links: Vec<Link> = callers
+            .into_iter()
+            .map(|from| Link {
                 from,
                 to: focus,
                 flow: Flow::Into,
-            }));
-        }
-        if !self.hidden.hides(Side::Callees) {
-            let written = graph.sequence(focus);
-            let callees: Vec<usize> = if written.is_empty() {
-                graph.callees(focus).collect()
-            } else {
-                written.to_vec()
-            };
-            for to in callees {
-                if to != focus && !links.iter().any(|l| l.from == focus && l.to == to) {
-                    links.push(Link {
-                        from: focus,
-                        to,
-                        flow: Flow::Journey(1),
-                    });
-                }
+            })
+            .collect();
+        let written = graph.sequence(focus);
+        let calls: Vec<usize> = if written.is_empty() {
+            graph.callees(focus).collect()
+        } else {
+            written.to_vec()
+        };
+        for to in calls {
+            if to != focus && !links.iter().any(|l| l.from == focus && l.to == to) {
+                links.push(Link {
+                    from: focus,
+                    to,
+                    flow: Flow::Journey(1),
+                });
             }
         }
         links
@@ -1628,31 +1504,27 @@ impl Nucleus {
     }
 
     /// The calls named round `focus`: each of its callers' into it, then each of the
-    /// open journey's from it, in the journey's order; none on a side `hidden` leaves
-    /// out.
-    fn named_calls(&self, graph: &ForceGraph, focus: usize, hidden: Hidden) -> Vec<Link> {
-        let mut links: Vec<Link> = Vec::new();
-        if !hidden.hides(Side::Callers) {
-            let mut callers: Vec<usize> = graph.callers(focus).filter(|&t| t != focus).collect();
-            callers.sort_unstable();
-            callers.dedup();
-            links.extend(callers.into_iter().map(|from| Link {
+    /// open journey's from it, in the journey's order.
+    fn named_calls(&self, graph: &ForceGraph, focus: usize) -> Vec<Link> {
+        let mut callers: Vec<usize> = graph.callers(focus).filter(|&t| t != focus).collect();
+        callers.sort_unstable();
+        callers.dedup();
+        let mut links: Vec<Link> = callers
+            .into_iter()
+            .map(|from| Link {
                 from,
                 to: focus,
                 flow: Flow::Into,
-            }));
-        }
-        if !hidden.hides(Side::Callees) {
-            for call in &self.trail.calls {
-                if call.from != call.to
-                    && !links.iter().any(|l| l.from == call.from && l.to == call.to)
-                {
-                    links.push(Link {
-                        from: call.from,
-                        to: call.to,
-                        flow: Flow::journey(call.level),
-                    });
-                }
+            })
+            .collect();
+        for call in &self.trail.calls {
+            if call.from != call.to && !links.iter().any(|l| l.from == call.from && l.to == call.to)
+            {
+                links.push(Link {
+                    from: call.from,
+                    to: call.to,
+                    flow: Flow::journey(call.level),
+                });
             }
         }
         links
@@ -3420,29 +3292,6 @@ pub(crate) fn draw(
             * nucleus.node_scale(quiet)
             * 0.5
     };
-    // Expanded, the calls of the function under the pointer, pale.
-    for touch in nucleus.touches() {
-        let toward = |end: End| match end {
-            End::Function(function) => nucleus.point(function),
-            End::Module(_) => None,
-        };
-        let Some(near) = toward(touch.from).or_else(|| toward(touch.to)) else {
-            continue;
-        };
-        let (Some(a), Some(b)) = (
-            nucleus.end_point(touch.from, near),
-            nucleus.end_point(touch.to, near),
-        ) else {
-            continue;
-        };
-        let b = match touch.to {
-            End::Function(callee) => short(a, b, callee),
-            End::Module(_) => b,
-        };
-        gizmos
-            .arrow(a, b, FURTHER.with_alpha(0.8))
-            .with_tip_length(0.7 * zoom);
-    }
     // The journey's call into the cursor, in the cursor's color, or into the function
     // the pointer is on, and the calls in of a function selected off the journey, or
     // of an outside caller or a folded caller of the start the pointer is on, are
@@ -3549,7 +3398,7 @@ mod tests {
 
     /// Seven modules: `web::route` calls `core::run`, which calls `db::put`,
     /// `log::say` and `core::help`; `core::help` calls `core::idle` and `ext::lib`;
-    /// `db::put` calls `disk::write`; `far` calls nothing.
+    /// `db::put` calls `disk::write`; `log::tail` calls `log::say`; `far` calls nothing.
     fn codebase() -> (ForceGraph, CodebaseMap) {
         let module = |name: &str| {
             format!(
@@ -3582,6 +3431,7 @@ mod tests {
                 function("db::put", &["disk::write"]),
                 function("db::other", &[]),
                 function("log::say", &[]),
+                function("log::tail", &["log::say"]),
                 function("disk::write", &[]),
                 function("ext::lib", &[]),
                 function("far::alone", &[]),
@@ -3971,51 +3821,6 @@ mod tests {
     }
 
     #[test]
-    fn expanded_draws_only_the_focus_calls_until_the_pointer_asks() {
-        let (graph, map) = codebase();
-        let mut nucleus = around(&graph, &map, "core::run", 1);
-        nucleus.expand(&graph, true);
-        while nucleus.advance(0.1) {}
-        assert!(
-            nucleus.links().iter().all(|l| l.flow.rank() <= 1),
-            "nothing past the depth"
-        );
-        let (help, idle) = (tile(&map, "core::help"), tile(&map, "core::idle"));
-        let ext = module(&graph, &map, "ext::lib");
-        assert_eq!(
-            nucleus.ball(ext).map(|b| b.body),
-            Some(Body::Closed),
-            "only the focus's own calls put a module on the ring"
-        );
-        assert_eq!(nucleus.touches(), &[]);
-        assert!(!nucleus.touched(idle));
-
-        assert!(nucleus.hover(&graph, Some(help)));
-        let touches = nucleus.touches();
-        assert!(touches.contains(&Touch {
-            from: End::Function(help),
-            to: End::Function(idle),
-        }));
-        assert!(
-            touches.contains(&Touch {
-                from: End::Function(help),
-                to: End::Module(ext),
-            }),
-            "a call to a function folded away runs to its module"
-        );
-        assert_eq!(touches.len(), 2, "the focus's call to it is drawn already");
-        assert!(nucleus.touched(idle), "the end of a call drawn is named");
-        let core = nucleus
-            .ball(module(&graph, &map, "core::run"))
-            .expect("a sphere");
-        let wall = nucleus.wall(ext).expect("a wall");
-        assert!((wall.distance(core.center) - core.radius).abs() < 1e-3);
-
-        assert!(nucleus.hover(&graph, None));
-        assert!(nucleus.touches().is_empty() && !nucleus.touched(idle));
-    }
-
-    #[test]
     fn what_is_named_inside_never_touches() {
         // The focus and two of its callees all start in one spot.
         let mut at = vec![
@@ -4063,34 +3868,6 @@ mod tests {
     }
 
     #[test]
-    fn hiding_callers_leaves_out_their_calls_and_modules() {
-        let (graph, map) = codebase();
-        let run = tile(&map, "core::run");
-        let web = module(&graph, &map, "web::route");
-        let hidden = Hidden {
-            callers: true,
-            callees: false,
-        };
-        let mut nucleus = Nucleus::gather(&graph, Some(run), hidden, trail(&graph, run, 1), false);
-        assert!(nucleus.links().iter().all(|l| l.flow != Flow::Into));
-        assert!(!nucleus.names(tile(&map, "web::route")));
-        assert_eq!(nucleus.ball(web).map(|b| b.body), Some(Body::Closed));
-        assert!(nucleus.names(tile(&map, "db::put")), "callees stay");
-
-        nucleus.expand(&graph, true);
-        assert!(nucleus.links().iter().all(|l| l.flow == Flow::Journey(1)));
-        nucleus.set_hidden(
-            &graph,
-            Hidden {
-                callers: false,
-                callees: true,
-            },
-        );
-        assert!(nucleus.links().iter().all(|l| l.flow == Flow::Into));
-        assert!(nucleus.names(tile(&map, "web::route")));
-    }
-
-    #[test]
     fn the_cursor_shows_where_it_sits_without_moving_anything() {
         let (graph, map) = codebase();
         let mut nucleus = around(&graph, &map, "core::run", 1);
@@ -4098,7 +3875,7 @@ mod tests {
         let db = module(&graph, &map, "db::put");
         assert!(!nucleus.shows(other));
         let before: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
-        assert!(nucleus.mark(&graph, Some(other)));
+        assert!(nucleus.mark(Some(other)));
         assert!(nucleus.shows(other) && nucleus.lit(other));
         let after: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
         assert_eq!(before, after, "nothing moves");
@@ -4109,8 +3886,8 @@ mod tests {
             "just outside its module"
         );
         assert!(at.distance(ball.center) < ball.radius + 2.0);
-        assert!(!nucleus.mark(&graph, Some(other)), "no change");
-        assert!(nucleus.mark(&graph, None));
+        assert!(!nucleus.mark(Some(other)), "no change");
+        assert!(nucleus.mark(None));
         assert!(!nucleus.shows(other));
     }
 
@@ -4133,8 +3910,7 @@ mod tests {
     fn browsing_every_module_keeps_its_place_whatever_is_clicked() {
         let (graph, map) = codebase();
         let run = tile(&map, "core::run");
-        let mut nucleus =
-            Nucleus::gather(&graph, Some(run), Hidden::default(), Trail::default(), true);
+        let mut nucleus = Nucleus::gather(&graph, Some(run), Trail::default(), true);
         // Every module's middle, and every function nothing lights.
         let places = |nucleus: &Nucleus, lit: &[usize]| {
             let points: Vec<Option<Vec3>> = (0..graph.positions.len())
@@ -4203,47 +3979,32 @@ mod tests {
     #[test]
     fn an_outside_caller_hangs_beyond_what_was_there() {
         let (graph, map) = codebase();
-        // With the start's callers left out, web::route calls core::run from off the
-        // journey.
+        // log::tail calls log::say, on core::run's journey, from off it.
         let run = tile(&map, "core::run");
-        let mut nucleus = Nucleus::gather(
-            &graph,
-            Some(run),
-            Hidden {
-                callers: true,
-                callees: false,
-            },
-            trail(&graph, run, 1),
-            false,
-        );
-        let before: Vec<Vec3> = nucleus
+        let mut nucleus = around(&graph, &map, "core::run", 1);
+        let before: Vec<(usize, Vec3)> = nucleus
             .balls()
             .filter(|(_, b)| nucleus.shows_body(b.body))
-            .map(|(_, b)| b.center)
+            .map(|(c, b)| (c, b.center))
             .collect();
         nucleus.set_outside(&graph, true);
         while nucleus.advance(0.1) {}
-        let route = tile(&map, "web::route");
-        assert!(
-            nucleus.outside(route),
-            "the start's caller, left out, comes in from outside"
-        );
+        let tail = tile(&map, "log::tail");
+        assert!(nucleus.outside(tail), "it comes in from outside");
         assert!(
             nucleus
                 .links()
                 .iter()
-                .any(|l| l.flow == Flow::Outside && l.from == route)
+                .any(|l| l.flow == Flow::Outside && l.from == tail)
         );
-        let web = nucleus
-            .ball(module(&graph, &map, "web::route"))
-            .expect("a sphere");
-        assert_eq!(web.body, Body::Faint, "faint, beyond the ring");
-        let after: Vec<Vec3> = nucleus
-            .balls()
-            .filter(|(c, b)| nucleus.shows_body(b.body) && *c != module(&graph, &map, "web::route"))
-            .map(|(_, b)| b.center)
-            .collect();
-        assert_eq!(before, after, "the rest stays where it was");
+        assert!(!nucleus.outside(run), "nor is the start");
+        for (cluster, center) in before {
+            assert_eq!(
+                nucleus.ball(cluster).map(|b| b.center),
+                Some(center),
+                "the rest stays where it was"
+            );
+        }
     }
 
     #[test]
@@ -4328,7 +4089,7 @@ mod tests {
     }
 
     #[test]
-    fn expanded_nothing_moves_as_the_depth_or_a_side_or_the_pointer_changes() {
+    fn expanded_nothing_moves_as_the_depth_or_the_pointer_changes() {
         let (graph, map) = codebase();
         let run = tile(&map, "core::run");
         let mut nucleus = around(&graph, &map, "core::run", 1);
@@ -4350,16 +4111,7 @@ mod tests {
         assert!(nucleus.retrace(&graph, trail(&graph, run, 2)));
         settle(&mut nucleus);
         assert_eq!(at(&nucleus), before, "a new depth");
-        nucleus.set_hidden(
-            &graph,
-            Hidden {
-                callers: true,
-                callees: false,
-            },
-        );
-        settle(&mut nucleus);
-        assert_eq!(at(&nucleus), before, "the callers hidden");
-        nucleus.hover(&graph, Some(tile(&map, "core::idle")));
+        nucleus.hover(Some(tile(&map, "core::idle")));
         settle(&mut nucleus);
         assert_eq!(at(&nucleus), before, "the pointer on a function");
     }
@@ -4454,12 +4206,7 @@ mod tests {
         };
         trail.add_own(help, idle, &["2".to_owned()]);
         trail.add_own(help, lib, &[]);
-        // Its caller left out, so the journey's function there is named by nothing else.
-        let hidden = Hidden {
-            callers: true,
-            callees: false,
-        };
-        let nucleus = Nucleus::gather(&graph, Some(help), hidden, trail, false);
+        let nucleus = Nucleus::gather(&graph, Some(help), trail, false);
         assert_eq!(nucleus.level(idle), Some(1), "its own call, blue");
         assert!(nucleus.names(lib), "out of the module too");
         assert!(nucleus.on_journey(idle) && !nucleus.on_journey(lib));
@@ -4468,24 +4215,7 @@ mod tests {
             ["2"],
             "numbered as the panel numbers it"
         );
-        assert!(
-            nucleus.context(run) && nucleus.lit(run),
-            "the journey's own stays drawn, to click"
-        );
-    }
-
-    #[test]
-    fn hiding_the_journey_leaves_the_callers() {
-        let (graph, map) = codebase();
-        let run = tile(&map, "core::run");
-        let hidden = Hidden {
-            callers: false,
-            callees: true,
-        };
-        let nucleus = Nucleus::gather(&graph, Some(run), hidden, trail(&graph, run, 2), false);
-        assert!(nucleus.names(tile(&map, "web::route")));
-        assert!(nucleus.links().iter().all(|l| l.flow == Flow::Into));
-        assert!(!nucleus.names(tile(&map, "db::put")));
+        assert!(nucleus.lit(run), "the journey's own stays drawn, to click");
     }
 
     #[test]
@@ -4633,7 +4363,7 @@ mod tests {
     #[test]
     fn browsing_with_nothing_selected_every_module_points_to_each_it_calls() {
         let (graph, map) = codebase();
-        let nucleus = Nucleus::gather(&graph, None, Hidden::default(), Trail::default(), true);
+        let nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
         let tubes = nucleus.tubes();
         assert!(tubes.iter().all(|t| t.flow == Flow::Module));
         let mut pairs: Vec<(usize, usize)> = graph
@@ -4660,7 +4390,6 @@ mod tests {
         let selected = Nucleus::gather(
             &graph,
             Some(tile(&map, "core::run")),
-            Hidden::default(),
             Trail::default(),
             true,
         );
