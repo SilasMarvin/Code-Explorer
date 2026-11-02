@@ -739,7 +739,7 @@ impl Explorer {
             nucleus.recenter(graph, start);
         }
         recentered |= nucleus.retrace(graph, trail);
-        let marked = nucleus.set_cursor(cursor);
+        let marked = nucleus.set_cursor(graph, cursor);
         if recentered || marked {
             self.moved += 1;
         }
@@ -1678,8 +1678,24 @@ pub(crate) mod tests {
             "the selection's module"
         );
         while explorer.ease_nucleus(1.0) {}
-        assert_eq!(points(&explorer), placed, "nothing moves but the camera");
-        assert!(explorer.nucleus().named(a), "its functions are named");
+        let module = explorer.graph().cluster(a);
+        let others = |points: &[Option<Vec3>]| -> Vec<Option<Vec3>> {
+            points
+                .iter()
+                .enumerate()
+                .filter(|&(t, _)| explorer.graph().cluster(t) != module)
+                .map(|(_, p)| *p)
+                .collect()
+        };
+        assert_eq!(
+            others(&points(&explorer)),
+            others(&placed),
+            "nothing but the module opened moves"
+        );
+        assert!(
+            explorer.nucleus().opened_up(a),
+            "its functions are drawn plainly"
+        );
 
         explorer.see(moved);
         explorer.toggle_expand(None);
@@ -1905,7 +1921,8 @@ pub(crate) mod tests {
 
     #[test]
     fn i_brings_in_outside_callers_and_one_clicked_is_selected_in_place() {
-        // main calls a; x calls a too, from off the journey that starts at main.
+        // main calls a; x calls a too, from off the journey that starts at main, and
+        // I with the cursor on a brings it in.
         let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
             { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [
                 { "key": "a#0", "text": "a", "targets": [ { "unit": "x:a", "certainty": "exact" } ] } ] },
@@ -1918,6 +1935,8 @@ pub(crate) mod tests {
         explorer.gather();
         explorer.ease_nucleus(1.0);
         assert!(!explorer.nucleus().lit(x), "off the journey, not shown");
+        let a = tile(&explorer, "a");
+        explorer.click(a, None);
         explorer.toggle_outside();
         explorer.ease_nucleus(1.0);
         assert!(explorer.outside_shown());
@@ -1926,7 +1945,7 @@ pub(crate) mod tests {
         explorer.ease_nucleus(1.0);
         assert!(!explorer.browsing(), "still in the journey");
         assert_eq!(explorer.aside(), Some(x), "selected in place");
-        assert_eq!(at(&explorer), "main", "the cursor stays");
+        assert_eq!(at(&explorer), "a", "the cursor stays");
         enter(&mut explorer);
         assert_eq!(
             explorer.start_unit().map(UnitId::as_str),

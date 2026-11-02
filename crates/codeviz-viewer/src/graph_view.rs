@@ -238,10 +238,10 @@ pub(crate) fn size_nodes(
     }
 }
 
-/// One ring per role, nothing else: white round the start (or the selection), and in
-/// a journey round the function set aside; pink round the journey's cursor, whose
-/// fill is pink too; fainter white round the function hovered, in the graph or as a
-/// bar. Each a share of its function's size out from it.
+/// At most one thin ring per function, facing the camera, nothing else: white round
+/// the start (or the selection), and in a journey round the function set aside; pink
+/// round the journey's cursor, whose fill is pink too; grey round the function
+/// hovered, in the graph or as a bar, so pointing never looks like selecting.
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
@@ -252,10 +252,13 @@ pub(crate) fn draw_graph(
     let Ok((camera, view)) = cameras.single() else {
         return;
     };
-    let mut ring = |tile: usize, grow: f32, color: Color| {
+    let facing = view.rotation();
+    let mut ring = |tile: usize, color: Color| {
         if let Some(at) = explorer.tile_point(tile) {
-            let radius = drawn_radius(&explorer, tile, camera, view) * grow;
-            gizmos.sphere(Isometry3d::from_translation(at), radius, color);
+            let radius = drawn_radius(&explorer, tile, camera, view) * RING;
+            gizmos
+                .circle(Isometry3d::new(at, facing), radius, color)
+                .resolution(32);
             marks.rings.push(RingMark {
                 tile,
                 radius,
@@ -265,12 +268,21 @@ pub(crate) fn draw_graph(
     };
     let start = explorer.nucleus().start();
     for tile in start.into_iter().chain(explorer.aside()) {
-        ring(tile, 1.5, Color::WHITE);
+        ring(tile, Color::WHITE);
     }
-    if let Some(tile) = explorer.cursor() {
-        ring(tile, 1.5, CURSOR);
+    let cursor = explorer.cursor();
+    if let Some(tile) = cursor {
+        ring(tile, CURSOR);
     }
-    if let Some(tile) = explorer.hovered().filter(|&t| Some(t) != start) {
-        ring(tile, 1.8, Color::srgba(1.0, 1.0, 1.0, 0.55));
+    if let Some(tile) = explorer
+        .hovered()
+        .filter(|&t| Some(t) != start && Some(t) != cursor && Some(t) != explorer.aside())
+    {
+        ring(tile, HOVER);
     }
 }
+
+/// How far out a ring sits, against its function's radius.
+const RING: f32 = 1.6;
+/// The ring round what the pointer is on: grey, never the selection's white.
+const HOVER: Color = Color::srgb(0.5, 0.53, 0.6);

@@ -1,9 +1,9 @@
 //! A journey's arrangement: the start's module in the middle with all its functions,
 //! and every module the journey enters on a ring round it, clockwise in the order it
 //! first enters them, opened to show the functions it names in columns; laid out for
-//! every depth at once, so a level more or less only shows or hides. Callers from
-//! outside the journey (I) take places kept free for them, or a module beyond the
-//! ring.
+//! every depth at once, so a level more or less only shows or hides. The callers
+//! from off the journey of the function the cursor is on (I) take places kept free
+//! for them, or their own module beyond the ring, moving nothing else.
 
 use std::{
     cmp::Reverse,
@@ -11,12 +11,9 @@ use std::{
 };
 
 use bevy::prelude::*;
-use codeviz_layout::{
-    ForceGraph,
-    atlas::{self, Apart, push_apart, sideways},
-};
+use codeviz_layout::{ForceGraph, atlas};
 
-use super::{Arrangement, Ball, Body, Flow, Link, Nucleus, Tube, VIEW, view_rotation};
+use super::{Arrangement, Ball, Body, Flow, Link, Nucleus, view_rotation};
 use crate::sizes::module_radius;
 
 /// Rows of names an open module stacks before it starts another column.
@@ -32,10 +29,9 @@ const MARGIN: f32 = 6.0;
 /// Between the ring round the nucleus and a module beyond it holding only calls in
 /// from outside the journey.
 const OUTER_GAP: f32 = 12.0;
-/// Of a module's callers from outside the journey (I), how many are drawn and named,
-/// those nearest the journey; the rest are a count on the module. An open module keeps
-/// this many places free below its names for them, so they come and go moving nothing.
-pub(super) const OUTSIDE_SHOWN: usize = 2;
+/// How many places an open module keeps free below its names for callers from off
+/// the journey (I), so they come and go moving nothing.
+pub(super) const OUTSIDE_SHOWN: usize = 3;
 /// In a journey, how many of the start's callers are named; the rest fold into a
 /// count on their module's name, so the journey stays what reads.
 const CALLERS_NAMED: usize = 5;
@@ -100,8 +96,6 @@ impl Nucleus {
             &cluster_of,
         );
         links.extend(calls_in);
-        let tubes = self.join(&links, &cluster_of);
-        let free = kept_free(&balls, &laid);
         Arrangement {
             start,
             middle,
@@ -115,8 +109,7 @@ impl Nucleus {
             ring: order,
             outside,
             folded,
-            free,
-            tubes,
+            tubes: Vec::new(),
             links,
         }
     }
@@ -131,90 +124,6 @@ impl Nucleus {
                 flow: Flow::Into,
             })
             .collect()
-    }
-
-    /// In a journey with I on, a call into each function shown on it, the start
-    /// included, from each function that calls it and is not shown: of each module's
-    /// such callers, only the few nearest the journey.
-    fn outside_calls(&self, graph: &ForceGraph, links: &[Link], start: Option<usize>) -> Vec<Link> {
-        self.outside_split(graph, links, start).0
-    }
-
-    /// In a journey with I on, how many callers from outside it each module holds
-    /// beyond those drawn, by cluster.
-    pub(crate) fn outside_left_out(&self, graph: &ForceGraph) -> HashMap<usize, usize> {
-        let links: Vec<Link> = self
-            .now
-            .links
-            .iter()
-            .filter(|l| l.flow != Flow::Outside)
-            .copied()
-            .collect();
-        self.outside_split(graph, &links, self.now.start).1
-    }
-
-    /// The calls in from outside the journey that are drawn, and how many callers
-    /// each module holds beyond them. A module's callers are ranked by the shallowest
-    /// function on the journey they call, the start first, then by how many of its
-    /// functions they call.
-    fn outside_split(
-        &self,
-        graph: &ForceGraph,
-        links: &[Link],
-        start: Option<usize>,
-    ) -> (Vec<Link>, HashMap<usize, usize>) {
-        let Some(start) = start.filter(|_| self.outside && !self.browse) else {
-            return (Vec::new(), HashMap::new());
-        };
-        // Each function on the journey, with its level: the start's 0.
-        let mut on: Vec<(usize, u32)> = vec![(start, 0)];
-        for link in links {
-            if let Flow::Journey(level) = link.flow {
-                match on.iter_mut().find(|(tile, _)| *tile == link.to) {
-                    Some(known) => known.1 = known.1.min(level),
-                    None => on.push((link.to, level)),
-                }
-            }
-        }
-        let shown: HashSet<usize> = links
-            .iter()
-            .flat_map(|l| [l.from, l.to])
-            .chain([start])
-            .collect();
-        let mut calls = Vec::new();
-        // Each caller's nearest level on the journey, and how many functions on it it
-        // calls.
-        let mut near: HashMap<usize, (u32, usize)> = HashMap::new();
-        for &(to, level) in &on {
-            let callers: Vec<usize> = graph.callers(to).filter(|c| !shown.contains(c)).collect();
-            for &from in &callers {
-                let known = near.entry(from).or_insert((level, 0));
-                known.0 = known.0.min(level);
-                known.1 += 1;
-            }
-            calls.extend(callers.into_iter().map(|from| Link {
-                from,
-                to,
-                flow: Flow::Outside,
-            }));
-        }
-        let mut by_module: HashMap<usize, Vec<usize>> = HashMap::new();
-        for &caller in near.keys() {
-            if let Some(cluster) = graph.cluster(caller) {
-                by_module.entry(cluster).or_default().push(caller);
-            }
-        }
-        let mut kept = HashSet::new();
-        let mut left_out = HashMap::new();
-        for (cluster, mut callers) in by_module {
-            callers.sort_by_key(|c| (near[c].0, Reverse(near[c].1), *c));
-            if callers.len() > OUTSIDE_SHOWN {
-                left_out.insert(cluster, callers.len() - OUTSIDE_SHOWN);
-            }
-            kept.extend(callers.into_iter().take(OUTSIDE_SHOWN));
-        }
-        calls.retain(|l| kept.contains(&l.from) || graph.cluster(l.from).is_none());
-        (calls, left_out)
     }
 
     /// Of the callers of `start`, the journey's start, those past the few nearest the
@@ -275,30 +184,6 @@ impl Nucleus {
         links
     }
 
-    /// An arrow for each pair of modules a named call runs between, as thick as all
-    /// the calls between them. A call in from outside the journey runs straight, on
-    /// no arrow, so the journey's own keep the arrows to themselves.
-    pub(super) fn join(&self, links: &[Link], cluster_of: &impl Fn(usize) -> usize) -> Vec<Tube> {
-        let mut tubes: Vec<Tube> = Vec::new();
-        for link in links.iter().filter(|l| l.flow != Flow::Outside) {
-            let (from, to) = (cluster_of(link.from), cluster_of(link.to));
-            if from == to {
-                continue;
-            }
-            match tubes.iter_mut().find(|t| t.from == from && t.to == to) {
-                // The call nearest the start colors the arrow.
-                Some(tube) if link.flow.rank() < tube.flow.rank() => tube.flow = link.flow,
-                Some(_) => {}
-                None => tubes.push(Tube {
-                    from,
-                    to,
-                    calls: self.flows.get(&(from, to)).copied().unwrap_or(1),
-                    flow: link.flow,
-                }),
-            }
-        }
-        tubes
-    }
     /// Every function below the start at any depth, in the order the journey first
     /// runs it, then any `links` name that the trail's order leaves out.
     fn journey_order<'a>(&'a self, links: &'a [Link]) -> impl Iterator<Item = usize> + 'a {
@@ -373,11 +258,37 @@ impl Nucleus {
         }
         order
     }
+    /// In a journey with I on, a call from each of its callers off the journey into
+    /// the function the cursor is on, or the start when the cursor is on none shown.
+    fn outside_calls(&self, graph: &ForceGraph, links: &[Link], start: Option<usize>) -> Vec<Link> {
+        let Some(start) = start.filter(|_| self.outside && !self.browse) else {
+            return Vec::new();
+        };
+        let shown: HashSet<usize> = links
+            .iter()
+            .flat_map(|l| [l.from, l.to])
+            .chain([start])
+            .collect();
+        let to = self.cursor.filter(|c| shown.contains(c)).unwrap_or(start);
+        let mut callers: Vec<usize> = graph.callers(to).filter(|c| !shown.contains(c)).collect();
+        callers.sort_unstable();
+        callers.dedup();
+        callers
+            .into_iter()
+            .map(|from| Link {
+                from,
+                to,
+                flow: Flow::Outside,
+            })
+            .collect()
+    }
+
     /// Puts the outside callers `calls` brings in where they show without moving
-    /// anything already placed: inside the nucleus where they sit; in a module on the
-    /// ring, in the places it keeps free below the names `reserved` lays out in it;
-    /// else in their own module beyond the ring, towards what they call, where they sit
-    /// in it. Returns them.
+    /// anything already placed: inside the nucleus where they sit; in a module with a
+    /// place on the ring, in the places it keeps free below the names `reserved` lays
+    /// out in it, as many as there are; else in their own module, beyond every sphere
+    /// the journey could show, towards what they call, clear of the others put there.
+    /// Returns them.
     pub(super) fn place_outside(
         &self,
         balls: &mut [Ball],
@@ -395,89 +306,89 @@ impl Nucleus {
                 None => by_module.push((cluster, vec![call.from])),
             }
         }
+        by_module.sort_unstable_by_key(|(cluster, _)| *cluster);
         let core = balls[middle].center;
-        let placed: Vec<usize> = (0..balls.len())
-            .filter(|&c| matches!(balls[c].body, Body::Nucleus | Body::Open))
-            .collect();
-        let outer = placed
-            .iter()
-            .map(|&c| balls[c].center.distance(core) + balls[c].radius)
+        // Past every sphere the journey could show at any depth, so the same callers
+        // go to the same places at every depth.
+        let outer = (0..balls.len())
+            .filter(|&c| c == middle || !reserved[c].is_empty())
+            .map(|c| balls[c].center.distance(core) + balls[c].radius)
             .fold(0.0, f32::max)
             + OUTER_GAP;
-        let back = view_rotation() * Vec3::Z;
-        let mut beyond = Vec::new();
+        let rotation = view_rotation();
+        let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+        let mut beyond: Vec<(Vec3, f32)> = Vec::new();
+        let mut placed = HashSet::new();
         for (cluster, tiles) in &by_module {
-            let ball = balls[*cluster];
             if *cluster == middle {
                 for &tile in tiles {
                     shown[tile] = true;
+                    placed.insert(tile);
                 }
                 continue;
             }
-            if ball.body == Body::Open {
+            let ball = balls[*cluster];
+            let names = &reserved[*cluster];
+            if !names.is_empty() {
                 // One the journey could name deeper has its place; the rest take the
-                // places kept free below the names.
-                let names = &reserved[*cluster];
+                // places kept free below the names, while there are any.
                 let mut free = names_grid(names.len(), ball.radius)
                     .into_iter()
                     .skip(names.len());
                 for &tile in tiles {
-                    if !names.contains(&tile) {
-                        points[tile] = ball.center + free.next().unwrap_or(self.offsets[tile]);
+                    let at = if names.contains(&tile) {
+                        Some(points[tile])
+                    } else {
+                        free.next().map(|at| ball.center + at)
+                    };
+                    if let Some(at) = at {
+                        points[tile] = at;
+                        shown[tile] = true;
+                        placed.insert(tile);
                     }
-                    shown[tile] = true;
+                }
+                if ball.body == Body::Closed && tiles.iter().any(|t| placed.contains(t)) {
+                    balls[*cluster].body = Body::Open;
                 }
                 continue;
             }
             // Towards the functions on the journey it calls, as the usual view sees them.
-            let toward = calls
+            let toward: Vec3 = calls
                 .iter()
                 .filter(|c| tiles.contains(&c.from))
                 .map(|c| points[c.to] - core)
-                .sum::<Vec3>();
-            let toward = (toward - back * toward.dot(back))
-                .try_normalize()
-                .unwrap_or_else(|| sideways(back));
+                .sum();
+            let angle = toward.dot(up).atan2(toward.dot(right));
+            let ring = outer + ball.radius;
+            // The nearest bearing to that, either way round, clear of those put
+            // beyond already.
+            let step = (ball.radius / ring).max(0.05);
+            #[expect(clippy::cast_precision_loss, reason = "a step count")]
+            let center = (0..200)
+                .map(|k| {
+                    let turn = (k / 2) as f32 * step * if k % 2 == 0 { 1.0 } else { -1.0 };
+                    core + (right * (angle + turn).cos() + up * (angle + turn).sin()) * ring
+                })
+                .find(|&at| {
+                    beyond
+                        .iter()
+                        .all(|&(c, r)| at.distance(c) >= r + ball.radius + MARGIN)
+                })
+                .unwrap_or(core + right * ring);
+            beyond.push((center, ball.radius));
             // Faint, as everything brought in from outside the journey is.
             balls[*cluster] = Ball {
-                center: core + toward * (outer + ball.radius),
+                center,
                 radius: ball.radius,
                 body: Body::Faint,
             };
-            beyond.push(*cluster);
-        }
-        // Kept off every sphere drawn, and off the places on the ring kept for what
-        // a deeper level names.
-        let among: Vec<usize> = (0..balls.len())
-            .filter(|&c| balls[c].body != Body::Closed || !reserved[c].is_empty())
-            .collect();
-        let shares = |a: usize, b: usize| match (beyond.contains(&a), beyond.contains(&b)) {
-            (true, true) => Some((0.5, 0.5)),
-            (true, false) => Some((1.0, 0.0)),
-            (false, true) => Some((0.0, 1.0)),
-            (false, false) => None,
-        };
-        let apart = Apart {
-            margin: MARGIN,
-            slant: 0.0,
-            views: &atlas::views(VIEW),
-            bound: None,
-        };
-        let mut centers: Vec<Vec3> = balls.iter().map(|b| b.center).collect();
-        let radii: Vec<f32> = balls.iter().map(|b| b.radius).collect();
-        push_apart(&mut centers, &radii, &among, shares, &apart, 200);
-        for (ball, center) in balls.iter_mut().zip(centers) {
-            ball.center = center;
-        }
-        for (cluster, tiles) in &by_module {
-            if beyond.contains(cluster) {
-                for &tile in tiles {
-                    points[tile] = balls[*cluster].center + self.offsets[tile];
-                    shown[tile] = true;
-                }
+            for &tile in tiles {
+                points[tile] = center + self.offsets[tile];
+                shown[tile] = true;
+                placed.insert(tile);
             }
         }
-        by_module.into_iter().flat_map(|(_, tiles)| tiles).collect()
+        placed
     }
 
     /// Where each function is drawn, and whether it is: the nucleus's own where they
@@ -508,8 +419,9 @@ impl Nucleus {
     }
 }
 
-/// How many calls each function `links` names is from `start`: -1 for a caller,
-/// else its shallowest level in the journey, capped at [`SHADES`]; the start left out.
+/// How many calls each function `links` names is from `start`: its shallowest level
+/// in the journey, capped at [`SHADES`], even when it calls the start back; else -1
+/// for a caller; the start left out.
 pub(super) fn distances(links: &[Link], start: Option<usize>) -> HashMap<usize, i32> {
     let mut named: HashMap<usize, i32> = HashMap::new();
     for link in links {
@@ -518,13 +430,13 @@ pub(super) fn distances(links: &[Link], start: Option<usize>) -> HashMap<usize, 
             #[expect(clippy::cast_possible_wrap, reason = "a small level")]
             Flow::Journey(level) => (link.to, level as i32),
             // An outside caller is shown, not named.
-            Flow::Outside | Flow::Module => continue,
+            Flow::Outside | Flow::Inner => continue,
         };
         if Some(tile) == start {
             continue;
         }
         let at = named.entry(tile).or_insert(level);
-        if level.abs() < at.abs() {
+        if *at < 0 || (level > 0 && level < *at) {
             *at = level;
         }
     }
@@ -609,22 +521,6 @@ pub(super) fn grid(count: usize, radius: f32) -> Vec<Vec3> {
             let x = (column as f32 - (columns as f32 - 1.0) / 2.0) * COLUMN_GAP;
             let y = ((rows as f32 - 1.0) / 2.0 - row as f32) * SPACING;
             (right * x + Vec3::Y * y) * fit
-        })
-        .collect()
-}
-
-/// The places each open module of `balls` keeps free below the names `reserved`
-/// lays out in it, in the world.
-pub(super) fn kept_free(balls: &[Ball], reserved: &[Vec<usize>]) -> Vec<Vec3> {
-    balls
-        .iter()
-        .zip(reserved)
-        .filter(|(ball, names)| ball.body == Body::Open && !names.is_empty())
-        .flat_map(|(ball, names)| {
-            names_grid(names.len(), ball.radius)
-                .into_iter()
-                .skip(names.len())
-                .map(move |at| ball.center + at)
         })
         .collect()
 }

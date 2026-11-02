@@ -37,7 +37,7 @@ impl Nucleus {
             .map(|t| graph.cluster(t).is_some())
             .collect();
         let tubes = if start.is_some() {
-            self.join(&links, &cluster_of)
+            Vec::new()
         } else {
             self.map_tubes()
         };
@@ -54,25 +54,18 @@ impl Nucleus {
             columns,
             outside: HashSet::new(),
             folded: HashSet::new(),
-            free: Vec::new(),
             tubes,
             links,
         }
     }
 
-    /// Browsing with nothing selected, how modules depend on each other: an arrow
-    /// from each module to every module it calls, as thick and as plain as the calls
-    /// it carries, so a weak dependency shows faint rather than not at all.
+    /// Browsing with nothing selected, how modules depend on each other: a line from
+    /// each module to every module it calls.
     fn map_tubes(&self) -> Vec<Tube> {
         let mut tubes: Vec<Tube> = self
             .flows
             .iter()
-            .map(|(&(from, to), &calls)| Tube {
-                from,
-                to,
-                calls,
-                flow: Flow::Module,
-            })
+            .map(|(&(from, to), &calls)| Tube { from, to, calls })
             .collect();
         tubes.sort_unstable_by_key(|t| (t.from, t.to));
         tubes

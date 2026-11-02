@@ -12,7 +12,7 @@ use bevy_egui::egui;
 use serde_json::{Value, json};
 
 use crate::{
-    drive::{Drawn, Painted, Screen, View},
+    drive::{ArrowShape, Drawn, Painted, Screen, View},
     explorer::{Explorer, is_conditional},
     labels::node_name,
     nucleus::Flow,
@@ -465,7 +465,7 @@ fn flow_role(flow: Flow) -> String {
         Flow::Journey(1) => "the start's or the selection's own call (blue)".to_owned(),
         Flow::Journey(level) => format!("journey level {level} (amber, darker the deeper)"),
         Flow::Outside => "calls into the journey from off it (pale)".to_owned(),
-        Flow::Module => "calls from one module to another, nothing selected (faint)".to_owned(),
+        Flow::Inner => "calls among the expanded module's functions (faint)".to_owned(),
     }
 }
 
@@ -476,19 +476,19 @@ fn flow_kind(flow: Flow) -> (&'static str, Option<u32>) {
         Flow::Into => ("into", None),
         Flow::Journey(level) => ("journey", Some(level)),
         Flow::Outside => ("outside", None),
-        Flow::Module => ("module", None),
+        Flow::Inner => ("inner", None),
     }
 }
 
-/// How an arrow's head shows: how long from its back to its tip, and how wide, in
-/// points, and where its tip is.
-fn head(view: &View, back: Vec3, tip: Vec3, spread: f32) -> Value {
-    let ends = view.to_screen(back).zip(view.to_screen(tip));
+/// How an arrow shows: how wide its line, how long its head from its back to its
+/// tip and how wide, in points, and where its tip is.
+fn shape(view: &View, shape: &ArrowShape) -> Value {
     json!({
-        "head": ends.map(|(b, t)| round(b.distance(t))),
-        "head_width": round(2.0 * view.screen_radius(tip, spread)),
-        "tip": ends.map(|(_, t)| point(t)),
-        "on_screen": ends.is_some_and(|(_, t)| view.on_screen(t)),
+        "width": round(shape.width),
+        "head": round(shape.head),
+        "head_width": round(shape.head_width),
+        "tip": point(shape.tip),
+        "on_screen": view.on_screen(shape.tip),
     })
 }
 
@@ -498,7 +498,6 @@ fn arrows(view: &View) -> Vec<Value> {
     let explorer = &*view.explorer;
     let name = |tile: usize| node_name(explorer, tile);
     let unit = |tile: usize| explorer.tile_unit(tile).map(ToString::to_string);
-    let width = view.line_width();
     view.marks
         .calls
         .iter()
@@ -513,16 +512,15 @@ fn arrows(view: &View) -> Vec<Value> {
                 "level": level,
                 "role": flow_role(call.flow),
                 "color": hex(call.color),
-                "width": round(width),
             });
-            merge(&mut arrow, head(view, call.back, call.tip, call.spread));
+            merge(&mut arrow, shape(view, &call.shape));
             arrow
         })
         .collect()
 }
 
-/// The arrows between module spheres, each carrying every call one way, as drawn:
-/// how wide its shaft, and its head.
+/// Browsing with nothing selected, the lines between module spheres, each carrying
+/// every call one way, as drawn: how wide, and its head.
 fn module_arrows(view: &View) -> Vec<Value> {
     let explorer = &*view.explorer;
     explorer
@@ -531,20 +529,18 @@ fn module_arrows(view: &View) -> Vec<Value> {
         .iter()
         .enumerate()
         .map(|(index, tube)| {
-            let (flow, level) = flow_kind(tube.flow);
             let mut arrow = json!({
                 "from": explorer.cluster_name(tube.from),
                 "to": explorer.cluster_name(tube.to),
                 "calls": tube.calls,
-                "flow": flow,
-                "level": level,
-                "role": flow_role(tube.flow),
+                "flow": "module",
+                "level": Value::Null,
+                "role": "calls from one module to another, nothing selected (faint)",
                 "drawn": false,
             });
             if let Some(mark) = view.marks.tubes.iter().find(|m| m.index == index) {
                 arrow["drawn"] = json!(true);
-                arrow["width"] = json!(round(2.0 * view.screen_radius(mark.back, mark.radius)));
-                merge(&mut arrow, head(view, mark.back, mark.tip, mark.spread));
+                merge(&mut arrow, shape(view, &mark.shape));
             }
             arrow
         })

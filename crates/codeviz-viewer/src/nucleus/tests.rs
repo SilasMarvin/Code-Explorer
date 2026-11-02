@@ -2,13 +2,9 @@ use codeviz_core::System;
 use codeviz_ir::{Document, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, atlas::fibonacci, map};
 
-use crate::sizes::tube_radius;
-
 use super::{
-    draw::module_strength,
-    inside::{keep_apart, lay_inside},
+    inside::{lattice, lay_inside, spread},
     journey::{OUTSIDE_SHOWN, ROWS, grid, names_grid},
-    route::detour,
     *,
 };
 
@@ -178,22 +174,18 @@ fn crowded() -> (ForceGraph, CodebaseMap) {
 #[test]
 fn the_start_names_a_handful_of_its_callers_and_counts_the_rest() {
     let (graph, map) = crowded();
-    let web = module(&graph, &map, "web::c0");
     for depth in [1, 2] {
         let nucleus = around(&graph, &map, "core::start", depth);
         // Calling into the journey, calling it most, and living by it come first.
         for id in ["web::c0", "core::c6", "core::c7", "core::c8"] {
             let caller = tile(&map, id);
             assert!(!nucleus.folded(caller), "{id} is named at depth {depth}");
-            assert!(nucleus.named(caller));
         }
         let folded: Vec<usize> = (0..graph.positions.len())
             .filter(|&t| nucleus.folded(t))
             .collect();
         assert_eq!(folded.len(), 4, "nine callers, five named");
-        assert_eq!(nucleus.folded_in(web), 4, "counted on their module");
         for &caller in &folded {
-            assert!(!nucleus.named(caller), "unnamed but under the pointer");
             assert!(nucleus.placed(caller) && nucleus.lit(caller), "still drawn");
         }
     }
@@ -296,29 +288,21 @@ fn modules_near_the_start_open_and_the_rest_stay_closed_further_out() {
 }
 
 #[test]
-fn arrows_run_into_and_out_of_the_nucleus() {
+fn calls_run_into_and_out_of_the_nucleus() {
     let (graph, map) = codebase();
     let nucleus = around(&graph, &map, "core::run", 2);
-    let [web, core, db, disk] =
-        ["web::route", "core::run", "db::put", "disk::write"].map(|id| module(&graph, &map, id));
-    let has = |from, to, flow| {
+    let has = |from: &str, to: &str, flow| {
         nucleus
-            .tubes()
+            .links()
             .iter()
-            .any(|t| t.from == from && t.to == to && t.flow == flow)
+            .any(|l| l.from == tile(&map, from) && l.to == tile(&map, to) && l.flow == flow)
     };
-    assert!(has(web, core, Flow::Into));
-    assert!(has(core, db, Flow::Journey(1)));
-    assert!(has(db, disk, Flow::Journey(2)));
-    let into = nucleus
-        .links()
-        .iter()
-        .find(|l| l.flow == Flow::Into)
-        .expect("a call into the start");
-    assert_eq!(
-        nucleus.route(into).len(),
-        4,
-        "a call between modules runs along their arrow"
+    assert!(has("web::route", "core::run", Flow::Into));
+    assert!(has("core::run", "db::put", Flow::Journey(1)));
+    assert!(has("db::put", "disk::write", Flow::Journey(2)));
+    assert!(
+        nucleus.tubes().is_empty(),
+        "no line between modules in a journey"
     );
 }
 
@@ -339,12 +323,6 @@ fn a_new_start_recenters_easing_there() {
         nucleus.ball(db).expect("a sphere").center.length() < 1e-3,
         "ends in the middle"
     );
-}
-
-#[test]
-fn arrows_stay_thin_however_many_calls() {
-    assert!(tube_radius(1) < tube_radius(10));
-    assert!(tube_radius(10_000) <= 0.3);
 }
 
 #[test]
@@ -401,14 +379,11 @@ fn expanding_grows_the_nucleus_and_rings_its_neighbours_outside() {
 }
 
 #[test]
-fn expanded_calls_leave_through_the_wall_towards_their_module() {
+fn expanded_the_start_calls_in_and_out_of_its_module() {
     let (graph, map) = codebase();
     let mut nucleus = around(&graph, &map, "core::run", 1);
     nucleus.expand(&graph, Some(nucleus.middle()));
     while nucleus.advance(0.1) {}
-    let core = nucleus
-        .ball(module(&graph, &map, "core::run"))
-        .expect("a sphere");
     let (run, help, put) = (
         tile(&map, "core::run"),
         tile(&map, "core::help"),
@@ -423,18 +398,8 @@ fn expanded_calls_leave_through_the_wall_towards_their_module() {
     };
     let inside = link(run, help).expect("the call inside the module");
     assert_eq!(inside.flow, Flow::Journey(1));
-    assert_eq!(nucleus.route(&inside).len(), 2, "straight, inside");
-    let out = link(run, put).expect("the call out to db");
-    let route = nucleus.route(&out);
-    assert_eq!(route.len(), 4, "to the wall, to db's surface, to db::put");
-    assert!(
-        (route[1].length() - core.radius).abs() < 0.5,
-        "leaves at the wall"
-    );
-    let db = nucleus
-        .ball(module(&graph, &map, "db::put"))
-        .expect("a sphere");
-    assert!((route[2].distance(db.center) - db.radius).abs() < 0.5);
+    assert!(link(run, put).is_some(), "the call out to db");
+    assert!(nucleus.placed(put), "drawn in db's sphere");
     assert!(nucleus.level(help).is_some(), "called by the start, named");
     assert!(
         nucleus.level(tile(&map, "core::idle")).is_none(),
@@ -443,22 +408,22 @@ fn expanded_calls_leave_through_the_wall_towards_their_module() {
 }
 
 #[test]
-fn what_is_named_inside_never_touches() {
-    // The start and two of its callees all start in one spot.
-    let mut at = vec![
-        Vec3::ZERO,
-        Vec3::new(0.01, 0.0, 0.0),
-        Vec3::new(0.0, 0.0, 0.3),
-    ];
-    let hops = [Some(0), Some(1), Some(1)];
-    keep_apart(&mut at, &hops, 0.05, Vec3::Z);
-    assert_eq!(at[0], Vec3::ZERO, "the start stays");
-    let seen = |v: Vec3| v.truncate();
-    for (i, a) in at.iter().enumerate() {
-        for b in &at[i + 1..] {
-            assert!(seen(*a).distance(seen(*b)) >= 0.1 - 1e-4, "apart as seen");
+fn an_opened_module_spreads_in_rows_wider_along_than_between() {
+    let places = lattice(40, 10.0);
+    assert_eq!(places.len(), 40);
+    assert_eq!(places[0], Vec2::ZERO, "the middle first");
+    for (i, a) in places.iter().enumerate() {
+        assert!(a.length() <= 10.0 + 1e-4, "inside the disc");
+        for b in &places[i + 1..] {
+            let apart = (*a - *b).abs();
+            assert!(apart.y > 0.5 || apart.x > 2.0, "apart, wider along a row");
         }
     }
+    let members: Vec<(usize, Vec3)> = (0..12).map(|t| (t, fibonacci(t, 12) * 3.0)).collect();
+    let spread = spread(&members, Some(5), 4.0);
+    assert_eq!(spread.len(), 12, "every one placed");
+    let first = spread.iter().find(|(t, _)| *t == 5).expect("the first");
+    assert!(first.1.length() < 1e-4, "the first in the middle");
 }
 
 #[test]
@@ -488,7 +453,7 @@ fn the_cursor_shows_where_it_sits_without_moving_anything() {
     let db = module(&graph, &map, "db::put");
     assert!(!nucleus.placed(other));
     let before: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
-    assert!(nucleus.set_cursor(Some(other)));
+    assert!(nucleus.set_cursor(&graph, Some(other)));
     assert!(nucleus.placed(other) && nucleus.lit(other));
     let after: Vec<Ball> = nucleus.balls().map(|(_, b)| b).collect();
     assert_eq!(before, after, "nothing moves");
@@ -499,8 +464,8 @@ fn the_cursor_shows_where_it_sits_without_moving_anything() {
         "just outside its module"
     );
     assert!(at.distance(ball.center) < ball.radius + 2.0);
-    assert!(!nucleus.set_cursor(Some(other)), "no change");
-    assert!(nucleus.set_cursor(None));
+    assert!(!nucleus.set_cursor(&graph, Some(other)), "no change");
+    assert!(nucleus.set_cursor(&graph, None));
     assert!(!nucleus.placed(other));
 }
 
@@ -513,7 +478,11 @@ fn specks_hide_in_a_journey_and_show_browsing() {
     assert!(nucleus.speck(idle));
     assert!(!nucleus.drawn(idle), "a journey shows only itself");
     nucleus.expand(&graph, Some(nucleus.middle()));
-    assert!(!nucleus.drawn(idle), "expanded too");
+    assert!(
+        nucleus.drawn(idle),
+        "expanded, every function of the module"
+    );
+    assert!(!nucleus.lit(tile(&map, "db::other")), "and only those");
     nucleus.set_browse(&graph, true);
     assert!(nucleus.drawn(idle), "browsing, every function shows");
 }
@@ -580,6 +549,8 @@ fn an_outside_caller_hangs_beyond_what_was_there() {
     // log::tail calls log::say, on core::run's journey, from off it.
     let run = tile(&map, "core::run");
     let mut nucleus = around(&graph, &map, "core::run", 1);
+    nucleus.set_cursor(&graph, Some(tile(&map, "log::say")));
+    while nucleus.advance(0.1) {}
     let before: Vec<(usize, Vec3)> = nucleus
         .balls()
         .filter(|(_, b)| nucleus.shows_body(b.body))
@@ -819,22 +790,6 @@ fn a_badge_keeps_the_call_nearest_the_root_wherever_the_cursor_is() {
 }
 
 #[test]
-fn many_names_keep_only_the_near_ones() {
-    let (graph, map) = codebase();
-    let mut nucleus = around(&graph, &map, "core::run", 2);
-    let disk = tile(&map, "disk::write");
-    assert!(nucleus.named(disk), "few enough to name them all");
-    for tile in 1000..1000 + NAMED_ALL {
-        nucleus.now.named.insert(tile, 3);
-    }
-    assert!(nucleus.named(disk), "two calls down keeps its name");
-    assert!(
-        !nucleus.named(1000),
-        "three calls down is named under the pointer"
-    );
-}
-
-#[test]
 fn names_past_a_column_spread_into_more_and_keep_inside() {
     assert_eq!(grid(3, 100.0).len(), 3);
     let many = grid(ROWS + 1, 100.0);
@@ -857,7 +812,6 @@ fn browsing_with_nothing_selected_every_module_points_to_each_it_calls() {
     let (graph, map) = codebase();
     let nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
     let tubes = nucleus.tubes();
-    assert!(tubes.iter().all(|t| t.flow == Flow::Module));
     let mut pairs: Vec<(usize, usize)> = graph
         .calls
         .iter()
@@ -875,10 +829,6 @@ fn browsing_with_nothing_selected_every_module_points_to_each_it_calls() {
         3,
         "core calls three modules"
     );
-    assert!(
-        module_strength(1) < module_strength(12),
-        "more calls, plainer"
-    );
     let selected = Nucleus::gather(
         &graph,
         Some(tile(&map, "core::run")),
@@ -886,30 +836,7 @@ fn browsing_with_nothing_selected_every_module_points_to_each_it_calls() {
         true,
     );
     assert!(
-        selected.tubes().iter().all(|t| t.flow != Flow::Module),
+        selected.tubes().is_empty(),
         "a selection's own calls take over"
     );
-}
-
-#[test]
-fn an_arrow_bends_round_a_sphere_in_its_way() {
-    let right = view_rotation() * Vec3::X;
-    let back = view_rotation() * Vec3::Z;
-    let sphere = (Vec3::ZERO, 3.0);
-    let path = detour(vec![-right * 10.0, right * 10.0], &[sphere], 0.5);
-    assert!(path.len() > 2, "bent");
-    for pair in path.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        let flat = |v: Vec3| v - back * v.dot(back);
-        let along = flat(b - a);
-        let t = (flat(-a).dot(along) / along.length_squared()).clamp(0.0, 1.0);
-        let nearest = flat(a + (b - a) * t);
-        assert!(nearest.length() >= 3.0, "clear of the sphere: {nearest}");
-    }
-    let past = detour(
-        vec![-right * 10.0 + Vec3::Y * 8.0, right * 10.0 + Vec3::Y * 8.0],
-        &[sphere],
-        0.5,
-    );
-    assert_eq!(past.len(), 2, "one already clear runs straight");
 }

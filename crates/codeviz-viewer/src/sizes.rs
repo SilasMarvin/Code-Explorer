@@ -1,7 +1,6 @@
 //! Every size something is drawn at, decided once: a module's sphere by how many
 //! functions it holds, the same everywhere; a function's dot by its role alone, kept
-//! within bounds on screen however near or far the view; an arrow by how many calls
-//! it carries. Text sizes are [`crate::text`]'s.
+//! within bounds on screen however near or far the view. Text sizes are [`crate::text`]'s.
 
 pub(crate) use codeviz_layout::atlas::module_radius;
 
@@ -43,11 +42,4 @@ impl Dot {
         let (least, most) = self.bounds();
         on_screen.clamp(least, most)
     }
-}
-
-/// An arrow's thickness, for this many calls: growing slowly, and never so thick that
-/// the calls running along it are lost.
-pub(crate) fn tube_radius(calls: usize) -> f32 {
-    #[expect(clippy::cast_precision_loss, reason = "a call count")]
-    (0.08 + 0.05 * (calls as f32).ln_1p()).min(0.3)
 }
