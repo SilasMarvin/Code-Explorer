@@ -197,45 +197,6 @@ pub(crate) enum ViewMode {
     Journey,
 }
 
-/// Either side of the focus: what calls it, or what it calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Side {
-    Callers,
-    Callees,
-}
-
-/// Which sides of the focus are hidden, with their calls: what calls it (Shift+I),
-/// what it calls (Shift+O), each with what is further along that way.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Hidden {
-    pub(crate) callers: bool,
-    pub(crate) callees: bool,
-}
-
-impl Hidden {
-    pub(crate) fn hides(self, side: Side) -> bool {
-        match side {
-            Side::Callers => self.callers,
-            Side::Callees => self.callees,
-        }
-    }
-
-    /// The same with one side hidden if it showed, or shown if it was hidden.
-    #[must_use]
-    pub(crate) fn toggled(self, side: Side) -> Self {
-        match side {
-            Side::Callers => Self {
-                callers: !self.callers,
-                ..self
-            },
-            Side::Callees => Self {
-                callees: !self.callees,
-                ..self
-            },
-        }
-    }
-}
-
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
     system: System,
@@ -273,9 +234,6 @@ pub(crate) struct Explorer {
     /// A node clicked off the journey: the focus while it is set, until a journey key,
     /// Esc or Enter, which follows it.
     aside: Option<usize>,
-    /// What calls the focus, or what it calls, picked out and brought into view: when,
-    /// in seconds of app time, and for which node.
-    spotlight: Option<(Side, f32, usize)>,
     /// Lane label to color index, in order of first appearance.
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
@@ -285,8 +243,6 @@ pub(crate) struct Explorer {
     nucleus: Nucleus,
     /// What the nucleus's trail was last worked out for.
     traced: Option<TrailKey>,
-    /// Which sides of the focus are hidden.
-    hidden: Hidden,
     /// Whether a journey is open, or the view browses.
     mode: ViewMode,
     /// Browsing, the function last clicked: what the view lights, and what Enter opens
@@ -328,7 +284,7 @@ impl Explorer {
             }
         }
         // Round nothing for now: gathered for real once the journey is set.
-        let nucleus = Nucleus::gather(&graph, None, Hidden::default(), Trail::default(), false);
+        let nucleus = Nucleus::gather(&graph, None, Trail::default(), false);
         let module_names = {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
                 .map(|cluster| {
@@ -357,12 +313,10 @@ impl Explorer {
             disclosure_cache: Mutex::new(None),
             hovered_tile: None,
             aside: None,
-            spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
             nucleus,
             traced: None,
-            hidden: Hidden::default(),
             mode: ViewMode::Journey,
             selection: None,
             outside: false,
@@ -417,9 +371,7 @@ impl Explorer {
             cursor: self.selected(),
             disclose: self.disclose,
             expanded: self.track().expanded.clone(),
-            spotlight: self.spotlight,
             aside: self.aside,
-            hidden: self.hidden,
             specks: self.nucleus.specks_hidden(),
             mode: self.mode,
             selection: self.selection,
@@ -429,7 +381,7 @@ impl Explorer {
     }
 
     /// Puts the view back as it was, all of it: the journey, its outcome and cursor,
-    /// how much of it shows, the function clicked, the spotlight and what was hidden.
+    /// how much of it shows and the function clicked.
     /// Gathered round the focus's module, the nucleus eases back round the function
     /// it was, and the camera back to where it stood.
     fn restore(&mut self, view: View) {
@@ -456,16 +408,11 @@ impl Explorer {
         track.expanded = view.expanded;
         self.disclose = view.disclose;
         self.disclosure_epoch += 1;
-        self.spotlight = view.spotlight;
         self.aside = view.aside;
         self.mode = view.mode;
         self.selection = view.selection;
         self.outside = view.outside;
         self.nucleus.set_outside(&self.graph, self.outside);
-        if self.hidden != view.hidden {
-            self.hidden = view.hidden;
-            self.nucleus.set_hidden(&self.graph, self.hidden);
-        }
         if self.nucleus.specks_hidden() != view.specks {
             self.nucleus.toggle_specks();
         }
@@ -535,18 +482,13 @@ impl Explorer {
         self.track().selected
     }
 
-    /// Moves the cursor, and the focus with it. The spotlight was on the focus
-    /// it leaves, so it goes out; the calls folded over where it lands open, so its bar
-    /// shows; a notice goes.
+    /// Moves the cursor, and the focus with it. The calls folded over where it lands
+    /// open, so its bar shows; a notice goes.
     pub(crate) fn select(&mut self, span: Option<SpanId>) {
-        let before = self.graph_focus();
         // Whatever a key said it could not do is past once the cursor moves.
         self.notice = None;
         self.aside = None;
         self.track_mut().selected = span;
-        if self.graph_focus() != before {
-            self.spotlight = None;
-        }
         self.reveal_cursor();
     }
 
@@ -613,7 +555,6 @@ impl Explorer {
             explorer.selection = explorer.graph_focus();
             explorer.mode = ViewMode::Browse;
             explorer.aside = None;
-            explorer.spotlight = None;
         });
         self.aim += 1;
         // Browsing shrinks the nucleus back; the pose it would have gone back to is
@@ -658,21 +599,15 @@ impl Explorer {
     }
 
     /// In a journey, shows every function that calls one on it from off it, or leaves
-    /// them out again; nothing already there moves.
+    /// them out again (I); nothing already there moves. Browsing, the selection's
+    /// callers already show, so it does nothing.
     pub(crate) fn toggle_outside(&mut self) {
+        if self.browsing() {
+            return;
+        }
         self.outside = !self.outside;
         self.nucleus.set_outside(&self.graph, self.outside);
         self.moved += 1;
-    }
-
-    /// What I does: in a journey, brings in every outside caller into it; browsing,
-    /// picks out the selection's callers.
-    pub(crate) fn press_callers(&mut self, now: f32) {
-        if self.browsing() {
-            self.toggle_spotlight(Side::Callers, now);
-        } else {
-            self.toggle_outside();
-        }
     }
 
     /// Starts the journey at `root` on its happy path, with the cursor on it.
@@ -738,15 +673,10 @@ impl Explorer {
     pub(crate) fn gather(&mut self) {
         let focus = self.nucleus_focus();
         self.traced = Some(self.trail_key(focus));
-        let mut nucleus = Nucleus::gather(
-            &self.graph,
-            focus,
-            self.hidden,
-            self.trail_from(focus),
-            self.browsing(),
-        );
+        let mut nucleus =
+            Nucleus::gather(&self.graph, focus, self.trail_from(focus), self.browsing());
         nucleus.set_outside(&self.graph, self.outside);
-        nucleus.mark(&self.graph, self.cursor_mark());
+        nucleus.mark(self.cursor_mark());
         while nucleus.advance(1.0) {}
         self.nucleus = nucleus;
         self.moved += 1;
@@ -771,7 +701,7 @@ impl Explorer {
     /// Tells the nucleus which function the pointer has settled on. Returns whether
     /// that changed.
     pub(crate) fn hover_nucleus(&mut self, tile: Option<usize>) -> bool {
-        self.nucleus.hover(&self.graph, tile)
+        self.nucleus.hover(tile)
     }
 
     /// The function under the pointer as drawn: the one the pointer has settled on, so
@@ -877,18 +807,6 @@ impl Explorer {
         trail
     }
 
-    /// Which sides of the focus are hidden.
-    pub(crate) fn hidden(&self) -> Hidden {
-        self.hidden
-    }
-
-    /// Hides one side of the focus, with its calls, or shows it again.
-    pub(crate) fn toggle_hidden(&mut self, side: Side) {
-        self.hidden = self.hidden.toggled(side);
-        self.nucleus.set_hidden(&self.graph, self.hidden);
-        self.moved += 1;
-    }
-
     /// Hides the nucleus's nameless specks, or shows them again, in the view it is in.
     pub(crate) fn toggle_specks(&mut self) {
         self.nucleus.toggle_specks();
@@ -914,7 +832,7 @@ impl Explorer {
             self.traced = Some(key);
             recentered |= nucleus.retrace(&self.graph, trail);
         }
-        let marked = nucleus.mark(&self.graph, cursor);
+        let marked = nucleus.mark(cursor);
         if nucleus.advance(dt) || recentered || marked {
             self.moved += 1;
         }
@@ -973,10 +891,7 @@ impl Explorer {
     pub(crate) fn focus_tile(&mut self, tile: usize, number: Option<&str>) {
         self.navigate(|explorer| {
             if explorer.browsing() {
-                if explorer.selection != Some(tile) {
-                    explorer.selection = Some(tile);
-                    explorer.spotlight = None;
-                }
+                explorer.selection = Some(tile);
             } else {
                 explorer.focus_on(tile, number);
             }
@@ -986,12 +901,8 @@ impl Explorer {
     fn focus_on(&mut self, tile: usize, number: Option<&str>) {
         if let Some(span) = self.span_at(tile, number) {
             self.select(Some(span));
-        } else if self.aside != Some(tile) {
-            let before = self.graph_focus();
+        } else {
             self.aside = Some(tile);
-            if self.graph_focus() != before {
-                self.spotlight = None;
-            }
         }
     }
 
@@ -1057,7 +968,6 @@ impl Explorer {
             return;
         }
         self.replace_root(unit);
-        self.spotlight = None;
     }
 
     pub(crate) fn disclose(&self) -> Disclose {
@@ -1148,45 +1058,6 @@ impl Explorer {
         callers.sort_unstable();
         callers.dedup();
         callers
-    }
-
-    /// Which side of the focus is in the spotlight, and since when. Only ever on the
-    /// focus: once the focus moves, it is out.
-    pub(crate) fn spotlight(&self) -> Option<(Side, f32)> {
-        self.spotlight
-            .filter(|&(_, _, tile)| Some(tile) == self.graph_focus())
-            .map(|(side, since, _)| (side, since))
-    }
-
-    /// Puts `side` in the spotlight at `now`, or takes it out when it already is.
-    pub(crate) fn toggle_spotlight(&mut self, side: Side, now: f32) {
-        let Some(focus) = self.graph_focus() else {
-            return;
-        };
-        self.spotlight = match self.spotlight() {
-            Some((on, _)) if on == side => None,
-            _ => Some((side, now, focus)),
-        };
-    }
-
-    /// Takes the spotlight out.
-    pub(crate) fn clear_spotlight(&mut self) {
-        self.spotlight = None;
-    }
-
-    /// The nodes in the spotlight: the focus's callers or its callees, each once.
-    pub(crate) fn spotlit(&self) -> Vec<usize> {
-        let (Some((side, _)), Some(focus)) = (self.spotlight(), self.graph_focus()) else {
-            return Vec::new();
-        };
-        let mut tiles: Vec<usize> = match side {
-            Side::Callers => self.graph.callers(focus).collect(),
-            Side::Callees => self.graph.callees(focus).collect(),
-        };
-        tiles.sort_unstable();
-        tiles.dedup();
-        tiles.retain(|&t| t != focus);
-        tiles
     }
 
     /// What reaches the focus drawn and what it reaches, once
@@ -1646,7 +1517,6 @@ pub(crate) mod tests {
         explorer.toggle_expanded(a_span);
         explorer.step(Step::Into);
         explorer.step(Step::Into);
-        explorer.toggle_spotlight(Side::Callers, 1.0);
         let before = explorer.view();
 
         explorer.open_at(tile(&explorer, "b"));
@@ -1656,7 +1526,6 @@ pub(crate) mod tests {
             Disclose::Depth(2),
             "b opens as deep as the journey before it"
         );
-        assert!(explorer.spotlight().is_none());
 
         assert!(explorer.go_back());
         assert_eq!(explorer.view(), before);
@@ -1665,11 +1534,6 @@ pub(crate) mod tests {
         assert!(
             explorer.disclosure().shows(a_span),
             "a still opened by hand"
-        );
-        assert_eq!(
-            explorer.spotlight().map(|(side, _)| side),
-            Some(Side::Callers),
-            "the spotlight back on"
         );
         assert!(explorer.go_back(), "then the walk to it");
         assert!(!explorer.go_back(), "from the first place");
@@ -1702,13 +1566,7 @@ pub(crate) mod tests {
     fn only_moves_are_remembered() {
         let mut explorer = explorer();
         explorer.set_disclose(Disclose::Depth(3));
-        explorer.toggle_spotlight(Side::Callees, 0.0);
-        explorer.toggle_hidden(Side::Callers);
-        assert!(
-            !explorer.can_go_back(),
-            "showing more, the spotlight and hiding are not moves"
-        );
-        explorer.toggle_hidden(Side::Callers);
+        assert!(!explorer.can_go_back(), "showing more is not a move");
         explorer.step(Step::Into);
 
         let main = tile(&explorer, "main");
@@ -1756,17 +1614,6 @@ pub(crate) mod tests {
         assert_eq!(at(&explorer), "main", "back to where the second walk began");
         assert!(explorer.go_back());
         assert_eq!(at(&explorer), "a", "then to before the click");
-    }
-
-    #[test]
-    fn back_puts_back_what_was_hidden() {
-        let mut explorer = explorer();
-        explorer.toggle_hidden(Side::Callers);
-        explorer.open_at(tile(&explorer, "b"));
-        explorer.toggle_hidden(Side::Callers);
-        explorer.toggle_hidden(Side::Callees);
-        assert!(explorer.go_back());
-        assert!(explorer.hidden().callers && !explorer.hidden().callees);
     }
 
     #[test]
@@ -1949,8 +1796,6 @@ pub(crate) mod tests {
         assert_eq!(explorer.aside(), Some(b));
         assert_eq!(explorer.graph_focus(), Some(b), "I and O act on it");
         assert_eq!(at(&explorer), "a", "the cursor stays put");
-        explorer.toggle_spotlight(Side::Callers, 0.0);
-        assert_eq!(explorer.spotlit(), vec![tile(&explorer, "main")]);
 
         assert_eq!(
             explorer.step(Step::Into).map(|s| explorer.label(s)),
@@ -1994,22 +1839,6 @@ pub(crate) mod tests {
         assert!(explorer.go_back(), "one move to go back from");
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
         assert!(!explorer.can_go_back());
-    }
-
-    #[test]
-    fn the_spotlight_goes_out_when_the_focus_moves() {
-        let mut explorer = explorer();
-        explorer.toggle_spotlight(Side::Callees, 0.0);
-        let mut callees = vec![tile(&explorer, "a"), tile(&explorer, "b")];
-        callees.sort_unstable();
-        assert_eq!(explorer.spotlit(), callees);
-        explorer.step(Step::Into);
-        assert!(explorer.spotlight().is_none());
-        explorer.step(Step::Back);
-        assert!(
-            explorer.spotlight().is_none(),
-            "and stays out on coming back"
-        );
     }
 
     #[test]
@@ -2270,34 +2099,6 @@ pub(crate) mod tests {
         assert_eq!(names(&explorer), [true, true, true], "two levels down");
         assert_eq!(explorer.nucleus().numbers(c), ["1.1"]);
         assert_eq!(explorer.nucleus().level(c), Some(2));
-
-        explorer.toggle_hidden(Side::Callees);
-        assert_eq!(
-            names(&explorer),
-            [false, false, false],
-            "the journey hidden"
-        );
-    }
-
-    #[test]
-    fn hiding_a_side_unlights_it() {
-        let mut explorer = explorer();
-        let a = explorer.map().tile_of(&UnitId::new("x:a")).unwrap();
-        explorer.open_at(a);
-        explorer.ease_nucleus(1.0);
-        explorer.refresh_reach();
-        let main = explorer.map().tile_of(&UnitId::new("x:main")).unwrap();
-        let reach = explorer.reach().unwrap().clone();
-        assert!(crate::graph_view::shown_relation(&explorer, &reach, main).is_some());
-        explorer.toggle_hidden(Side::Callers);
-        assert!(explorer.hidden().hides(Side::Callers));
-        assert_eq!(
-            crate::graph_view::shown_relation(&explorer, &reach, main),
-            None,
-            "a's caller is hidden"
-        );
-        explorer.toggle_hidden(Side::Callers);
-        assert_eq!(explorer.hidden(), Hidden::default());
     }
 
     #[test]
@@ -2431,7 +2232,7 @@ pub(crate) mod tests {
         explorer.gather();
         explorer.ease_nucleus(1.0);
         assert!(!explorer.nucleus().lit(x), "off the journey, not shown");
-        explorer.press_callers(0.0);
+        explorer.toggle_outside();
         explorer.ease_nucleus(1.0);
         assert!(explorer.outside_shown());
         assert!(explorer.nucleus().outside(x), "brought in");

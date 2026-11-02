@@ -1,7 +1,7 @@
 //! Where the view has been, for going back and forward the way a browser does. Each
 //! entry is the whole view as it was when it was left: the journey and its outcome,
-//! the cursor, how much of it showed, the function clicked, the spotlight and what was
-//! hidden, and where the camera stood, so going back puts all of it back, seen as it
+//! the cursor, how much of it showed, the function clicked, and where the camera
+//! stood, so going back puts all of it back, seen as it
 //! was, rather than only the node it was on.
 //!
 //! One rule says what makes an entry: whatever changes the nucleus's middle or where
@@ -15,11 +15,7 @@ use std::collections::HashSet;
 use codeviz_core::SpanId;
 use codeviz_ir::UnitId;
 
-use crate::{
-    camera::Pose,
-    disclosure::Disclose,
-    explorer::{Hidden, Side, ViewMode},
-};
+use crate::{camera::Pose, disclosure::Disclose, explorer::ViewMode};
 
 /// The most places remembered; older ones are forgotten.
 const LIMIT: usize = 200;
@@ -31,12 +27,9 @@ pub(crate) struct View {
     pub(crate) cursor: Option<SpanId>,
     pub(crate) disclose: Disclose,
     pub(crate) expanded: HashSet<SpanId>,
-    /// The side in the spotlight, when it came on, and the node it was on for.
-    pub(crate) spotlight: Option<(Side, f32, usize)>,
     /// A node clicked off the journey, the focus while it was.
     pub(crate) aside: Option<usize>,
-    /// The sides of the focus hidden, and whether the nucleus's specks were.
-    pub(crate) hidden: Hidden,
+    /// Whether the nucleus's specks were left out.
     pub(crate) specks: bool,
     /// Whether a journey was open, or the view browsed.
     pub(crate) mode: ViewMode,
