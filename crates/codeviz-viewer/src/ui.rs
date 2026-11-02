@@ -14,7 +14,7 @@ use crate::{
     colors::{CALLER_TEXT, MUTED},
     explorer::Explorer,
     journey_panel::{self, JourneyPanel},
-    key_help::{Showing, key_help, key_hint},
+    key_help::{key_help, key_hint},
     labels::draw_graph_labels,
     text,
 };
@@ -169,7 +169,7 @@ fn draw_ui(
                 &mut chrome.search,
             );
         }
-        key_hint(ctx, graph_area, Showing::of(&explorer));
+        key_hint(ctx, graph_area, explorer.browsing());
         if help.0 {
             // Down to the window's foot, over the journey panel where it must, so the
             // whole list fits rather than scrolls.
@@ -177,7 +177,7 @@ fn draw_ui(
                 graph_area.min,
                 egui::pos2(graph_area.max.x, ctx.content_rect().max.y),
             );
-            key_help(ctx, room, &mut help.0, Showing::of(&explorer));
+            key_help(ctx, room, &mut help.0, explorer.browsing());
         }
         if let Some(area) = panel_area {
             let tethers = journey_panel::draw(ctx, area, &mut explorer, &mut panel);

@@ -5,19 +5,18 @@ use bevy_egui::egui;
 
 use crate::{
     colors::{CALLEE, CALLER, CURSOR, DEEPER, MUTED, egui_color},
-    explorer::Explorer,
     labels::{PILL, PILL_PAD},
     text,
 };
 
 /// A hint at the keys along `foot`.
-pub(crate) fn key_hint(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
+pub(crate) fn key_hint(ctx: &egui::Context, foot: egui::Rect, browsing: bool) {
     ctx.layer_painter(egui::LayerId::background())
         .with_clip_rect(foot)
         .text(
             egui::pos2(foot.min.x + 12.0, foot.max.y - 10.0),
             egui::Align2::LEFT_BOTTOM,
-            if view.browsing {
+            if browsing {
                 "Browsing · click a function to select it, nothing moves · Enter opens its \
                  journey · Backspace back · / search · R whole map · H keys"
             } else {
@@ -27,13 +26,6 @@ pub(crate) fn key_hint(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
             egui::FontId::proportional(text::SMALL),
             MUTED,
         );
-}
-
-/// What the view open is, for the keys that apply in it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Showing {
-    /// Browsing, rather than in a journey.
-    browsing: bool,
 }
 
 /// Which view a key does something in.
@@ -46,20 +38,13 @@ enum When {
     Journey,
 }
 
-impl Showing {
-    pub(crate) fn of(explorer: &Explorer) -> Self {
-        Self {
-            browsing: explorer.browsing(),
-        }
-    }
-}
-
 impl When {
-    fn applies(self, view: Showing) -> bool {
+    /// Whether a key does something browsing, or in a journey.
+    fn applies(self, browsing: bool) -> bool {
         match self {
             Self::Always => true,
-            Self::Browse => view.browsing,
-            Self::Journey => !view.browsing,
+            Self::Browse => browsing,
+            Self::Journey => !browsing,
         }
     }
 }
@@ -274,7 +259,7 @@ const HELP_CHAR: f32 = 5.6;
 /// The keys that apply to the view open, on a sheet down the right of `area`, in two
 /// columns where they fit: whole at 1600 × 1000, and in a smaller window scrolling,
 /// with a cue at its foot while more lies below.
-pub(crate) fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, view: Showing) {
+pub(crate) fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, browsing: bool) {
     let margin = 12.0;
     let width = (area.width() - 2.0 * margin).clamp(240.0, HELP_WIDTH);
     let height = (area.height() - 2.0 * margin).max(160.0);
@@ -284,7 +269,7 @@ pub(crate) fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, v
         .map(|(title, keys)| {
             let keys = keys
                 .iter()
-                .filter(|(.., when)| when.applies(view))
+                .filter(|(.., when)| when.applies(browsing))
                 .map(|&(key, what, _)| (key, what))
                 .collect();
             (*title, keys)
@@ -306,7 +291,7 @@ pub(crate) fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, v
                     ui.set_width(width - 28.0);
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.horizontal(|ui| {
-                        let title = if view.browsing {
+                        let title = if browsing {
                             "Keys while browsing: no journey open"
                         } else {
                             "Keys in a journey"
@@ -322,14 +307,14 @@ pub(crate) fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, v
                         ui.spacing_mut().item_spacing.y = 2.0;
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            for (color, what) in color_key(view.browsing) {
+                            for (color, what) in color_key(browsing) {
                                 ui.label(egui::RichText::new("●").color(color));
                                 ui.label(egui::RichText::new(what).size(text::SMALL).color(MUTED));
                                 ui.add_space(8.0);
                             }
                         });
                         ui.label(
-                            egui::RichText::new(if view.browsing {
+                            egui::RichText::new(if browsing {
                                 "Browsing, a click selects a function and moves nothing. \
                                  Enter opens its journey."
                             } else {
@@ -340,7 +325,7 @@ pub(crate) fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, v
                             .size(text::SMALL)
                             .color(egui::Color32::WHITE),
                         );
-                        for line in reading(view.browsing) {
+                        for line in reading(browsing) {
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(*line).size(text::SMALL).color(MUTED),
@@ -466,8 +451,7 @@ mod tests {
                     ..Default::default()
                 };
                 let mut output = ctx.run_ui(input, |ui| {
-                    let view = Showing { browsing };
-                    key_help(ui.ctx(), area, &mut open, view);
+                    key_help(ui.ctx(), area, &mut open, browsing);
                 });
                 output.textures_delta.clear();
             }
@@ -494,8 +478,7 @@ mod tests {
                     ..Default::default()
                 };
                 let mut output = ctx.run_ui(input, |ui| {
-                    let view = Showing { browsing };
-                    key_help(ui.ctx(), area, &mut open, view);
+                    key_help(ui.ctx(), area, &mut open, browsing);
                 });
                 output.textures_delta.clear();
             }
