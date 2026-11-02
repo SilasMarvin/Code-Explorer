@@ -9,7 +9,10 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 
 use crate::{
-    colors::{CURSOR, FURTHER, egui_color},
+    colors::{
+        CALL_STRENGTH, CURSOR, FOLDED_STRENGTH, FURTHER, INNER_STRENGTH, MAP_STRENGTH,
+        OUTSIDE_STRENGTH, egui_color, followed as lighter,
+    },
     drive::{ArrowShape, CallMark, Marks, TubeMark},
     explorer::Explorer,
     graph_view::drawn_radius,
@@ -23,23 +26,24 @@ const BRIGHT_WIDTH: f32 = 2.0;
 const INNER_WIDTH: f32 = 1.0;
 /// A call's head: its length along the line and its width, in points.
 const HEAD: (f32, f32) = (8.0, 7.0);
-/// A line between modules, in points; one carrying [`MANY_CALLS`] or more, a little
-/// wider. Its head is smaller than a call's.
+/// A line between modules, in points: one call's thinnest, wider the more calls it
+/// carries, up to [`MAP_WIDEST`] for [`MAP_MOST_CALLS`] or more, so a module that
+/// calls another often reads heavier than a single call. Its head is smaller than a
+/// call's.
 const MAP_WIDTH: f32 = 1.0;
-const MAP_WIDE: f32 = 1.6;
-const MANY_CALLS: usize = 10;
+const MAP_WIDEST: f32 = 2.5;
+const MAP_MOST_CALLS: f32 = 16.0;
 const MAP_HEAD: (f32, f32) = (6.0, 5.0);
-/// How strong every line between modules is: one, so the map is no hairball.
-const MAP_ALPHA: f32 = 0.16;
 /// Between a line's end and the dot or sphere it ends at, in points.
 const GAP: f32 = 2.5;
 /// How much of its strength a line keeps where it crosses a sphere it does not touch.
 const CROSSING: f32 = 0.3;
 /// Kept clear round a dot a line passes over without ending there, in points.
 const DOT_CLEAR: f32 = 2.0;
-/// How far apart, in points, the two lines between the same two ends run when calls
-/// go both ways.
-const BOTH_WAYS: f32 = 2.5;
+/// How far each of the two lines between the same two ends moves to its right when
+/// calls go both ways, in points: far enough that their heads, side by side, do not
+/// touch, so neither hides the other.
+const BOTH_WAYS: f32 = 4.0;
 
 /// What a stretch of a line crosses: a sphere it is not part of, drawn faint; or a
 /// dot it does not end at, left out.
@@ -323,15 +327,19 @@ fn draw_map(painter: &egui::Painter, screen: &Screen, nucleus: &Nucleus, marks: 
             (from, to)
         };
         let crossings = screen.crossings(from, to, [Some(tube.from), Some(tube.to)], [None; 2]);
-        let width = if tube.calls >= MANY_CALLS {
-            MAP_WIDE
-        } else {
-            MAP_WIDTH
-        };
-        let color = FURTHER.with_alpha(MAP_ALPHA);
+        let width = map_width(tube.calls);
+        let color = FURTHER.with_alpha(MAP_STRENGTH);
         let shape = paint(painter, (from, to), width, color, MAP_HEAD, &crossings);
         marks.tubes.push(TubeMark { index, shape });
     }
+}
+
+/// How wide a line between modules carrying `calls` calls is: [`MAP_WIDTH`] for one,
+/// a step wider each time they double, [`MAP_WIDEST`] at [`MAP_MOST_CALLS`].
+fn map_width(calls: usize) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "a count of calls")]
+    let doublings = (calls.max(1) as f32).log2() / MAP_MOST_CALLS.log2();
+    MAP_WIDTH + (MAP_WIDEST - MAP_WIDTH) * doublings.min(1.0)
 }
 
 /// Whether a call is the one being followed, drawn bright over the rest.
@@ -348,24 +356,40 @@ fn followed(explorer: &Explorer, link: &Link) -> bool {
 }
 
 /// A call's color: its flow's, but the cursor's for the call into the cursor, and
-/// lighter for the others being followed.
+/// lighter for the others being followed; a call in from off the journey stays pale,
+/// stronger when followed.
 fn link_color(explorer: &Explorer, link: &Link, bright: bool) -> Color {
     let nucleus = explorer.nucleus();
     match link.flow {
-        Flow::Outside if bright => Color::WHITE.with_alpha(0.9),
-        Flow::Outside => link.flow.color().with_alpha(0.35),
-        Flow::Inner if !bright => link.flow.color().with_alpha(0.28),
+        // Pale, as everything brought in from off the journey is; at full strength
+        // when followed.
+        Flow::Outside if bright => link.flow.color(),
+        Flow::Outside => link.flow.color().with_alpha(OUTSIDE_STRENGTH),
+        Flow::Inner if !bright => link.flow.color().with_alpha(INNER_STRENGTH),
         // A caller of the start folded into its module's count: there, but quiet.
-        Flow::Into if !bright && nucleus.folded(link.from) => link.flow.color().with_alpha(0.25),
+        Flow::Into if !bright && nucleus.folded(link.from) => {
+            link.flow.color().with_alpha(FOLDED_STRENGTH)
+        }
         _ if bright && explorer.cursor() == Some(link.to) => CURSOR,
-        _ if bright => link.flow.color().mix(&Color::WHITE, 0.35),
-        _ => link.flow.color().with_alpha(0.85),
+        _ if bright => lighter(link.flow.color()),
+        _ => link.flow.color().with_alpha(CALL_STRENGTH),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_between_modules_is_wider_the_more_calls_it_carries() {
+        assert!(
+            (map_width(1) - MAP_WIDTH).abs() < 1e-6,
+            "one call, thinnest"
+        );
+        assert!(map_width(2) > map_width(1) && map_width(5) > map_width(2));
+        assert!((map_width(16) - MAP_WIDEST).abs() < 1e-6);
+        assert!((map_width(400) - MAP_WIDEST).abs() < 1e-6, "and no wider");
+    }
 
     #[test]
     fn a_line_crosses_a_circle_where_it_runs_inside_it() {

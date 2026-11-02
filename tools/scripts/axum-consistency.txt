@@ -1,0 +1,85 @@
+#: view demo/out/axum-server.json
+# The same action does the same thing wherever it happens. Browsing, the journey keys
+# do nothing (they say "Open a journey first") and Esc clears the selection. A search
+# picks a function as a click does, in a journey too: the cursor goes to a call the
+# journey runs, a function off it is set aside. The depth keys stop at the journey's
+# deepest level and at 1. With I on, a step of the cursor moves nothing; a function
+# that both calls the start and is called is ringed violet (colours).
+click pricing::quote
+expect selection pricing::quote
+snap selected
+
+key .
+key down
+key ]
+key i
+expect mode browse
+expect selection pricing::quote
+expect depth 1
+expect nothing-moved
+snap journey keys browsing
+
+key esc
+expect selection none
+expect nothing-moved
+snap esc deselects
+
+click orders::place
+key enter
+expect start orders::place
+snap journey
+
+key /
+type quote
+key enter
+expect mode journey
+expect start orders::place
+expect cursor pricing::quote
+expect aside none
+expect nothing-moved
+snap search moves the cursor
+
+key /
+type register
+key enter
+expect mode journey
+expect start orders::place
+expect aside users::register
+expect drawn users::register
+snap search sets aside
+
+key esc
+expect aside none
+key ,
+key ,
+expect depth 1
+key .
+key .
+key .
+key .
+key .
+expect depth 3
+expect check panel-agrees
+snap deepest
+
+key ,
+key ,
+key ,
+key ,
+expect depth 1
+snap shallowest
+
+bar users::find_user
+key i
+expect outside_callers true
+snap outside callers
+key ]
+expect nothing-moved
+snap step with outside callers
+key ]
+expect nothing-moved
+key [
+key [
+expect cursor users::find_user
+expect nothing-moved
+snap stepped back

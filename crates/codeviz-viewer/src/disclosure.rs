@@ -236,6 +236,19 @@ impl Disclosed {
         &self.trail
     }
 
+    /// How many levels below the root its deepest call is, shown or not: as deep as
+    /// `.` goes.
+    pub(crate) fn deepest(&self) -> u32 {
+        let levels = self
+            .numbers
+            .values()
+            .filter(|n| !n.is_empty())
+            .map(|n| n.matches('.').count() + 1)
+            .max()
+            .unwrap_or(0);
+        u32::try_from(levels).unwrap_or(u32::MAX)
+    }
+
     /// Whether a span shows.
     pub(crate) fn shows(&self, span: SpanId) -> bool {
         self.shown.contains(&span)

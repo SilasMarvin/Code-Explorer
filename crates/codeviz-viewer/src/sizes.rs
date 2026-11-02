@@ -1,6 +1,7 @@
-//! Every size something is drawn at, decided once: a module's sphere by how many
-//! functions it holds, the same everywhere; a function's dot by its role alone, kept
-//! within bounds on screen however near or far the view. Text sizes are [`crate::text`]'s.
+//! Every size a sphere or a dot is drawn at, decided once: a module's sphere by how
+//! many functions it holds, the same everywhere; a function's dot by its role alone,
+//! kept within bounds on screen however near or far the view. Text sizes are
+//! [`crate::text`]'s; arrows' widths and heads [`crate::arrows`]'.
 
 pub(crate) use codeviz_layout::atlas::module_radius;
 

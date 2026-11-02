@@ -112,8 +112,8 @@ impl Viewer {
         self
     }
 
-    /// Opens with the nucleus expanded, showing how calls run inside the start's
-    /// module; X shrinks it back among the others.
+    /// With a focus, opens with the journey's start's module expanded, showing every
+    /// function in it; X shrinks it back among the others. Without one, does nothing.
     #[must_use]
     pub fn expanded(mut self) -> Self {
         self.expanded = true;
@@ -160,7 +160,8 @@ impl Viewer {
             explorer.open_at(tile);
         }
         explorer.gather();
-        if self.expanded {
+        // The start's module: browsing there is no focus to expand the module of.
+        if self.expanded && focus.is_some() {
             explorer.toggle_expand(None);
         }
         explorer
@@ -170,8 +171,10 @@ impl Viewer {
     #[must_use]
     pub fn run(mut self) -> AppExit {
         let mut explorer = self.explorer();
-        if let Some(depth) = self.depth {
-            explorer.set_disclose(disclosure::Disclose(depth));
+        // As deep as the journey goes at most; browsing, no journey to show deeper.
+        if let Some(depth) = self.depth.filter(|_| !explorer.browsing()) {
+            let deepest = explorer.disclosure().deepest().max(1);
+            explorer.set_disclose(disclosure::Disclose(depth.clamp(1, deepest)));
         }
         // Back starts from the view as it opens.
         explorer.forget_history();
@@ -208,7 +211,7 @@ impl Viewer {
             scene::ScenePlugin,
             ui::UiPlugin,
         ))
-        .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
+        .insert_resource(ClearColor(colors::GROUND))
         .insert_resource(explorer)
         .init_resource::<JourneyPanel>()
         .init_resource::<drive::Marks>()

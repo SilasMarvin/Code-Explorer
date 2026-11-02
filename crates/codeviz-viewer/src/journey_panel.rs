@@ -10,7 +10,11 @@ use codeviz_core::SpanId;
 use codeviz_ir::ExitKind;
 
 use crate::{
-    colors::{CALLER, CURSOR, ERROR, MUTED, OK, ON_FILL, egui_color},
+    colors::{
+        BADGE_FILL, BADGE_INK, CALLER, CURSOR, CURSOR_LINE, ERROR, FAINT_LINE, GUESSED, HOVER,
+        MUTED, OK, ON_FILL, PANEL_EDGE, SELECTED, SOMETIMES, SURFACE, TEXT, THUMB, TRACK,
+        egui_color,
+    },
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
     graph_view::{look_color, role_look},
@@ -53,9 +57,6 @@ const BAR_TEXT_SMALL: f32 = text::SMALL;
 /// Rows a docked journey grows to before it scrolls: the start and four levels.
 const DOCKED_ROWS: usize = 5;
 
-/// Opaque: the graph is drawn on under the panel.
-const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(11, 13, 19);
-
 /// The rows of bars the panel makes room for: the journey's, a row a level with the
 /// start's, up to a few, past which they scroll; and above them the start's callers.
 pub(crate) fn rows(explorer: &Explorer) -> usize {
@@ -94,9 +95,8 @@ struct Bar {
     shown: bool,
 }
 
-/// The bar a tether runs from to its node: the one under the pointer. The cursor's
-/// bar has none: its node is the one pink node, and a line across the graph to it
-/// ran through the names on the way.
+/// The bar a tether runs from to its node: the one under the pointer, the cursor's
+/// as any other.
 #[derive(Default)]
 pub(crate) struct Tethers {
     pub(crate) hovered: Option<egui::Rect>,
@@ -122,11 +122,12 @@ pub(crate) fn draw(
             // clickable under its margin.
             ui.allocate_rect(strip, egui::Sense::hover());
             ui.set_clip_rect(rect);
+            // Opaque: the graph is drawn on under the panel.
             ui.painter().rect(
                 rect,
                 8.0,
-                BACKGROUND,
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(28)),
+                SURFACE,
+                egui::Stroke::new(1.0, PANEL_EDGE),
                 egui::StrokeKind::Inside,
             );
             let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER));
@@ -145,16 +146,16 @@ pub(crate) fn draw(
     tethers
 }
 
-/// How much of the journey shows: levels of calls below the root.
+/// How much of the journey shows: levels of calls below the root; − and + do as `,`
+/// and `.` do.
 fn disclosure(ui: &mut egui::Ui, explorer: &mut Explorer) {
     let Disclose(depth) = explorer.disclose();
-    let mut disclose = Disclose(depth);
     if ui
         .small_button("+")
         .on_hover_text("One more level of calls (.)")
         .clicked()
     {
-        disclose = Disclose(depth + 1);
+        explorer.deeper();
     }
     ui.label(egui::RichText::new(format!("{depth}")).small());
     if ui
@@ -162,12 +163,9 @@ fn disclosure(ui: &mut egui::Ui, explorer: &mut Explorer) {
         .on_hover_text("One level of calls fewer (,)")
         .clicked()
     {
-        disclose = Disclose(depth.saturating_sub(1).max(1));
+        explorer.shallower();
     }
     ui.label(egui::RichText::new("depth").small().color(MUTED));
-    if disclose != explorer.disclose() {
-        explorer.set_disclose(disclose);
-    }
 }
 
 fn header_bar(
@@ -215,7 +213,7 @@ fn title(ui: &mut egui::Ui, explorer: &Explorer) {
     ui.add(
         egui::Label::new(
             egui::RichText::new(journey_title(explorer))
-                .color(egui::Color32::WHITE)
+                .color(TEXT)
                 .strong(),
         )
         .truncate(),
@@ -262,6 +260,13 @@ fn canvas(
     let slots = slots.max(1.0);
     let fit = content.width() / slots;
     let usual = fit.max(MIN_SLOT);
+    // Another journey, or one put back, opens at the usual scale.
+    if panel
+        .followed
+        .is_some_and(|(revision, ..)| revision != explorer.revision())
+    {
+        panel.zoom = None;
+    }
     let scale = panel.zoom.unwrap_or(usual);
     let pitch = ROW + ROW_GAP;
     let visible_rows = (content.height() / pitch).floor().max(1.0);
@@ -371,7 +376,7 @@ fn canvas(
         if !points.iter().all(|p| p.is_finite()) {
             continue;
         }
-        let stroke = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(70));
+        let stroke = egui::Stroke::new(1.0, FAINT_LINE);
         if is_conditional(span) {
             painter.extend(egui::Shape::dashed_line(&points, stroke, 3.0, 3.0));
         } else {
@@ -394,25 +399,21 @@ fn canvas(
             hovered = Some(bar.span);
         }
         let tile = tile_of(bar.span);
-        // Its node's color; a call with no node of its own is grey, as everything
-        // that is no module's is. Only the cursor's call is pink: another run of the
-        // same function is painted as its node would be were the cursor elsewhere.
-        let base = match tile {
-            _ if Some(bar.span) == cursor => egui_color(CURSOR),
-            Some(tile) => egui_color(look_color(role_look(explorer, tile))),
-            None => MUTED,
-        };
-        let faint = Confidence::of(span) == Confidence::Guessed || is_handoff(span);
-        let (fill, text) = if faint {
-            (base.gamma_multiply(0.22), MUTED)
+        let fill = bar_fill(explorer, bar.span);
+        let text = if guessed(explorer, bar.span) {
+            MUTED
         } else {
-            (base, ON_FILL)
+            ON_FILL
         };
         painter.rect_filled(bar.rect, 3.0, fill);
+        // A call that calls the start back, outlined violet as its dot is ringed.
+        if tile.is_some_and(|t| explorer.nucleus().calls_back(t)) {
+            outline(&painter, bar.rect, egui_color(CALLER), 1.5);
+        }
 
         // A call that only sometimes runs is outlined in dashes.
         if is_conditional(span) {
-            let stroke = egui::Stroke::new(1.2, egui::Color32::from_white_alpha(190));
+            let stroke = egui::Stroke::new(1.2, SOMETIMES);
             dashed_outline(&painter, bar.rect.shrink(0.75), stroke);
         }
 
@@ -444,8 +445,8 @@ fn canvas(
                 egui::pos2(bar.rect.max.x - BADGE, bar.rect.min.y + 3.0),
                 egui::pos2(bar.rect.max.x - 3.0, bar.rect.max.y - 3.0),
             );
-            let ink = egui::Color32::from_rgb(220, 224, 234);
-            painter.rect_filled(badge, 3.0, egui::Color32::from_black_alpha(120));
+            let ink = BADGE_INK;
+            painter.rect_filled(badge, 3.0, BADGE_FILL);
             let tip = egui::pos2(badge.min.x + 8.0, badge.center().y + 2.5);
             painter.add(egui::Shape::convex_polygon(
                 vec![
@@ -469,13 +470,10 @@ fn canvas(
             badge
         });
         chips.extend(badge.map(|badge| (bar.span, badge)));
+        // A node the pointer rests on in the graph outlines its bars, as hovering a
+        // bar does.
         if graph_hover.is_some() && tile == graph_hover {
-            painter.rect_stroke(
-                bar.rect.expand(1.5),
-                3.0,
-                egui::Stroke::new(2.0, egui::Color32::from_white_alpha(200)),
-                egui::StrokeKind::Outside,
-            );
+            outline(&painter, bar.rect, egui_color(HOVER), 1.0);
         }
         let free = badge.map_or(bar.rect, |badge| {
             egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x - 2.0, bar.rect.max.y))
@@ -491,20 +489,10 @@ fn canvas(
             );
         }
         if tile.is_some() && tile == current && Some(bar.span) != cursor {
-            painter.rect_stroke(
-                bar.rect.expand(1.5),
-                3.0,
-                egui::Stroke::new(1.5, egui::Color32::WHITE),
-                egui::StrokeKind::Outside,
-            );
+            outline(&painter, bar.rect, egui_color(SELECTED), 1.5);
         }
     }
 
-    // With a function set aside, the journey steps back behind it; the
-    // cursor still shows where an arrow key returns to.
-    if explorer.aside().is_some() {
-        painter.rect_filled(content, 0.0, egui::Color32::from_black_alpha(140));
-    }
     let (caller_hovered, caller_bars) = above.map_or_else(
         || (None, Vec::new()),
         |row| callers_row(ui, row, explorer, &callers, mouse, graph_hover),
@@ -516,14 +504,9 @@ fn canvas(
                 egui::pos2(rect.min.x, content.min.y),
                 egui::pos2(rect.min.x, content.max.y),
             ],
-            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
+            egui::Stroke::new(1.0, CURSOR_LINE),
         );
-        painter.rect_stroke(
-            rect.expand(1.5),
-            3.0,
-            egui::Stroke::new(2.0, egui::Color32::WHITE),
-            egui::StrokeKind::Outside,
-        );
+        outline(&painter, rect, egui_color(SELECTED), 2.0);
     }
     // Wider than the panel, a track along its foot shows which part is in view.
     if slots > across + 1e-3 {
@@ -541,8 +524,8 @@ fn canvas(
                 track.max.y,
             ),
         );
-        painter.rect_filled(track, 1.5, egui::Color32::from_white_alpha(18));
-        painter.rect_filled(thumb, 1.5, egui::Color32::from_white_alpha(110));
+        painter.rect_filled(track, 1.5, TRACK);
+        painter.rect_filled(thumb, 1.5, THUMB);
     }
 
     if let Some((tile, _)) = caller_hovered {
@@ -561,12 +544,7 @@ fn canvas(
     }
     if let Some(span) = hovered {
         if let Some(rect) = rect_of(span) {
-            painter.rect_stroke(
-                rect.expand(1.0),
-                3.0,
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(150)),
-                egui::StrokeKind::Outside,
-            );
+            outline(&painter, rect, egui_color(HOVER), 1.0);
         }
         let mut tip = explorer.label(span);
         let number = disclosed.number(span).unwrap_or_default();
@@ -602,9 +580,8 @@ fn canvas(
         .filter(|rect| content.intersects(*rect))
         .or(caller_hovered.map(|(_, rect)| rect));
     // Hovering a bar lights its node in the graph.
-    let hovered_tile = hovered
-        .and_then(tile_of)
-        .or(caller_hovered.map(|(tile, _)| tile));
+    let bar_tile = hovered.and_then(tile_of);
+    let hovered_tile = bar_tile.or(caller_hovered.map(|(tile, _)| tile));
     if hovered_tile.is_some() {
         if explorer.under_pointer != hovered_tile {
             explorer.under_pointer = hovered_tile;
@@ -627,7 +604,11 @@ fn canvas(
         } else if let Some(span) = fold_hit {
             explorer.toggle_expanded(span);
         } else if let Some(span) = hovered {
-            explorer.go_to(span);
+            // Shift opens its journey, as Shift-click does anywhere.
+            match bar_tile {
+                Some(tile) if ui.input(|i| i.modifiers.shift) => explorer.open_at(tile),
+                _ => explorer.go_to(span),
+            }
         }
     }
     Tethers {
@@ -638,8 +619,9 @@ fn canvas(
 /// A bar in the row of the start's callers: its function, and where it is.
 type CallerBar = (usize, egui::Rect);
 
-/// The row above the start's bar: the functions that call the start, violet, the one
-/// set aside white, as many across as fit at the narrowest a bar is drawn, from the
+/// The row above the start's bar: the functions that call the start, each painted as
+/// its node is (violet, or as the call when the journey runs it too), the one set
+/// aside white, as many across as fit at the narrowest a bar is drawn, from the
 /// first, or as far along as keeps the one set aside in view. Returns the caller under
 /// the pointer, and where each caller's bar is.
 #[expect(
@@ -673,19 +655,14 @@ fn callers_row(
             egui::vec2(slot * (1.0 - BAR_GAP), ROW),
         );
         let aside = explorer.aside() == Some(tile);
-        let fill = if aside {
-            egui::Color32::WHITE
-        } else {
-            egui_color(CALLER)
-        };
-        painter.rect_filled(rect, 3.0, fill);
-        if aside || graph_hover == Some(tile) {
-            painter.rect_stroke(
-                rect.expand(1.5),
-                3.0,
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
-                egui::StrokeKind::Outside,
-            );
+        painter.rect_filled(rect, 3.0, caller_fill(explorer, tile));
+        if explorer.nucleus().calls_back(tile) {
+            outline(&painter, rect, egui_color(CALLER), 1.5);
+        }
+        if aside {
+            outline(&painter, rect, egui_color(SELECTED), 2.0);
+        } else if graph_hover == Some(tile) || mouse.is_some_and(|p| rect.contains(p)) {
+            outline(&painter, rect, egui_color(HOVER), 1.0);
         }
         let name = explorer
             .tile_unit(tile)
@@ -724,10 +701,51 @@ fn callers_row(
             egui::pos2(share(first), track.min.y),
             egui::pos2(share(first + across), track.max.y),
         );
-        painter.rect_filled(track, 0.5, egui::Color32::from_white_alpha(18));
-        painter.rect_filled(thumb, 0.5, egui::Color32::from_white_alpha(110));
+        painter.rect_filled(track, 0.5, TRACK);
+        painter.rect_filled(thumb, 0.5, THUMB);
     }
     (hovered, bars)
+}
+
+/// A journey bar's fill: its node's color; a call with no node of its own is grey,
+/// as everything that is no module's is. Only the cursor's call is pink: another run
+/// of the same function is painted as its node would be were the cursor elsewhere. A
+/// call only guessed, or handed off to run later, is faint.
+pub(crate) fn bar_fill(explorer: &Explorer, span: SpanId) -> egui::Color32 {
+    let track = explorer.track();
+    let base = match track.tile(span, explorer.map()) {
+        _ if Some(span) == explorer.cursor_span() => egui_color(CURSOR),
+        Some(tile) => egui_color(look_color(role_look(explorer, tile))),
+        None => MUTED,
+    };
+    if guessed(explorer, span) {
+        base.gamma_multiply(GUESSED)
+    } else {
+        base
+    }
+}
+
+/// Whether a call is only guessed, or handed off to run later: its bar is faint.
+pub(crate) fn guessed(explorer: &Explorer, span: SpanId) -> bool {
+    explorer
+        .span(span)
+        .is_some_and(|s| Confidence::of(s) == Confidence::Guessed || is_handoff(s))
+}
+
+/// A bar in the row of the start's callers: painted as its node is, so one the
+/// journey runs too reads as the call it is; the one set aside white.
+pub(crate) fn caller_fill(explorer: &Explorer, tile: usize) -> egui::Color32 {
+    egui_color(look_color(role_look(explorer, tile)))
+}
+
+/// A line round a bar, just outside it.
+fn outline(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, width: f32) {
+    painter.rect_stroke(
+        rect.expand(1.5),
+        3.0,
+        egui::Stroke::new(width, color),
+        egui::StrokeKind::Outside,
+    );
 }
 
 /// What a bar says, in `room` points, and at what size: its number, then its

@@ -53,6 +53,7 @@ impl Nucleus {
             ring: Vec::new(),
             columns,
             outside: HashSet::new(),
+            aside: None,
             folded: HashSet::new(),
             tubes,
             links,

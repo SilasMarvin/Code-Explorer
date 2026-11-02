@@ -3,7 +3,9 @@
 //! first enters them, opened to show the functions it names in columns; laid out for
 //! every depth at once, so a level more or less only shows or hides. The callers
 //! from off the journey of the function the cursor is on (I) take places kept free
-//! for them, or their own module beyond the ring, moving nothing else.
+//! for them, or their own module beyond the ring, moving nothing else: every caller
+//! from off the journey into any function it runs has its place worked out once, so
+//! a step of the cursor only shows some and hides others.
 
 use std::{
     cmp::Reverse,
@@ -88,14 +90,21 @@ impl Nucleus {
             }
         }
         let calls_in = self.outside_calls(graph, &links, start);
-        let outside = self.place_outside(
-            &mut balls,
-            (&mut points, &mut shown),
+        let outside = self.show_outside(
+            graph,
+            (&mut balls, &mut points, &mut shown),
             (&calls_in, &laid),
-            middle,
+            (start, middle),
             &cluster_of,
         );
         links.extend(calls_in);
+        let aside = self.place_aside(
+            &mut balls,
+            (&mut points, &mut shown),
+            (&laid, &outside),
+            middle,
+            &cluster_of,
+        );
         Arrangement {
             start,
             middle,
@@ -108,6 +117,7 @@ impl Nucleus {
             reserved: laid,
             ring: order,
             outside,
+            aside,
             folded,
             tubes: Vec::new(),
             links,
@@ -265,6 +275,73 @@ impl Nucleus {
             .collect()
     }
 
+    /// Shows the outside callers `calls` brings in, each where it goes among every
+    /// caller from off the journey into any function it runs at any depth, so the
+    /// places are the same wherever the cursor is: a step of the cursor shows some and
+    /// hides others, and moves none. Returns those shown.
+    fn show_outside(
+        &self,
+        graph: &ForceGraph,
+        (balls, points, shown): (&mut [Ball], &mut [Vec3], &mut [bool]),
+        (calls, reserved): (&[Link], &[Vec<usize>]),
+        (start, middle): (Option<usize>, usize),
+        cluster_of: &impl Fn(usize) -> usize,
+    ) -> HashSet<usize> {
+        let Some(start) = start.filter(|_| !calls.is_empty()) else {
+            return HashSet::new();
+        };
+        let mut every = self.every_outside_call(graph, start);
+        // Those the journey runs deeper than shown take their own places.
+        every.extend(calls.iter().copied());
+        every.sort_unstable_by_key(|l| (l.from, l.to));
+        every.dedup_by_key(|l| (l.from, l.to));
+        let (mut all_balls, mut all_points) = (balls.to_vec(), points.to_vec());
+        let mut all_shown = shown.to_vec();
+        let placed = self.place_outside(
+            &mut all_balls,
+            (&mut all_points, &mut all_shown),
+            (&every, reserved),
+            middle,
+            cluster_of,
+        );
+        let mut outside = HashSet::new();
+        for call in calls {
+            let tile = call.from;
+            if !placed.contains(&tile) {
+                continue;
+            }
+            points[tile] = all_points[tile];
+            shown[tile] = true;
+            outside.insert(tile);
+            let cluster = cluster_of(tile);
+            if cluster != middle {
+                balls[cluster] = all_balls[cluster];
+            }
+        }
+        outside
+    }
+
+    /// Every call into a function the journey runs at any depth, or its start, from
+    /// one it does not run and that does not call the start: whatever I could bring in,
+    /// wherever the cursor is.
+    fn every_outside_call(&self, graph: &ForceGraph, start: usize) -> Vec<Link> {
+        let on = |tile: usize| tile == start || self.trail.whole.contains_key(&tile);
+        let callers_of_start: HashSet<usize> = graph.callers(start).collect();
+        let mut targets: Vec<usize> = self.trail.whole.keys().copied().chain([start]).collect();
+        targets.sort_unstable();
+        targets
+            .into_iter()
+            .flat_map(|to| {
+                graph.callers(to).map(move |from| Link {
+                    from,
+                    to,
+                    flow: Flow::Outside,
+                })
+            })
+            .filter(|l| !on(l.from) && !callers_of_start.contains(&l.from))
+            .collect()
+    }
+
     /// Puts the outside callers `calls` brings in where they show without moving
     /// anything already placed: inside the nucleus where they sit; in a module with a
     /// place on the ring, in the places it keeps free below the names `reserved` lays
@@ -341,22 +418,7 @@ impl Nucleus {
                 .map(|c| points[c.to] - core)
                 .sum();
             let angle = toward.dot(up).atan2(toward.dot(right));
-            let ring = outer + ball.radius;
-            // The nearest bearing to that, either way round, clear of those put
-            // beyond already.
-            let step = (ball.radius / ring).max(0.05);
-            #[expect(clippy::cast_precision_loss, reason = "a step count")]
-            let center = (0..200)
-                .map(|k| {
-                    let turn = (k / 2) as f32 * step * if k % 2 == 0 { 1.0 } else { -1.0 };
-                    core + (right * (angle + turn).cos() + up * (angle + turn).sin()) * ring
-                })
-                .find(|&at| {
-                    beyond
-                        .iter()
-                        .all(|&(c, r)| at.distance(c) >= r + ball.radius + MARGIN)
-                })
-                .unwrap_or(core + right * ring);
+            let center = beyond_at(core, angle, outer + ball.radius, ball.radius, &beyond);
             beyond.push((center, ball.radius));
             // Faint, as everything brought in from outside the journey is.
             balls[*cluster] = Ball {
@@ -371,6 +433,70 @@ impl Nucleus {
             }
         }
         placed
+    }
+
+    /// Draws the function set aside (`self.aside`) where it shows without moving
+    /// anything else, when the journey draws it nowhere already: in a module round
+    /// the nucleus, in the first place it keeps free that no outside caller has
+    /// taken; in a module beyond the ring already, where it sits in it; else in its
+    /// own module beyond every sphere shown, towards where the map has it. Returns it
+    /// when placed so.
+    pub(super) fn place_aside(
+        &self,
+        balls: &mut [Ball],
+        (points, shown): (&mut [Vec3], &mut [bool]),
+        (reserved, outside): (&[Vec<usize>], &HashSet<usize>),
+        middle: usize,
+        cluster_of: &impl Fn(usize) -> usize,
+    ) -> Option<usize> {
+        let tile = self.aside.filter(|&t| !shown[t])?;
+        let cluster = cluster_of(tile);
+        let ball = balls[cluster];
+        let names = &reserved[cluster];
+        if !names.is_empty() {
+            let taken: Vec<Vec3> = outside
+                .iter()
+                .filter(|&&t| cluster_of(t) == cluster)
+                .map(|&t| points[t])
+                .collect();
+            let at = names_grid(names.len(), ball.radius)
+                .into_iter()
+                .skip(names.len())
+                .map(|at| ball.center + at)
+                .find(|at| taken.iter().all(|t| t.distance(*at) > 1e-3))?;
+            points[tile] = at;
+            if ball.body == Body::Closed {
+                balls[cluster].body = Body::Open;
+            }
+        } else if ball.body == Body::Faint {
+            points[tile] = ball.center + self.offsets[tile];
+        } else {
+            let core = balls[middle].center;
+            let shown_balls: Vec<(Vec3, f32)> = balls
+                .iter()
+                .filter(|b| b.body != Body::Closed)
+                .map(|b| (b.center, b.radius))
+                .collect();
+            let outer = shown_balls
+                .iter()
+                .map(|&(c, r)| c.distance(core) + r)
+                .fold(0.0, f32::max)
+                + OUTER_GAP;
+            let rotation = view_rotation();
+            let toward = self.atlas.balls[cluster].center - self.atlas.balls[middle].center;
+            let angle = toward
+                .dot(rotation * Vec3::Y)
+                .atan2(toward.dot(rotation * Vec3::X));
+            let center = beyond_at(core, angle, outer + ball.radius, ball.radius, &shown_balls);
+            balls[cluster] = Ball {
+                center,
+                radius: ball.radius,
+                body: Body::Faint,
+            };
+            points[tile] = center + self.offsets[tile];
+        }
+        shown[tile] = true;
+        Some(tile)
     }
 
     /// Where each function is drawn, and whether it is: the nucleus's own where they
@@ -476,6 +602,26 @@ pub(super) fn open_up(
         }
     }
     columns
+}
+
+/// Where a sphere of `radius` goes `ring` from `core`, at the nearest bearing to
+/// `angle` as the usual view sees it, either way round, clear of the spheres `taken`.
+fn beyond_at(core: Vec3, angle: f32, ring: f32, radius: f32, taken: &[(Vec3, f32)]) -> Vec3 {
+    let rotation = view_rotation();
+    let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+    let step = (radius / ring).max(0.05);
+    #[expect(clippy::cast_precision_loss, reason = "a step count")]
+    (0..200)
+        .map(|k| {
+            let turn = (k / 2) as f32 * step * if k % 2 == 0 { 1.0 } else { -1.0 };
+            core + (right * (angle + turn).cos() + up * (angle + turn).sin()) * ring
+        })
+        .find(|&at| {
+            taken
+                .iter()
+                .all(|&(c, r)| at.distance(c) >= r + radius + MARGIN)
+        })
+        .unwrap_or(core + right * ring)
 }
 
 /// Stands the modules in `order` on a ring round the nucleus, `middle`, clockwise

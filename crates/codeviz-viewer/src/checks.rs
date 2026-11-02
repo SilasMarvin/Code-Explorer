@@ -90,11 +90,9 @@ const MAP_SHOWN: f32 = 0.9;
 /// How far beyond an edge of the graph's part of the window a panel may start, or
 /// the window end, for the edge to hide what it cuts, in points.
 const HIDDEN_EDGE: f32 = 4.0;
-/// Widest an arrow's line or shaft shows, in points; an arrow between modules
-/// carrying [`MANY_CALLS`] or more may be [`MANY_WIDER`] wider.
+/// Widest an arrow's line or shaft shows, in points, a line between modules however
+/// many calls it carries too.
 const ARROW_WIDTH: f32 = 2.5;
-const MANY_CALLS: usize = 10;
-const MANY_WIDER: f32 = 1.0;
 /// Least and most an arrow's head shows, in points: its length along the line, or
 /// half its width when that is more, as for a head seen end on.
 const HEAD_SIZE: (f32, f32) = (5.0, 12.0);
@@ -233,7 +231,6 @@ struct Arrow {
     flow: String,
     level: Option<u32>,
     color: Option<String>,
-    calls: usize,
     drawn: Option<bool>,
     width: Option<f32>,
     head: Option<f32>,
@@ -315,6 +312,8 @@ struct Bar {
     name: String,
     unit: Option<String>,
     cursor: bool,
+    color: Option<String>,
+    guessed: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1615,11 +1614,7 @@ fn arrow_sizes(s: &Snap) -> Value {
     for (kind, arrows) in [("call", &s.arrows), ("module", &s.module_arrows)] {
         for a in arrows.iter().filter(shown) {
             judged += 1;
-            let most = if kind == "module" && a.calls >= MANY_CALLS {
-                ARROW_WIDTH + MANY_WIDER
-            } else {
-                ARROW_WIDTH
-            };
+            let most = ARROW_WIDTH;
             let width = a.width.unwrap_or(0.0);
             if width > most {
                 let offender = json!({ "arrow": kind, "from": a.from, "to": a.to, "width": r1(width), "most": most });
@@ -1900,6 +1895,34 @@ fn colours(s: &Snap) -> Value {
             && !like(got, want)
         {
             let offender = json!({ "function": n.name, "roles": n.roles, "fill": n.color, "role_color": hex3(want) });
+            offenders.push((1.0, offender));
+        }
+    }
+    // A call that calls the start back is ringed in the caller's violet.
+    for n in s.nodes.iter().filter(|n| n.is("calls back") && !n.focus()) {
+        let violet = n
+            .rings
+            .iter()
+            .filter_map(|r| rgb(&r.color))
+            .any(|c| like(c, srgb(CALLER)));
+        if !violet {
+            let offender = json!({ "function": n.name, "why": "calls back, but no violet ring", "rings": n.rings.iter().map(|r| &r.color).collect::<Vec<_>>() });
+            offenders.push((1.0, offender));
+        }
+    }
+    // A bar is painted as its node is: the cursor's other runs as it would be were
+    // the cursor elsewhere, a call only guessed faint.
+    for bar in s.bars.iter().filter(|b| !b.cursor && !b.guessed) {
+        let (Some(unit), Some(got)) = (&bar.unit, bar.color.as_deref().and_then(rgb)) else {
+            continue;
+        };
+        let Some(n) = s.node(unit).filter(|n| !n.is("cursor")) else {
+            continue;
+        };
+        if let Some(want) = n.color.as_deref().and_then(rgb)
+            && !like(got, want)
+        {
+            let offender = json!({ "bar": bar.number, "name": bar.name, "bar_color": bar.color, "node_color": n.color });
             offenders.push((1.0, offender));
         }
     }
@@ -2911,6 +2934,29 @@ mod tests {
         let result = check(&s, "colours");
         assert_eq!(result["count"], 1, "{result}");
         assert_eq!(result["offenders"][0]["flow"], "into");
+    }
+
+    #[test]
+    fn a_bar_wears_its_node_s_color_and_a_call_back_its_violet_ring() {
+        let mut s = journey();
+        s["nodes"][0]["color"] = json!("#ffffff");
+        s["nodes"][1]["roles"] = json!(["journey level 1", "calls back"]);
+        s["nodes"][1]["color"] = json!("#4db8ff");
+        s["nodes"][1]["rings"] = json!([{ "radius": 6.0, "color": "#bd85ffff" }]);
+        s["bars"] = json!([
+            { "number": "", "name": "f", "unit": "x:a::f", "cursor": false, "color": "#ffffff" },
+            { "number": null, "name": "g", "unit": "x:a::g", "caller": true, "color": "#4db8ff" },
+        ]);
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
+        // Its caller's bar painted violet while its dot is blue.
+        s["bars"][1]["color"] = json!("#bd85ff");
+        let result = check(&s, "colours");
+        assert_eq!(result["offenders"][0]["name"], "g", "{result}");
+        // A call back with no violet ring.
+        s["bars"][1]["color"] = json!("#4db8ff");
+        s["nodes"][1]["rings"] = json!([]);
+        let result = check(&s, "colours");
+        assert_eq!(result["offenders"][0]["function"], "g", "{result}");
     }
 
     #[test]
