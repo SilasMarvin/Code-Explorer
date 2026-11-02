@@ -1,0 +1,54 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus Finder::walk
+# A journey frames the spheres it runs through whole, with room for their names,
+# clear of the panel, however deep; the wheel in stops with the sphere under the
+# pointer filling at most 90% of the free area, all of it there; a pan keeps the map
+# in the free area, or over its middle when it is bigger.
+snap walk
+expect check spheres-unclipped
+key .
+key .
+key .
+expect check spheres-unclipped
+snap walk depth 4
+
+key /
+type spotlit
+key enter
+expect start Explorer::spotlit
+expect check journey-fills
+expect check spheres-unclipped
+snap spotlit
+key .
+key .
+key .
+expect check spheres-unclipped
+snap spotlit depth 4
+
+bar 1
+key enter
+expect start Explorer::spotlight
+expect check journey-fills
+expect check spheres-unclipped
+snap spotlight
+
+key esc
+expect mode browse
+key r
+scroll 60 at Explorer::lens
+expect check zoom-bounds
+snap wheel in big module max
+
+key r
+scroll 60 at users::find_user
+expect check zoom-bounds
+snap wheel in small module max
+
+key r
+pan 700 300
+expect check map-on-screen
+snap r panned
+
+scroll 6 at 800 990
+pan -700 -400
+expect check map-on-screen
+snap zoomed in panned

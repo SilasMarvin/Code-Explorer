@@ -71,6 +71,11 @@ const FRONT_SLACK: f32 = 0.05;
 const ZOOM_DRIFT: (f32, f32) = (4.0, 0.05);
 /// Zoomed out, the least share of the free area's smaller side the whole map spans.
 const ZOOM_OUT_LEAST: f32 = 0.4;
+/// Zoomed in, the most share of the free area's smaller side the diameter of the
+/// sphere under the pointer spans; and the share past which it lies inside the free
+/// area, as it does at the near bound.
+const ZOOM_IN_MOST: f32 = 0.92;
+const ZOOM_IN_KEPT: f32 = 0.88;
 /// Least a function or sphere moves in the world, or a dot or name on screen in
 /// points, or the camera turns in radians, to count as moved.
 const MOVED_WORLD: f32 = 0.01;
@@ -112,9 +117,12 @@ const HUE_SLACK: f32 = 25.0;
 const GREY: f32 = 0.3;
 /// A color this near white, in every channel (0 to 1), reads as the selection's.
 const WHITE: f32 = 0.85;
-/// Room the framing leaves round a lit dot for it to show whole, in points: a depth
-/// change draws the camera back for a dot nearer the free area's edge than this.
+/// Room the framing leaves round a lit dot or a sphere for it to show whole, in
+/// points: a depth change draws the camera back for one nearer the free area's edge
+/// than this.
 const SHOWN_WHOLE: f32 = 10.0;
+/// Room the framing leaves above a journey's sphere for its name, in points.
+const NAME_ROOM: f32 = 24.0;
 /// Offenders listed per check; `count` says how many in all.
 const LISTED: usize = 12;
 
@@ -363,6 +371,22 @@ impl Snap {
         self.modules.iter().filter(|m| m.shown)
     }
 
+    /// The function the journey's cursor is on, by unit.
+    fn cursor(&self) -> Option<&str> {
+        self.nodes
+            .iter()
+            .find(|n| n.is("cursor"))
+            .and_then(|n| n.unit.as_deref())
+    }
+
+    /// Expanded in a journey, whether the cursor moved since `before`: the view keeps
+    /// it in view, and takes the expansion to its module.
+    fn cursor_moved_expanded(&self, before: Option<&Snap>) -> bool {
+        self.expanded()
+            && self.state.mode == "journey"
+            && before.is_some_and(|b| b.cursor() != self.cursor())
+    }
+
     /// The function drawn for a unit.
     fn node(&self, unit: &str) -> Option<&Node> {
         self.nodes.iter().find(|n| n.unit.as_deref() == Some(unit))
@@ -432,15 +456,15 @@ pub(crate) fn run(now: &Value, before: Option<&Value>, since: &Since) -> Value {
         named_on_screen(&now),
         text_sizes(&now),
         panel_agrees(&now),
-        expanded_fill(&now, since),
+        expanded_fill(&now, before, since),
         framed(&now, since),
         zoom_to_pointer(&now, before, since),
         zoom_bounds(&now, since),
         nothing_moved(&now, before, since),
-        focus_on_screen(&now, since),
+        focus_on_screen(&now, before, since),
         camera_outside(&now),
         map_on_screen(&now, since),
-        spheres_unclipped(&now),
+        spheres_unclipped(&now, before, since),
         arrow_sizes(&now),
         module_names(&now),
         named_when_room(&now),
@@ -876,9 +900,13 @@ fn same_name(bar: &str, n: &Node) -> bool {
     }
 }
 
-fn expanded_fill(s: &Snap, since: &Since) -> Value {
-    if !since.has(Kind::Expand) {
-        return skip("no expand (x, double click) since the last snapshot");
+fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
+    // Expanded in a journey, the cursor takes the expansion to its module.
+    let followed = before.is_some_and(|b| b.expanded() && b.state.expanded != s.state.expanded);
+    if !since.has(Kind::Expand) && !followed {
+        return skip(
+            "no expand (x, double click), nor another module expanded, since the last snapshot",
+        );
     }
     if !s.expanded() {
         return skip("collapsed");
@@ -977,7 +1005,9 @@ fn zoom_to_pointer(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         return skip("more than one wheel turn, or other moves, since the last snapshot");
     }
     if s.state.camera.is_some_and(|c| c.held) {
-        return skip("the wheel turn out panned to hold the map in the free area");
+        return skip(
+            "the wheel turn panned to hold the map, or the sphere it zoomed to, in the free area",
+        );
     }
     let (Some(before), Some(pointer)) = (before, s.state.pointer) else {
         return skip("no snapshot before, or no pointer");
@@ -1045,6 +1075,29 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
     let circle =
         |m: &Module| egui::Rect::from_center_size(pos(m.at), egui::Vec2::splat(2.0 * m.radius));
     let mut offenders = Vec::new();
+    // Zoomed in, the sphere under the pointer, nearest the camera (biggest on screen).
+    let under = s.state.pointer.and_then(|p| {
+        spheres
+            .iter()
+            .filter(|m| v2(m.at).distance(v2(p)) <= m.radius)
+            .max_by(|a, b| a.radius.total_cmp(&b.radius))
+    });
+    if since.has(Kind::Zoom { out: false })
+        && let Some(m) = under
+    {
+        let side = free.width().min(free.height());
+        let fill = 2.0 * m.radius / side;
+        if fill > ZOOM_IN_MOST {
+            let offender = json!({ "why": "zoomed in past the sphere under the pointer filling the free area", "module": m.name, "fill": r2(fill), "most": ZOOM_IN_MOST });
+            offenders.push((fill, offender));
+        } else if fill >= ZOOM_IN_KEPT {
+            let out = circle_out(free, v2(m.at), m.radius);
+            if out > EDGE {
+                let offender = json!({ "why": "zoomed in to the near bound, the sphere under the pointer is not all in the free area", "module": m.name, "out_by": r1(out) });
+                offenders.push((out, offender));
+            }
+        }
+    }
     if !spheres.iter().any(|m| circle(m).intersects(free)) {
         let offender = json!({ "why": "nothing of the map is on screen" });
         offenders.push((f32::MAX, offender));
@@ -1083,15 +1136,9 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if since.has(Kind::Click) && s.expanded() && s.state.mode == "journey" {
         return skip("a click expanded in a journey may re-centre on what it clicks");
     }
-    let cursor = |snap: &Snap| {
-        snap.nodes
-            .iter()
-            .find(|n| n.is("cursor"))
-            .and_then(|n| n.unit.clone())
-    };
-    if s.expanded() && s.state.mode == "journey" && cursor(before) != cursor(s) {
+    if s.cursor_moved_expanded(Some(before)) {
         return skip(
-            "the cursor moved expanded in a journey: the camera may pan to keep it in view",
+            "the cursor moved expanded in a journey: the camera may pan to keep it in view, or fly to its module",
         );
     }
     // A depth change may draw the camera back to show what it brought in, when that
@@ -1153,7 +1200,32 @@ fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
                 .is_none_or(|was| !free.contains(egui::pos2(was.x, was.y)))
         })
     });
-    if off {
+    // A sphere that came in, or any while the panel has grown, cut by the free area
+    // as the camera from before would have shown it, or with no room above it for
+    // its name, draws the camera back too.
+    let grown = now.free() != before.free();
+    let free = now.free();
+    let named = egui::Rect::from_min_max(free.min + egui::vec2(0.0, NAME_ROOM), free.max);
+    let cut = now
+        .spheres()
+        .filter(|m| grown || !before.spheres().any(|b| b.name == m.name))
+        .any(|m| {
+            let world = Vec3::from_array(m.world);
+            let right = Quat::from_euler(EulerRot::YXZ, a.yaw, a.pitch, 0.0) * Vec3::X;
+            let graph = rect(now.graph_area);
+            match (
+                shown_from(a, graph, world),
+                shown_from(a, graph, world + right * m.world_radius),
+            ) {
+                (Some(at), Some(rim)) => {
+                    let radius = at.distance(rim);
+                    circle_out(free.shrink(SHOWN_WHOLE), at, radius) > 0.0
+                        || circle_out(named, at, radius) > 0.0
+                }
+                _ => true,
+            }
+        });
+    if off || cut {
         return Vec::new();
     }
     let why = if came.is_empty() {
@@ -1340,17 +1412,40 @@ fn labels_moved(before: &Snap, now: &Snap) -> (usize, Vec<(f32, Value)>) {
     (compared, moved)
 }
 
-fn focus_on_screen(s: &Snap, since: &Since) -> Value {
-    if since.by_hand {
+fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
+    // Wherever the hands put the camera, a cursor that moves expanded in a journey is
+    // kept in view.
+    let cursor_only = since.by_hand && s.cursor_moved_expanded(before);
+    if since.by_hand && !cursor_only {
         return skip("the camera is where the user's hands put it");
     }
     if since.has(Kind::Expand) {
         return skip("an expand frames the module, wherever the focus is");
     }
     let free = s.free();
-    let focus: Vec<&Node> = s.nodes.iter().filter(|n| n.focus()).collect();
+    // Expanded, the view is on the module expanded: what is in focus in another may
+    // lie off it.
+    let in_view = |n: &&Node| {
+        s.state
+            .expanded
+            .as_ref()
+            .filter(|_| s.expanded())
+            .is_none_or(|m| n.module.as_ref() == Some(m))
+    };
+    let focus: Vec<&Node> = s
+        .nodes
+        .iter()
+        .filter(|n| {
+            if cursor_only {
+                n.is("cursor")
+            } else {
+                n.focus()
+            }
+        })
+        .filter(in_view)
+        .collect();
     if focus.is_empty() {
-        return skip("no selection, start or cursor drawn");
+        return skip("no selection, start or cursor drawn, in the module expanded if one is");
     }
     let offenders = focus
         .into_iter()
@@ -1387,9 +1482,9 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
     let out = since
         .kinds
         .iter()
-        .any(|k| matches!(k, Kind::Zoom { out: true } | Kind::FrameAll));
+        .any(|k| matches!(k, Kind::Zoom { out: true } | Kind::FrameAll | Kind::Pan));
     if !out {
-        return skip("no wheel turn out, nor R, since the last snapshot");
+        return skip("no wheel turn out, pan or R since the last snapshot");
     }
     let free = s.free();
     let spheres: Vec<&Module> = s.spheres().filter(|m| m.radius > 0.0).collect();
@@ -1397,6 +1492,19 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
         return skip("no module spheres drawn");
     };
     if extent.width() > free.width() || extent.height() > free.height() {
+        // Dragged, a map bigger than the free area keeps over its middle.
+        if since.has(Kind::Pan) {
+            let mut offenders = Vec::new();
+            if !extent.contains(free.center()) {
+                let offender = json!({
+                    "why": "dragged off the middle of the free area",
+                    "map": rect_json([extent.min.x, extent.min.y, extent.max.x, extent.max.y]),
+                    "middle": pt([free.center().x, free.center().y]),
+                });
+                offenders.push((1.0, offender));
+            }
+            return verdict(offenders);
+        }
         return skip("the map is bigger than the free area at this zoom");
     }
     let area = |m: &&Module| m.radius * m.radius;
@@ -1407,8 +1515,10 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
         .map(area)
         .sum();
     let share = inside / all.max(f32::EPSILON);
+    // Dragged, a map that fits stays in the free area whole.
+    let least = if since.has(Kind::Pan) { 1.0 } else { MAP_SHOWN };
     let mut offenders = Vec::new();
-    if share < MAP_SHOWN {
+    if share < least {
         let outside: Vec<&str> = spheres
             .iter()
             .filter(|m| circle_out(free, v2(m.at), m.radius) > EDGE)
@@ -1416,10 +1526,10 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
             .collect();
         let offender = json!({
             "why": "the whole map would fit in the free area, but not this much of it is there",
-            "inside": r2(share), "least": MAP_SHOWN, "map": rect_json([extent.min.x, extent.min.y, extent.max.x, extent.max.y]),
+            "inside": r2(share), "least": least, "map": rect_json([extent.min.x, extent.min.y, extent.max.x, extent.max.y]),
             "outside": outside,
         });
-        offenders.push((MAP_SHOWN - share, offender));
+        offenders.push((least - share, offender));
     }
     with(verdict(offenders), "inside", json!(r2(share)))
 }
@@ -1432,12 +1542,20 @@ fn map_extent(s: &Snap) -> Option<egui::Rect> {
         .reduce(egui::Rect::union)
 }
 
-fn spheres_unclipped(s: &Snap) -> Value {
+fn spheres_unclipped(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     let graph = rect(s.graph_area);
     let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(s.window[0], s.window[1]));
     if !graph.is_positive() {
         return skip("no graph area");
     }
+    // The top of a panel docked along the graph's foot, where the view framed itself:
+    // what it cuts shows half under the panel. Zoomed into a module, the modules round
+    // it lie where they fall, as at the window's edges; shrunk back, the camera stands
+    // where it stood before, whatever came in meanwhile.
+    let free = s.free();
+    let collapsed = before.is_some_and(Snap::expanded) && !s.expanded();
+    let panel = (free.max.y < graph.max.y - EDGE && !since.by_hand && !s.expanded() && !collapsed)
+        .then_some(free.max.y);
     // An edge of the graph past which the window shows nothing of the graph, but no
     // panel or window edge either: what it cuts shows cut off.
     let panel_below = |y: f32| {
@@ -1464,6 +1582,10 @@ fn spheres_unclipped(s: &Snap) -> Value {
                 bottom && across && (c.y - graph.max.y).abs() < m.radius,
                 "bottom",
             ),
+            (
+                panel.is_some_and(|y| m.body != "faint" && across && (c.y - y).abs() < m.radius),
+                "panel",
+            ),
             (left && down && (c.x - graph.min.x).abs() < m.radius, "left"),
             (
                 right && down && (c.x - graph.max.x).abs() < m.radius,
@@ -1471,8 +1593,13 @@ fn spheres_unclipped(s: &Snap) -> Value {
             ),
         ];
         for (_, edge) in cut.iter().filter(|(cut, _)| *cut) {
+            let by = if *edge == "panel" {
+                "the top of the panel".to_owned()
+            } else {
+                format!("the graph's {edge} edge, in open window")
+            };
             let offender = json!({
-                "module": m.name, "cut_by": format!("the graph's {edge} edge, in open window"),
+                "module": m.name, "cut_by": by,
                 "at": pt(m.at), "radius": r1(m.radius), "graph_area": rect_json(s.graph_area),
             });
             offenders.push((m.radius, offender));
@@ -1692,19 +1819,32 @@ fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         return skip("fewer than two of the journey's functions drawn");
     }
     let free = s.free();
+    let disc = |at: [f32; 2], radius: f32| {
+        egui::Rect::from_center_size(pos(at), egui::Vec2::splat(2.0 * radius))
+    };
+    // The spheres holding what the journey lights; a faint one holds none of it.
+    let spheres: Vec<&Module> = s
+        .spheres()
+        .filter(|m| m.radius > 0.0 && m.body != "faint")
+        .collect();
     let span = lit
         .iter()
-        .flat_map(|n| {
-            let dot = egui::Rect::from_center_size(pos(n.at), egui::Vec2::splat(2.0 * n.radius));
-            std::iter::once(dot).chain(n.label_rect.map(rect))
-        })
+        .flat_map(|n| std::iter::once(disc(n.at, n.radius)).chain(n.label_rect.map(rect)))
+        .chain(spheres.iter().map(|m| disc(m.at, m.radius)))
         .reduce(egui::Rect::union)
         .unwrap_or(egui::Rect::NOTHING);
     let share = (span.width() / free.width()).max(span.height() / free.height());
     let mut offenders = Vec::new();
+    for m in spheres {
+        let out = circle_out(free, v2(m.at), m.radius);
+        if out > EDGE {
+            let offender = json!({ "module": m.name, "out_of_the_free_area_by": r1(out) });
+            offenders.push((out, offender));
+        }
+    }
     if share < JOURNEY_FILL {
         let offender = json!({
-            "why": "the journey's functions and their names take too little of the free area",
+            "why": "the journey's spheres, functions and names take too little of the free area",
             "share": r2(share), "least": JOURNEY_FILL, "span": [r1(span.width()), r1(span.height())],
             "free_area": [r1(free.width()), r1(free.height())],
         });
@@ -2282,6 +2422,32 @@ mod tests {
     }
 
     #[test]
+    fn zooming_in_stops_with_the_sphere_under_the_pointer_in_the_free_area() {
+        let mut s = scene();
+        // a, under the pointer, 880 across of the free area's 976 down: 0.9.
+        s["modules"][0]["radius"] = json!(440.0);
+        s["modules"][0]["at"] = json!([500.0, 512.0]);
+        assert!(passes(&after(&s, &s, &[IN], "zoom-bounds")));
+        s["modules"][0]["at"] = json!([400.0, 600.0]);
+        let result = after(&s, &s, &[IN], "zoom-bounds");
+        assert!(
+            result["offenders"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("not all in the free area"),
+            "{result}"
+        );
+        s["modules"][0]["radius"] = json!(600.0);
+        let result = after(&s, &s, &[IN], "zoom-bounds");
+        assert_eq!(result["offenders"][0]["module"], "a", "{result}");
+        assert_eq!(
+            after(&s, &s, &[OUT], "zoom-bounds")["pass"],
+            json!(true),
+            "out, the bound out alone"
+        );
+    }
+
+    #[test]
     fn nothing_may_move_after_a_click() {
         let before = scene();
         let mut now = scene();
@@ -2361,6 +2527,15 @@ mod tests {
                 .unwrap()
                 .contains("would have shown")
         );
+        // A sphere that came in, cut by the free area's edge from where the camera was.
+        let mut now = deeper(10.0);
+        let world = (crate::nucleus::view_rotation() * Vec3::X * 75.0).to_array();
+        now["modules"].as_array_mut().unwrap().push(json!({
+            "name": "c", "body": "open", "shown": true, "functions": 1, "at": [1200.0, 500.0],
+            "radius": 40.0, "world": world, "world_radius": 6.0, "on_screen": true,
+        }));
+        let result = after(&before, &now, &[Kind::Depth], "nothing-moved");
+        assert!(passes(&result), "{result}");
     }
 
     #[test]
@@ -2499,9 +2674,19 @@ mod tests {
         s["modules"][1]["at"] = json!([1580.0, 500.0]);
         let result = after(&s, &s, &[OUT], "map-on-screen");
         assert!(!passes(&result), "{result}");
+        assert!(
+            !passes(&after(&s, &s, &[Kind::Pan], "map-on-screen")),
+            "nor dragged out"
+        );
         // Bigger than the free area, it cannot all be there.
         s["modules"][0]["radius"] = json!(900.0);
         assert_eq!(after(&s, &s, &[OUT], "map-on-screen")["pass"], Value::Null);
+        // But dragged, it stays over the free area's middle.
+        assert!(passes(&after(&s, &s, &[Kind::Pan], "map-on-screen")));
+        s["modules"][0]["at"] = json!([2300.0, 500.0]);
+        s["modules"][1]["at"] = json!([3300.0, 500.0]);
+        let result = after(&s, &s, &[Kind::Pan], "map-on-screen");
+        assert!(!passes(&result), "{result}");
     }
 
     #[test]
@@ -2524,6 +2709,72 @@ mod tests {
         // The panel starts where the graph ends: what it cuts is under the panel.
         s["overlays"][0]["rect"] = json!([12.0, 562.0, 1588.0, 988.0]);
         assert!(passes(&check(&s, "spheres-unclipped")));
+    }
+
+    #[test]
+    fn a_sphere_half_under_the_panel_is_named_unless_the_hands_put_it_there() {
+        let mut s = scene();
+        s["window"] = json!([1600.0, 1000.0]);
+        s["graph_area"] = json!([0.0, 24.0, 1600.0, 1000.0]);
+        s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 560.0, 1600.0, 1000.0] }]);
+        let result = check(&s, "spheres-unclipped");
+        assert_eq!(result["count"], 2, "{result}");
+        assert_eq!(result["offenders"][0]["cut_by"], "the top of the panel");
+        let by_hand = Since {
+            kinds: vec![Kind::Zoom { out: false }],
+            by_hand: true,
+        };
+        assert!(passes(&run(&s, None, &by_hand)["spheres-unclipped"]));
+        s["state"]["nucleus"] = json!("expanded");
+        assert!(
+            passes(&check(&s, "spheres-unclipped")),
+            "zoomed into a module, those round it fall where they do"
+        );
+    }
+
+    #[test]
+    fn expanded_the_focus_off_the_module_and_a_hand_placed_camera_are_left_alone() {
+        let mut s = journey();
+        s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 800.0, 1600.0, 1000.0] }]);
+        s["nodes"][2]["at"] = json!([1000.0, 820.0]);
+        s["state"]["nucleus"] = json!("expanded");
+        s["state"]["expanded"] = json!("a");
+        assert!(
+            passes(&check(&s, "focus-on-screen")),
+            "the cursor is in b, not the module expanded"
+        );
+        s["state"]["expanded"] = json!("b");
+        assert!(!passes(&check(&s, "focus-on-screen")));
+        // After an orbit, a cursor step expanded in a journey still keeps it in view.
+        let mut before = s.clone();
+        before["nodes"][2]["roles"] = json!(["journey level 1"]);
+        before["nodes"][0]["roles"] = json!(["start", "cursor"]);
+        let orbited = Since {
+            kinds: vec![Kind::Still],
+            by_hand: true,
+        };
+        let result = run(&s, Some(&before), &orbited)["focus-on-screen"].clone();
+        assert_eq!(result["offenders"][0]["function"], "h", "{result}");
+        assert_eq!(
+            run(&s, Some(&s), &orbited)["focus-on-screen"]["pass"],
+            Value::Null,
+            "the cursor stayed: the hands' camera stands"
+        );
+    }
+
+    #[test]
+    fn a_cursor_that_takes_the_expansion_along_fills_the_view_with_its_module() {
+        let mut before = journey();
+        before["state"]["nucleus"] = json!("expanded");
+        before["state"]["expanded"] = json!("a");
+        let mut now = before.clone();
+        now["state"]["expanded"] = json!("b");
+        let result = after(&before, &now, &[Kind::Still], "expanded-fill");
+        assert!(!passes(&result), "b fills too little: {result}");
+        assert_eq!(
+            after(&now, &now, &[Kind::Still], "expanded-fill")["pass"],
+            Value::Null
+        );
     }
 
     #[test]
@@ -2620,10 +2871,10 @@ mod tests {
     fn a_framed_journey_spans_the_free_area() {
         let browse = scene();
         let mut s = journey();
-        // f at 380 to h's name ending at 1016: 641 of 1600 across, 0.4.
+        // a's left edge at 300 to b's right at 1080: 780 of 1600 across, 0.49.
         let result = after(&browse, &s, &[Kind::Moves], "journey-fills");
         assert!(!passes(&result), "{result}");
-        assert_eq!(result["share"], 0.4);
+        assert_eq!(result["share"], 0.49);
         s["nodes"][0]["at"] = json!([100.0, 500.0]);
         s["nodes"][2]["at"] = json!([1300.0, 500.0]);
         assert!(passes(&after(&browse, &s, &[Kind::Moves], "journey-fills")));
@@ -2633,6 +2884,10 @@ mod tests {
             Value::Null
         );
         assert!(passes(&after(&s, &s, &[Kind::Depth], "journey-fills")));
+        // A sphere half under the panel.
+        s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 560.0, 1600.0, 1000.0] }]);
+        let result = after(&browse, &s, &[Kind::Moves], "journey-fills");
+        assert_eq!(result["offenders"][0]["module"], "a", "{result}");
     }
 
     #[test]
