@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use bevy::{input::keyboard::KeyCode, math::Vec2};
 
-use crate::capture::Press;
+use crate::keys::Press;
 
 /// What the pointer does to a function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -504,8 +504,7 @@ impl Step {
                     | KeyCode::ArrowRight
                     | KeyCode::BracketLeft
                     | KeyCode::BracketRight
-                    | KeyCode::KeyI
-                    | KeyCode::KeyO,
+                    | KeyCode::KeyI,
                     false,
                 ) => Kind::Still,
                 (KeyCode::Comma | KeyCode::Period, false) => Kind::Depth,

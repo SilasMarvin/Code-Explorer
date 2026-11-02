@@ -378,10 +378,9 @@ impl Explorer {
         }
     }
 
-    /// Puts the view back as it was, all of it: the journey, its outcome and cursor,
-    /// how much of it shows and the function clicked.
-    /// Gathered round the focus's module, the nucleus eases back round the function
-    /// it was, and the camera back to where it stood.
+    /// Puts the view back as it was, all of it: the journey and its cursor, how much of
+    /// it shows and the function clicked. The nucleus eases back round the function it
+    /// was, and the camera back to where it stood.
     fn restore(&mut self, view: View) {
         self.leaving_browse(view.mode);
         // Expanding is no place of its own: a camera that framed the nucleus expanded
@@ -487,7 +486,7 @@ impl Explorer {
         self.reveal_cursor();
     }
 
-    /// Moves the cursor to a call picked by hand, a bar or a digit, remembering where
+    /// Moves the cursor to a call picked by hand, as a bar does, remembering where
     /// it was; stepping with the keys moves it without.
     pub(crate) fn go_to(&mut self, span: SpanId) {
         self.navigate(|explorer| explorer.select(Some(span)));

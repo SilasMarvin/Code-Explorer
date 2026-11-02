@@ -12,7 +12,6 @@ use codeviz_layout::{ForceGraph, Reach};
 use crate::{
     camera::OrbitCamera,
     explorer::Explorer,
-    idle::Awake,
     nucleus,
     scene::{PALETTE, Tile, lane_color},
 };
@@ -164,8 +163,8 @@ pub(crate) fn speck(explorer: &Explorer, tile: usize) -> bool {
     n.shows(tile) && !n.lit(tile) && n.focus() != Some(tile)
 }
 
-/// Whether a function is a speck the nucleus leaves out altogether (N): not drawn,
-/// and not pointed at.
+/// Whether a function is a speck the nucleus leaves out altogether, as a journey
+/// does: not drawn, and not pointed at.
 pub(crate) fn hidden_speck(explorer: &Explorer, tile: usize) -> bool {
     explorer.nucleus().specks_hidden() && speck(explorer, tile)
 }
@@ -297,119 +296,29 @@ pub(crate) fn create_node_materials(
     commands.insert_resource(NodeMaterials(node_materials(&mut materials)));
 }
 
-/// The rings round the focus, the cursor and the node under the pointer.
-pub(crate) fn draw_graph(
-    explorer: Res<Explorer>,
-    clock: Res<Time>,
-    mut gizmos: Gizmos,
-    mut marked: Local<Option<(usize, f32)>>,
-    mut awake: ResMut<Awake>,
-) {
-    let time = clock.elapsed_secs();
-    // The cursor pulses for a moment wherever it lands.
-    let cursor = explorer.cursor_mark();
-    if cursor != marked.map(|(tile, _)| tile) {
-        *marked = cursor.map(|tile| (tile, time));
-    }
-    let age = marked.map_or(f32::INFINITY, |(_, since)| time - since);
-    if age < CURSOR_PULSE {
-        awake.0 = true;
-    }
-    draw_attention(&explorer, age, &mut gizmos);
-}
-
-/// Seconds the cursor pulses for when it lands on a function.
-const CURSOR_PULSE: f32 = 1.2;
-
-/// Dots running along a call from caller to callee, so which way it goes reads
-/// without a legend.
-pub(crate) fn flow(gizmos: &mut Gizmos, a: Vec3, b: Vec3, color: Color, time: f32, seed: usize) {
-    let length = a.distance(b);
-    if length < 1.0 {
-        return;
-    }
-    // About one dot every few units, all moving at the same speed.
-    let count = (length / 7.0).ceil().clamp(1.0, 5.0);
-    #[expect(clippy::cast_precision_loss, reason = "a seed for a phase")]
-    let offset = (seed as f32 * 0.618_034).fract();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to 1..=5"
-    )]
-    for dot in 0..count as u32 {
-        #[expect(clippy::cast_precision_loss, reason = "a small count")]
-        let phase = (time * 5.0 / length + (dot as f32 + offset) / count).fract();
-        gizmos.sphere(
-            Isometry3d::from_translation(a.lerp(b, phase)),
-            0.22,
-            color.with_alpha((color.alpha() + 0.15).min(1.0)),
-        );
-    }
-}
-
-/// A white ring round the focus, and a fainter, wider one round the node under the
-/// pointer, in the graph or as a bar in the journey. Gathered round the focus's
-/// module, the journey's cursor, where it is not the nucleus's middle, gets two rings
-/// where it sits in a glow of its own color, pulsing for a moment `age` seconds after it landed;
-/// the function under the pointer, a bar's included, glows as a preview of that.
-fn draw_attention(explorer: &Explorer, age: f32, gizmos: &mut Gizmos) {
+/// One ring per role, nothing else: white round the focus, and in a journey round a
+/// function selected off it; pink round the journey's cursor, whose fill is pink too;
+/// fainter white round the function under the pointer, in the graph or as a bar.
+pub(crate) fn draw_graph(explorer: Res<Explorer>, mut gizmos: Gizmos) {
     let graph = explorer.graph();
     let nucleus = explorer.nucleus();
     // The node's own radius, as big as it is drawn.
     let size = |tile: usize| node_size(graph, tile) * nucleus.node_scale(false) * 0.5;
-    let focus = explorer.lit_focus();
-    // The focus, and in a journey a function selected off it, ringed in white.
-    let ringed = focus.into_iter().chain(explorer.aside());
-    for tile in ringed {
-        if let Some(at) = explorer.tile_point(tile) {
-            let radius = size(tile) + 0.35;
-            gizmos.sphere(Isometry3d::from_translation(at), radius, Color::WHITE);
-        }
-    }
     let zoom = nucleus.zoom();
-    let glow = |gizmos: &mut Gizmos, at: Vec3, radius: f32, color: Color, strength: f32| {
-        for (grow, alpha) in [(1.3, 0.35), (1.9, 0.2), (2.6, 0.1)] {
-            gizmos.sphere(
-                Isometry3d::from_translation(at),
-                radius + grow * zoom,
-                color.with_alpha(alpha * strength),
-            );
+    let mut ring = |tile: usize, grow: f32, color: Color| {
+        if let Some(at) = explorer.tile_point(tile) {
+            gizmos.sphere(Isometry3d::from_translation(at), size(tile) + grow, color);
         }
     };
-    if let Some(tile) = explorer.cursor_mark()
-        && let Some(at) = explorer.tile_point(tile)
-    {
-        let pulse = if age < CURSOR_PULSE {
-            0.5 - 0.5 * (age * std::f32::consts::TAU / 0.4).cos()
-        } else {
-            0.0
-        };
-        for grow in [0.35, 0.8] {
-            gizmos.sphere(
-                Isometry3d::from_translation(at),
-                size(tile) + (grow + pulse * 1.2) * zoom,
-                CURSOR,
-            );
-        }
-        glow(gizmos, at, size(tile), CURSOR, 1.0);
+    let focus = explorer.lit_focus();
+    for tile in focus.into_iter().chain(explorer.aside()) {
+        ring(tile, 0.35, Color::WHITE);
     }
-    if let Some(tile) = explorer
-        .pointed()
-        .filter(|&t| Some(t) != focus && Some(t) != explorer.cursor_mark())
-        && let Some(at) = explorer.tile_point(tile)
-    {
-        glow(gizmos, at, size(tile), Color::WHITE, 0.6);
+    if let Some(tile) = explorer.cursor_mark() {
+        ring(tile, 0.35 * zoom, CURSOR);
     }
-    if let Some(tile) = explorer.pointed().filter(|&t| Some(t) != focus)
-        && let Some(at) = explorer.tile_point(tile)
-    {
-        let radius = size(tile) + 0.6;
-        gizmos.sphere(
-            Isometry3d::from_translation(at),
-            radius,
-            Color::srgba(1.0, 1.0, 1.0, 0.55),
-        );
+    if let Some(tile) = explorer.pointed().filter(|&t| Some(t) != focus) {
+        ring(tile, 0.6, Color::srgba(1.0, 1.0, 1.0, 0.55));
     }
 }
 

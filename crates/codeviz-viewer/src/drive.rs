@@ -36,10 +36,10 @@ use serde_json::{Value, json};
 
 use crate::{
     camera::OrbitCamera,
-    capture::{DRAIN_FRAMES, Press, SETTLE_FRAMES, SETTLE_TIME},
     checks,
     explorer::Explorer,
     idle::Awake,
+    keys::Press,
     scene::Tile,
     script::{
         Expect, Gesture, Kind, Line, Name, Spot, Step, close_matches, snap_label, snap_name,
@@ -48,6 +48,13 @@ use crate::{
     ui::{Chrome, KeyHelp, node_name},
 };
 
+/// Frames to let the scene settle (assets load, camera eases) before the first step.
+const SETTLE_FRAMES: u32 = 90;
+/// Time to let it settle as well: on a first run shaders compile in the background,
+/// and until they do the frames come quickly and draw nothing.
+const SETTLE_TIME: Duration = Duration::from_secs(2);
+/// Frames to wait after the last snapshot so its file write completes.
+const DRAIN_FRAMES: u32 = 30;
 /// Times a snapshot that comes out black is taken again.
 const RETAKES: u32 = 3;
 /// Frames in a row with nothing moving before a step counts as settled.

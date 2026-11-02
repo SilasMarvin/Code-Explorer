@@ -1,7 +1,7 @@
 //! What the pointer is on, and what a click picks. A function is picked by where it
 //! shows on screen rather than by the first sphere a ray meets: a named function wins
 //! over a faint unnamed speck lying a pixel nearer, a name picks the function it
-//! names, and a speck the nucleus leaves out (N) is never picked.
+//! names, and a speck the nucleus leaves out is never picked.
 
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, input::EguiWantsInput};

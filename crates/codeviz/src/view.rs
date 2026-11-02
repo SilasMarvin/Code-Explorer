@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
-use codeviz_core::{JourneyOptions, System};
-use codeviz_ir::Document;
+use codeviz_core::System;
+use codeviz_ir::{Document, UnitId};
 use codeviz_viewer::{Script, Viewer};
 
 #[derive(Debug, clap::Args)]
@@ -19,46 +19,24 @@ pub(crate) struct ViewArgs {
 /// What the viewer opens on and how it shows it.
 #[derive(Debug, clap::Args)]
 struct Display {
-    /// Include calls nothing resolved.
-    #[arg(long)]
-    unresolved: bool,
-    /// Start with summaries, or the units they refine.
-    #[arg(long, value_enum, default_value_t = crate::journey::ZoomArg::Summary)]
-    zoom: crate::journey::ZoomArg,
     /// Open the journey that starts at this function (entry label or unit id suffix).
     /// Without it, the view opens browsing the whole codebase.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
-    /// With --screenshot, as though the pointer were over this function (entry label
-    /// or unit id suffix).
-    #[arg(long, value_name = "UNIT", requires = "screenshot")]
-    hover: Option<String>,
     /// Open the journey this many levels deep instead of one.
     #[arg(long, value_name = "LEVELS")]
     depth: Option<u32>,
-    /// Draw only the graph and the journey, without the panels and cards around them.
-    #[arg(long)]
-    bare: bool,
     /// Open with the journey's start module expanded to show how calls run inside it
     /// (X toggles it).
     #[arg(long, requires = "focus")]
     expand: bool,
-    /// Render once, save a PNG screenshot here, and exit.
-    #[arg(long, value_name = "PATH")]
+    /// With --script, the directory each snap's PNG and JSON go in.
+    #[arg(long, value_name = "DIR", requires = "script")]
     screenshot: Option<PathBuf>,
-    /// With --screenshot, keys to press first, separated by spaces: `o`, `.`, `up`,
-    /// `shift+]`.
-    #[arg(long, value_name = "KEYS", requires = "screenshot")]
-    keys: Option<String>,
     /// Run a session from this file in one window, a step per line (`key x`, `click
-    /// UNIT`, `expect mode journey`, `snap LABEL`; see docs/harness.md); --screenshot
-    /// names the directory each snap's PNG and JSON go in. Run it through tools/drive.
-    #[arg(
-        long,
-        value_name = "FILE",
-        requires = "screenshot",
-        conflicts_with = "keys"
-    )]
+    /// UNIT`, `expect mode journey`, `snap LABEL`; see docs/harness.md), checking every
+    /// snap. Run it through tools/drive, which guards memory and time.
+    #[arg(long, value_name = "FILE", requires = "screenshot")]
     script: Option<PathBuf>,
     /// Read this session script and look up every function and module it names, then
     /// exit without opening the window.
@@ -88,43 +66,23 @@ fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result
     let focus = args
         .focus
         .as_ref()
-        .map(|query| crate::journey::find_one(&system, query))
-        .transpose()?;
-    let hover = args
-        .hover
-        .as_ref()
-        .map(|query| crate::journey::find_one(&system, query))
+        .map(|query| find_one(&system, query))
         .transpose()?;
     let script = read_script(args)?;
     let title = format!("codeviz — {title}");
 
-    let mut viewer = Viewer::new(system)
-        .with_title(title)
-        .with_options(JourneyOptions {
-            include_unresolved: args.unresolved,
-            zoom: args.zoom.into(),
-            ..JourneyOptions::default()
-        });
+    let mut viewer = Viewer::new(system).with_title(title);
     if let Some(focus) = focus {
         viewer = viewer.with_focus(focus);
     }
-    if let Some(hover) = hover {
-        viewer = viewer.with_hover(hover);
-    }
     if let Some(depth) = args.depth {
         viewer = viewer.with_depth(depth);
-    }
-    if args.bare {
-        viewer = viewer.bare();
     }
     if args.expand {
         viewer = viewer.expanded();
     }
     if let Some(path) = &args.screenshot {
         viewer = viewer.with_screenshot(path);
-    }
-    if let Some(keys) = &args.keys {
-        viewer = viewer.with_keys(keys).map_err(anyhow::Error::msg)?;
     }
     if let Some(script) = script {
         viewer = viewer.with_script(script);
@@ -146,4 +104,19 @@ fn read_script(args: &Display) -> anyhow::Result<Option<Script>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     Script::parse(&text).map(Some).map_err(anyhow::Error::msg)
+}
+
+/// The one function `query` names: an entry's label or the end of a unit's id.
+fn find_one(system: &System, query: &str) -> anyhow::Result<UnitId> {
+    match system.find(query).as_slice() {
+        [unit] => Ok(unit.id.clone()),
+        [] => bail!("nothing matches `{query}`"),
+        many => bail!(
+            "`{query}` is ambiguous:\n{}",
+            many.iter()
+                .map(|u| format!("  {}", u.id))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
 }

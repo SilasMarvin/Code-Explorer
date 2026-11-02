@@ -11,7 +11,6 @@
 )]
 
 mod camera;
-mod capture;
 mod checks;
 mod disclosure;
 mod drive;
@@ -20,6 +19,7 @@ mod graph_view;
 mod history;
 mod idle;
 mod journey_panel;
+mod keys;
 mod module_names;
 mod notice;
 mod nucleus;
@@ -45,20 +45,14 @@ pub struct Viewer {
     options: JourneyOptions,
     title: String,
     screenshot: Option<PathBuf>,
-    /// Keys a screenshot presses first, once the scene settles.
-    keys: Vec<capture::Press>,
     /// A session's steps, each with its line; with one, the screenshot path is the
     /// directory its snapshots go in.
     script: Option<Vec<script::Line>>,
     /// Whether to look the script's names up and stop, without opening the window.
     check_script: bool,
     focus: Option<UnitId>,
-    /// The function a screenshot puts the pointer over.
-    hover: Option<UnitId>,
     /// How many levels of the opened journey show at first.
     depth: Option<u32>,
-    /// Whether only the graph and the journey draw, without the panels and cards.
-    bare: bool,
     /// Whether the nucleus opens expanded.
     expanded: bool,
 }
@@ -89,13 +83,10 @@ impl Viewer {
             options: JourneyOptions::default(),
             title: "codeviz".to_owned(),
             screenshot: None,
-            keys: Vec::new(),
             script: None,
             check_script: false,
             focus: None,
-            hover: None,
             depth: None,
-            bare: false,
             expanded: false,
         }
     }
@@ -108,24 +99,10 @@ impl Viewer {
         self
     }
 
-    /// Opens as though the pointer were over this function, for a screenshot.
-    #[must_use]
-    pub fn with_hover(mut self, unit: UnitId) -> Self {
-        self.hover = Some(unit);
-        self
-    }
-
     /// Opens the journey this many levels deep instead of one.
     #[must_use]
     pub fn with_depth(mut self, depth: u32) -> Self {
         self.depth = Some(depth);
-        self
-    }
-
-    /// Draws only the graph and the journey, without the panels and cards around them.
-    #[must_use]
-    pub fn bare(mut self) -> Self {
-        self.bare = true;
         self
     }
 
@@ -137,44 +114,22 @@ impl Viewer {
         self
     }
 
-    /// Initial journey options; adjustable in the UI.
-    #[must_use]
-    pub fn with_options(mut self, options: JourneyOptions) -> Self {
-        self.options = options;
-        self
-    }
-
     #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
         self
     }
 
-    /// Instead of running interactively, save a screenshot to `path` once the scene
-    /// has settled, then exit.
+    /// With a script, the directory a session's snapshots go in.
     #[must_use]
     pub fn with_screenshot(mut self, path: impl Into<PathBuf>) -> Self {
         self.screenshot = Some(path.into());
         self
     }
 
-    /// Keys to press before the screenshot, once the scene settles, separated by
-    /// spaces: `o`, `.`, `up`, `shift+]`.
-    ///
-    /// # Errors
-    ///
-    /// Names the first key it cannot read.
-    pub fn with_keys(mut self, keys: &str) -> Result<Self, String> {
-        self.keys = keys
-            .split_whitespace()
-            .map(|key| capture::Press::parse(key).ok_or_else(|| format!("unknown key `{key}`")))
-            .collect::<Result<_, _>>()?;
-        Ok(self)
-    }
-
-    /// Runs a session in one window instead of taking one screenshot: the script's
-    /// steps, each through the input a person would give, with the view let settle
-    /// after each. The screenshot path is the directory the snapshots go in.
+    /// Runs a session in one window instead of interactively: the script's steps,
+    /// each through the input a person would give, with the view let settle after
+    /// each. The screenshot path is the directory the snapshots go in.
     #[must_use]
     pub fn with_script(mut self, script: Script) -> Self {
         self.script = Some(script.0);
@@ -204,10 +159,6 @@ impl Viewer {
         }
         explorer.gather();
         explorer.expand_nucleus(self.expanded);
-        explorer.hovered_tile = self
-            .hover
-            .take()
-            .and_then(|unit| explorer.map().tile_of(&unit));
         explorer
     }
 
@@ -256,10 +207,7 @@ impl Viewer {
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
         .init_resource::<JourneyPanel>()
-        .insert_resource(ui::Chrome {
-            bare: self.bare,
-            ..default()
-        })
+        .init_resource::<ui::Chrome>()
         .init_resource::<idle::Awake>();
         if let (Some(dir), Some(lines)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.
@@ -267,12 +215,6 @@ impl Viewer {
                 dir: dir.clone(),
                 lines,
                 names,
-            });
-        } else if let Some(path) = self.screenshot {
-            // A screenshot waits frames out, so it keeps drawing.
-            app.add_plugins(capture::CapturePlugin {
-                path,
-                keys: self.keys,
             });
         } else {
             app.add_plugins(idle::IdlePlugin);

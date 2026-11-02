@@ -139,7 +139,7 @@ scene's units.
   (`at`, `facing`), `snap`.
 - `state`: `mode` (`browse`, `journey`), `selection`, `focus`, `centre`, `centre_module`,
   `nucleus` (`modules`, `expanded`), `journey_start`, `cursor` (`number`, `name`),
-  `aside`, `depth`, `hidden`, `outside_callers`, `pointed` (the function the view counts
+  `aside`, `depth`, `outside_callers`, `pointed` (the function the view counts
   as under the pointer) and `under_pointer` (raw), `search`, `help`, `back`, `forward`,
   `camera` (`target`, `distance`, `yaw`, `pitch`), `pointer`.
 - `nodes`: every function drawn: `name`, `unit`, `module`, `roles` (`centre`, `start`,
@@ -194,7 +194,7 @@ What a step may move decides which checks judge it:
 
 | kind | steps | may move |
 |---|---|---|
-| still | `hover`, `hover-label`, `key` arrows, `[`, `]`, `i`, `o`, `wait`, `expect` | nothing |
+| still | `hover`, `hover-label`, `key` arrows, `[`, `]`, `i`, `wait`, `expect` | nothing |
 | click | `click UNIT`, `click-label`, `bar` | nothing; expanded in a journey it may re-centre |
 | depth | `key ,`, `key .` | the camera, to bring new calls on; nothing in the world |
 | expand | `key x`, `doubleclick-module` | the view |

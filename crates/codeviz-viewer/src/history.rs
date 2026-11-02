@@ -1,12 +1,11 @@
 //! Where the view has been, for going back and forward the way a browser does. Each
-//! entry is the whole view as it was when it was left: the journey and its outcome,
-//! the cursor, how much of it showed, the function clicked, and where the camera
-//! stood, so going back puts all of it back, seen as it
-//! was, rather than only the node it was on.
+//! entry is the whole view as it was when it was left: the journey, the cursor, how
+//! much of it showed, the function clicked, and where the camera stood, so going back
+//! puts all of it back, seen as it was, rather than only the node it was on.
 //!
 //! One rule says what makes an entry: whatever changes the nucleus's middle or where
 //! the journey starts, opens or leaves a journey, selects a function browsing, or
-//! moves the cursor by a click, a bar, a digit or Enter. A walk with the arrows or
+//! moves the cursor by a click, a bar or Enter. A walk with the arrows or
 //! brackets is one entry however many steps it takes, so Back returns to where the
 //! walk began. Back crosses between browsing and a journey as it crosses anything.
 
