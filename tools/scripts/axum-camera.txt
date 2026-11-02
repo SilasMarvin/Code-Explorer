@@ -1,0 +1,77 @@
+#: view demo/out/axum-server.json
+# The camera on the small demo: a double click on a function selects it and expands
+# its module; Back and Forward while expanded keep it expanded; F frames the
+# expanded module; the wheel stops at a module filling the view; X again returns to
+# exactly where the camera was; a click off every function deselects and moves no
+# camera; in a journey X expands the module under the pointer, Esc shrinks it back,
+# R shows the journey from the usual view, and Esc returns to browsing as it was.
+click pricing::quote
+snap before
+
+doubleclick users::find_user
+expect selection users::find_user
+expect expanded users
+expect check expanded-fill
+snap double clicked a function
+
+click users::register
+expect selection users::register
+expect expanded users
+snap selected inside
+
+key backspace
+expect selection users::find_user
+expect expanded users
+snap back while expanded
+
+key shift+backspace
+expect selection users::register
+expect expanded users
+snap forward while expanded
+
+drag 60 0
+snap orbited
+
+key f
+expect check framed
+snap f expanded
+
+scroll 30 at users::register
+expect check zoom-bounds
+snap wheel in far
+
+key x
+expect expanded none
+expect camera-same-as before
+snap collapsed
+
+click-empty
+expect selection none
+expect camera-same-as collapsed
+snap deselected
+
+shift+click orders::place
+expect mode journey
+snap journey
+
+hover validation::check_quantity
+key x
+expect expanded validation
+expect check expanded-fill
+snap expanded another module
+
+key esc
+expect expanded none
+expect mode journey
+expect camera-same-as journey
+snap esc collapses
+
+drag 80 30
+key r
+expect check framed
+snap r journey
+
+key esc
+expect mode browse
+expect camera-same-as deselected
+snap left the journey

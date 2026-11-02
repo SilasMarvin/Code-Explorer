@@ -6,7 +6,9 @@
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, input::EguiWantsInput};
 
-use crate::{camera::OrbitCamera, explorer::Explorer, idle::Awake, scene::Tile, ui};
+use crate::{
+    camera::OrbitCamera, explorer::Explorer, idle::Awake, nucleus::Nucleus, scene::Tile, ui,
+};
 
 /// How far past a function's drawn edge, in points, the pointer still counts as on it.
 const SLOP: f32 = 3.0;
@@ -87,9 +89,20 @@ pub(crate) fn point(
                 explorer.under_pointer = None;
             }
             *set = None;
+            if explorer.module_under_pointer.is_some() {
+                explorer.module_under_pointer = None;
+            }
             return;
         }
     };
+    let module = cursor.and_then(|pointer| {
+        let (camera, view) = cameras.single().ok()?;
+        let ray = camera.viewport_to_world(view, pointer).ok()?;
+        module_at(explorer.nucleus(), ray)
+    });
+    if explorer.module_under_pointer != module {
+        explorer.module_under_pointer = module;
+    }
     if explorer.under_pointer != over {
         explorer.under_pointer = over;
     }
@@ -123,6 +136,24 @@ fn spot(
     })
 }
 
+/// The module whose drawn sphere `ray` enters first.
+fn module_at(nucleus: &Nucleus, ray: Ray3d) -> Option<usize> {
+    nucleus
+        .balls()
+        .filter(|(_, ball)| nucleus.shows_body(ball.body))
+        .filter_map(|(cluster, ball)| {
+            let to_middle = ball.center - ray.origin;
+            let along = to_middle.dot(*ray.direction);
+            let off = to_middle.length_squared() - along * along;
+            let reach = ball.radius * ball.radius - off;
+            // From inside a sphere, it counts as entered where the ray starts.
+            (reach >= 0.0).then(|| (cluster, (along - reach.sqrt()).max(0.0)))
+        })
+        .filter(|&(_, enters)| enters.is_finite())
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(cluster, _)| cluster)
+}
+
 fn egui_pos(at: Vec2) -> bevy_egui::egui::Pos2 {
     bevy_egui::egui::pos2(at.x, at.y)
 }
@@ -150,7 +181,11 @@ pub(crate) fn click(
         (pressed.take(), cursor),
         (Some(a), Some(b)) if a.distance(b) < CLICK_TRAVEL
     );
-    let Some(tile) = explorer.under_pointer.filter(|_| clicked) else {
+    if !clicked {
+        return;
+    }
+    let Some(tile) = explorer.under_pointer else {
+        explorer.click_empty();
         return;
     };
     if !explorer.nucleus().drawn(tile) {
@@ -168,16 +203,17 @@ pub(crate) fn click(
 /// Longest between the two clicks of a double click, in seconds.
 const DOUBLE_CLICK: f32 = 0.4;
 
-/// A double click on the nucleus, off any function, expands it or shrinks it back.
-/// A press that drags to orbit is no click.
+/// A double click on a module expands it: anywhere on its sphere, or on one of its
+/// functions, which the first click has already picked as any click does. With a
+/// module expanded, a double click off every function shrinks it back. A press that
+/// drags to orbit is no click.
 pub(crate) fn double_click(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     window: Single<&Window, With<PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
     mut explorer: ResMut<Explorer>,
     mut pressed: Local<Option<Vec2>>,
-    mut last: Local<Option<f32>>,
+    mut last: Local<Option<(f32, Vec2)>>,
 ) {
     let cursor = window.cursor_position();
     if buttons.just_pressed(MouseButton::Left) {
@@ -186,30 +222,28 @@ pub(crate) fn double_click(
     if !buttons.just_released(MouseButton::Left) {
         return;
     }
-    let clicked = matches!(
-        (pressed.take(), cursor),
-        (Some(a), Some(b)) if a.distance(b) < CLICK_TRAVEL
-    );
-    let on_nucleus = || {
-        let nucleus = explorer.nucleus();
-        let ball = nucleus.ball(nucleus.middle())?;
-        let (camera, global) = cameras.single().ok()?;
-        let ray = camera.viewport_to_world(global, cursor?).ok()?;
-        let to_middle = ball.center - ray.origin;
-        let nearest = ray.origin + *ray.direction * to_middle.dot(*ray.direction);
-        Some(nearest.distance(ball.center) <= ball.radius)
+    let at = match (pressed.take(), cursor) {
+        (Some(a), Some(b)) if a.distance(b) < CLICK_TRAVEL => b,
+        _ => {
+            *last = None;
+            return;
+        }
     };
-    if !clicked || explorer.under_pointer.is_some() || on_nucleus() != Some(true) {
-        *last = None;
+    let now = time.elapsed_secs();
+    let again = last.is_some_and(|(then, was)| {
+        now - then <= DOUBLE_CLICK && was.distance(at) < 2.0 * CLICK_TRAVEL
+    });
+    if !again {
+        *last = Some((now, at));
         return;
     }
-    let now = time.elapsed_secs();
-    if last.is_some_and(|at| now - at <= DOUBLE_CLICK) {
-        *last = None;
-        let on = !explorer.nucleus().expanded();
-        explorer.expand_nucleus(on);
-    } else {
-        *last = Some(now);
+    *last = None;
+    if explorer.nucleus().expanded() {
+        if explorer.under_pointer.is_none() {
+            explorer.toggle_expand(None);
+        }
+    } else if let Some(module) = explorer.module_pointed() {
+        explorer.toggle_expand(Some(module));
     }
 }
 

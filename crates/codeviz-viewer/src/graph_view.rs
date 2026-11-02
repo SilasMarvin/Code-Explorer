@@ -1,7 +1,8 @@
 //! How functions look: each node's color and size, and the rings round the start (or
 //! the selection), the function set aside, the cursor and what is hovered. A node's
-//! fill says where it lives, its module; what is near the start is bright, fading with
-//! each call further. Its size says only what it is to the view, one size for each:
+//! fill says what it is to the selection or the journey, in the colors its calls and
+//! names carry: white, violet, blue, amber darker the deeper, pink, and grey for the
+//! rest; its module shows in its sphere alone. Its size says only what it is to the view, one size for each:
 //! a faint speck, lit, or the one in focus; kept within bounds on screen however near
 //! or far the view. Hovering only rings the node, so passing over the graph does not
 //! repaint it.
@@ -9,32 +10,30 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use codeviz_layout::Reach;
 
 use crate::{
     camera::OrbitCamera,
-    colors::{CURSOR, MODULE_SHADES, module_color, module_shade},
+    colors::{CURSOR, FURTHER},
     explorer::Explorer,
+    nucleus::{Flow, SHADES},
     scene::Tile,
 };
 
-/// Calls away from the start that still get their own shade; further is drawn as this.
-const FARTHEST_SHADE: u32 = 3;
-
-/// How a node is drawn right now.
+/// How a node is drawn right now: in the color of what it is to the selection or
+/// the journey, as its call and its name are; its module shows in its sphere alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NodeLook {
-    /// The start, or browsing, the selection.
+    /// The start, the selection, or the function set aside: white.
     Start,
-    /// The journey's cursor.
+    /// The journey's cursor: pink.
     Cursor,
-    /// Calls into the start or called from it, this many calls away (capped at
-    /// [`FARTHEST_SHADE`]), in its module's color.
-    Near(usize, u32),
-    /// Unrelated to the start.
-    Faded(usize),
-    /// Anything while nothing is selected, in its module's color.
-    Plain(usize),
+    /// What the start or the selection lights, colored as the call that lights it:
+    /// violet for a caller, blue for its own calls, amber further down.
+    Role(Flow),
+    /// Anything else while nothing is selected, and what is lit for no call: grey.
+    Plain,
+    /// Unrelated to what is selected: faint grey.
+    Faded,
 }
 
 /// How bright a dimmed node is, against its full brightness.
@@ -72,52 +71,34 @@ fn dimmed(material: &StandardMaterial, share: f32) -> StandardMaterial {
     }
 }
 
-/// How each look is drawn at full brightness.
+/// How each look is drawn at full brightness: flat, with only enough light of its
+/// own to read on the dark, and no glow.
 fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
-    let glow = |color: Color, strength: f32| StandardMaterial {
+    let flat = |color: Color| StandardMaterial {
         base_color: color,
-        emissive: LinearRgba::from(color) * strength,
+        emissive: LinearRgba::from(color) * 0.5,
         ..default()
     };
+    let grey = FURTHER.mix(&Color::BLACK, 0.35);
     let mut table = HashMap::new();
-    table.insert(NodeLook::Start, glow(Color::WHITE, 4.0));
-    table.insert(NodeLook::Cursor, glow(CURSOR, 2.6));
-    for hops in 1..=FARTHEST_SHADE {
-        // Bright and glowing next door, darker and flat further out.
-        let (shade, strength) = match hops {
-            1 => (1.0, 2.6),
-            2 => (0.75, 0.8),
-            _ => (0.5, 0.25),
-        };
-        let darken = |color: Color| {
-            let linear = LinearRgba::from(color);
-            Color::from(LinearRgba::rgb(
-                linear.red * shade,
-                linear.green * shade,
-                linear.blue * shade,
-            ))
-        };
-        for color in 0..MODULE_SHADES {
-            table.insert(
-                NodeLook::Near(color, hops),
-                // Enough glow to stand out, little enough that the hue holds.
-                glow(darken(module_color(color)), strength * 0.3),
-            );
-        }
+    table.insert(NodeLook::Start, flat(Color::WHITE));
+    table.insert(NodeLook::Cursor, flat(CURSOR));
+    for flow in [Flow::Into]
+        .into_iter()
+        .chain((1..=SHADES).map(Flow::journey))
+    {
+        table.insert(NodeLook::Role(flow), flat(flow.color()));
     }
-    for color in 0..MODULE_SHADES {
-        let base = module_color(color);
-        table.insert(NodeLook::Plain(color), glow(base, 0.6));
-        table.insert(
-            NodeLook::Faded(color),
-            StandardMaterial {
-                base_color: base.with_alpha(0.12),
-                alpha_mode: AlphaMode::Blend,
-                unlit: true,
-                ..default()
-            },
-        );
-    }
+    table.insert(NodeLook::Plain, flat(grey));
+    table.insert(
+        NodeLook::Faded,
+        StandardMaterial {
+            base_color: grey.with_alpha(0.12),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        },
+    );
     table
 }
 
@@ -194,68 +175,32 @@ pub(crate) fn drawn_radius(
     }
 }
 
-/// Which way a node relates to the start, and how many calls away: upstream wins a
-/// tie, as for a function that both calls the start and is called by it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Relation {
-    Upstream(u32),
-    Downstream(u32),
-}
-
-pub(crate) fn relation(reach: &Reach, tile: usize) -> Option<Relation> {
-    match (reach.upstream.get(&tile), reach.downstream.get(&tile)) {
-        (Some(&up), Some(&down)) if down < up => Some(Relation::Downstream(down)),
-        (Some(&up), _) => Some(Relation::Upstream(up)),
-        (None, Some(&down)) => Some(Relation::Downstream(down)),
-        (None, None) => None,
-    }
-}
-
 pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
-    let color = module_shade(explorer.graph().cluster(tile).unwrap_or_default());
+    let nucleus = explorer.nucleus();
     // The journey's cursor is the one pink node, wherever it is.
     if explorer.cursor() == Some(tile) {
         return NodeLook::Cursor;
     }
-    if explorer.nucleus().start() == Some(tile) {
+    if nucleus.start() == Some(tile) || explorer.aside() == Some(tile) {
         return NodeLook::Start;
     }
-    let Some(reach) = explorer.reach() else {
-        return NodeLook::Plain(color);
-    };
-    near(explorer, reach, tile).map_or(NodeLook::Faded(color), |hops| NodeLook::Near(color, hops))
-}
-
-/// How many calls from the start a node is, when it is near enough to light: with a
-/// journey open, what the start calls lights as far as the journey is disclosed, and
-/// only its direct callers light above it.
-pub(crate) fn near(explorer: &Explorer, reach: &Reach, tile: usize) -> Option<u32> {
-    let disclosed = explorer.disclosure();
-    let journey = disclosed.tiles();
-    let opened = disclosed.opened();
-    // Whatever the nucleus lights for what it is to the start lights.
-    let named = explorer.nucleus().level(tile).is_some();
-    match relation(reach, tile) {
-        Some(Relation::Upstream(hops)) if !opened || hops == 1 => Some(hops),
-        Some(Relation::Upstream(hops) | Relation::Downstream(hops)) if named => Some(hops),
-        Some(Relation::Downstream(hops)) if !opened || journey.contains_key(&tile) => Some(hops),
-        _ if journey.contains_key(&tile) => Some(2),
-        _ => None,
+    match nucleus.level(tile) {
+        Some(-1) => NodeLook::Role(Flow::Into),
+        Some(level) => NodeLook::Role(Flow::journey(level.unsigned_abs())),
+        None if nucleus.lit(tile) || explorer.reach().is_none() => NodeLook::Plain,
+        None => NodeLook::Faded,
     }
-    .map(|hops| hops.clamp(1, FARTHEST_SHADE))
 }
 
-/// The color a node is filled with, at full strength: the cursor's, else white for
-/// the start, else its module's. A journey bar is painted the same, so a bar and its
-/// node read as one thing.
+/// The color a node is filled with, at full strength, as [`node_look`] has it. A
+/// journey bar is painted the same, so a bar and its node read as one thing.
 pub(crate) fn node_color(explorer: &Explorer, tile: usize) -> Color {
-    if explorer.cursor() == Some(tile) {
-        return CURSOR;
+    match node_look(explorer, tile) {
+        NodeLook::Start => Color::WHITE,
+        NodeLook::Cursor => CURSOR,
+        NodeLook::Role(flow) => flow.color(),
+        NodeLook::Plain | NodeLook::Faded => FURTHER,
     }
-    if explorer.nucleus().start() == Some(tile) {
-        return Color::WHITE;
-    }
-    module_color(explorer.graph().cluster(tile).unwrap_or_default())
 }
 
 /// Keeps what reaches the start current.
@@ -290,19 +235,10 @@ pub(crate) fn style_nodes(
             continue;
         }
         let look = node_look(&explorer, tile.0);
-        // What the nucleus lights shows plainly though the start does not reach it;
-        // anything else is a small, faint speck, however near the start it is.
-        let named = nucleus.lit(tile.0);
-        let quiet = nucleus.speck(tile.0);
         // Brought in from outside the journey, or a caller of the start folded into its
         // module's count: there, but quieter than the journey.
         let outside =
             (nucleus.outside(tile.0) || nucleus.folded(tile.0)) && explorer.aside() != Some(tile.0);
-        let look = match look {
-            NodeLook::Faded(color) if named => NodeLook::Plain(color),
-            NodeLook::Near(color, _) if quiet => NodeLook::Faded(color),
-            look => look,
-        };
         if let Some(wanted) = materials.0.get(&(look, outside))
             && &material.0 != wanted
         {

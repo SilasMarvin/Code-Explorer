@@ -262,11 +262,6 @@ impl Disclosed {
         };
         (out, width)
     }
-
-    /// Whether more than the root shows.
-    pub(crate) fn opened(&self) -> bool {
-        self.levels.len() > 1
-    }
 }
 
 /// When a call runs, if not every time its caller does, as the panel and the graph

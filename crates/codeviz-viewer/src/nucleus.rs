@@ -27,7 +27,7 @@ use bevy::prelude::*;
 use codeviz_layout::ForceGraph;
 
 use crate::{
-    camera::OrbitCamera,
+    camera::{OrbitCamera, ease, frame_time, transition_step},
     colors::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, MODULE_SHADES, module_color, module_shade},
     disclosure::number_order,
     explorer::Explorer,
@@ -71,7 +71,7 @@ pub(crate) enum Flow {
 
 /// Levels of the journey drawn in a shade of their own: the start's calls blue, then
 /// amber, darker a level at a time; deeper than this, as dark as the last.
-const SHADES: u32 = 4;
+pub(crate) const SHADES: u32 = 4;
 
 impl Flow {
     /// The journey's call this many levels below the start.
@@ -201,8 +201,6 @@ const SPACING: f32 = 2.8;
 const NEAR_GAP: f32 = 15.0;
 /// Space kept clear between two spheres.
 const MARGIN: f32 = 6.0;
-/// Seconds a re-centering takes.
-const RECENTER_SECONDS: f32 = 0.9;
 /// The angle the camera turns to when the nucleus opens.
 pub(crate) const VIEW: (f32, f32) = (-0.45, -0.38);
 /// Browsing, how far the camera may turn off [`VIEW`], in yaw and in pitch: the map
@@ -336,8 +334,10 @@ pub(crate) struct Nucleus {
     offsets: Vec<Vec3>,
     /// Calls from one module to another, by `(from, to)` cluster.
     flows: HashMap<(usize, usize), usize>,
-    /// Whether the start's module is expanded to show how calls run inside it.
-    expanded: bool,
+    /// The module expanded, if any. In a journey the start's module is laid out
+    /// afresh to show how calls run inside it; any other module expands where it is,
+    /// and only the camera moves.
+    expanded: Option<usize>,
     now: Arrangement,
     /// The function the pointer has rested on.
     hovered: Option<usize>,
@@ -411,7 +411,7 @@ impl Nucleus {
             module_of: (0..tiles).map(|t| graph.cluster(t)).collect(),
             offsets,
             flows,
-            expanded: false,
+            expanded: None,
             now: Arrangement::default(),
             hovered: None,
             trail,
@@ -434,21 +434,45 @@ impl Nucleus {
     }
 
     /// The module in the middle: the start's.
+    #[cfg(test)]
     pub(crate) fn middle(&self) -> usize {
         self.now.middle
     }
 
-    /// Whether the start's module is expanded.
+    /// Whether a module is expanded.
     pub(crate) fn expanded(&self) -> bool {
+        self.expanded.is_some()
+    }
+
+    /// The module expanded, if any.
+    pub(crate) fn expanded_module(&self) -> Option<usize> {
         self.expanded
     }
 
-    /// Expands the start's module, or shrinks it back among the others, easing there.
-    pub(crate) fn expand(&mut self, graph: &ForceGraph, on: bool) {
-        if on != self.expanded {
-            self.expanded = on;
+    /// Whether expanding `cluster` lays it out afresh: in a journey, the start's
+    /// module; anything else expands where it is.
+    fn lays_out(&self, cluster: Option<usize>) -> bool {
+        !self.browse && cluster.is_some() && cluster == Some(self.now.middle)
+    }
+
+    /// Expands `cluster`, or with none shrinks back what is expanded, easing there.
+    pub(crate) fn expand(&mut self, graph: &ForceGraph, cluster: Option<usize>) {
+        if cluster == self.expanded {
+            return;
+        }
+        let relayout = self.lays_out(self.expanded) || self.lays_out(cluster);
+        self.expanded = cluster;
+        if relayout {
             self.recenter(graph, self.now.start);
         }
+    }
+
+    /// Whether a function is one of the functions of a module expanded where it is
+    /// while browsing: drawn plainly and named, as the module opens.
+    pub(crate) fn opened_up(&self, tile: usize) -> bool {
+        self.browse
+            && self.expanded.is_some()
+            && self.module_of.get(tile).copied().flatten() == self.expanded
     }
 
     /// Arranges everything around `start` instead, easing there from wherever things
@@ -488,9 +512,7 @@ impl Nucleus {
             return false;
         }
         self.browse = browse;
-        if browse {
-            self.expanded = false;
-        }
+        self.expanded = None;
         self.recenter(graph, self.now.start);
         true
     }
@@ -567,7 +589,10 @@ impl Nucleus {
     /// (it has a [`Self::level`]), the journey's cursor, or an outside caller into
     /// the journey.
     pub(crate) fn lit(&self, tile: usize) -> bool {
-        self.level(tile).is_some() || self.is_cursor(tile) || self.outside(tile)
+        self.level(tile).is_some()
+            || self.is_cursor(tile)
+            || self.outside(tile)
+            || self.opened_up(tile)
     }
 
     /// Whether a function is drawn at all: placed where it shows, and in a journey,
@@ -588,10 +613,11 @@ impl Nucleus {
     /// keep theirs; and none of the start's callers folded into a count. The one
     /// test of what is named.
     pub(crate) fn named(&self, tile: usize) -> bool {
-        !self.folded(tile)
-            && self
-                .level(tile)
-                .is_some_and(|level| self.now.named.len() <= NAMED_ALL || level.abs() <= 2)
+        self.opened_up(tile)
+            || !self.folded(tile)
+                && self
+                    .level(tile)
+                    .is_some_and(|level| self.now.named.len() <= NAMED_ALL || level.abs() <= 2)
     }
 
     /// Moves a re-centering along by `dt` seconds. Returns whether anything moved.
@@ -599,7 +625,7 @@ impl Nucleus {
         if self.progress >= 1.0 {
             return false;
         }
-        self.progress = (self.progress + dt / RECENTER_SECONDS).min(1.0);
+        self.progress = (self.progress + transition_step(dt)).min(1.0);
         if self.progress >= 1.0 {
             self.from = None;
         }
@@ -608,8 +634,7 @@ impl Nucleus {
 
     /// The share of the way to where things are going, eased in and out.
     fn eased(&self) -> f32 {
-        let t = self.progress.clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
+        ease(self.progress)
     }
 
     /// Where a function is drawn: inside its module's sphere, or at its middle when
@@ -858,13 +883,13 @@ impl Nucleus {
             .collect()
     }
 
-    /// Points round the nucleus alone, as it will be once a re-centering ends: what
-    /// the view takes in to fill itself with the expanded module.
+    /// Points round the expanded module alone, as it will be once a re-centering
+    /// ends: what the view takes in to fill itself with it.
     pub(crate) fn nucleus_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
         self.now
             .balls
-            .get(self.now.middle)
+            .get(self.expanded.unwrap_or(self.now.middle))
             .map(|b| {
                 vec![
                     b.center + right * b.radius,
@@ -876,12 +901,14 @@ impl Nucleus {
             .unwrap_or_default()
     }
 
-    /// Points round every sphere browsing shows, the whole codebase.
+    /// Points round every sphere shown, as it will be once a re-centering ends:
+    /// browsing, the whole codebase.
     pub(crate) fn atlas_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
         self.now
             .balls
             .iter()
+            .filter(|b| self.shows_body(b.body))
             .flat_map(|b| {
                 [
                     b.center + (right + up) * b.radius,
@@ -913,6 +940,10 @@ impl Nucleus {
         if let Some(at) = self.centre().and_then(|t| self.now.points.get(t).copied()) {
             return at;
         }
+        // A module expanded where it is: its middle.
+        if let Some(ball) = self.expanded.and_then(|c| self.now.balls.get(c)) {
+            return ball.center;
+        }
         let open: Vec<Vec3> = self
             .now
             .balls
@@ -934,7 +965,7 @@ impl Nucleus {
             return self.arrange_browse(graph, start);
         }
         let modules = self.arrange_modules(graph, start);
-        if self.expanded {
+        if self.expanded == Some(modules.middle) {
             let laid = self.laid_out(graph, &modules);
             self.arrange_inside(graph, modules, &laid)
         } else {
@@ -2368,20 +2399,12 @@ fn interior(graph: &ForceGraph, members: &[usize], radius: f32) -> Vec<(usize, V
         .collect()
 }
 
-/// X expands the nucleus, or shrinks it back.
-pub(crate) fn toggle(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer) {
-    if keys.just_pressed(KeyCode::KeyX) {
-        let on = !explorer.nucleus().expanded();
-        explorer.expand_nucleus(on);
-    }
-}
-
 /// Re-centers on the start's module when the start moves, and eases the spheres
 /// there.
 pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake: ResMut<Awake>) {
     if explorer
         .bypass_change_detection()
-        .ease_nucleus(time.delta_secs())
+        .ease_nucleus(frame_time(&time))
     {
         explorer.set_changed();
         awake.0 = true;
@@ -3208,7 +3231,7 @@ mod tests {
         let small = nucleus.ball(core).expect("a sphere").radius;
         let web = module(&graph, &map, "web::route");
         let bearing = nucleus.ball(web).expect("a sphere").center.normalize();
-        nucleus.expand(&graph, true);
+        nucleus.expand(&graph, Some(nucleus.middle()));
         while nucleus.advance(0.1) {}
         let big = nucleus.ball(core).expect("a sphere");
         assert!(big.radius >= small * 3.0, "grows several times over");
@@ -3248,7 +3271,7 @@ mod tests {
             !nucleus.placed(tile(&map, "db::other")),
             "the rest folds away"
         );
-        nucleus.expand(&graph, false);
+        nucleus.expand(&graph, None);
         while nucleus.advance(0.1) {}
         assert!((nucleus.ball(core).expect("a sphere").radius - small).abs() < 1e-3);
     }
@@ -3257,7 +3280,7 @@ mod tests {
     fn expanded_calls_leave_through_the_wall_towards_their_module() {
         let (graph, map) = codebase();
         let mut nucleus = around(&graph, &map, "core::run", 1);
-        nucleus.expand(&graph, true);
+        nucleus.expand(&graph, Some(nucleus.middle()));
         while nucleus.advance(0.1) {}
         let core = nucleus
             .ball(module(&graph, &map, "core::run"))
@@ -3374,7 +3397,7 @@ mod tests {
         let mut nucleus = around(&graph, &map, "core::run", 1);
         assert!(nucleus.speck(idle));
         assert!(!nucleus.drawn(idle), "a journey shows only itself");
-        nucleus.expand(&graph, true);
+        nucleus.expand(&graph, Some(nucleus.middle()));
         assert!(!nucleus.drawn(idle), "expanded too");
         nucleus.set_browse(&graph, true);
         assert!(nucleus.drawn(idle), "browsing, every function shows");
@@ -3517,7 +3540,7 @@ mod tests {
             named
         };
         let modules = named(&nucleus);
-        nucleus.expand(&graph, true);
+        nucleus.expand(&graph, Some(nucleus.middle()));
         assert_eq!(named(&nucleus), modules, "the expanded view names the same");
         for &tile in &modules {
             assert!(nucleus.placed(tile), "and draws it");
@@ -3541,7 +3564,7 @@ mod tests {
         let (graph, map) = codebase();
         let run = tile(&map, "core::run");
         let mut nucleus = around(&graph, &map, "core::run", 1);
-        nucleus.expand(&graph, true);
+        nucleus.expand(&graph, Some(nucleus.middle()));
         while nucleus.advance(0.1) {}
         let at = |nucleus: &Nucleus| {
             let inside: Vec<Option<Vec3>> = ["core::run", "core::help", "core::idle"]
@@ -3630,10 +3653,10 @@ mod tests {
             module(&graph, &map, "db::put"),
             "the first the journey enters, at the top"
         );
-        nucleus.expand(&graph, true);
+        nucleus.expand(&graph, Some(nucleus.middle()));
         while nucleus.advance(0.1) {}
         assert_eq!(clockwise(&nucleus), before, "expanded");
-        nucleus.expand(&graph, false);
+        nucleus.expand(&graph, None);
         while nucleus.advance(0.1) {}
         assert_eq!(clockwise(&nucleus), before, "and back");
     }

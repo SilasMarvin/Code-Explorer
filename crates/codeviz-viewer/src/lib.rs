@@ -158,7 +158,9 @@ impl Viewer {
             explorer.open_at(tile);
         }
         explorer.gather();
-        explorer.expand_nucleus(self.expanded);
+        if self.expanded {
+            explorer.toggle_expand(None);
+        }
         explorer
     }
 
