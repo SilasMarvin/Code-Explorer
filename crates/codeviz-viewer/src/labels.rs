@@ -141,6 +141,9 @@ struct Disc {
     /// A caller from off the journey (I): only names of what I brings in keep off it,
     /// so I moves no other name.
     outside: bool,
+    /// Lit, or lit at another depth or by another selection: a name would rather not
+    /// cover it, so that one more lit takes no name's side.
+    may_light: bool,
 }
 
 /// Rectangles and dots by where they are on screen, so a name looks only at what is
@@ -308,17 +311,20 @@ impl Placer {
         reach: f32,
         (size, bare): (egui::Vec2, egui::Vec2),
     ) -> Option<(usize, f32)> {
+        // Dots that may light first, then any.
         let covered = |pill: egui::Rect| {
-            self.dot_grid
+            let under: Vec<Disc> = self
+                .dot_grid
                 .near(pill.expand(reach + CLEAR))
                 .into_iter()
-                .filter(|&i| {
-                    let d = self.dots[i];
-                    self.sees(&d) && d.tile != own && pill.distance_to_pos(d.at) < d.steady + CLEAR
+                .map(|i| self.dots[i])
+                .filter(|d| {
+                    self.sees(d) && d.tile != own && pill.distance_to_pos(d.at) < d.steady + CLEAR
                 })
-                .count()
+                .collect();
+            (under.iter().filter(|d| d.may_light).count(), under.len())
         };
-        let mut spots: Vec<(usize, usize, egui::Rect)> = (0..SPOTS.len())
+        let mut spots: Vec<((usize, usize), usize, egui::Rect)> = (0..SPOTS.len())
             .map(|i| {
                 (
                     covered(spot(i, node, reach, bare)),
@@ -626,6 +632,9 @@ impl<'a> Naming<'a> {
                     steady,
                     lit: dot != Dot::Speck,
                     outside: nucleus.outside(tile),
+                    may_light: dot != Dot::Speck
+                        || nucleus.browsing()
+                        || nucleus.journey_level(tile).is_some(),
                 })
             })
             .chain(self.ghosts())
@@ -653,6 +662,7 @@ impl<'a> Naming<'a> {
                     steady: radius,
                     lit: false,
                     outside: false,
+                    may_light: true,
                 })
             })
     }
@@ -1314,6 +1324,7 @@ mod tests {
             steady: 4.0,
             lit,
             outside: false,
+            may_light: lit,
         }
     }
 
