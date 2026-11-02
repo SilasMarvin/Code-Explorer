@@ -12,7 +12,6 @@ use crate::{
     disclosure::Disclose,
     explorer::{Confidence, Explorer, is_conditional, is_handoff},
     graph_view::node_color,
-    scene::{PALETTE, lane_color},
     ui::{egui_color, journey_title, short},
 };
 
@@ -209,8 +208,7 @@ fn canvas(
     );
     let painter = ui.painter_at(content);
     let track = explorer.track();
-    let scene = track.scene();
-    if scene.nodes.is_empty() {
+    let Some(journey) = track.journey() else {
         painter.text(
             content.center(),
             egui::Align2::CENTER_CENTER,
@@ -219,13 +217,10 @@ fn canvas(
             MUTED,
         );
         return Tethers::default();
-    }
+    };
     // Only what is disclosed is laid out, a slot per call.
     let disclosed = explorer.disclosure();
-    let (placed, slots) = track
-        .journey()
-        .map(|j| disclosed.layout(j.root()))
-        .unwrap_or_default();
+    let (placed, slots) = disclosed.layout(journey.root());
     let start = 0.0;
     let end = slots.max(1.0);
     let fit = content.width() / (end - start);
@@ -291,12 +286,12 @@ fn canvas(
     let graph_focus = explorer.graph_focus();
     let tile_of = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
 
-    let bars: Vec<Bar> = scene
-        .nodes
-        .iter()
-        .map(|node| match placed.get(&node.span) {
+    // A bar per span, in the journey's order, so a span's index finds its bar.
+    let bars: Vec<Bar> = journey
+        .spans()
+        .map(|(span, _)| match placed.get(&span) {
             Some(&(left, slots, row)) => Bar {
-                span: node.span,
+                span,
                 rect: egui::Rect::from_min_size(
                     egui::pos2(x_of(left), y_of(row as f32)),
                     egui::vec2(((slots - BAR_GAP) * scale).max(3.0), ROW),
@@ -304,7 +299,7 @@ fn canvas(
                 shown: true,
             },
             None => Bar {
-                span: node.span,
+                span,
                 rect: egui::Rect::NOTHING,
                 shown: false,
             },
@@ -325,15 +320,11 @@ fn canvas(
     // A node hovered in the graph lights its bars here.
     let graph_hover = explorer.hovered_tile.filter(|_| !panel.lit_node);
     // Caller to callee: a short drop from the caller's row.
-    for edge in &scene.edges {
-        if !disclosed.shows(edge.callee) {
+    for (callee, span) in journey.spans() {
+        let Some(caller) = span.parent.filter(|_| disclosed.shows(callee)) else {
             continue;
-        }
-        let (Some(from), Some(to), Some(span)) = (
-            rect_of(edge.caller),
-            rect_of(edge.callee),
-            track.span(edge.callee),
-        ) else {
+        };
+        let (Some(from), Some(to)) = (rect_of(caller), rect_of(callee)) else {
             continue;
         };
         let x = to.min.x + 2.0;
@@ -365,10 +356,9 @@ fn canvas(
             hovered = Some(bar.span);
         }
         let tile = tile_of(bar.span);
-        let base = egui_color(tile.map_or_else(
-            || lane_color(track.color(bar.span) % PALETTE.len()),
-            |tile| node_color(explorer, tile),
-        ));
+        // Its node's color; a call with no node of its own is grey, as everything
+        // that is no module's is.
+        let base = tile.map_or(MUTED, |tile| egui_color(node_color(explorer, tile)));
         let faint = Confidence::of(span) == Confidence::Guessed || is_handoff(span);
         let (fill, text) = if faint {
             (base.gamma_multiply(0.22), MUTED)

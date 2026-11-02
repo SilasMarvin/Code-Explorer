@@ -120,7 +120,7 @@ viewer shows the happy path, and marks the calls where another outcome can fail.
 | `codeviz-core` | Merges documents; unrolls journeys; enumerates scenarios. |
 | `codeviz-rust` | Rust producer (tree-sitter, calls resolved by rust-analyzer). |
 | `codeviz-python` | Python producer (tree-sitter). |
-| `codeviz-layout` | The codebase map, the force-directed graph, journey layout. Renderer-agnostic. |
+| `codeviz-layout` | The codebase map and the force-directed graph that seeds each module's interior. Renderer-agnostic. |
 | `codeviz-viewer` | Bevy + egui viewer. |
 | `codeviz` | CLI. |
 

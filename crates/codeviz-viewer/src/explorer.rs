@@ -8,7 +8,7 @@
 //! there; a click on any other selects it in place.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     sync::{Arc, Mutex, PoisonError},
 };
 
@@ -18,7 +18,7 @@ use codeviz_core::{
     scenarios,
 };
 use codeviz_ir::{Certainty, Mode, UnitId};
-use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
+use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, Reach};
 
 use crate::{
     camera::Pose,
@@ -56,21 +56,18 @@ impl Confidence {
 }
 
 /// The journey: where it starts, on its happy path, the outcomes that split off it,
-/// its cursor, and its layout in time and depth.
+/// and its cursor.
 #[derive(Debug, Default)]
 pub(crate) struct Track {
     root: Option<UnitId>,
     scenarios: Vec<Scenario>,
     scenario: Option<usize>,
     journey: Option<Journey>,
-    scene: Scene,
     /// Where each failing outcome splits off the happy path.
     divergences: Vec<SpanId>,
     selected: Option<SpanId>,
     /// Spans opened one level past the disclosed depth, by hand or by the cursor.
     expanded: HashSet<SpanId>,
-    /// The color of each of the scene's lanes, by module.
-    colors: Vec<usize>,
 }
 
 impl Track {
@@ -80,10 +77,6 @@ impl Track {
 
     pub(crate) fn journey(&self) -> Option<&Journey> {
         self.journey.as_ref()
-    }
-
-    pub(crate) fn scene(&self) -> &Scene {
-        &self.scene
     }
 
     /// Where on the happy path each failing outcome splits off.
@@ -107,37 +100,22 @@ impl Track {
         }
     }
 
-    /// The color index for a span's bar: its module's.
-    pub(crate) fn color(&self, id: SpanId) -> usize {
-        self.scene
-            .nodes
-            .get(id.index())
-            .and_then(|placed| self.colors.get(placed.lane))
-            .copied()
-            .unwrap_or_default()
-    }
-
-    fn reroot(&mut self, system: &System, options: &JourneyOptions, layout: &LayoutConfig) {
+    fn reroot(&mut self, system: &System, options: &JourneyOptions) {
         self.scenarios = self
             .root
             .as_ref()
             .map(|root| scenarios(system, root, &options.zoom))
             .unwrap_or_default();
         self.scenario = (!self.scenarios.is_empty()).then_some(0);
-        self.rebuild(system, options, layout);
+        self.rebuild(system, options);
     }
 
-    fn rebuild(&mut self, system: &System, options: &JourneyOptions, layout: &LayoutConfig) {
+    fn rebuild(&mut self, system: &System, options: &JourneyOptions) {
         let scenario = self.scenario.and_then(|i| self.scenarios.get(i));
         self.journey = self
             .root
             .as_ref()
             .and_then(|root| Journey::unroll(system, root, scenario, options.clone()));
-        self.scene = self
-            .journey
-            .as_ref()
-            .map(|journey| codeviz_layout::layout(system, journey, layout))
-            .unwrap_or_default();
         self.divergences = self.find_divergences();
         self.selected = self.journey.as_ref().map(Journey::root);
         // A rebuilt journey numbers its spans afresh.
@@ -200,7 +178,6 @@ pub(crate) enum ViewMode {
 pub(crate) struct Explorer {
     system: System,
     pub(crate) options: JourneyOptions,
-    pub(crate) layout: LayoutConfig,
     /// The journey the cursor keys, the panel and the outline follow.
     track: Track,
     /// Every function, grouped by container; graph nodes are its tiles.
@@ -233,8 +210,6 @@ pub(crate) struct Explorer {
     /// A node clicked off the journey: the focus while it is set, until a journey key,
     /// Esc or Enter, which follows it.
     aside: Option<usize>,
-    /// Lane label to color index, in order of first appearance.
-    lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
     /// The graph gathered into module spheres: browsing, the whole codebase; in a
@@ -272,7 +247,7 @@ pub(crate) struct Explorer {
 impl Explorer {
     pub(crate) fn new(system: System, root: Option<UnitId>, options: JourneyOptions) -> Self {
         let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
-        let map = codeviz_layout::map(&system, &MapConfig::default());
+        let map = codeviz_layout::map(&system);
         let mut graph = ForceGraph::new(&system, &map, forces());
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
@@ -297,7 +272,6 @@ impl Explorer {
         let mut explorer = Self {
             system,
             options,
-            layout: LayoutConfig::default(),
             track: Track::default(),
             map,
             graph,
@@ -312,7 +286,6 @@ impl Explorer {
             disclosure_cache: Mutex::new(None),
             hovered_tile: None,
             aside: None,
-            lane_colors: HashMap::new(),
             revision: 0,
             nucleus,
             traced: None,
@@ -327,7 +300,6 @@ impl Explorer {
             expand_pose: None,
             return_pose: None,
         };
-        explorer.color_groups();
         if root.is_none() {
             explorer.mode = ViewMode::Browse;
         }
@@ -395,7 +367,7 @@ impl Explorer {
         let track = &mut self.track;
         if track.root != view.root {
             track.root = view.root;
-            track.reroot(&self.system, &self.options, &self.layout);
+            track.reroot(&self.system, &self.options);
         }
         // A journey rebuilt since may no longer have the span.
         track.selected = view
@@ -619,7 +591,7 @@ impl Explorer {
     /// Recomputes outcomes for the journey's root and opens on the happy path, with
     /// the cursor on the root.
     fn reroot(&mut self) {
-        self.track.reroot(&self.system, &self.options, &self.layout);
+        self.track.reroot(&self.system, &self.options);
         self.recolor();
     }
 
@@ -825,21 +797,8 @@ impl Explorer {
         recentered || marked
     }
 
-    /// Gives lanes and containers their colors after the journey changed, and asks
-    /// for a redraw.
+    /// Notes that the journey changed.
     fn recolor(&mut self) {
-        let colors = &mut self.lane_colors;
-        self.track.colors = self
-            .track
-            .scene
-            .lanes
-            .iter()
-            .map(|lane| {
-                let next = colors.len();
-                *colors.entry(lane.label.clone()).or_insert(next)
-            })
-            .collect();
-        self.color_groups();
         self.revision += 1;
     }
 
@@ -1040,16 +999,6 @@ impl Explorer {
     /// the same name.
     pub(crate) fn cluster_name(&self, cluster: usize) -> String {
         self.module_names.get(cluster).cloned().unwrap_or_default()
-    }
-
-    /// Gives every container a color, after those the journey uses.
-    fn color_groups(&mut self) {
-        for group in &self.map.groups {
-            if let Some(unit) = &group.unit {
-                let next = self.lane_colors.len();
-                self.lane_colors.entry(unit.to_string()).or_insert(next);
-            }
-        }
     }
 
     pub(crate) fn map(&self) -> &CodebaseMap {

@@ -3342,7 +3342,7 @@ fn link_color(nucleus: &Nucleus, link: &Link, bright: bool) -> Color {
 mod tests {
     use codeviz_core::System;
     use codeviz_ir::{Document, UnitId};
-    use codeviz_layout::{CodebaseMap, ForceConfig, MapConfig, map};
+    use codeviz_layout::{CodebaseMap, ForceConfig, map};
 
     use super::*;
 
@@ -3392,7 +3392,7 @@ mod tests {
             units.join(",")
         );
         let system = System::new([Document::from_json(&json).expect("a valid document")]);
-        let map = map(&system, &MapConfig::default());
+        let map = map(&system);
         let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
         for _ in 0..50 {
             graph.step();
@@ -3511,7 +3511,7 @@ mod tests {
             units.join(",")
         );
         let system = System::new([Document::from_json(&json).expect("a valid document")]);
-        let map = map(&system, &MapConfig::default());
+        let map = map(&system);
         let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
         for _ in 0..50 {
             graph.step();

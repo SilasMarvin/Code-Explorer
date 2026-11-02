@@ -1,9 +1,8 @@
 //! The codebase as a force-directed graph in 3D: one node per function (as tiled by
 //! the [`CodebaseMap`]), one link per pair of functions where one calls the other.
 //! Nodes repel and links pull, so clusters come from what calls what; with cohesion
-//! on, functions in the same container also drift together.
-//!
-//! The simulation runs a step at a time so a viewer can show it settling.
+//! on, functions in the same module also drift together. The viewer settles it once,
+//! to seed where each module's functions sit inside its sphere, and reads its calls.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -58,7 +57,6 @@ pub struct ForceGraph {
     /// Node positions, by tile index.
     pub positions: Vec<[f32; 3]>,
     velocities: Vec<[f32; 3]>,
-    groups: Vec<usize>,
     /// The cluster each tile pulls into: its container's module, so a module's types
     /// and free functions gather as one.
     clusters: Vec<usize>,
@@ -66,11 +64,9 @@ pub struct ForceGraph {
     cluster_units: Vec<Option<UnitId>>,
     /// Links between tiles, each pair once, lower index first.
     pub links: Vec<(usize, usize)>,
-    /// The same links with their direction: `(caller, callee)`, sorted.
+    /// The same links with their direction: `(caller, callee)`, each once, sorted,
+    /// none from a function to itself.
     pub calls: Vec<(usize, usize)>,
-    /// Calls that still pull as links but no longer run, such as the calls a diff
-    /// removed: kept out of [`Self::calls`], callers, reach and sequences.
-    pub ghosts: Vec<(usize, usize)>,
     /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
     sequences: Vec<Vec<usize>>,
     config: ForceConfig,
@@ -78,18 +74,6 @@ pub struct ForceGraph {
 
 /// Where a call is written: line, column, then declaration order as a tiebreak.
 type SiteKey = (u32, u32, usize);
-
-/// How a container's functions call: among themselves, or across its boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct GroupStats {
-    pub nodes: usize,
-    /// Calls between two of its functions.
-    pub internal: usize,
-    /// Calls from its functions to other containers.
-    pub outgoing: usize,
-    /// Calls into its functions from other containers.
-    pub incoming: usize,
-}
 
 /// Fewest calls between a node and the tiles that reach it, or that it reaches.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -155,33 +139,14 @@ impl ForceGraph {
             .collect();
         Self {
             velocities: vec![[0.0; 3]; map.tiles.len()],
-            groups: map.tiles.iter().map(|t| t.group).collect(),
             clusters,
             cluster_units,
             positions,
             links,
             calls,
-            ghosts: Vec::new(),
             sequences,
             config,
         }
-    }
-
-    /// Turns these calls into ghosts: they keep pulling their ends together, but no
-    /// longer count as calls.
-    pub fn retire(&mut self, gone: &HashSet<(usize, usize)>) {
-        let (ghosts, calls) = self.calls.iter().partition(|call| gone.contains(call));
-        self.calls = calls;
-        self.ghosts.extend::<Vec<_>>(ghosts);
-        self.ghosts.sort_unstable();
-        for (from, sequence) in self.sequences.iter_mut().enumerate() {
-            sequence.retain(|&to| !gone.contains(&(from, to)));
-        }
-    }
-
-    /// Changes the forces; the graph moves until it settles under them.
-    pub fn set_config(&mut self, config: ForceConfig) {
-        self.config = config;
     }
 
     /// The tiles `tile` calls, in the order the calls are written, repeats kept.
@@ -241,40 +206,12 @@ impl ForceGraph {
         self.cluster_units.len()
     }
 
-    /// The container each tile belongs to, by group index.
-    #[must_use]
-    pub fn group(&self, tile: usize) -> Option<usize> {
-        self.groups.get(tile).copied()
-    }
-
-    /// Per container, by group index: its functions and where their calls go.
-    #[must_use]
-    pub fn group_stats(&self) -> Vec<GroupStats> {
-        let count = self.groups.iter().max().map_or(0, |g| g + 1);
-        let mut stats = vec![GroupStats::default(); count];
-        for &group in &self.groups {
-            stats[group].nodes += 1;
-        }
-        for &(from, to) in &self.calls {
-            let (Some(a), Some(b)) = (self.group(from), self.group(to)) else {
-                continue;
-            };
-            if a == b {
-                stats[a].internal += 1;
-            } else {
-                stats[a].outgoing += 1;
-                stats[b].incoming += 1;
-            }
-        }
-        stats
-    }
-
-    /// Tiles that call `tile`.
+    /// Tiles that call `tile`, each once, in order.
     pub fn callers(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
         self.calls.iter().filter(move |c| c.1 == tile).map(|c| c.0)
     }
 
-    /// Tiles `tile` calls.
+    /// Tiles `tile` calls, each once, in order.
     pub fn callees(&self, tile: usize) -> impl Iterator<Item = usize> + '_ {
         self.calls.iter().filter(move |c| c.0 == tile).map(|c| c.1)
     }
@@ -286,12 +223,6 @@ impl ForceGraph {
             .iter()
             .filter(|(a, b)| *a == tile || *b == tile)
             .count()
-    }
-
-    /// Whether `a` and `b` are linked.
-    #[must_use]
-    pub fn linked(&self, a: usize, b: usize) -> bool {
-        self.links.binary_search(&(a.min(b), a.max(b))).is_ok()
     }
 
     /// Advances the simulation one step. Returns the mean speed, which falls towards
@@ -448,8 +379,7 @@ fn module_clusters(system: &System, map: &CodebaseMap) -> (Vec<usize>, Vec<Optio
         .tiles
         .iter()
         .map(|tile| {
-            let container = map.groups.get(tile.group).and_then(|g| g.unit.as_ref());
-            let mut at = container.and_then(|id| system.unit(id));
+            let mut at = tile.container.as_ref().and_then(|id| system.unit(id));
             while let Some(unit) = at {
                 if MODULES.contains(&unit.kind.as_str()) {
                     break;
@@ -457,7 +387,7 @@ fn module_clusters(system: &System, map: &CodebaseMap) -> (Vec<usize>, Vec<Optio
                 at = unit.parent.as_ref().and_then(|p| system.unit(p));
             }
             let key = at.map_or_else(
-                || format!("group:{}", tile.group),
+                || format!("container:{:?}", tile.container),
                 |unit| unit.id.to_string(),
             );
             let next = numbers.len();
@@ -475,7 +405,7 @@ mod tests {
     use codeviz_ir::Document;
 
     use super::*;
-    use crate::{MapConfig, map};
+    use crate::map;
 
     /// `a -> b -> c`, and `lonely` calls nothing.
     fn system() -> System {
@@ -501,11 +431,9 @@ mod tests {
     #[test]
     fn linked_functions_settle_closer_than_strangers() {
         let system = system();
-        let map = map(&system, &MapConfig::default());
+        let map = map(&system);
         let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
         let tile = |name: &str| map.tile_of(&codeviz_ir::UnitId::new(name)).unwrap();
-        assert!(graph.linked(tile("x:a"), tile("x:b")));
-        assert!(!graph.linked(tile("x:a"), tile("x:c")));
         assert_eq!(
             graph.callees(tile("x:a")).collect::<Vec<_>>(),
             [tile("x:b")]
@@ -528,7 +456,7 @@ mod tests {
     #[test]
     fn reach_counts_calls_both_ways() {
         let system = system();
-        let map = map(&system, &MapConfig::default());
+        let map = map(&system);
         let graph = ForceGraph::new(&system, &map, ForceConfig::default());
         let tile = |name: &str| map.tile_of(&codeviz_ir::UnitId::new(name)).unwrap();
         let reach = graph.reach(tile("x:b"));
@@ -537,18 +465,12 @@ mod tests {
         let from_a = graph.reach(tile("x:a"));
         assert_eq!(from_a.downstream.get(&tile("x:c")), Some(&2));
         assert_eq!(graph.sequence(tile("x:a")), [tile("x:b")]);
-        let stats = graph.group_stats();
-        assert_eq!(stats.iter().map(|s| s.nodes).sum::<usize>(), 4);
-        assert_eq!(
-            stats.iter().map(|s| s.internal + s.outgoing).sum::<usize>(),
-            2
-        );
     }
 
     #[test]
     fn the_same_codebase_starts_from_the_same_shape() {
         let system = system();
-        let map = map(&system, &MapConfig::default());
+        let map = map(&system);
         let first = ForceGraph::new(&system, &map, ForceConfig::default());
         let second = ForceGraph::new(&system, &map, ForceConfig::default());
         assert_eq!(first.positions, second.positions);

@@ -1,64 +1,25 @@
-//! A stable map of the whole codebase: one tile per function, grouped into boxes by
+//! A stable map of the whole codebase: one tile per function, the tiles grouped by
 //! container, with the groups ordered from entry points towards what they call.
 //!
-//! Closures and other units nested in a function share its tile. The map grows up from
-//! `y = 0`, so it can sit on top of a journey.
+//! Closures and other units nested in a function share its tile.
 
 use std::collections::{HashMap, VecDeque};
 
 use codeviz_core::System;
 use codeviz_ir::{Role, Unit, UnitId};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MapConfig {
-    pub tile_width: f32,
-    pub tile_height: f32,
-    pub gap: f32,
-    /// Room above a group's tiles for its name.
-    pub header: f32,
-    /// Tiles per column before a group wraps into another column.
-    pub max_rows: usize,
-    /// Groups wrap into another band past this width.
-    pub max_width: f32,
-}
-
-impl Default for MapConfig {
-    fn default() -> Self {
-        Self {
-            tile_width: 4.4,
-            tile_height: 0.7,
-            gap: 0.2,
-            header: 1.1,
-            max_rows: 12,
-            max_width: 80.0,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapTile {
     pub unit: UnitId,
-    pub group: usize,
-    /// Center of the tile.
-    pub position: [f32; 2],
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MapGroup {
-    /// The container, when the tiles have one.
-    pub unit: Option<UnitId>,
-    pub label: String,
-    pub min: [f32; 2],
-    pub max: [f32; 2],
+    /// The nearest container that is not a function, when it has one.
+    pub container: Option<UnitId>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CodebaseMap {
     pub tiles: Vec<MapTile>,
-    pub groups: Vec<MapGroup>,
     /// The tile each invocable unit is drawn on, by index into `tiles`.
     owner: HashMap<UnitId, usize>,
-    pub bounds: ([f32; 2], [f32; 2]),
 }
 
 impl CodebaseMap {
@@ -75,89 +36,18 @@ impl CodebaseMap {
 }
 
 #[must_use]
-pub fn map(system: &System, config: &MapConfig) -> CodebaseMap {
+pub fn map(system: &System) -> CodebaseMap {
     let (owner_unit, members) = groups(system);
-
-    // Size each group, then flow them left to right, wrapping into bands.
-    let step_x = config.tile_width + config.gap;
-    let step_y = config.tile_height + config.gap;
-    let padding = config.gap * 2.0;
-    let group_gap = config.tile_width * 0.35;
-    let sizes: Vec<(usize, usize, f32, f32)> = members
-        .iter()
-        .map(|(_, _, units)| {
-            let columns = units.len().div_ceil(config.max_rows).max(1);
-            let rows = units.len().div_ceil(columns).max(1);
-            let width = columns as f32 * step_x - config.gap + padding * 2.0;
-            let height = config.header + rows as f32 * step_y - config.gap + padding;
-            (columns, rows, width, height)
+    let tiles: Vec<MapTile> = members
+        .into_iter()
+        .flat_map(|(container, _, units)| {
+            units.into_iter().map(move |unit| MapTile {
+                unit: unit.id.clone(),
+                container: container.clone(),
+            })
         })
         .collect();
-    let mut bands: Vec<Vec<usize>> = vec![Vec::new()];
-    let mut used = 0.0;
-    for (index, (_, _, width, _)) in sizes.iter().enumerate() {
-        let band_full = bands.last().is_some_and(|b| !b.is_empty());
-        if band_full && used + width > config.max_width {
-            bands.push(Vec::new());
-            used = 0.0;
-        }
-        if let Some(band) = bands.last_mut() {
-            band.push(index);
-        }
-        used += width + group_gap;
-    }
-    let band_height = |band: &[usize]| {
-        band.iter()
-            .filter_map(|&i| sizes.get(i))
-            .map(|s| s.3)
-            .fold(0.0_f32, f32::max)
-    };
-    // The first band goes on top; the map's bottom edge rests on y = 0.
-    let total: f32 = bands
-        .iter()
-        .map(|b| band_height(b) + group_gap)
-        .sum::<f32>()
-        - group_gap;
-
-    let mut result = CodebaseMap::default();
-    let mut top = total;
-    let mut max_x = 0.0_f32;
-    for band in &bands {
-        let mut x = 0.0;
-        for &index in band {
-            let (Some((key, label, units)), Some(&(columns, rows, width, height))) =
-                (members.get(index), sizes.get(index))
-            else {
-                continue;
-            };
-            let group = result.groups.len();
-            result.groups.push(MapGroup {
-                unit: key.clone(),
-                label: label.clone(),
-                min: [x, top - height],
-                max: [x + width, top],
-            });
-            for (n, unit) in units.iter().enumerate() {
-                let (column, row) = (n / rows, n % rows);
-                debug_assert!(column < columns);
-                let position = [
-                    x + padding + column as f32 * step_x + config.tile_width / 2.0,
-                    top - config.header - row as f32 * step_y - config.tile_height / 2.0,
-                ];
-                result.tiles.push(MapTile {
-                    unit: unit.id.clone(),
-                    group,
-                    position,
-                });
-            }
-            x += width + group_gap;
-            max_x = max_x.max(x - group_gap);
-        }
-        top -= band_height(band) + group_gap;
-    }
-
-    let tile_index: HashMap<&UnitId, usize> = result
-        .tiles
+    let tile_index: HashMap<&UnitId, usize> = tiles
         .iter()
         .enumerate()
         .map(|(i, t)| (&t.unit, i))
@@ -166,12 +56,10 @@ pub fn map(system: &System, config: &MapConfig) -> CodebaseMap {
         .iter()
         .filter_map(|(unit, top)| Some((unit.clone(), *tile_index.get(top)?)))
         .collect();
-    result.owner = owner;
-    result.bounds = ([0.0, 0.0], [max_x, total.max(0.0)]);
-    result
+    CodebaseMap { tiles, owner }
 }
 
-/// A container, its label and its tiles.
+/// A container, the name it is ordered by, and its tiles.
 type Group<'s> = (Option<UnitId>, String, Vec<&'s Unit>);
 
 /// Which tile each invocable is drawn on, and the tiles grouped by their nearest
@@ -320,26 +208,23 @@ mod tests {
     #[test]
     fn groups_flow_from_entries_to_what_they_call() {
         let system = system();
-        let map = map(&system, &MapConfig::default());
+        let map = map(&system);
 
-        let labels: Vec<&str> = map.groups.iter().map(|g| g.label.as_str()).collect();
-        assert_eq!(labels, ["api", "db"]);
         let units: Vec<&str> = map.tiles.iter().map(|t| t.unit.as_str()).collect();
         assert_eq!(
             units,
             ["x:api::handle", "x:db::load", "x:db::unused"],
             "closures share their function's tile; reached tiles come first"
         );
+        let containers: Vec<Option<&str>> = map
+            .tiles
+            .iter()
+            .map(|t| t.container.as_ref().map(UnitId::as_str))
+            .collect();
+        assert_eq!(containers, [Some("x:api"), Some("x:db"), Some("x:db")]);
         assert_eq!(
             map.tile_of(&UnitId::new("x:api::handle::{closure#0}")),
             Some(0)
-        );
-        let (min, max) = map.bounds;
-        assert_eq!(min, [0.0, 0.0]);
-        assert!(
-            map.tiles
-                .iter()
-                .all(|t| t.position[1] > 0.0 && t.position[1] < max[1])
         );
     }
 }

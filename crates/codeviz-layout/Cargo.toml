@@ -1,6 +1,6 @@
 [package]
 name = "codeviz-layout"
-description = "Maps codeviz call traces onto 3D coordinates."
+description = "Lays the codebase out as a map of functions and a graph of calls."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
