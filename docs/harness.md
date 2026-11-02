@@ -227,7 +227,7 @@ constant at the top of that file.
 | `focus-on-screen` | the selection, the start and the cursor, where drawn, lie inside the free area | unless the camera is where the user's hands put it, or an expand since framed a module |
 | `camera-outside` | the camera is inside no sphere | always |
 | `map-on-screen` | when the whole map would fit in the free area, 90% of it (by sphere area) is there | after a wheel turn out, or R |
-| `spheres-unclipped` | no sphere is cut by an edge of the graph's part of the window that lies in open window (not the window's edge, not where a panel starts); one bigger than the free area aside | always |
+| `spheres-unclipped` | no sphere is cut by an edge of the graph's part of the window that lies in open window (not the window's edge, not where a panel starts), however big it shows; one the camera is inside aside | always |
 | `arrow-sizes` | every arrow on screen is at most 2.5 points wide (3.5 for a module arrow of 10 calls or more), with a head 5 to 12 points long (or half as wide, seen end on; the whole map's faint module links need no head, but none over 12); a module arrow has no head of its own where a call drawn along it goes on to its dot | an arrow on screen |
 | `module-names` | a module's name is centred over its sphere (within 3 points) just above its top edge (2 below to 8 above), over no other sphere and none of its own dots | a module named |
 | `named-when-room` | a lit function with no name would have no room for one on any side of its dot, clear of the free area's edge, overlays, names and other lit dots; a shown module with no name, none above its sphere (the width a name takes from the names drawn) | always |
