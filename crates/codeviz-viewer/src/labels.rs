@@ -475,7 +475,7 @@ impl<'a> Naming<'a> {
             discs: Vec::new(),
             ladder: ladder.into_iter().map(|(_, tile)| tile).collect(),
         };
-        let reach = nucleus.dot_radius(Dot::Focus);
+        let reach = Dot::Focus.radius();
         naming.discs = (0..explorer.map().tiles.len())
             .map(|tile| {
                 let world = explorer.tile_point(tile).filter(|_| nucleus.drawn(tile))?;
@@ -491,7 +491,6 @@ impl<'a> Naming<'a> {
     /// Every dot on the graph as names keep off it: as big as it is drawn, or for
     /// the `neutral` view at least as big as a lit one.
     fn dots(&self, neutral: bool) -> Vec<Disc> {
-        let nucleus = self.nucleus;
         self.discs
             .iter()
             .enumerate()
@@ -499,9 +498,9 @@ impl<'a> Naming<'a> {
                 let (at, _) = (*disc)?;
                 let dot = graph_view::dot(self.explorer, tile);
                 let world = self.explorer.tile_point(tile)?;
-                let edge = (self.to_screen)(world + self.up * nucleus.dot_radius(dot))
+                let edge = (self.to_screen)(world + self.up * dot.radius())
                     .map_or(2.0, |p| p.distance(at));
-                let lit_edge = (self.to_screen)(world + self.up * nucleus.dot_radius(Dot::Lit))
+                let lit_edge = (self.to_screen)(world + self.up * Dot::Lit.radius())
                     .map_or(2.0, |p| p.distance(at));
                 let steady = dot.clamp(edge).max(Dot::Lit.clamp(lit_edge));
                 Some(Disc {

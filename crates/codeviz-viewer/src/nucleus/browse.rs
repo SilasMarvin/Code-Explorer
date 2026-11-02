@@ -44,12 +44,10 @@ impl Nucleus {
         Arrangement {
             start,
             middle,
-            expanded: false,
             balls,
             points: atlas.points,
             shown,
             named,
-            reserved: columns.clone(),
             ring: Vec::new(),
             columns,
             outside: HashSet::new(),

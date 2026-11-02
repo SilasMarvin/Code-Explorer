@@ -191,7 +191,7 @@ fn header_bar(
                     .clicked()
                 {
                     panel.fit();
-                    explorer.frame_again();
+                    explorer.ask_to_frame();
                 }
                 disclosure(ui, explorer);
                 ui.add_space(8.0);
