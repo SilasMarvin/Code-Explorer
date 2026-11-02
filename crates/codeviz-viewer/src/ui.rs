@@ -378,23 +378,31 @@ fn search_box(
                     if rows.is_empty() {
                         ui.label(egui::RichText::new("no function matches").color(MUTED));
                     }
-                    egui::ScrollArea::vertical()
+                    let mut drawn = Vec::new();
+                    let shown = egui::ScrollArea::vertical()
                         .id_salt("units")
                         .max_height(260.0)
                         .show(ui, |ui| {
-                            for (id, title, kind) in &rows {
+                            for (index, (id, title, kind)) in rows.iter().enumerate() {
                                 ui.horizontal(|ui| {
-                                    if ui
+                                    let row = ui
                                         .selectable_label(explorer.start_unit() == Some(id), title)
-                                        .on_hover_text(id.as_str())
-                                        .clicked()
-                                    {
+                                        .on_hover_text(id.as_str());
+                                    if row.clicked() {
                                         chosen = Some(id.clone());
                                     }
+                                    drawn.push(crate::drive::SearchRow {
+                                        rect: row.rect,
+                                        unit: id.to_string(),
+                                        text: title.clone(),
+                                        highlighted: index == 0,
+                                    });
                                     ui.label(egui::RichText::new(kind).small().color(MUTED));
                                 });
                             }
                         });
+                    // Where each row is, for a scripted session to pick.
+                    crate::drive::note_search_rows(ui.ctx(), shown.inner_rect, drawn);
                 });
         });
     // Browsing, the function found is selected where it sits, as a click selects it;

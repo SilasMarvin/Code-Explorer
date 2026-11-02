@@ -1,9 +1,9 @@
 //! The steps of a scripted session (`--script`), one per line, as a person would take
 //! them: keys and typing, clicks and hovers on functions by name, on their drawn names
-//! or on a point, double clicks on a module's sphere, clicks on journey bars and
-//! buttons by what they say, drags, wheel turns, a window size, waits, snapshots of
-//! what shows, and `expect` lines that fail the session when the view is not as they
-//! say. Names of functions and modules are looked up before the window opens
+//! or on a point, double clicks on a module's sphere, clicks on journey bars, their
+//! fold badges, search rows and buttons by what they say, drags and pans, wheel turns,
+//! a window size, waits, snapshots of what shows (or of each frame of a transition),
+//! and `expect` lines that fail the session when the view is not as they say. Names of functions and modules are looked up before the window opens
 //! (`drive::resolve`), so a misspelt one stops the script at once.
 
 use std::time::Duration;
@@ -50,12 +50,18 @@ pub(crate) enum Step {
     ClickEmpty,
     /// A double click on a module's sphere, off its functions.
     DoubleClickModule(String),
-    /// A click on the journey bar with this number, as `1.2`, or this name.
+    /// A click on the journey bar with this number, as `1.2`, or for this function.
     Bar(String),
+    /// A click on the badge on that bar that unfolds what is folded under it.
+    Chip(String),
+    /// A click on the search box's row for this function, by what the row says.
+    SearchPick(String),
     /// A click on the button or chip that says this.
     Button(String),
     /// Orbits by a drag of this many points.
     Drag(Vec2),
+    /// Pans by a right-button drag of this many points.
+    Pan(Vec2),
     /// Turns the wheel this many notches across and down (positive `y` is nearer),
     /// with the pointer here first, else where it is.
     Scroll {
@@ -69,6 +75,9 @@ pub(crate) enum Step {
     Expect(Expect),
     /// Saves what shows, under this label.
     Snap(Option<String>),
+    /// Saves what shows on each of the next this many frames, as the step before
+    /// plays out, rather than once it rests.
+    Frames(u32),
 }
 
 /// What an `expect` line says the view shows.
@@ -110,8 +119,12 @@ pub(crate) enum Kind {
     Depth,
     /// `x` or a double click on a module: expands or collapses.
     Expand,
-    /// A wheel turn.
-    Zoom,
+    /// A wheel turn, nearer or (`out`) further.
+    Zoom { out: bool },
+    /// An orbit by a drag.
+    Orbit,
+    /// A pan by a right-button drag.
+    Pan,
     /// `f`: frames what the view is on.
     FrameFocus,
     /// `r`: frames everything from the front.
@@ -143,7 +156,7 @@ const STATE_FIELDS: [(&str, &[&str]); 9] = [
 ];
 
 /// Every step's verb, to suggest one for a misspelt verb.
-const VERBS: [&str; 18] = [
+const VERBS: [&str; 22] = [
     "key",
     "type",
     "click",
@@ -155,13 +168,17 @@ const VERBS: [&str; 18] = [
     "doubleclick",
     "doubleclick-module",
     "bar",
+    "chip",
+    "search-pick",
     "button",
     "drag",
+    "pan",
     "scroll",
     "window",
     "wait",
     "expect",
     "snap",
+    "frames",
 ];
 
 /// What may follow `expect`.
@@ -248,11 +265,24 @@ fn step(line: &str, snaps: &[String]) -> Result<Step, String> {
         "doubleclick" => point(Gesture::DoubleClick),
         "click-label" => point(Gesture::LabelClick),
         "doubleclick-module" => Ok(Step::DoubleClickModule(needs("a module")?.to_owned())),
-        "bar" => Ok(Step::Bar(needs("a number")?.to_owned())),
+        "bar" => Ok(Step::Bar(needs("a number or a function")?.to_owned())),
+        "chip" => Ok(Step::Chip(needs("a bar's number or function")?.to_owned())),
+        "search-pick" => Ok(Step::SearchPick(needs("a row's text")?.to_owned())),
         "button" => Ok(Step::Button(needs("its text")?.to_owned())),
         "drag" => pair(needs("dx and dy")?)
             .map(Step::Drag)
             .ok_or_else(|| "`drag` needs dx and dy".to_owned()),
+        "pan" => pair(needs("dx and dy")?)
+            .map(Step::Pan)
+            .ok_or_else(|| "`pan` needs dx and dy".to_owned()),
+        "frames" => {
+            let n = needs("a number of frames")?;
+            n.parse()
+                .ok()
+                .filter(|n| (1..=MOST_FRAMES).contains(n))
+                .map(Step::Frames)
+                .ok_or_else(|| format!("`frames` needs a number of frames, 1 to {MOST_FRAMES}"))
+        }
         "scroll" => scroll(needs("notches")?),
         "window" => pair(needs("a width and a height")?)
             .filter(|size| size.x >= 200.0 && size.y >= 200.0)
@@ -268,6 +298,14 @@ fn step(line: &str, snaps: &[String]) -> Result<Step, String> {
         "snap" => Ok(Step::Snap((!rest.is_empty()).then(|| rest.to_owned()))),
         other => Err(unknown("step", other, VERBS)),
     }
+}
+
+/// Most frames `frames` saves.
+pub(crate) const MOST_FRAMES: u32 = 30;
+
+/// Whether a bar is named by its number (`2`, `1.2`) rather than its function.
+pub(crate) fn bar_number(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// Two numbers, as `120 -40`.
@@ -521,14 +559,20 @@ impl Step {
                 Gesture::DoubleClick => Kind::Expand,
             },
             Step::Bar(_) => Kind::Click,
+            // Unfolding shows calls, as a depth change does.
+            Step::Chip(_) => Kind::Depth,
             Step::DoubleClickModule(_) => Kind::Expand,
-            Step::Scroll { .. } => Kind::Zoom,
-            Step::Wait(_) | Step::Expect(_) | Step::Snap(_) => Kind::Still,
+            Step::Scroll { by, .. } => Kind::Zoom { out: by.y < 0.0 },
+            Step::Drag(_) => Kind::Orbit,
+            Step::Pan(_) => Kind::Pan,
+            // The panel's Fit frames as F does.
+            Step::Button(text) if text.trim().eq_ignore_ascii_case("fit") => Kind::FrameFocus,
+            Step::Wait(_) | Step::Expect(_) | Step::Snap(_) | Step::Frames(_) => Kind::Still,
             Step::Type(_)
             | Step::ClickAt(_)
             | Step::ClickEmpty
+            | Step::SearchPick(_)
             | Step::Button(_)
-            | Step::Drag(_)
             | Step::Window(_) => Kind::Moves,
         }
     }
@@ -548,6 +592,7 @@ impl Step {
                 | Expect::Named(unit)
                 | Expect::Drawn(unit),
             ) => Some(Name::Unit(unit)),
+            Step::Bar(bar) | Step::Chip(bar) if !bar_number(bar) => Some(Name::Bar(bar)),
             Step::DoubleClickModule(module) => Some(Name::Module(module)),
             _ => None,
         }
@@ -559,6 +604,9 @@ impl Step {
 pub(crate) enum Name<'a> {
     Unit(&'a str),
     Module(&'a str),
+    /// A journey bar by its function: looked up as a function when it names one, else
+    /// found by the name on the bar when the step comes.
+    Bar(&'a str),
 }
 
 /// A snapshot's label as its file name has it: lowercase words joined by dashes.
@@ -791,8 +839,31 @@ mod tests {
         assert_eq!(kind("shift+click main"), Kind::Moves);
         assert_eq!(kind("doubleclick-module m"), Kind::Expand);
         assert_eq!(kind("doubleclick main"), Kind::Expand);
-        assert_eq!(kind("scroll 2"), Kind::Zoom);
-        assert_eq!(kind("drag 1 1"), Kind::Moves);
+        assert_eq!(kind("scroll 2"), Kind::Zoom { out: false });
+        assert_eq!(kind("scroll -1 at main"), Kind::Zoom { out: true });
+        assert_eq!(kind("drag 1 1"), Kind::Orbit);
+        assert_eq!(kind("pan 1 1"), Kind::Pan);
+        assert_eq!(kind("button Fit"), Kind::FrameFocus);
+        assert_eq!(kind("chip 2"), Kind::Depth);
+        assert_eq!(kind("search-pick place"), Kind::Moves);
+        assert_eq!(kind("frames 4"), Kind::Still);
+    }
+
+    #[test]
+    fn reads_pans_frames_badges_and_search_rows() {
+        let steps = steps(
+            "key x\nframes 6\npan 30 -10\nchip 2.1\nchip Explorer::spotlit\nsearch-pick orders::place\nbar Explorer.spotlit",
+        );
+        assert_eq!(steps[1], Step::Frames(6));
+        assert_eq!(steps[2], Step::Pan(Vec2::new(30.0, -10.0)));
+        assert_eq!(steps[3], Step::Chip("2.1".to_owned()));
+        assert_eq!(steps[5], Step::SearchPick("orders::place".to_owned()));
+        let names: Vec<Option<Name>> = steps.iter().map(Step::names).collect();
+        assert_eq!(names[3], None, "a bar by number names no function");
+        assert_eq!(names[4], Some(Name::Bar("Explorer::spotlit")));
+        assert_eq!(names[6], Some(Name::Bar("Explorer.spotlit")));
+        let error = parse("frames 0\nframes 99\npan 3").unwrap_err();
+        assert_eq!(error.lines().count(), 3, "{error}");
     }
 
     #[test]

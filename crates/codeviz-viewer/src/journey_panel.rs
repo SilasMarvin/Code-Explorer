@@ -341,6 +341,7 @@ fn canvas(
     let mouse = response.hover_pos();
     let mut hovered = None;
     let mut fold_hit = None;
+    let mut chips = Vec::new();
     let mut unnamed_cursor = None;
     for bar in &bars {
         let Some(span) = track.span(bar.span) else {
@@ -422,6 +423,7 @@ fn canvas(
             }
             badge
         });
+        chips.extend(badge.map(|badge| (bar.span, badge)));
         if graph_hover.is_some() && tile == graph_hover {
             painter.rect_stroke(
                 bar.rect.expand(1.5),
@@ -579,6 +581,7 @@ fn canvas(
             .filter(|bar| bar.shown)
             .map(|bar| (bar.span, bar.rect))
             .collect(),
+        chips,
     );
     let hovered_rect = hovered
         .and_then(rect_of)

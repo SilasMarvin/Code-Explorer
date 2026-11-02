@@ -21,6 +21,7 @@
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
+    f32::consts::FRAC_1_SQRT_2,
 };
 
 use bevy::prelude::*;
@@ -30,6 +31,7 @@ use crate::{
     camera::{OrbitCamera, ease, frame_time, transition_step},
     colors::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, MODULE_SHADES, module_color, module_shade},
     disclosure::number_order,
+    drive::{CallMark, Marks, TubeMark},
     explorer::Explorer,
     graph_view::{Dot, drawn_radius},
     idle::Awake,
@@ -2610,6 +2612,7 @@ pub(crate) fn place_bodies(
         Without<ModuleSphere>,
     >,
     cameras: Query<&Transform, OnlyTheCamera>,
+    mut marks: ResMut<Marks>,
 ) {
     let nucleus = explorer.nucleus();
     let clusters = explorer.graph().cluster_count();
@@ -2650,7 +2653,7 @@ pub(crate) fn place_bodies(
         }
     }
 
-    place_arrows(&mut commands, nucleus, &looks, &mut arrows);
+    place_arrows(&mut commands, nucleus, &looks, &mut arrows, &mut marks);
 }
 
 /// Spawns as many arrows as the nucleus has between modules, each a shaft in
@@ -2669,7 +2672,9 @@ fn place_arrows(
         ),
         Without<ModuleSphere>,
     >,
+    marks: &mut Marks,
 ) {
+    marks.tubes.clear();
     let tubes = nucleus.tubes();
     let have = arrows
         .iter()
@@ -2725,6 +2730,13 @@ fn place_arrows(
         // The last stretch stops where the head begins.
         let shaft = if part == last { length - head } else { length };
         let placed = if arrow.head {
+            marks.tubes.push(TubeMark {
+                index: arrow.index,
+                radius: *radius,
+                back: end - direction * head,
+                tip: end,
+                spread: width,
+            });
             Transform {
                 translation: end - direction * head / 2.0,
                 rotation,
@@ -2786,7 +2798,9 @@ pub(crate) fn draw(
     explorer: Res<Explorer>,
     cameras: Query<(&Camera, &GlobalTransform, &Transform), With<OrbitCamera>>,
     mut gizmos: Gizmos,
+    mut marks: ResMut<Marks>,
 ) {
+    marks.calls.clear();
     let nucleus = explorer.nucleus();
     let Ok((lens, view, camera)) = cameras.single() else {
         return;
@@ -2831,6 +2845,17 @@ pub(crate) fn draw(
         gizmos
             .arrow(*last_but_one, end, color)
             .with_tip_length(head);
+        // The gizmo's barbs run back from the tip at 45 degrees.
+        let back = end - (end - *last_but_one).normalize_or_zero() * head * FRAC_1_SQRT_2;
+        marks.calls.push(CallMark {
+            from: link.from,
+            to: link.to,
+            flow: link.flow,
+            color,
+            back,
+            tip: end,
+            spread: head * FRAC_1_SQRT_2,
+        });
     }
 }
 
