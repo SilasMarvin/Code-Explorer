@@ -244,6 +244,8 @@ pub(crate) struct Explorer {
     expand_pose: Option<Pose>,
     /// Where the camera is to go back to, until the camera takes it.
     return_pose: Option<Return>,
+    /// Whether the panel's Fit asked the camera to frame the focus, until it does.
+    frame_asked: bool,
     /// Browsing, the function a click off every function just deselected: the first
     /// click of a double click on a module, which expanding puts back.
     deselected: Option<usize>,
@@ -309,6 +311,7 @@ impl Explorer {
             browse_pose: None,
             expand_pose: None,
             return_pose: Some(Return::Whole),
+            frame_asked: false,
             deselected: None,
         }
     }
@@ -351,7 +354,11 @@ impl Explorer {
             mode: self.mode,
             selection: self.selection,
             outside: self.outside,
-            pose: Seen(self.pose, self.nucleus.expanded()),
+            pose: Seen {
+                pose: self.pose,
+                expanded: self.nucleus.expanded_module(),
+                resting: self.expand_pose.or(self.pose),
+            },
         }
     }
 
@@ -361,19 +368,12 @@ impl Explorer {
     fn restore(&mut self, view: View) {
         self.leaving_browse(view.mode);
         // Expanding is no place of its own. Going to another journey, or between
-        // browsing and a journey, shrinks back what is expanded; within one, it stays.
-        // A camera that framed a module expanded is not put back on it shrunk, nor the
-        // other way round. The camera stays, and shrinking back still returns to where
-        // it stood before X.
+        // browsing and a journey, shrinks back what is expanded; within one, it stays,
+        // and follows the cursor put back.
         if view.mode != self.mode || view.start != self.track.start {
             self.drop_expansion();
         }
-        let expanded = self.nucleus.expanded();
-        if let Seen(Some(pose), seen_expanded) = view.pose
-            && seen_expanded == expanded
-        {
-            self.return_to(Some(pose));
-        }
+        let seen = view.pose;
         let track = &mut self.track;
         if track.start != view.start {
             track.start = view.start;
@@ -395,6 +395,21 @@ impl Explorer {
         self.revision += 1;
         self.disclose_again();
         self.sync_nucleus();
+        // The camera as it stood there, with the same module expanded; with none
+        // expanded now, where it stood before any was, as Esc would leave it; with
+        // another expanded, it stays on that one. Shrinking back still returns to
+        // where it stood before X.
+        let now = self.nucleus.expanded_module();
+        let pose = if seen.expanded == now {
+            seen.pose
+        } else if now.is_none() {
+            seen.resting
+        } else {
+            None
+        };
+        if pose.is_some() {
+            self.return_to(pose);
+        }
     }
 
     /// Goes somewhere: whatever `go` changes, the view before it is remembered, so
@@ -457,10 +472,14 @@ impl Explorer {
         self.aim
     }
 
-    /// Points the view at the journey again, as the panel's Fit does: the camera
-    /// frames it afresh.
-    pub(crate) fn frame_again(&mut self) {
-        self.aim += 1;
+    /// Asks the camera to frame the focus, as F does: the panel's Fit.
+    pub(crate) fn ask_to_frame(&mut self) {
+        self.frame_asked = true;
+    }
+
+    /// Whether the camera was asked to frame the focus, once.
+    pub(crate) fn take_frame_ask(&mut self) -> bool {
+        std::mem::take(&mut self.frame_asked)
     }
 
     /// The span the journey's cursor is on.
@@ -919,8 +938,8 @@ impl Explorer {
     /// it is selected. In a journey that runs it, the cursor goes to its call, the one
     /// numbered `number` (the number on the name clicked) or else the one nearest the
     /// cursor, opening what folds it; off the journey, it is set aside, selected in
-    /// place, and the journey stays as it was. Nothing moves, but inside the expanded
-    /// nucleus, which centres on the cursor.
+    /// place, and the journey stays as it was. Nothing moves, but expanded, where the
+    /// view keeps the cursor in sight, flying to its module when it moves to another.
     pub(crate) fn click(&mut self, tile: usize, number: Option<&str>) {
         self.navigate(|explorer| {
             if explorer.browsing() {
@@ -1995,10 +2014,44 @@ pub(crate) mod tests {
 
         assert!(explorer.go_back());
         assert_eq!(
-            explorer.take_return_pose(),
-            None,
-            "Back does not put a camera that framed the nucleus expanded on it shrunk"
+            returned(&mut explorer),
+            Some(before),
+            "Back to a place seen expanded, shrunk now, returns to where the camera \
+             stood before expanding, as Esc would"
         );
+    }
+
+    #[test]
+    fn back_and_esc_from_a_journey_entered_while_expanded_agree() {
+        use crate::camera::OrbitCamera;
+        let mut camera = OrbitCamera::default();
+        let before = camera.pose();
+        camera.pan_to(Vec3::new(40.0, 0.0, 0.0));
+        let inside = camera.pose();
+        let returned = |explorer: &mut Explorer| match explorer.take_return_pose() {
+            Some(Return::To(pose)) => Some(pose),
+            _ => None,
+        };
+        // Browsing, a module expanded, then into a journey.
+        let entered = || {
+            let mut explorer = explorer();
+            let main = tile(&explorer, "main");
+            explorer.leave_journey();
+            explorer.click(main, None);
+            explorer.see(before);
+            explorer.toggle_expand(None);
+            explorer.see(inside);
+            explorer.open_at(main);
+            explorer.take_return_pose();
+            explorer
+        };
+        let mut explorer = entered();
+        explorer.leave_journey();
+        let esc = returned(&mut explorer);
+        assert_eq!(esc, Some(before), "Esc: where it stood before expanding");
+        let mut explorer = entered();
+        assert!(explorer.go_back());
+        assert_eq!(returned(&mut explorer), esc, "Back agrees");
     }
 
     #[test]

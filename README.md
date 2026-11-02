@@ -84,28 +84,32 @@ began. Changing the depth is not a move of its own.
 
 ### Expand
 
-`X` flies into a module (the top bar then reads `· inside` it): the one under the pointer, else that of the selection, the
-cursor or the start (`--expand` opens straight into it). A double click on a module, on
-one of its functions or anywhere on its sphere, does the same. The camera saves where
-it is and comes in until the module fills the view. In a journey the start's module is
-laid out by the calls among them, named, with every module holding a named function
-on a ring just outside the wall; here, and only here, a click on a function inside
-makes it the middle. Any other module, and every module browsing, opens where it is,
-its functions named, and nothing moves but the camera. `X` again, `Esc`, or a double
-click off every function shrinks it back and returns the camera to exactly where it
-stood. `Back` and `Forward` keep it expanded; going to another journey, or between
-browsing and a journey, shrinks it back.
+`X` flies into a module (the top bar then reads `· inside` it): that of the selection,
+the cursor or the start, else the one in the middle of the view (`--expand` opens
+straight into it). A double click on a module, on one of its functions or anywhere on
+its sphere, does the same for that module. The camera saves where it is and comes in
+until the module fills the view. The module opens where it stands, browsing or in a
+journey alike: every one of its functions drawn and named where they fit, with the
+calls among them, and nothing moves but the camera. In a journey, when the cursor
+moves to a function in another module, that module opens instead and the camera flies
+to it; moving back flies back. `X` again, `Esc`, or a double click off every function
+shrinks it back and returns the camera to exactly where it stood before the first
+module opened. `Back` and `Forward` keep it expanded; going to another journey, or
+between browsing and a journey, shrinks it back.
 
 ### Camera
 
-The wheel or a pinch zooms towards the pointer, in until a module fills the view, out
-until the whole scene takes about half of it; a drag orbits within a range round the
-usual view; a right drag, or `Shift` with a drag, pans. `F` frames the focus: the
+The wheel or a pinch zooms towards the pointer, in until the module under it fills nine
+tenths of the view, drawn into it whole, out until the whole scene takes about half of
+it; a drag orbits within a range round the usual view; a right drag, or `Shift` with a
+drag, pans, no further than keeps the map in the view. `F` frames the focus: the
 selection and what it lights, the journey, or the module expanded. `R` turns back to the
 usual view and frames everything shown. A click on empty space clears the selection (in
 a journey, the function set aside) and never moves the camera. The camera moves only
 when you tell it to, on entering or leaving a journey, a `Back` or `Forward` that
-crosses between them, and expanding or shrinking, each move one short glide.
+crosses between them, and expanding or shrinking, each move one short glide; besides,
+a level more draws it back when what comes in would show off the view, and expanded
+in a journey it follows the cursor.
 `H` lists the keys that do something in the mode you are in.
 
 ## Scripted sessions

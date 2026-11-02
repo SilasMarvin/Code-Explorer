@@ -166,7 +166,7 @@ impl Disclosed {
     fn trace(&self, tile: &impl Fn(SpanId) -> Option<usize>, start: SpanId) -> Trail {
         let mut trail = Trail::default();
         // Everything below the start at any depth, each at the fewest calls from it, so
-        // the expanded nucleus is laid out once for every depth.
+        // the modules round the start are laid out once for every depth.
         let mut wave = vec![start];
         let mut seen = HashSet::from([start]);
         for level in 1.. {

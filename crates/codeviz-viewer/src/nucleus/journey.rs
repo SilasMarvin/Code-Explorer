@@ -114,13 +114,11 @@ impl Nucleus {
         Arrangement {
             start,
             middle,
-            expanded: false,
             balls,
             points,
             shown,
             named,
             columns,
-            reserved: laid,
             ring: order,
             outside,
             folded,

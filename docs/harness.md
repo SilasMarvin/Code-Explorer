@@ -167,7 +167,7 @@ scene's units.
   the free area), `pointer`.
 - `nodes`: every function drawn: `name`, `unit`, `module`, `roles` (`start`,
   `selection`, `cursor`, `aside`, `caller`, `journey level N`, `opened`
-  for a function of the module expanded while browsing, `hovered`, `speck` for a
+  for a function of the module expanded that nothing else lights, `hovered`, `speck` for a
   faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
   screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `name_size`
   (how big the placer laid its name's text out, room found for it or not), `crowded_by`,

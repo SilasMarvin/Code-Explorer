@@ -12,7 +12,8 @@ expect check expanded-fill
 snap expanded
 
 scroll 3 at Finder::walk
-expect check zoom-to-pointer
+expect check zoom-bounds
+expect check camera-outside
 snap zoomed in
 
 drag 60 20

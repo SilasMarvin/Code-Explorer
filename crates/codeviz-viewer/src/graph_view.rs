@@ -125,7 +125,7 @@ pub(crate) fn drawn_radius(
     view: &GlobalTransform,
 ) -> f32 {
     let dot = dot(explorer, tile);
-    let world = explorer.nucleus().dot_radius(dot);
+    let world = dot.radius();
     let shows = |at: Vec3| camera.world_to_viewport(view, at).ok();
     let per_unit = explorer
         .tile_point(tile)
