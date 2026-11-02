@@ -685,19 +685,22 @@ pub(crate) struct DrawnBars {
     pub(crate) bars: Vec<(SpanId, egui::Rect)>,
     /// The badges that unfold a bar's folded calls, by the bar's span.
     pub(crate) chips: Vec<(SpanId, egui::Rect)>,
+    /// The bars of the start's callers, in the row above its bar, by function.
+    pub(crate) callers: Vec<(usize, egui::Rect)>,
 }
 
 fn bars_id() -> egui::Id {
     egui::Id::new("drawn_journey_bars")
 }
 
-/// Notes where the journey panel drew its bars this pass, and the badges on them that
-/// unfold what is folded.
+/// Notes where the journey panel drew its bars this pass, the badges on them that
+/// unfold what is folded, and the bars of the start's callers.
 pub(crate) fn note_bars(
     ctx: &egui::Context,
     content: egui::Rect,
     bars: Vec<(SpanId, egui::Rect)>,
     chips: Vec<(SpanId, egui::Rect)>,
+    callers: Vec<(usize, egui::Rect)>,
 ) {
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| {
@@ -708,6 +711,7 @@ pub(crate) fn note_bars(
                 content,
                 bars,
                 chips,
+                callers,
             },
         );
     });
@@ -1543,10 +1547,11 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
             acts
         }
         Step::DoubleClickModule(module) => double_click_module(drive, view, module)?,
-        Step::Bar(bar) => {
-            let span = bar_span(view, &drive.names, bar)?;
-            click(bar_point(view, span, bar)?)
-        }
+        // A bar of the journey, else of the start's callers in the row above it.
+        Step::Bar(bar) => match bar_span(view, &drive.names, bar) {
+            Ok(span) => click(bar_point(view, span, bar)?),
+            Err(why) => click(caller_bar_point(view, &drive.names, bar).ok_or(why)?),
+        },
         Step::Chip(bar) => {
             let span = bar_span(view, &drive.names, bar)?;
             click(chip_point(view, span, bar)?)
@@ -1735,6 +1740,7 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
         Expect::Selection(unit) => same("selection", explorer.selection(), wanted(unit)?),
         Expect::Cursor(unit) => same("journey's cursor", explorer.cursor(), wanted(unit)?),
         Expect::Start(unit) => same("journey's start", explorer.start(), wanted(unit)?),
+        Expect::Aside(unit) => same("function set aside", explorer.aside(), wanted(unit)?),
         Expect::Named(unit) => {
             let tile = drive.names.unit(unit)?;
             if view.screen.labels.iter().any(|&(_, t)| t == tile) {
@@ -2049,6 +2055,18 @@ fn bar_point(view: &View, span: SpanId, bar: &str) -> Result<Vec2, String> {
     }
     let x = shown.min.x + (shown.width() / 2.0).min(12.0);
     Ok(Vec2::new(x, shown.center().y))
+}
+
+/// Where to click the bar of the start's caller `bar` names, in the row above the
+/// start's bar, where it is drawn.
+fn caller_bar_point(view: &View, names: &Names, bar: &str) -> Option<Vec2> {
+    let tile = names.unit(bar).ok()?;
+    let drawn = view.screen.bars.as_ref()?;
+    let &(_, rect) = drawn.callers.iter().find(|(t, _)| *t == tile)?;
+    Some(Vec2::new(
+        rect.min.x + (rect.width() / 2.0).min(12.0),
+        rect.center().y,
+    ))
 }
 
 /// Where to click the badge on a journey bar that unfolds what is folded under it.
