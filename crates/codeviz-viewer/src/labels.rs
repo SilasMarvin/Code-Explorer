@@ -17,8 +17,8 @@ use bevy_egui::egui;
 
 use crate::{
     colors::{
-        CALLEE, CALLEE_TEXT, CALLER, CALLER_TEXT, CURSOR, CURSOR_TEXT, DEEPER, DEEPER_TEXT, MUTED,
-        ON_FILL, egui_color, module_color,
+        CALLEE, CALLEE_TEXT, CALLER, CALLER_TEXT, CURSOR, CURSOR_TEXT, DEEPER, DEEPER_TEXT,
+        FADED_TEXT, MUTED, ON_FILL, PILL, PLAIN_TEXT, egui_color, module_color,
     },
     disclosure::{self, Disclosed},
     explorer::Explorer,
@@ -29,13 +29,8 @@ use crate::{
     ui::short,
 };
 
-pub(crate) const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
 /// Room kept around a label's text: its pill.
 pub(crate) const PILL_PAD: egui::Vec2 = egui::vec2(5.0, 2.0);
-/// A plain function's name: quieter than a lit one's.
-const PLAIN_TEXT: egui::Color32 = egui::Color32::from_rgb(178, 184, 196);
-/// The name of a function faded beside what is selected: quieter still.
-const FADED_TEXT: egui::Color32 = egui::Color32::from_rgb(112, 118, 130);
 /// Between a dot's edge and its name, in points.
 const GAP: f32 = 4.0;
 /// Between a module's sphere and its name above it, in points.
@@ -1069,8 +1064,8 @@ impl<'a> Naming<'a> {
     }
 
     /// What the pointer is on and is not named already: the function hovered, beside
-    /// its dot, and the module under the pointer, above its sphere, wherever they
-    /// cover least, taking no room.
+    /// its dot wherever it covers least, and the module under the pointer, above its
+    /// sphere where that covers no name; taking no room.
     fn pointed(&self, painter: &egui::Painter, placer: &Placer, labels: &[Label]) -> Vec<Label> {
         let named = |key: Named| labels.iter().any(|l| l.named == key);
         let mut over = Vec::new();
@@ -1105,7 +1100,8 @@ impl<'a> Naming<'a> {
         {
             let (galley, size) = pill_of(painter, self.module_label(cluster));
             let pill = above(middle, edge, size);
-            if !placer.bounds.contains_rect(pill) {
+            // Not over a name placed: pointing hides no name.
+            if !placer.bounds.contains_rect(pill) || placer.over_names(pill) > 0 {
                 return over;
             }
             over.push(Label {
@@ -1294,7 +1290,7 @@ fn place(
 fn unnamed_note(painter: &egui::Painter, unnamed: usize, lit: usize) {
     let area = painter.clip_rect();
     let note = format!(
-        "{unnamed} of {lit} lit functions unnamed for want of room · zoom in, or point at one"
+        "{unnamed} of {lit} lit functions have no room for a name · zoom in, or point at one"
     );
     let galley = painter.layout_no_wrap(note, egui::FontId::proportional(text::SMALL), MUTED);
     let at = egui::pos2(

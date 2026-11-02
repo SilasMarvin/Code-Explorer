@@ -4,8 +4,10 @@
 use bevy_egui::egui;
 
 use crate::{
-    colors::{CALLEE, CALLER, CURSOR, DEEPER, EDGE, MUTED, SELECTED, SURFACE, TEXT, egui_color},
-    labels::{PILL, PILL_PAD},
+    colors::{
+        CALLEE, CALLER, CURSOR, DEEPER, EDGE, MUTED, PILL, SELECTED, SURFACE, TEXT, egui_color,
+    },
+    labels::PILL_PAD,
     text,
 };
 
