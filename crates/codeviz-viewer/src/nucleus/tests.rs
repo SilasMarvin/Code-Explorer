@@ -3,7 +3,7 @@ use codeviz_ir::{Document, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, atlas::fibonacci, map};
 
 use super::{
-    inside::{lattice, lay_inside, spread},
+    inside::{lattice, spread},
     journey::{OUTSIDE_SHOWN, ROWS, grid, names_grid},
     *,
 };
@@ -326,56 +326,29 @@ fn a_new_start_recenters_easing_there() {
 }
 
 #[test]
-fn expanding_grows_the_nucleus_and_rings_its_neighbours_outside() {
+fn expanding_the_start_s_module_opens_it_where_it_stands() {
     let (graph, map) = codebase();
     let mut nucleus = around(&graph, &map, "core::run", 1);
     let core = module(&graph, &map, "core::run");
-    let small = nucleus.ball(core).expect("a sphere").radius;
-    let web = module(&graph, &map, "web::route");
-    let bearing = nucleus.ball(web).expect("a sphere").center.normalize();
-    nucleus.expand(&graph, Some(nucleus.middle()));
+    let balls = |nucleus: &Nucleus| nucleus.balls().collect::<Vec<_>>();
+    let before = balls(&nucleus);
+    nucleus.expand(&graph, Some(core));
     while nucleus.advance(0.1) {}
-    let big = nucleus.ball(core).expect("a sphere");
-    assert!(big.radius >= small * 3.0, "grows several times over");
-    for id in ["web::route", "db::put", "log::say"] {
-        let cluster = module(&graph, &map, id);
-        let ball = nucleus.ball(cluster).expect("a sphere");
-        assert_eq!(ball.body, Body::Open, "{id}'s module is on the ring");
-        assert!(
-            ball.center.length() > big.radius + ball.radius,
-            "outside the wall"
-        );
-        assert!(
-            (ball.radius - module_radius(nucleus.count(cluster))).abs() < 1e-3,
-            "as big as it is everywhere"
-        );
-    }
-    let ring = nucleus.ball(web).expect("a sphere").center.normalize();
-    assert!(ring.dot(bearing) > 0.0, "keeps to the side it was on");
-    let disk = nucleus
-        .ball(module(&graph, &map, "disk::write"))
-        .expect("a sphere");
-    assert_eq!(
-        disk.body,
-        Body::Closed,
-        "two modules away is not on the ring"
-    );
+    assert_eq!(balls(&nucleus), before, "no sphere moves or grows");
+    let ball = nucleus.ball(core).expect("a sphere");
     for id in ["core::run", "core::help", "core::idle"] {
-        let at = nucleus.point(tile(&map, id)).expect("a point");
-        assert!(nucleus.placed(tile(&map, id)));
-        assert!(at.length() < big.radius, "{id} inside");
+        let t = tile(&map, id);
+        assert!(nucleus.placed(t), "{id} drawn");
+        let at = nucleus.point(t).expect("a point");
+        assert!(at.distance(ball.center) < ball.radius, "{id} inside");
     }
     assert!(
         nucleus.placed(tile(&map, "db::put")),
         "what the start calls outside stays named in its module"
     );
-    assert!(
-        !nucleus.placed(tile(&map, "db::other")),
-        "the rest folds away"
-    );
     nucleus.expand(&graph, None);
     while nucleus.advance(0.1) {}
-    assert!((nucleus.ball(core).expect("a sphere").radius - small).abs() < 1e-3);
+    assert_eq!(balls(&nucleus), before);
 }
 
 #[test]
@@ -424,25 +397,6 @@ fn an_opened_module_spreads_in_rows_wider_along_than_between() {
     assert_eq!(spread.len(), 12, "every one placed");
     let first = spread.iter().find(|(t, _)| *t == 5).expect("the first");
     assert!(first.1.length() < 1e-4, "the first in the middle");
-}
-
-#[test]
-fn inside_callers_lean_one_way_and_callees_the_other() {
-    // Focus 0; 1 and 2 call it; it calls 3 and 4; 5 relates to nothing.
-    let start: Vec<Vec3> = (0..6).map(|i| fibonacci(i, 6) * 0.3).collect();
-    let calls = [(1, 0), (2, 0), (0, 3), (0, 4)];
-    let hops = [Some(0), Some(-1), Some(-1), Some(1), Some(1), None];
-    let at = lay_inside(&start, &calls, &hops, Vec3::X, Vec3::Z);
-    assert_eq!(at[0], Vec3::ZERO, "the start in the middle");
-    assert!(at[1].x < 0.0 && at[2].x < 0.0, "callers to one side");
-    assert!(at[3].x > 0.0 && at[4].x > 0.0, "callees to the other");
-    assert!(at[5].length() > at[1].length(), "the rest towards the wall");
-    for (i, a) in at.iter().enumerate() {
-        assert!(a.length() <= 0.92 + 1e-4, "inside");
-        for b in &at[i + 1..] {
-            assert!(a.distance(*b) > 0.1, "apart");
-        }
-    }
 }
 
 #[test]

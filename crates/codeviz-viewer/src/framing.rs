@@ -92,11 +92,12 @@ const CURSOR_ROOM: f32 = 0.85;
 ///   moves nothing unless something the journey lights, or a sphere it comes to run
 ///   through (any, when the panel grows), would show off the free area, and then it
 ///   frames the journey afresh, coming no nearer.
-/// - F frames the focus from the angle the camera has: browsing, the selection and
-///   what it lights; in a journey, the journey and what the view is on
-///   ([`Explorer::current`]); expanded, the module, filling the view, and the cursor.
-///   R shrinks back what is expanded, turns back to the usual three-quarter view and
-///   frames everything shown: in a journey, its spheres and what it lights. Either has the last word over the view pointed anew.
+/// - F, or the panel's Fit, frames the focus from the angle the camera has:
+///   browsing, the selection and what it lights; in a journey, the journey and what
+///   the view is on ([`Explorer::current`]); expanded, the module, filling the view,
+///   and the cursor. R shrinks back what is expanded, turns back to the usual
+///   three-quarter view and frames everything shown: in a journey, its spheres and
+///   what it lights. Either has the last word over the view pointed anew.
 /// - When the explorer asks for the camera back (Back to a place, Esc to browsing,
 ///   shrinking back), it returns to where it stood then, or with no such place,
 ///   browsing, takes in the whole codebase.
@@ -116,7 +117,9 @@ pub(crate) fn frame(
         return;
     };
     let keyed = |key| !wants.wants_any_keyboard_input() && keys.just_pressed(key);
-    let (focus, whole) = (keyed(KeyCode::KeyF), keyed(KeyCode::KeyR));
+    // The panel's Fit frames as F does.
+    let asked = explorer.bypass_change_detection().take_frame_ask();
+    let (focus, whole) = (keyed(KeyCode::KeyF) || asked, keyed(KeyCode::KeyR));
     if whole && explorer.nucleus().expanded() {
         explorer.collapse();
     }

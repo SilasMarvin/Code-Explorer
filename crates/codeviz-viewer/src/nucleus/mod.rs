@@ -11,12 +11,10 @@
 //! along thin arrows between modules. Space says only where things are: no axis
 //! stands for order, rank or distance in calls.
 //!
-//! Expanded (`X`, a double click on the nucleus, or `--expand`), the nucleus grows to
-//! several times its size as the camera comes in, and its functions are laid out by
-//! the calls among them, what is named in the middle, callers leaning one way and the
-//! journey the other, the rest small towards the wall. The same functions are named
-//! as in the module view: those in other modules sit in their module's sphere on a
-//! ring just outside the wall, and a call to one runs out through the wall.
+//! Expanded (`X`, a double click on a module, or `--expand`), a module opens where it
+//! stands, browsing or in a journey alike: every one of its functions drawn, spread in
+//! rows inside its sphere, with the calls among them. Nothing else moves; the camera
+//! comes in until it fills the view.
 //!
 //! This file holds what the nucleus is and answers; [`browse`], [`journey`] and
 //! [`inside`] arrange it for each mode, and [`draw`] puts it in the scene. The browsing map itself is [`codeviz_layout::atlas`]'s.
@@ -43,7 +41,7 @@ use crate::{
     camera::{ease, transition_step},
     colors::{CALLEE, CALLER, DEEPER, FURTHER},
     disclosure::number_order,
-    sizes::{Dot, module_radius},
+    sizes::module_radius,
 };
 
 /// How a module shows.
@@ -122,8 +120,8 @@ pub(crate) struct Call {
 pub(crate) struct Trail {
     pub(crate) calls: Vec<Call>,
     /// Every function below the start at any depth, with the fewest calls it is
-    /// from it: what the expanded nucleus is laid out for, so a new depth moves
-    /// nothing.
+    /// from it: what the modules round the start are laid out for, so a new depth
+    /// moves nothing.
     pub(crate) whole: HashMap<usize, u32>,
     /// Every function below the start at any depth, in the order the journey first
     /// runs it, which orders the modules round the nucleus.
@@ -187,8 +185,6 @@ pub(crate) const VIEW: atlas::View = (-0.45, -0.38);
 /// along the view, so further round it would turn edge-on; turned both ways at once,
 /// names crowd well before that.
 pub(crate) const BROWSE_REACH: (f32, f32) = (0.6, 0.3);
-/// How many times its size the nucleus grows to when expanded.
-const GROWTH: f32 = 3.5;
 
 /// Where everything is, for one start.
 #[derive(Debug, Clone, Default)]
@@ -197,8 +193,6 @@ struct Arrangement {
     start: Option<usize>,
     /// The module in the middle: the start's.
     middle: usize,
-    /// Whether the nucleus is expanded.
-    expanded: bool,
     /// By cluster.
     balls: Vec<Ball>,
     /// By tile.
@@ -210,9 +204,6 @@ struct Arrangement {
     named: HashMap<usize, i32>,
     /// By cluster: the functions an open module names, in the order it lists them.
     columns: Vec<Vec<usize>>,
-    /// By cluster: every function an open module could name in this journey, at any
-    /// depth, in the order its names are laid out.
-    reserved: Vec<Vec<usize>>,
     /// The modules round the nucleus, clockwise from the top.
     ring: Vec<usize>,
     /// In a journey with I on, every function off it that calls one on it.
@@ -234,16 +225,6 @@ struct Atlas {
     points: Vec<Vec3>,
 }
 
-/// The expanded nucleus's layout for one start: where its functions sit in a sphere
-/// of radius one, and the angle round it of each module that could be named there.
-#[derive(Debug, Clone)]
-struct Laid {
-    /// The start, and everything below it at any depth.
-    key: (Option<usize>, HashMap<usize, u32>),
-    inside: Vec<(usize, Vec3)>,
-    angles: HashMap<usize, f32>,
-}
-
 /// The graph gathered into module spheres: in a journey, round the start's module;
 /// browsing, the whole codebase, lighting what the selection touches. Browsing has no
 /// journey, so the selection stands where a start would: what is said of the start
@@ -261,9 +242,7 @@ pub(crate) struct Nucleus {
     offsets: Vec<Vec3>,
     /// Calls from one module to another, by `(from, to)` cluster.
     flows: HashMap<(usize, usize), usize>,
-    /// The module expanded, if any. In a journey the start's module is laid out
-    /// afresh to show how calls run inside it; any other module expands where it is,
-    /// and only the camera moves.
+    /// The module expanded, if any: it opens where it is, and only the camera moves.
     expanded: Option<usize>,
     now: Arrangement,
     /// The function the pointer has rested on.
@@ -280,8 +259,6 @@ pub(crate) struct Nucleus {
     atlas: Atlas,
     /// In a journey, whether every outside caller into it shows (I).
     outside: bool,
-    /// The expanded layout, kept while the start stays.
-    laid: Option<Laid>,
     /// Where the spheres and functions were when the last re-centering began.
     from: Option<(Vec<Ball>, Vec<Vec3>)>,
     /// How far along that re-centering is, 0 to 1.
@@ -343,7 +320,6 @@ impl Nucleus {
             browse,
             atlas,
             outside: false,
-            laid: None,
             from: None,
             progress: 1.0,
         };
@@ -580,7 +556,7 @@ impl Nucleus {
                 .now
                 .balls
                 .get(self.module_of.get(tile).copied().flatten()?)?;
-            return Some(self.below(ball));
+            return Some(Self::below(ball));
         }
         self.now.points.get(tile).copied()
     }
@@ -589,13 +565,15 @@ impl Nucleus {
     /// the arrangement folds away shows without moving anything: clear of the
     /// module's name on top and of the arrows leaving its sides.
     fn under(&self, tile: usize) -> Option<Vec3> {
-        Some(self.below(self.ball(self.module_of.get(tile).copied().flatten()?)?))
+        Some(Self::below(
+            self.ball(self.module_of.get(tile).copied().flatten()?)?,
+        ))
     }
 
     /// Just under `ball`, as [`Self::under`] says.
-    fn below(&self, ball: Ball) -> Vec3 {
+    fn below(ball: Ball) -> Vec3 {
         let down = view_rotation() * Vec3::NEG_Y;
-        ball.center + down * (ball.radius + 0.8 * self.zoom())
+        ball.center + down * (ball.radius + 0.8)
     }
 
     /// A module's sphere as drawn now.
@@ -634,19 +612,6 @@ impl Nucleus {
         self.now.named.get(&tile).copied()
     }
 
-    /// How big a function of `dot`'s role is drawn in the world, before the bounds
-    /// its size keeps to on screen: bigger in the expanded nucleus, as the view is
-    /// nearer.
-    pub(crate) fn dot_radius(&self, dot: Dot) -> f32 {
-        dot.radius() * self.zoom()
-    }
-
-    /// How much bigger arrows and their heads are drawn, so they keep their size on
-    /// screen in the expanded nucleus.
-    pub(crate) fn zoom(&self) -> f32 {
-        if self.now.expanded { GROWTH * 0.5 } else { 1.0 }
-    }
-
     /// How many functions a module holds.
     pub(crate) fn count(&self, cluster: usize) -> usize {
         self.counts.get(cluster).copied().unwrap_or(0)
@@ -680,10 +645,8 @@ impl Nucleus {
             .iter()
             .filter(|b| matches!(b.body, Body::Nucleus | Body::Open))
             .flat_map(|b| {
-                // Names hang to the right of an open module's functions.
-                let room = if b.body == Body::Open { 2.2 } else { 1.0 };
                 [
-                    b.center + right * b.radius * room,
+                    b.center + right * b.radius,
                     b.center - right * b.radius,
                     b.center + up * b.radius,
                     b.center - up * b.radius,
@@ -762,19 +725,13 @@ impl Nucleus {
             .collect()
     }
 
-    /// Everything placed around `start`, the nucleus expanded or not, or browsing;
-    /// and the module expanded opened out.
+    /// Everything placed around `start`, browsing or in a journey, and the module
+    /// expanded opened out where it is.
     fn arrange(&mut self, graph: &ForceGraph, start: Option<usize>) -> Arrangement {
         let mut now = if self.browse {
             self.arrange_browse(graph, start)
         } else {
-            let modules = self.arrange_modules(graph, start);
-            if self.expanded == Some(modules.middle) {
-                let laid = self.laid_out(graph, &modules);
-                self.arrange_inside(graph, modules, &laid)
-            } else {
-                modules
-            }
+            self.arrange_modules(graph, start)
         };
         if let Some(cluster) = self.expanded {
             self.open_out(graph, cluster, &mut now);
