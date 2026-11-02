@@ -40,6 +40,9 @@ const GAP: f32 = 4.0;
 const ABOVE: f32 = 2.0;
 /// Kept clear round a name: no other name or dot comes nearer, in points.
 const CLEAR: f32 = 1.0;
+/// How much nearer than its own another dot may lie to a name, in points: a name
+/// level with its own dot still reads as its own beside a dot as near above or below.
+const NEARER: f32 = 2.0;
 /// A character's width against its font size, to see whether a plain name could fit
 /// before laying it out.
 const CHAR_WIDTH: f32 = 0.5;
@@ -211,7 +214,7 @@ impl Placer {
             .filter(|d| d.tile != own && (keep == Keep::EveryDot || d.lit))
             .filter(|d| {
                 let theirs = pill.distance_to_pos(d.at) - d.radius;
-                theirs < CLEAR || theirs < mine - 0.5
+                theirs < CLEAR || theirs < mine - NEARER
             })
             .count()
     }
@@ -243,6 +246,24 @@ impl Placer {
             (0..SPOTS.len())
                 .map(|i| (i, spot(i, node, reach, size)))
                 .find(|&(_, pill)| self.fits(pill, own, keep))
+        })
+    }
+
+    /// The first spot round a dot at `node` where a pill of `size` lies on the graph
+    /// and off every dot, else off the lit ones, whatever names are there.
+    fn find_by_dots(
+        &self,
+        own: usize,
+        node: egui::Pos2,
+        reach: f32,
+        size: egui::Vec2,
+    ) -> Option<(usize, egui::Rect)> {
+        [Keep::EveryDot, Keep::LitDots].iter().find_map(|&keep| {
+            (0..SPOTS.len())
+                .map(|i| (i, spot(i, node, reach, size)))
+                .find(|&(_, pill)| {
+                    self.bounds.contains_rect(pill) && self.over_dots(pill, own, keep) == 0
+                })
         })
     }
 
@@ -740,8 +761,8 @@ impl<'a> Naming<'a> {
     /// A function's name beside its dot, of `tier`, where it fits; one that must show
     /// wherever it covers least. With the `sides` names took in the neutral view, a
     /// name goes on its side there, so a click or a step that lights or unlights
-    /// others never moves it: where that is taken, a plain name goes unnamed and a lit
-    /// one takes the first side free.
+    /// others never moves it: where that is taken it goes unnamed, unless it must
+    /// show; a lit name with no side there takes the first side free.
     fn function_name(
         &self,
         painter: &egui::Painter,
@@ -753,26 +774,40 @@ impl<'a> Naming<'a> {
         let (job, stroke, number) = self.function_label(tile, tier);
         let lit = tier != Tier::Plain;
         if let Some(sides) = sides {
-            let held = sides.get(&tile).and_then(|&side| {
+            if let Some(&side) = sides.get(&tile) {
                 let keep = if lit { Keep::LitDots } else { Keep::EveryDot };
                 let (galley, size) = pill_of(painter, job.clone());
                 let pill = spot(side, node, reach, size);
-                placer
-                    .fits(pill, tile, keep)
-                    .then_some((side, pill, galley))
-            });
-            if let Some((side, pill, galley)) = held {
-                return Some(Label {
+                if placer.fits(pill, tile, keep) {
+                    return Some(Label {
+                        named: Named::Node(tile),
+                        side: Some(side),
+                        pill,
+                        galley,
+                        stroke,
+                        number,
+                    });
+                }
+                // Taken: unnamed rather than moved, unless it must show.
+                if !tier.always() {
+                    return None;
+                }
+            } else if !lit {
+                return None;
+            } else if !tier.always() {
+                // Lit with no side of its own: the first side its dot's neighbours
+                // leave, whatever else is named, so what else is lit never moves it;
+                // unnamed where a name is there already.
+                let (galley, size) = pill_of(painter, job);
+                let (free, pill) = placer.find_by_dots(tile, node, reach, size)?;
+                return (placer.over_names(pill) == 0).then_some(Label {
                     named: Named::Node(tile),
-                    side: Some(side),
+                    side: Some(free),
                     pill,
                     galley,
                     stroke,
                     number,
                 });
-            }
-            if !lit {
-                return None;
             }
         }
         if tier == Tier::Plain {
@@ -837,10 +872,17 @@ impl<'a> Naming<'a> {
             && let Some((middle, edge)) = self.sphere_on_screen(cluster)
         {
             let (galley, size) = pill_of(painter, self.module_label(cluster));
+            // Kept on the graph, however big the sphere shows.
+            let pill = above(middle, edge, size);
+            let bounds = placer.bounds;
+            let pill = pill.translate(egui::vec2(
+                (bounds.min.x - pill.min.x).max(0.0) + (bounds.max.x - pill.max.x).min(0.0),
+                (bounds.min.y - pill.min.y).max(0.0) + (bounds.max.y - pill.max.y).min(0.0),
+            ));
             over.push(Label {
                 named: Named::Group(cluster),
                 side: None,
-                pill: above(middle, edge, size),
+                pill,
                 galley,
                 stroke: None,
                 number: None,

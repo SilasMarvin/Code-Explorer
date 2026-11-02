@@ -199,7 +199,8 @@ const ROW_WIDE: f32 = 4.0;
 
 impl Nucleus {
     /// Opens `cluster`, the module expanded, in `now`: every one of its functions
-    /// drawn, spread in rows where it is, unless it is the start's in a journey,
+    /// drawn, spread in rows where it is, the same whatever is selected, unless it
+    /// is the start's in a journey,
     /// which [`Self::laid_out`] lays out; and every call among them that nothing else
     /// names, drawn faintly.
     pub(super) fn open_out(&self, graph: &ForceGraph, cluster: usize, now: &mut Arrangement) {
@@ -210,7 +211,7 @@ impl Nucleus {
             && let Some(ball) = now.balls.get(cluster).copied()
         {
             let at: Vec<(usize, Vec3)> = members.iter().map(|&t| (t, self.offsets[t])).collect();
-            for (tile, offset) in spread(&at, now.start, atlas::disc(ball.radius)) {
+            for (tile, offset) in spread(&at, None, atlas::disc(ball.radius)) {
                 now.points[tile] = ball.center + offset;
                 now.shown[tile] = true;
             }
