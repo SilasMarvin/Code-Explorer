@@ -183,7 +183,7 @@ impl Lens {
 }
 
 /// Zooming out, how many times the free area the map is when the wheel starts to
-/// draw it in.
+/// draw it in ([`OrbitCamera::hold_map`]).
 const DRAWN_FROM: f32 = 1.5;
 
 /// How far outside a sphere's surface, as a share of its radius, the camera keeps.
@@ -385,63 +385,56 @@ impl OrbitCamera {
         }
         let before = self.distance;
         let distance = (before * factor).min(reach.far.max(before));
-        let fits = self.map_fits_at(&reach);
+        let was = self.map_seen(&reach);
         self.scale_about(point, distance / before);
-        let drawn = self.draw_map_in(&reach, fits, before);
-        let kept = self.keep_map_inside(&reach);
-        self.held |= drawn || kept;
-    }
-
-    /// How far from what it looks at the camera, as it stands, would just fit the
-    /// map in the free area.
-    fn map_fits_at(&self, reach: &Reach) -> Option<f32> {
-        let lens = reach.lens;
-        let (_, depth) = lens.project(self.rotation(), self.eye(), reach.home)?;
-        let share = reach.extent / (depth * lens.tan) / lens.half;
-        Some(self.distance * share.max_element())
-    }
-
-    /// Zoomed out from `before` to where it is, with the map fitting the free area
-    /// from `fits` away: from where the map is [`DRAWN_FROM`] times the free area
-    /// down to where it just fits, draws the map's middle to the free area's, as
-    /// much of the way as the wheel went of what was left, so it never jumps.
-    /// Returns whether it drew it in.
-    fn draw_map_in(&mut self, reach: &Reach, fits: Option<f32>, before: f32) -> bool {
-        let Some(fits) = fits else {
-            return false;
-        };
-        let from = fits / DRAWN_FROM;
-        let left = |d: f32| ((fits - d) / (fits - from)).clamp(0.0, 1.0);
-        let (was, now) = (left(before), left(self.distance));
-        if now >= was {
-            return false;
+        if let Some(was) = was {
+            self.held |= self.hold_map(&reach, was, before);
         }
-        let middle = reach.home - reach.lens.shift(self.rotation()) * self.distance;
-        let target = middle + (self.looking_at - middle) * (now / was);
-        self.target = target;
-        self.looking_at = target;
-        true
     }
 
-    /// Once the map fits the free area, across or up, pans just enough to hold it
-    /// inside. Returns whether it panned.
-    fn keep_map_inside(&mut self, reach: &Reach) -> bool {
-        let rotation = self.rotation();
+    /// Where the map's middle shows, off the free area's middle, in the view's
+    /// units, how deep, and how far from what it looks at the camera would just fit
+    /// the map in the free area.
+    fn map_seen(&self, reach: &Reach) -> Option<(Vec2, f32, f32)> {
         let lens = reach.lens;
-        let Some((at, depth)) = lens.project(rotation, self.eye(), reach.home) else {
+        let (at, depth) = lens.project(self.rotation(), self.eye(), reach.home)?;
+        let share = reach.extent / (depth * lens.tan) / lens.half;
+        Some((at - lens.centre, depth, self.distance * share.max_element()))
+    }
+
+    /// Zoomed out from `before` to where it is, with the map seen as `was` says
+    /// then, pans just enough that the map's middle is no further off the free
+    /// area's than this: once the map fits the free area, across or up, so far that
+    /// it is inside; as it comes to fit, from where it is [`DRAWN_FROM`] times the
+    /// free area, half the free area at first, nothing by the time it fits, but never
+    /// less than as much of how far off it was as the wheel left of the way, so it
+    /// never jumps. Returns whether it panned.
+    fn hold_map(
+        &mut self,
+        reach: &Reach,
+        (off_before, _, fits): (Vec2, f32, f32),
+        before: f32,
+    ) -> bool {
+        let Some((off, depth, _)) = self.map_seen(reach) else {
             return false;
         };
+        let lens = reach.lens;
         let tan = lens.tan;
-        // Across or up, how far its middle may be off the free area's for it to stay
-        // inside, where it fits.
-        let room = (lens.half - reach.extent / (depth * tan))
-            .map(|room| if room >= 0.0 { room } else { f32::INFINITY });
-        let off = at - lens.centre;
+        let size = reach.extent / (depth * tan);
+        // Across or up, where it fits, as far as keeps it inside.
+        let mut room =
+            (lens.half - size).map(|room| if room >= 0.0 { room } else { f32::INFINITY });
+        let left = |d: f32| ((fits - d) / (fits - fits / DRAWN_FROM)).clamp(0.0, 1.0);
+        let (was, now) = (left(before), left(self.distance));
+        if now > 0.0 && now < 1.0 {
+            let kept = if was > 0.0 { now / was } else { 0.0 };
+            room = room.min((lens.half * now).max(off_before.abs() * kept));
+        }
         let by = off.clamp(-room, room) - off;
         if by == Vec2::ZERO {
             return false;
         }
-        self.pan(rotation * Vec3::new(-by.x * depth * tan.x, -by.y * depth * tan.y, 0.0));
+        self.pan(self.rotation() * Vec3::new(-by.x * depth * tan.x, -by.y * depth * tan.y, 0.0));
         true
     }
 
