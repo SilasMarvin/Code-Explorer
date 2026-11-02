@@ -402,14 +402,21 @@ fn match_labels(
     named
 }
 
-/// Whether `text` carries `name` as a whole word.
+/// Whether `text` leads with `name` as a whole word, as a name on the graph does:
+/// after a journey number, if any, and the type or path it may be qualified by
+/// (`Explorer.root`). A hint that only mentions the word (`R whole map`) names
+/// nothing.
 fn carries(text: &str, name: &str) -> bool {
     let word = |c: char| c.is_alphanumeric() || c == '_';
+    let number = |c: char| c.is_ascii_digit() || matches!(c, '.' | '+' | ' ');
     !name.is_empty()
         && text.match_indices(name).any(|(at, _)| {
-            let before = text[..at].chars().next_back();
+            let lead = text[..at].trim_start_matches(number);
+            let qualified = lead.is_empty()
+                || (!lead.contains(char::is_whitespace)
+                    && (lead.ends_with('.') || lead.ends_with("::")));
             let after = text[at + name.len()..].chars().next();
-            !before.is_some_and(word) && !after.is_some_and(word)
+            qualified && !after.is_some_and(word)
         })
 }
 
@@ -594,6 +601,11 @@ mod tests {
         assert!(!carries("spotlit_more", "spotlit"));
         assert!(!carries("respotlit", "spotlit"));
         assert!(!carries("anything", ""));
+        assert!(carries("Explorer.root", "root"), "qualified by its type");
+        assert!(
+            !carries("Browsing · R whole map · H keys", "map"),
+            "a hint only mentions it"
+        );
     }
 
     #[test]

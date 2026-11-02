@@ -568,9 +568,6 @@ const THREADED: [i8; 12] = [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6];
 /// node's. Past it a name is better left to the pointer, and counted as unnamed;
 /// a name held further off takes a nearer place when there is one.
 const NEAR: f32 = 40.0;
-/// How much of a held name others may cover, as when its badge grows by a number,
-/// before it is placed elsewhere for now.
-const COVERED_SHARE: f32 = 0.25;
 
 /// Where a label sits against its node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -702,6 +699,9 @@ struct Placer<'a> {
     /// Every sphere drawn, by cluster, its middle and radius on screen: a module's
     /// name lies over none but its own.
     spheres: Vec<(usize, egui::Pos2, f32)>,
+    /// Browsing, every faint dot on screen, by tile, as big as it is drawn lit:
+    /// names keep off them where they can.
+    specks: Vec<(usize, egui::Pos2, f32)>,
     last: ShownLabels,
     next: ShownLabels,
     /// Where each label placed this frame sits.
@@ -763,6 +763,7 @@ impl<'a> Placer<'a> {
             nodes,
             blocking: Vec::new(),
             spheres: Vec::new(),
+            specks: Vec::new(),
             last: painter
                 .ctx()
                 .data_mut(|d| d.get_temp::<ShownLabels>(Self::id()))
@@ -840,6 +841,14 @@ impl<'a> Placer<'a> {
             {
                 return false;
             }
+            // The cursor's or the selection's stays where it is held, over the rest,
+            // taking no room.
+            Some(at)
+                if self.beside.contains(&key)
+                    && self.painter.clip_rect().contains_rect(spot(at)) =>
+            {
+                None
+            }
             Some(_) => {
                 self.displaced.push(Displaced {
                     key,
@@ -856,8 +865,16 @@ impl<'a> Placer<'a> {
         let drawn = match at {
             Some(at) => at,
             None if self.beside.contains(&key) => {
-                let last = previous.map(|p| p.at);
-                self.beside_spot(key, node, edge, extent, [last, held])
+                let stays =
+                    held.filter(|&at| !far && self.painter.clip_rect().contains_rect(spot(at)));
+                // Where it is held it keeps what is new off it, as it was there first.
+                if let Some(at) = stays {
+                    self.taken.push(spot(at).expand2(PILL_PAD));
+                    at
+                } else {
+                    let last = previous.map(|p| p.at);
+                    self.beside_spot(key, node, edge, extent, [last, held])
+                }
             }
             None => return false,
         };
@@ -893,19 +910,14 @@ impl<'a> Placer<'a> {
         true
     }
 
-    /// Whether a held name at `rect` is inside the graph and the names placed so far
-    /// cover little enough of it: as when its badge grows by a number.
+    /// Whether a held name at `rect` is inside the graph and clear of the names placed
+    /// so far.
     fn has_room(&self, rect: egui::Rect) -> bool {
-        let covered: f32 = self
-            .names_and_cards()
-            .map(|r| r.intersect(rect))
-            .filter(egui::Rect::is_positive)
-            .map(|r| r.area())
-            .sum();
-        self.painter.clip_rect().contains_rect(rect) && covered <= rect.area() * COVERED_SHARE
+        self.painter.clip_rect().contains_rect(rect)
+            && !self.names_and_cards().any(|r| r.intersects(rect))
     }
 
-    /// Whether a function's name at `rect` would lie over another lit node's middle,
+    /// Whether a function's name at `rect` would touch another lit node,
     /// or a module's over another module's sphere; a landmark never counts nodes, as
     /// module names browsing do not keep off them.
     fn covers_node(&self, key: Named, rect: egui::Rect) -> bool {
@@ -926,7 +938,7 @@ impl<'a> Placer<'a> {
         let pill = rect.expand2(PILL_PAD);
         self.blocking
             .iter()
-            .any(|&(tile, at, radius)| Some(tile) != own && pill.distance_to_pos(at) < radius * 0.5)
+            .any(|&(tile, at, radius)| Some(tile) != own && pill.distance_to_pos(at) < radius)
     }
 
     /// Where a label new to the scene goes: the side it had last frame if that is
@@ -981,8 +993,16 @@ impl<'a> Placer<'a> {
                 .min_by(|a, b| a.0.total_cmp(&b.0))
                 .map(|(_, at)| at)
         };
+        // Off every faint dot too where it can be, as any may light with the next
+        // click, which would leave this name nowhere to stay.
+        let off_specks = |at: &Spot| !self.over_speck(key, spot(*at));
+        let free_and_clean =
+            || along(&[0]).find(|&at| close(at) && fits(spot(at), PILL_PAD) && off_specks(&at));
         // A label nudged off its node goes back beside it as soon as there is room.
-        kept.filter(|at| at.shift == 0)
+        kept.filter(|at| at.shift == 0 && off_specks(at))
+            .or_else(free_and_clean)
+            .or(kept.filter(off_specks))
+            .or(kept.filter(|at| at.shift == 0))
             .or_else(|| free(&[0]))
             .or(kept)
             .or_else(|| (force != Force::Never).then(|| free(&NUDGES)).flatten())
@@ -1081,6 +1101,17 @@ impl<'a> Placer<'a> {
     fn unplace(&mut self, key: Named) {
         self.next.remove(&key);
         self.chosen.remove(&key);
+    }
+
+    /// Whether a function's name at `rect` would touch a faint dot other than its own.
+    fn over_speck(&self, key: Named, rect: egui::Rect) -> bool {
+        let Named::Node(own) = key else {
+            return false;
+        };
+        let pill = rect.expand2(PILL_PAD);
+        self.specks
+            .iter()
+            .any(|&(tile, at, radius)| tile != own && pill.distance_to_pos(at) < radius)
     }
 
     /// Whether `key` names a module as a landmark.
@@ -1645,6 +1676,19 @@ fn draw_graph_labels(
         })
         .collect();
     placer.landmarks = nucleus.browsing();
+    if nucleus.browsing() {
+        // As big as each would be drawn lit.
+        let speck_radius = nucleus.dot_radius(Dot::Lit);
+        placer.specks = (0..map.tiles.len())
+            .filter(|&tile| nucleus.speck(tile))
+            .filter_map(|tile| {
+                let world = explorer.tile_point(tile)?;
+                let at = to_screen(world)?;
+                let edge = to_screen(world + up * speck_radius).map_or(1.0, |p| p.distance(at));
+                Some((tile, at, Dot::Lit.clamp(edge)))
+            })
+            .collect();
+    }
     let held_keys: HashSet<Named> = held.keys().copied().collect();
     placer.held = held;
     placer.keep = settled;
@@ -1684,15 +1728,14 @@ fn draw_graph_labels(
                 });
                 let label = explorer.cluster_name(group);
                 // An open module says how much of it is named, and how many callers
-                // from outside the journey it holds beyond those drawn. Browsing, only
-                // under the pointer, so a click never makes a name longer and pushes
-                // another module's out.
+                // from outside the journey it holds beyond those drawn. Browsing, never,
+                // so neither a click nor the pointer makes a name longer and moves it.
                 // The start's callers folded into a count are counted apart from what
                 // it names.
                 let folded = nucleus.folded_in(group);
                 let named_note = (body == Some(Body::Open)
                     && nucleus.opened(group) > folded
-                    && (!nucleus.browsing() || pointed_module == Some(group)))
+                    && !nucleus.browsing())
                 .then(|| {
                     format!(
                         "{} of {}",

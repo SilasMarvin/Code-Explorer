@@ -224,7 +224,11 @@ const NODE_CLEAR: f32 = 0.5;
 /// Most bends an arrow takes round what lies in its way.
 const DETOUR_BENDS: usize = 4;
 /// Kept clear between two module spheres browsing.
-const ATLAS_MARGIN: f32 = 5.0;
+const ATLAS_MARGIN: f32 = 3.0;
+/// Browsing, how near the modules start, against their typical neighbours' just
+/// clear of each other: kept apart from there, the map comes out compact, so the
+/// whole of it shows each module, and the functions in it, as big as can be.
+const ATLAS_START: f32 = 0.4;
 /// Browsing, how much wider than high the codebase is laid out, as a window is.
 const ATLAS_ASPECT: f32 = 1.5;
 /// Browsing, how much of its depth along the usual view the layout of modules keeps.
@@ -2000,7 +2004,7 @@ fn atlas_balls(homes: &[Vec3], counts: &[usize]) -> Vec<Ball> {
         .iter()
         .zip(&radii)
         .map(|(&home, &radius)| {
-            let at = (home - middle) * (room / gap);
+            let at = (home - middle) * (room / gap) * ATLAS_START;
             Ball {
                 center: at - back * at.dot(back) * (1.0 - ATLAS_DEPTH),
                 radius,
