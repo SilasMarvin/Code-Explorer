@@ -612,6 +612,7 @@ impl<'a> Naming<'a> {
     /// Every dot on the graph as names keep off it: as big as it is drawn, or for
     /// the `neutral` view at least as big as a lit one.
     fn dots(&self, neutral: bool) -> Vec<Disc> {
+        let nucleus = self.nucleus;
         self.discs
             .iter()
             .enumerate()
@@ -651,7 +652,7 @@ impl<'a> Naming<'a> {
             .filter_map(move |tile| {
                 let world = self.explorer.tile_point(tile)?;
                 let at = (self.to_screen)(world)?;
-                let edge = (self.to_screen)(world + self.up * nucleus.dot_radius(Dot::Lit))
+                let edge = (self.to_screen)(world + self.up * Dot::Lit.radius())
                     .map_or(2.0, |p| p.distance(at));
                 let radius = Dot::Lit.clamp(edge);
                 Some(Disc {
