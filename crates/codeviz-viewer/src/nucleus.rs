@@ -1,5 +1,4 @@
-//! The graph gathered into module spheres (`Z`, or `--z nucleus`), in one of two
-//! modes. Browsing, with no journey open, every module is a sphere at its place in
+//! The graph gathered into module spheres, in one of two modes. Browsing, with no journey open, every module is a sphere at its place in
 //! one layout of the whole codebase, worked out once per document, with every one of
 //! its functions inside; a click lights the function clicked, white, its callers,
 //! violet, and its calls, blue, where they sit, and moves nothing. In a journey, the
@@ -29,12 +28,11 @@ use bevy::prelude::*;
 use codeviz_layout::ForceGraph;
 
 use crate::{
-    camera::{ANGLED, Bounds, OrbitCamera},
+    camera::{Bounds, OrbitCamera},
     disclosure::Disclose,
     explorer::{Explorer, Hidden, Side},
     graph_view::{
         CALLEE, CALLER, CURSOR, DEEPER, FURTHER, fit_distance, flow, hidden_speck, node_size,
-        orbit_anchor,
     },
     idle::Awake,
     scene::{PALETTE, lane_color},
@@ -2670,19 +2668,14 @@ fn interior(graph: &ForceGraph, members: &[usize], radius: f32) -> Vec<(usize, V
         .collect()
 }
 
-/// Z gathers the graph round the focus's module, or lays it flat again; X expands the
-/// nucleus, or shrinks it back, gathering the graph first when it lies flat; N leaves
-/// out the functions named by nothing, or draws them again as specks.
+/// X expands the nucleus, or shrinks it back; N leaves out the functions named by
+/// nothing, or draws them again as specks.
 pub(crate) fn toggle(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer) {
     if keys.just_pressed(KeyCode::KeyN) {
         explorer.toggle_specks();
     }
-    if keys.just_pressed(KeyCode::KeyZ) {
-        let on = explorer.nucleus().is_none();
-        explorer.set_nucleus(on);
-    }
     if keys.just_pressed(KeyCode::KeyX) {
-        let on = !explorer.nucleus().is_some_and(Nucleus::expanded);
+        let on = !explorer.nucleus().expanded();
         explorer.expand_nucleus(on);
     }
 }
@@ -2710,7 +2703,7 @@ pub(crate) fn double_click(
     }
     let clicked = matches!((pressed.take(), cursor), (Some(a), Some(b)) if a.distance(b) < 4.0);
     let on_nucleus = || {
-        let nucleus = explorer.nucleus()?;
+        let nucleus = explorer.nucleus();
         let ball = nucleus.ball(nucleus.center())?;
         let (camera, global) = cameras.single().ok()?;
         let ray = camera.viewport_to_world(global, cursor?).ok()?;
@@ -2725,7 +2718,7 @@ pub(crate) fn double_click(
     let now = time.elapsed_secs();
     if last.is_some_and(|at| now - at <= DOUBLE_CLICK) {
         *last = None;
-        let on = !explorer.nucleus().is_some_and(Nucleus::expanded);
+        let on = !explorer.nucleus().expanded();
         explorer.expand_nucleus(on);
     } else {
         *last = Some(now);
@@ -2812,10 +2805,7 @@ pub(crate) fn hover(
     {
         pointing.resting = None;
     }
-    let Some(taken) = explorer.nucleus().map(Nucleus::hovered) else {
-        pointing.held = Settle::default();
-        return;
-    };
+    let taken = explorer.nucleus().hovered();
     let over = explorer
         .hovered_tile
         .filter(|&t| pointing.resting.is_none() && !hidden_speck(&explorer, t));
@@ -2868,11 +2858,9 @@ pub(crate) struct Framed {
 /// it stood before expanding (see [`crate::camera::restore_pose`]). Browsing, it holds
 /// the camera's angle near the usual view, so the flattened map never turns edge-on,
 /// and frames the function clicked and what it touches only then, so a click moves
-/// nothing. Expanded in a
-/// journey, it glides across to the cursor wherever the cursor goes, from as far as it
-/// was. A level more or less of the journey moves nothing, unless what it brings in
-/// would show off screen, and then it only pulls back. Turns back to the usual view
-/// when the graph lies flat again.
+/// nothing. Expanded in a journey, it glides across to the cursor wherever the cursor
+/// goes, from as far as it was. A level more or less of the journey moves nothing,
+/// unless what it brings in would show off screen, and then it only pulls back.
 pub(crate) fn frame(
     explorer: Res<Explorer>,
     mut last: Local<Option<Framed>>,
@@ -2880,23 +2868,14 @@ pub(crate) fn frame(
 ) {
     // Browsing, the map is flattened along the usual view: held near it, so no orbit
     // turns it edge-on.
-    let bounds = explorer.nucleus().filter(|n| n.browsing()).map(|_| Bounds {
+    let nucleus = explorer.nucleus();
+    let bounds = nucleus.browsing().then_some(Bounds {
         middle: VIEW,
         reach: BROWSE_REACH,
     });
     for (mut camera, _) in &mut cameras {
         camera.bound(bounds);
     }
-    let Some(nucleus) = explorer.nucleus() else {
-        // Laid flat again: back to the usual angle, round the journey's start.
-        if last.take().is_some() {
-            for (mut camera, ..) in &mut cameras {
-                camera.turn_to(ANGLED);
-                orbit_anchor(&explorer, &mut camera);
-            }
-        }
-        return;
-    };
     let browsing = nucleus.browsing();
     let now = Framed {
         browsing,
@@ -3218,9 +3197,8 @@ pub(crate) fn create_looks(
 /// The orbit camera, apart from the spheres and arrows placed.
 type OnlyTheCamera = (With<OrbitCamera>, Without<ModuleSphere>, Without<Arrow>);
 
-/// Spawns a sphere per module once the nucleus first opens, and an arrow per pair of
-/// modules as many as are needed, then keeps each where the nucleus has it, drawn as
-/// its body asks; hides them all while the graph is flat.
+/// Spawns a sphere per module, and an arrow per pair of modules as many as are
+/// needed, then keeps each where the nucleus has it, drawn as its body asks.
 pub(crate) fn place_bodies(
     mut commands: Commands,
     explorer: Res<Explorer>,
@@ -3245,15 +3223,7 @@ pub(crate) fn place_bodies(
     >,
     cameras: Query<&Transform, OnlyTheCamera>,
 ) {
-    let Some(nucleus) = explorer.nucleus() else {
-        for (_, _, mut visibility, _) in &mut spheres {
-            visibility.set_if_neq(Visibility::Hidden);
-        }
-        for (_, _, mut visibility, _) in &mut arrows {
-            visibility.set_if_neq(Visibility::Hidden);
-        }
-        return;
-    };
+    let nucleus = explorer.nucleus();
     let clusters = explorer.graph().cluster_count();
     if spheres.is_empty() {
         for cluster in 0..clusters {
@@ -3431,9 +3401,7 @@ pub(crate) fn draw(
     cameras: Query<&Transform, With<OrbitCamera>>,
     mut gizmos: Gizmos,
 ) {
-    let Some(nucleus) = explorer.nucleus() else {
-        return;
-    };
+    let nucleus = explorer.nucleus();
     let Ok(camera) = cameras.single() else {
         return;
     };

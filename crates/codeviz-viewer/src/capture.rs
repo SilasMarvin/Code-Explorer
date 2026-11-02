@@ -14,7 +14,7 @@ use bevy::{
     window::PrimaryWindow,
 };
 
-use crate::{diff_view::DiffView, explorer::Explorer};
+use crate::explorer::Explorer;
 
 /// Frames to let the scene settle (assets load, camera eases) before capturing.
 pub(crate) const SETTLE_FRAMES: u32 = 90;
@@ -271,7 +271,6 @@ fn capture(
     capturing: Query<(), With<Capturing>>,
     mut exit: MessageWriter<AppExit>,
     explorer: Res<Explorer>,
-    diff: Option<Res<DiffView>>,
     time: Res<Time<Real>>,
 ) {
     state.frame += 1;
@@ -282,7 +281,7 @@ fn capture(
             commands
                 .spawn(Screenshot::primary_window())
                 .observe(save_to_disk(state.path.clone()));
-            let truth = crate::truth::of(&explorer, diff.as_deref());
+            let truth = crate::truth::of(&explorer);
             let path = state.path.with_extension("truth.json");
             if let Err(error) = std::fs::write(&path, format!("{truth:#}\n")) {
                 error!("could not write {}: {error}", path.display());

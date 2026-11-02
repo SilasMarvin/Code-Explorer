@@ -2,9 +2,7 @@
 //! is. On a trackpad, two fingers orbit, shift and two fingers pan, and a pinch or
 //! ctrl and two fingers zoom; with a mouse, the wheel zooms, left- or middle-drag
 //! orbits and right- or shift-drag pans. Zoom goes towards the pointer, so you can
-//! zoom into any part of the graph. Panning or zooming away lets go of the focused
-//! node until you click one or press F. Moves to a new point, distance or angle ease
-//! in.
+//! zoom into any part of the graph. Moves to a new point, distance or angle ease in.
 
 use bevy::{
     camera::{CameraOutputMode, visibility::RenderLayers},
@@ -33,17 +31,12 @@ impl Plugin for OrbitCameraPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (crate::graph_view::hold_center, apply_camera, remember_pose)
+                (apply_camera, remember_pose)
                     .chain()
                     .before(TransformSystems::Propagate),
             );
     }
 }
-
-/// Facing the graph head-on.
-pub(crate) const FRONT: (f32, f32) = (0.0, 0.0);
-/// The default three-quarter view.
-pub(crate) const ANGLED: (f32, f32) = (-0.35, -0.2);
 
 #[derive(Component, Debug)]
 pub(crate) struct OrbitCamera {
@@ -58,9 +51,6 @@ pub(crate) struct OrbitCamera {
     goal_distance: Option<f32>,
     /// Angles being eased towards, until the viewer orbits by hand.
     goal_angles: Option<(f32, f32)>,
-    /// Whether the viewer has panned or zoomed away from the focused node, so the
-    /// camera stops holding it in the middle.
-    pub(crate) free: bool,
     /// The angles it may turn to, when held near one: browsing, the flattened map
     /// never turns edge-on.
     bounds: Option<Bounds>,
@@ -93,11 +83,10 @@ impl Default for OrbitCamera {
             target: Vec3::ZERO,
             focus: Vec3::ZERO,
             distance: 60.0,
-            yaw: ANGLED.0,
-            pitch: ANGLED.1,
+            yaw: nucleus::VIEW.0,
+            pitch: nucleus::VIEW.1,
             goal_distance: None,
             goal_angles: None,
-            free: false,
             bounds: None,
         }
     }
@@ -115,21 +104,19 @@ impl OrbitCamera {
     pub(crate) fn glide_to(&mut self, target: Vec3, distance: f32) {
         self.target = target;
         self.goal_distance = Some(distance);
-        self.free = false;
     }
 
-    /// Eases back to `distance`, around wherever it is looking, without taking hold
-    /// of the focus again: a panned or zoomed view stays where it was put.
+    /// Eases back to `distance`, around wherever it is looking: a panned or zoomed
+    /// view stays where it was put.
     pub(crate) fn pull_back(&mut self, distance: f32) {
         let goal = self.goal_distance.unwrap_or(self.distance);
         self.goal_distance = Some(goal.max(distance));
     }
 
-    /// Moves the point orbited by `offset` at once, letting go of the focus.
+    /// Moves the point orbited by `offset` at once.
     fn pan(&mut self, offset: Vec3) {
         self.target += offset;
         self.focus += offset;
-        self.free = true;
     }
 
     /// Zooms by `factor` (below 1 is nearer), towards `toward` when given: the whole
@@ -194,11 +181,9 @@ impl OrbitCamera {
         self.goal_angles = Some((yaw, pitch));
     }
 
-    /// Eases across to look at `target` from as far away as it is going to be,
-    /// taking hold of the focus again.
+    /// Eases across to look at `target` from as far away as it is going to be.
     pub(crate) fn pan_to(&mut self, target: Vec3) {
         self.target = target;
-        self.free = false;
     }
 
     /// The distance it is easing to, or is at.
@@ -212,7 +197,6 @@ impl OrbitCamera {
             target: self.target,
             distance: self.goal_distance(),
             angles: self.goal_angles.unwrap_or((self.yaw, self.pitch)),
-            free: self.free,
         }
     }
 
@@ -221,19 +205,16 @@ impl OrbitCamera {
         self.target = pose.target;
         self.goal_distance = Some(pose.distance);
         self.turn_to(pose.angles);
-        self.free = pose.free;
     }
 }
 
-/// Where the camera stands: what it looks at, from how far and at what angle, and
-/// whether the viewer had moved it by hand. Kept with each place in the history, so
-/// going back looks at it as it was seen.
+/// Where the camera stands: what it looks at, from how far and at what angle. Kept
+/// with each place in the history, so going back looks at it as it was seen.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Pose {
     target: Vec3,
     distance: f32,
     angles: (f32, f32),
-    free: bool,
 }
 
 impl Pose {
@@ -406,13 +387,14 @@ pub(crate) fn restore_pose(
         return;
     }
     for (mut camera, projection) in &mut cameras {
-        match (pose, explorer.nucleus()) {
-            (Some(pose), _) => camera.return_to(pose),
-            (None, Some(gathered)) if gathered.browsing() => {
+        let gathered = explorer.nucleus();
+        match pose {
+            Some(pose) => camera.return_to(pose),
+            None if gathered.browsing() => {
                 let rotation = camera.aim_rotation();
                 nucleus::fit_all(gathered, &mut camera, rotation, projection);
             }
-            (None, _) => {}
+            None => {}
         }
     }
 }

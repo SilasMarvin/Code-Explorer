@@ -37,7 +37,7 @@ Script steps (one per line; `#` comments; `#: view DATA [FLAGS]` gives the view 
   scroll N | scroll DX DY [at UNIT | at X Y]   wheel notches; positive DY zooms in
   window W H          resizes the window (points)
   wait MS             snap [LABEL]
-  expect mode browse|journey   expect nucleus off|modules|expanded   expect depth N
+  expect mode browse|journey   expect nucleus modules|expanded   expect depth N
   expect search|help|back|forward|outside_callers true|false
   expect selection|cursor|start UNIT|none     expect named|drawn UNIT
   expect camera-same-as LABEL  expect nothing-moved   expect check NAME [pass|fail]

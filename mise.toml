@@ -14,18 +14,13 @@ description = "Regenerate the demo IR documents"
 run = [
   "cargo run -q -p codeviz -- analyze demo/axum-server -o demo/out/axum-server.json",
   "cargo run -q -p codeviz -- analyze demo/python-service -o demo/out/python-service.json",
-  "cargo run -q -p codeviz -- analyze demo/diff/axum-server-next -o demo/out/axum-server-next.json",
   "cargo run -q -p codeviz -- import demo/pipelines/deploy.yml --slug orders-deploy -o demo/out/deploy-pipeline.json",
   "cargo run -q -p codeviz -- validate demo/out/*.json demo/architecture/orders-platform.json",
 ]
 
 [tasks.demo]
 description = "Explore the Rust demo, starting at POST /users/{id}/orders"
-run = "cargo run -p codeviz -- view demo/out/axum-server.json --entry 'POST /users/{id}/orders'"
-
-[tasks.demo-diff]
-description = "The Rust demo after a change (tax, audit trail, simpler discount), diffed against before; D cycles status / impact / morph"
-run = "cargo run -p codeviz -- view demo/out/axum-server-next.json --before demo/out/axum-server.json --entry 'POST /users/{id}/orders' --journey hidden"
+run = "cargo run -p codeviz -- view demo/out/axum-server.json --focus 'POST /users/{id}/orders'"
 
 [tasks.demo-merged]
 description = "Explore the architecture and Rust code as one system"

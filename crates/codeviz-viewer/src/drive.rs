@@ -38,10 +38,8 @@ use crate::{
     camera::OrbitCamera,
     capture::{DRAIN_FRAMES, Press, SETTLE_FRAMES, SETTLE_TIME},
     checks,
-    diff_view::DiffView,
     explorer::Explorer,
     idle::Awake,
-    journey_panel::JourneyPanel,
     scene::Tile,
     script::{
         Expect, Gesture, Kind, Line, Name, Spot, Step, close_matches, snap_label, snap_name,
@@ -674,15 +672,10 @@ pub(crate) fn note_bars(ctx: &egui::Context, content: egui::Rect, bars: Vec<(Spa
 }
 
 /// egui areas that sit over the graph, by id.
-const OVERLAYS: [(&str, &str); 8] = [
+const OVERLAYS: [(&str, &str); 3] = [
     ("journey_panel", "journey panel"),
     ("key_help", "key help (H)"),
     ("search", "search box"),
-    ("camera_free", "camera-free chip"),
-    ("legend", "legend"),
-    ("diff_card", "diff card"),
-    ("depth_meter", "depth meter"),
-    ("source", "side panel"),
 ];
 
 fn record(
@@ -795,9 +788,7 @@ pub(crate) struct Drawn {
 #[derive(SystemParam)]
 pub(crate) struct View<'w, 's> {
     pub(crate) explorer: Res<'w, Explorer>,
-    pub(crate) diff: Option<Res<'w, DiffView>>,
     pub(crate) help: Res<'w, KeyHelp>,
-    pub(crate) panel: Res<'w, JourneyPanel>,
     pub(crate) chrome: Res<'w, Chrome>,
     pub(crate) screen: Res<'w, Screen>,
     tiles: Query<
@@ -919,11 +910,6 @@ impl View<'_, '_> {
         self.cameras.iter().next().map(|(_, _, orbit)| orbit.pose())
     }
 
-    /// Whether the camera was panned or zoomed off the journey's start.
-    pub(crate) fn camera_free(&self) -> bool {
-        self.cameras.iter().any(|(_, _, orbit)| orbit.free)
-    }
-
     fn camera_easing(&self) -> bool {
         self.cameras.iter().any(|(_, _, orbit)| orbit.easing())
     }
@@ -943,9 +929,8 @@ impl View<'_, '_> {
                 e.revision(),
                 e.moved(),
                 e.aim(),
-                e.nucleus().map(crate::nucleus::Nucleus::expanded),
+                e.nucleus().expanded(),
                 self.help.0,
-                self.panel.mode,
             )
         )
     }
@@ -1611,10 +1596,7 @@ fn open_ground(view: &View, at: Vec2) -> bool {
 /// functions and names.
 fn module_point(view: &View, cluster: usize) -> Result<Vec2, String> {
     let module = view.explorer.cluster_name(cluster);
-    let nucleus = view
-        .explorer
-        .nucleus()
-        .ok_or("no module spheres are drawn")?;
+    let nucleus = view.explorer.nucleus();
     let ball = nucleus
         .ball(cluster)
         .filter(|ball| nucleus.shows_body(ball.body))
@@ -1646,17 +1628,17 @@ fn module_point(view: &View, cluster: usize) -> Result<Vec2, String> {
 /// middle.
 fn empty_point(view: &View) -> Result<Vec2, String> {
     let drawn = view.drawn();
-    let spheres: Vec<(Vec2, f32)> = view.explorer.nucleus().map_or_else(Vec::new, |n| {
-        n.balls()
-            .filter(|(_, ball)| n.shows_body(ball.body))
-            .filter_map(|(_, ball)| {
-                Some((
-                    view.to_screen(ball.center)?,
-                    view.screen_radius(ball.center, ball.radius),
-                ))
-            })
-            .collect()
-    });
+    let n = view.explorer.nucleus();
+    let spheres: Vec<(Vec2, f32)> = n
+        .balls()
+        .filter(|(_, ball)| n.shows_body(ball.body))
+        .filter_map(|(_, ball)| {
+            Some((
+                view.to_screen(ball.center)?,
+                view.screen_radius(ball.center, ball.radius),
+            ))
+        })
+        .collect();
     let graph = view.screen.graph;
     let spots = (1..24).flat_map(|i| {
         (1..16).map(move |j| {
@@ -1718,11 +1700,11 @@ fn label_point(view: &View, tile: usize) -> Result<Vec2, String> {
 }
 
 /// Where to click the journey bar numbered `number` (or, failing that, named it, as
-/// the journey's start must be): inside its left end, clear of
-/// the badge that unfolds it and the mark where other outcomes split off.
+/// the journey's start must be): inside its left end, clear of the badge that unfolds
+/// it.
 fn bar_point(view: &View, number: &str) -> Result<Vec2, String> {
     let Some(drawn) = &view.screen.bars else {
-        return Err("the journey panel is not showing (J shows it)".to_owned());
+        return Err("the journey panel is not showing: no journey is open".to_owned());
     };
     let disclosed = view.explorer.disclosure();
     // By number, else by the name on it, among the bars disclosed.

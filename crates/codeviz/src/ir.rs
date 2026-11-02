@@ -57,17 +57,13 @@ pub(crate) fn analyze(args: &AnalyzeArgs) -> anyhow::Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot open {}", args.path.display()))?;
-    let document = analyze_dir(&root, &args.source, None)?;
+    let document = analyze_dir(&root, &args.source)?;
     write(&document, args.output.as_ref())
 }
 
 /// Analyzes the source under `root`, in the language asked for or the one its files
-/// suggest. rust-analyzer builds into `target_dir` when one is given.
-pub(crate) fn analyze_dir(
-    root: &Path,
-    source: &Source,
-    target_dir: Option<&Path>,
-) -> anyhow::Result<Document> {
+/// suggest.
+fn analyze_dir(root: &Path, source: &Source) -> anyhow::Result<Document> {
     let language = match source.lang {
         Some(language) => language,
         None if root.join("Cargo.toml").exists() => Language::Rust,
@@ -90,9 +86,7 @@ pub(crate) fn analyze_dir(
     }
     eprintln!("rust-analyzer: resolving calls in {}", root.display());
     let syntax = options.clone();
-    options.resolver = codeviz_rust::Resolver::RustAnalyzer {
-        target_dir: target_dir.map(Path::to_path_buf),
-    };
+    options.resolver = codeviz_rust::Resolver::RustAnalyzer { target_dir: None };
     match codeviz_rust::analyze(root, &options) {
         Ok(analysis) => Ok(analysis.document),
         Err(error) if source.resolve == Resolve::Auto => {
@@ -101,25 +95,6 @@ pub(crate) fn analyze_dir(
         }
         Err(error) => Err(error.into()),
     }
-}
-
-/// The target directory of the Cargo workspace at `dir`, unless `CARGO_TARGET_DIR`
-/// already picks one.
-pub(crate) fn target_dir(dir: &Path) -> Option<PathBuf> {
-    if std::env::var_os("CARGO_TARGET_DIR").is_some() {
-        return None;
-    }
-    let output = std::process::Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .current_dir(dir)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    metadata
-        .get("target_directory")?
-        .as_str()
-        .map(PathBuf::from)
 }
 
 #[derive(Debug, clap::Args)]

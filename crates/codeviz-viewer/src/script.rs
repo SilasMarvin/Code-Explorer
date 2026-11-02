@@ -132,7 +132,7 @@ pub(crate) struct Line {
 /// (none listed: any).
 const STATE_FIELDS: [(&str, &[&str]); 8] = [
     ("mode", &["browse", "journey"]),
-    ("nucleus", &["off", "modules", "expanded"]),
+    ("nucleus", &["modules", "expanded"]),
     ("depth", &[]),
     ("search", &["true", "false"]),
     ("help", &["true", "false"]),

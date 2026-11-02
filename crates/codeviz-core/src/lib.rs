@@ -5,9 +5,8 @@
 //! of invocations, and [`scenarios`] lists the distinct ways that entry can end so a
 //! journey can be restricted to one of them, and [`upstream`] finds everything that
 //! can reach a unit. [`Zoom`] and [`Journey::collapse`] change
-//! its level of detail. [`Diff`] compares two versions of a system.
+//! its level of detail.
 
-mod diff;
 mod journey;
 mod outline;
 mod scenario;
@@ -15,7 +14,6 @@ mod system;
 mod upstream;
 mod zoom;
 
-pub use diff::{Call, Change, Diff, Moves, align, union};
 pub use journey::{
     Condition, ExitMarker, Journey, JourneyOptions, Span, SpanId, SpanTarget, StopReason,
 };

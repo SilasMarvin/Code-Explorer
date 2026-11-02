@@ -1,6 +1,5 @@
 //! `codeviz`: build, check and explore codeviz IR documents.
 
-mod diff;
 mod ir;
 mod journey;
 mod view;
@@ -24,8 +23,6 @@ enum Command {
     Import(ir::ImportArgs),
     /// List entries, scenarios, and print journeys from IR documents.
     Journey(journey::JourneyArgs),
-    /// Open what changed between two git revisions in the 3D viewer.
-    Diff(diff::DiffArgs),
     /// Open IR documents in the 3D viewer.
     View(view::ViewArgs),
     /// Check IR documents against the rules in docs/ir.md.
@@ -39,7 +36,6 @@ fn main() -> ExitCode {
         Command::Analyze(args) => ir::analyze(&args),
         Command::Import(args) => ir::import(&args),
         Command::Journey(args) => journey::run(&args),
-        Command::Diff(args) => diff::run(&args),
         Command::View(args) => view::run(&args),
         Command::Validate(args) => ir::validate(&args),
         Command::Schema => ir::schema(),

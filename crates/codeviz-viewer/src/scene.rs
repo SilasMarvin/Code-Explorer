@@ -1,5 +1,5 @@
-//! The 3D scene: one glowing sphere per function, placed by the graph simulation, with
-//! the keys that move the cursor and switch what is shown.
+//! The 3D scene: one glowing sphere per function, placed inside its module's sphere,
+//! with the keys that move the cursor and switch what is shown.
 
 use bevy::prelude::*;
 use bevy_egui::{
@@ -10,11 +10,9 @@ use bevy_egui::{
 use crate::{
     camera,
     disclosure::Disclose,
-    explorer::{Autoplay, Clustering, Explorer, Side, Step},
+    explorer::{Autoplay, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
     idle::Awake,
-    journey_panel::{JourneyPanel, PanelMode},
-    lens::Lens,
     notice, nucleus, pick,
     ui::{Chrome, KeyHelp},
 };
@@ -47,15 +45,11 @@ impl Plugin for ScenePlugin {
                 nucleus::double_click.run_if(not(egui_wants_any_pointer_input)),
                 nucleus::follow,
                 nucleus::hover,
-                simulate,
-                reveal,
+                place_nodes,
                 nucleus::place_bodies,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
-                graph_view::follow_focus,
                 nucleus::frame,
-                graph_view::frame_reveal,
-                graph_view::frame_spotlight,
-                (graph_view::reveal_cursor, camera::restore_pose).chain(),
+                camera::restore_pose,
                 graph_view::style_nodes,
                 graph_view::draw_graph,
                 nucleus::draw,
@@ -170,10 +164,8 @@ fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
 }
 
 /// The graph's keys: digits open the call numbered so on screen, Backspace goes back
-/// to the view before and Shift+Backspace forward again. - and = narrow and widen
-/// what shows, L picks what it shows around and G how it measures nearness. Returns
-/// whether one of those four was pressed, for the depth meter.
-fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) -> bool {
+/// to the view before and Shift+Backspace forward again.
+fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
     if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key)) {
         explorer.open_numbered(index + 1);
     }
@@ -183,29 +175,6 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
         } else {
             explorer.go_back();
         }
-    }
-    let lens = explorer.lens();
-    let dialed =
-        keys.any_just_pressed([KeyCode::Minus, KeyCode::Equal, KeyCode::KeyL, KeyCode::KeyG]);
-    let lens = if keys.just_pressed(KeyCode::Minus) {
-        lens.narrower(explorer.lens_top())
-    } else if keys.just_pressed(KeyCode::Equal) {
-        lens.wider(explorer.lens_top())
-    } else if keys.just_pressed(KeyCode::KeyL) {
-        Lens {
-            source: lens.source.next(),
-            ..lens
-        }
-    } else if keys.just_pressed(KeyCode::KeyG) {
-        Lens {
-            measure: lens.measure.next(),
-            ..lens
-        }
-    } else {
-        lens
-    };
-    if lens != explorer.lens() {
-        explorer.set_lens(lens);
     }
     // , and . disclose a level less or more of the journey; V switches between
     // disclosing by depth and by time.
@@ -231,14 +200,6 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
     }
-    if keys.just_pressed(KeyCode::KeyK) {
-        let next = match explorer.clustering() {
-            Clustering::Modules => Clustering::Calls,
-            Clustering::Calls => Clustering::Modules,
-        };
-        explorer.set_clustering(next);
-    }
-    dialed
 }
 
 fn keyboard(
@@ -246,7 +207,6 @@ fn keyboard(
     time: Res<Time>,
     mut explorer: ResMut<Explorer>,
     mut autoplay: ResMut<Autoplay>,
-    mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
 ) {
@@ -255,9 +215,7 @@ fn keyboard(
         autoplay.playing = false;
         explorer.step(step);
     }
-    if graph_navigation(&keys, &mut explorer, shift) {
-        chrome.dial_turned = Some(time.elapsed_secs());
-    }
+    graph_navigation(&keys, &mut explorer, shift);
     if keys.just_pressed(KeyCode::Escape) {
         close_topmost(&mut explorer, &mut help, &mut chrome);
     }
@@ -284,26 +242,10 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Enter) {
         explorer.trace_from_focus();
     }
-    if keys.just_pressed(KeyCode::KeyJ) {
-        panel.mode = if panel.mode == PanelMode::Hidden {
-            PanelMode::Docked
-        } else {
-            PanelMode::Hidden
-        };
-    }
-    if keys.just_pressed(KeyCode::KeyM) {
-        panel.mode = match panel.mode {
-            PanelMode::Full => PanelMode::Docked,
-            PanelMode::Hidden | PanelMode::Docked => PanelMode::Full,
-        };
-    }
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
     }
     nucleus::toggle(&keys, &mut explorer);
-    if keys.just_pressed(KeyCode::KeyS) {
-        chrome.side = !chrome.side;
-    }
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;
     }
@@ -311,7 +253,7 @@ fn keyboard(
 
 /// Escape closes whatever is on top: the search box, the key list, the spotlight, a
 /// function selected off the journey, then the journey itself, for browsing with the
-/// cursor's function selected; browsing, the side panel.
+/// cursor's function selected.
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
     if chrome.search {
         chrome.search = false;
@@ -323,8 +265,6 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         explorer.clear_aside();
     } else if !explorer.browsing() {
         explorer.leave_journey();
-    } else if chrome.side {
-        chrome.side = false;
     }
 }
 
@@ -343,26 +283,13 @@ fn autoplay(time: Res<Time>, mut autoplay: ResMut<Autoplay>, mut explorer: ResMu
     }
 }
 
-/// Fades nodes in and out as the lens moves.
-fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake: ResMut<Awake>) {
-    if explorer
-        .bypass_change_detection()
-        .ease_visibility(time.delta_secs())
-    {
-        explorer.set_changed();
-        awake.0 = true;
-    }
-}
-
-/// Lets the graph settle, moving its nodes as it does, and moves them wherever else
-/// they go, as when the graph gathers round the focus's module.
-fn simulate(
-    mut explorer: ResMut<Explorer>,
+/// Moves the nodes wherever the nucleus puts them, as it eases round a new middle.
+fn place_nodes(
+    explorer: Res<Explorer>,
     mut placed: Local<Option<u64>>,
     mut nodes: Query<(&Tile, &mut Transform)>,
     mut awake: ResMut<Awake>,
 ) {
-    explorer.bypass_change_detection().simulate(2);
     if *placed == Some(explorer.moved()) {
         return;
     }

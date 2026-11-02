@@ -13,8 +13,6 @@
 mod camera;
 mod capture;
 mod checks;
-mod depth_meter;
-mod diff_view;
 mod disclosure;
 mod drive;
 mod explorer;
@@ -22,14 +20,12 @@ mod graph_view;
 mod history;
 mod idle;
 mod journey_panel;
-mod lens;
 mod module_names;
 mod notice;
 mod nucleus;
 mod pick;
 mod scene;
 mod script;
-mod source_diff;
 mod truth;
 mod ui;
 
@@ -37,21 +33,18 @@ use std::path::PathBuf;
 
 use bevy::{prelude::*, window::WindowPlugin};
 use bevy_egui::EguiPlugin;
-use codeviz_core::{Diff, JourneyOptions, System};
-use codeviz_ir::{Document, UnitId};
+use codeviz_core::{JourneyOptions, System};
+use codeviz_ir::UnitId;
 
 use crate::{
-    diff_view::{DiffStyle, DiffView},
-    explorer::{Autoplay, Clustering, Explorer, ViewMode},
-    journey_panel::{JourneyPanel, PanelMode},
-    lens::{Lens, Measure, Source},
+    explorer::{Autoplay, Explorer},
+    journey_panel::JourneyPanel,
 };
 
 /// Configures and launches the viewer window.
 #[derive(Debug)]
 pub struct Viewer {
     system: System,
-    root: Option<UnitId>,
     options: JourneyOptions,
     title: String,
     screenshot: Option<PathBuf>,
@@ -60,15 +53,7 @@ pub struct Viewer {
     /// A session's steps, each with its line; with one, the screenshot path is the
     /// directory its snapshots go in.
     script: Option<Vec<script::Line>>,
-    scenario: Option<usize>,
     step: usize,
-    panel: PanelMode,
-    clustering: Clustering,
-    lens: Lens,
-    /// Whether the lens's starting point was chosen, rather than left to the default.
-    lens_source: bool,
-    /// Whether a diff opens showing only what changed.
-    changes_only: bool,
     focus: Option<UnitId>,
     /// The function a screenshot puts the pointer over.
     hover: Option<UnitId>,
@@ -76,11 +61,8 @@ pub struct Viewer {
     depth: Option<u32>,
     /// Whether only the graph and the journey draw, without the panels and cards.
     bare: bool,
-    /// What the third dimension shows at first.
-    z: ZView,
-    /// Whether it opens in the focus's journey or browsing.
-    mode: ViewMode,
-    diff: Option<Comparison>,
+    /// Whether the nucleus opens expanded.
+    expanded: bool,
 }
 
 /// A session's steps, read from a script a step per line (`key x`, `click
@@ -101,107 +83,23 @@ impl Script {
     }
 }
 
-/// What the third dimension shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ZView {
-    /// Whatever the graph's layout puts there.
-    Free,
-    /// The focus's module a sphere in the middle, the others around it.
-    Nucleus,
-    /// That sphere expanded to show how calls run inside it.
-    Expanded,
-}
-
-/// The older version a diff compares against, and both versions together for layout.
-#[derive(Debug)]
-struct Comparison {
-    before: System,
-    moved: codeviz_core::Moves,
-    both: Option<System>,
-    style: DiffStyle,
-    morph: Option<f32>,
-}
-
 impl Viewer {
     #[must_use]
     pub fn new(system: System) -> Self {
         Self {
             system,
-            root: None,
             options: JourneyOptions::default(),
             title: "codeviz".to_owned(),
             screenshot: None,
             keys: Vec::new(),
             script: None,
-            scenario: None,
             step: 0,
-            panel: PanelMode::default(),
-            clustering: Clustering::default(),
-            lens: Lens::default(),
-            lens_source: false,
-            changes_only: true,
             focus: None,
             hover: None,
             depth: None,
             bare: false,
-            z: ZView::Free,
-            mode: ViewMode::Journey,
-            diff: None,
+            expanded: false,
         }
-    }
-
-    /// Shows `after` with what changed since `before` drawn over the graph.
-    #[must_use]
-    pub fn compare(before: Vec<Document>, after: Vec<Document>) -> Self {
-        let system = System::new(after.clone());
-        // Moved functions take their new ids on both sides.
-        let (before, moved) = codeviz_core::align(before, &system);
-        let both = System::new(codeviz_core::union(&before, after));
-        let mut viewer = Self::new(system);
-        viewer.diff = Some(Comparison {
-            before: System::new(before),
-            moved,
-            both: Some(both),
-            style: DiffStyle::default(),
-            morph: None,
-        });
-        viewer
-    }
-
-    /// How a diff is drawn: `status`, `impact` or `morph`.
-    #[must_use]
-    pub fn with_diff_style(mut self, name: &str) -> Self {
-        if let Some(diff) = &mut self.diff {
-            diff.style = match name {
-                "impact" => DiffStyle::Impact,
-                "morph" => DiffStyle::Morph,
-                _ => DiffStyle::Status,
-            };
-        }
-        self
-    }
-
-    /// Holds the morph at `t`, from 0 (before) to 1 (after), instead of playing it.
-    #[must_use]
-    pub fn with_morph(mut self, t: f32) -> Self {
-        if let Some(diff) = &mut self.diff {
-            diff.morph = Some(t);
-        }
-        self
-    }
-
-    /// The unit to start from. Without one, the first entry is used.
-    #[must_use]
-    pub fn with_root(mut self, root: UnitId) -> Self {
-        self.root = Some(root);
-        self
-    }
-
-    /// Opens on this outcome (index into the entry's scenarios) instead of the happy path.
-    #[must_use]
-    pub fn with_scenario(mut self, scenario: usize) -> Self {
-        self.scenario = Some(scenario);
-        self
     }
 
     /// Opens with the cursor this many steps into the journey.
@@ -211,59 +109,8 @@ impl Viewer {
         self
     }
 
-    /// How the journey shows: `hidden`, `docked` over the graph, or `full` below it.
-    #[must_use]
-    pub fn with_journey(mut self, mode: &str) -> Self {
-        self.panel = match mode {
-            "hidden" => PanelMode::Hidden,
-            "full" => PanelMode::Full,
-            _ => PanelMode::Docked,
-        };
-        self
-    }
-
-    /// Clusters the graph by `modules` (functions in a container pull together) or
-    /// by `calls` alone.
-    #[must_use]
-    pub fn with_clustering(mut self, name: &str) -> Self {
-        self.clustering = match name {
-            "calls" => Clustering::Calls,
-            _ => Clustering::Modules,
-        };
-        self
-    }
-
-    /// Shows only what is near a starting point: `focus`, `changes` or `journey`
-    /// (by default the changes in a diff, else the focus), out to `reach` steps
-    /// measured in `calls`, `space` or a `blend` of both. Without a reach, everything
-    /// shows.
-    #[must_use]
-    pub fn with_reveal(mut self, source: Option<&str>, measure: &str, reach: Option<u32>) -> Self {
-        if let Some(source) = source {
-            self.lens.source = match source {
-                "changes" => Source::Changes,
-                "journey" => Source::Journey,
-                _ => Source::Focus,
-            };
-            self.lens_source = true;
-        }
-        self.lens.measure = match measure {
-            "space" => Measure::Space,
-            "blend" => Measure::Blend,
-            _ => Measure::Calls,
-        };
-        self.lens.reach = reach;
-        self
-    }
-
-    /// Opens a diff with everything showing, not only what changed.
-    #[must_use]
-    pub fn with_unchanged(mut self) -> Self {
-        self.changes_only = false;
-        self
-    }
-
-    /// Opens with this function focused in the graph.
+    /// Opens the journey that starts at this function; without one, the view opens
+    /// browsing.
     #[must_use]
     pub fn with_focus(mut self, unit: UnitId) -> Self {
         self.focus = Some(unit);
@@ -291,27 +138,11 @@ impl Viewer {
         self
     }
 
-    /// Opens with the graph gathered round the focus's module: that module a glass
-    /// sphere in the middle, the others around it; Z lays it flat again.
-    #[must_use]
-    pub fn with_nucleus(mut self) -> Self {
-        self.z = ZView::Nucleus;
-        self
-    }
-
     /// Opens with the nucleus expanded, showing how calls run inside the focus's
     /// module; X shrinks it back among the others.
     #[must_use]
     pub fn expanded(mut self) -> Self {
-        self.z = ZView::Expanded;
-        self
-    }
-
-    /// Opens browsing, with no journey open and the focus selected, or with none
-    /// given, nothing; Enter opens the selection's journey.
-    #[must_use]
-    pub fn browsing(mut self) -> Self {
-        self.mode = ViewMode::Browse;
+        self.expanded = true;
         self
     }
 
@@ -360,39 +191,27 @@ impl Viewer {
     }
 
     fn explorer(&mut self) -> Explorer {
-        let mut explorer = Explorer::with_layout(
-            std::mem::take(&mut self.system),
-            self.diff.as_mut().and_then(|d| d.both.take()),
-            self.root.take(),
-            self.options.clone(),
-        );
-        if self.scenario.is_some() {
-            explorer.set_scenario(self.scenario);
-        }
+        let mut explorer =
+            Explorer::new(std::mem::take(&mut self.system), None, self.options.clone());
         if self.step > 0 {
             explorer.select(explorer.journey().map(codeviz_core::Journey::root));
             for _ in 0..self.step {
                 explorer.step(explorer::Step::Into);
             }
         }
-        explorer.set_clustering(self.clustering);
-        explorer.set_lens(self.lens);
         let focus = self
             .focus
             .take()
             .and_then(|unit| explorer.map().tile_of(&unit));
         if let Some(tile) = focus {
             explorer.open_at(tile);
-        }
-        if self.mode == ViewMode::Browse {
+        } else {
+            // With no journey asked for, browsing, with nothing selected: the whole map.
             explorer.leave_journey();
-            // Browsing with nothing asked for, nothing is selected: the whole map.
-            if focus.is_none() {
-                explorer.clear_selection();
-            }
+            explorer.clear_selection();
         }
-        explorer.set_nucleus(self.z != ZView::Free);
-        explorer.expand_nucleus(self.z == ZView::Expanded);
+        explorer.gather();
+        explorer.expand_nucleus(self.expanded);
         explorer.hovered_tile = self
             .hover
             .take()
@@ -403,34 +222,7 @@ impl Viewer {
     /// Opens the window and blocks until it is closed.
     #[must_use]
     pub fn run(mut self) -> AppExit {
-        let focused = self.focus.is_some();
         let mut explorer = self.explorer();
-        let diff = self.diff.take().map(|comparison| {
-            let diff =
-                Diff::between(&comparison.before, explorer.system()).with_moves(comparison.moved);
-            let mut view = DiffView::new(&mut explorer, &diff, comparison.before);
-            view.style = comparison.style;
-            if let Some(t) = comparison.morph {
-                view.morph = t;
-                view.playing = false;
-            }
-            explorer.set_changed_tiles(view.changed().map(|(tile, _)| tile).collect());
-            // A diff opens on what changed alone, around the changes.
-            explorer.set_lens(Lens {
-                source: if self.lens_source {
-                    explorer.lens().source
-                } else {
-                    Source::Changes
-                },
-                changes_only: self.changes_only,
-                ..explorer.lens()
-            });
-            if !focused && let Some(tile) = view.hub() {
-                explorer.open_at(tile);
-            }
-            explorer.refresh_reach();
-            view
-        });
         if let Some(depth) = self.depth {
             explorer.set_disclose(disclosure::Disclose::Depth(depth));
         }
@@ -463,20 +255,16 @@ impl Viewer {
             camera::OrbitCameraPlugin,
             scene::ScenePlugin,
             ui::UiPlugin,
-            diff_view::DiffPlugin,
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
-        .insert_resource(JourneyPanel::new(self.panel))
+        .init_resource::<JourneyPanel>()
         .insert_resource(ui::Chrome {
             bare: self.bare,
             ..default()
         })
         .init_resource::<Autoplay>()
         .init_resource::<idle::Awake>();
-        if let Some(diff) = diff {
-            app.insert_resource(diff);
-        }
         if let (Some(dir), Some(lines)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.
             app.add_plugins(drive::DrivePlugin {

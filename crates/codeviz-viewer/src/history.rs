@@ -28,7 +28,6 @@ const LIMIT: usize = 200;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct View {
     pub(crate) root: Option<UnitId>,
-    pub(crate) scenario: Option<usize>,
     pub(crate) cursor: Option<SpanId>,
     pub(crate) disclose: Disclose,
     pub(crate) expanded: HashSet<SpanId>,

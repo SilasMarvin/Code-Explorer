@@ -14,17 +14,16 @@ use std::{
 
 use bevy::prelude::*;
 use codeviz_core::{
-    Journey, JourneyOptions, Level, Scenario, Span, SpanId, SpanTarget, StopReason, System,
-    display_name, scenarios,
+    Journey, JourneyOptions, Scenario, Span, SpanId, SpanTarget, StopReason, System, display_name,
+    scenarios,
 };
-use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
+use codeviz_ir::{Certainty, Mode, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
 
 use crate::{
     camera::Pose,
     disclosure::{self, Disclose, Disclosed},
     history::{History, Seen, View},
-    lens::{self, Distances, Lens},
     module_names,
     nucleus::{Nucleus, Trail},
 };
@@ -37,10 +36,6 @@ type DisclosureKey = (u64, Disclose, u64, Option<SpanId>);
 /// discloses, the spans opened, the cursor when that matters, the middle, and whether
 /// the view browses.
 type TrailKey = (u64, Disclose, u64, Option<SpanId>, Option<usize>, bool);
-
-/// What the lens's distances were worked out for: where it starts, how it measures,
-/// and how often calls were retired and, when measuring in space, nodes moved.
-type DistanceKey = (Vec<usize>, lens::Source, lens::Measure, u64, u64);
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,17 +56,8 @@ impl Confidence {
     }
 }
 
-/// A place in the happy path where another outcome splits off.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Divergence {
-    pub(crate) span: SpanId,
-    pub(crate) scenario: usize,
-    pub(crate) kind: ExitKind,
-    pub(crate) label: String,
-}
-
-/// The journey: where it starts, which outcome it shows, its cursor, and its layout
-/// in time and depth.
+/// The journey: where it starts, on its happy path, the outcomes that split off it,
+/// its cursor, and its layout in time and depth.
 #[derive(Debug, Default)]
 pub(crate) struct Track {
     root: Option<UnitId>,
@@ -79,7 +65,8 @@ pub(crate) struct Track {
     scenario: Option<usize>,
     journey: Option<Journey>,
     scene: Scene,
-    divergences: Vec<Divergence>,
+    /// Where each failing outcome splits off the happy path.
+    divergences: Vec<SpanId>,
     selected: Option<SpanId>,
     /// Spans opened one level past the disclosed depth, by hand or by the cursor.
     expanded: HashSet<SpanId>,
@@ -100,7 +87,8 @@ impl Track {
         &self.scene
     }
 
-    pub(crate) fn divergences(&self) -> &[Divergence] {
+    /// Where on the happy path each failing outcome splits off.
+    pub(crate) fn divergences(&self) -> &[SpanId] {
         &self.divergences
     }
 
@@ -159,77 +147,45 @@ impl Track {
 
     /// On the happy path, where each failing outcome splits off: the deepest unit on
     /// its chain that the happy path also runs.
-    fn find_divergences(&self) -> Vec<Divergence> {
+    fn find_divergences(&self) -> Vec<SpanId> {
         let (Some(journey), Some(0)) = (&self.journey, self.scenario) else {
             return Vec::new();
         };
         self.scenarios
             .iter()
-            .enumerate()
             .skip(1)
-            .filter_map(|(index, scenario)| {
-                let span = scenario.chain.iter().rev().find_map(|site| {
+            .filter_map(|scenario| {
+                scenario.chain.iter().rev().find_map(|site| {
                     journey
                         .spans()
                         .find(|(_, s)| s.target == SpanTarget::Unit(site.unit.clone()))
                         .map(|(id, _)| id)
-                })?;
-                Some(Divergence {
-                    span,
-                    scenario: index,
-                    kind: scenario.outcome.kind,
-                    label: scenario.outcome.label.clone(),
                 })
             })
             .collect()
     }
 }
 
-/// How the graph gathers its nodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Clustering {
-    /// Functions in the same container pull together.
-    #[default]
-    Modules,
-    /// Only calls pull, so functions gather with whatever they talk to. Containers
-    /// that stay together anyway call mostly among themselves.
-    Calls,
-}
-
-impl Clustering {
-    pub(crate) fn forces(self) -> ForceConfig {
-        // Spread out, so names have room.
-        let spread = ForceConfig {
-            repulsion: 50.0,
-            link_length: 8.0,
-            // Mostly flat, so clusters sit side by side like regions on a map.
-            flatten: 0.1,
-            ..ForceConfig::default()
-        };
-        match self {
-            // Each container a cluster of its own, with clear space between them.
-            Self::Modules => ForceConfig {
-                cohesion: 0.15,
-                separation: SEPARATION,
-                cross_spring: 0.3,
-                ..spread
-            },
-            Self::Calls => ForceConfig {
-                cohesion: 0.0,
-                ..spread
-            },
-        }
+/// The forces the codebase's graph settles under once, at the start: each module's
+/// functions pull together, so each module's own map, which seeds where its functions
+/// sit inside its sphere, keeps the calls among them short.
+fn forces() -> ForceConfig {
+    ForceConfig {
+        repulsion: 50.0,
+        link_length: 8.0,
+        flatten: 0.1,
+        cohesion: 0.15,
+        separation: 0.4,
+        cross_spring: 0.3,
+        ..ForceConfig::default()
     }
 }
 
-/// How hard crowding containers push apart when clustered by module.
-const SEPARATION: f32 = 0.4;
-
-/// Simulation steps run before the graph is first shown, so it opens nearly settled.
+/// Simulation steps always run before the graph is gathered into spheres.
 const PRESETTLE_STEPS: usize = 200;
-/// At most this many steps to settle at once.
-const SETTLE_NOW_STEPS: usize = 600;
-/// Below this mean speed the graph counts as settled and stops simulating.
+/// At most this many more steps for it to settle.
+const SETTLE_STEPS: usize = 600;
+/// Below this mean speed the graph counts as settled.
 const SETTLED_SPEED: f32 = 0.002;
 
 /// Whether a journey is open.
@@ -283,37 +239,22 @@ impl Hidden {
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
     system: System,
-    /// What the graph lays out, when wider than `system`.
-    layout_system: Option<System>,
     pub(crate) options: JourneyOptions,
     pub(crate) layout: LayoutConfig,
     /// The journey the cursor keys, the panel and the outline follow.
     track: Track,
     /// Every function, grouped by container; graph nodes are its tiles.
     map: CodebaseMap,
-    /// The codebase as a graph of calls.
+    /// The codebase as a graph of calls, settled once to seed where each module's
+    /// functions sit inside its sphere.
     graph: ForceGraph,
     /// What each module sphere is called, by cluster: its name, told apart from
     /// another module's of the same name.
     module_names: Vec<String>,
-    clustering: Clustering,
-    /// Whether the graph is still moving.
-    settling: bool,
-    /// Map tiles the journey runs, with the color each is drawn in there.
-    journey_tiles: HashMap<usize, usize>,
     /// What reaches the focus, and what it reaches.
     reach: Option<(usize, Reach)>,
-    /// How much of the graph shows.
-    lens: Lens,
-    distance_cache: Mutex<Option<(DistanceKey, Option<Arc<Distances>>)>>,
     /// Bumped whenever nodes move.
     moved: u64,
-    /// Bumped whenever calls are retired.
-    rewired: u64,
-    /// How fully each node shows, by tile, eased towards what the lens says.
-    visibility: Vec<f32>,
-    /// A diff's changed nodes, for a lens that starts from them.
-    changed_tiles: Vec<usize>,
     /// How much of the journey shows.
     disclose: Disclose,
     /// Bumped whenever the journey's opened spans change.
@@ -339,8 +280,9 @@ pub(crate) struct Explorer {
     lane_colors: HashMap<String, usize>,
     /// Bumped whenever the journey is rebuilt.
     revision: u64,
-    /// The graph gathered round the focus's module, when it is.
-    nucleus: Option<Nucleus>,
+    /// The graph gathered into module spheres: browsing, the whole codebase; in a
+    /// journey, round its start's module.
+    nucleus: Nucleus,
     /// What the nucleus's trail was last worked out for.
     traced: Option<TrailKey>,
     /// Which sides of the focus are hidden.
@@ -373,33 +315,25 @@ pub(crate) struct Explorer {
 }
 
 impl Explorer {
-    #[cfg(test)]
     pub(crate) fn new(system: System, root: Option<UnitId>, options: JourneyOptions) -> Self {
-        Self::with_layout(system, None, root, options)
-    }
-
-    /// Journeys run over `system`; the graph lays out `layout` when given, a wider
-    /// system such as both sides of a diff, so it can place units `system` lacks.
-    pub(crate) fn with_layout(
-        system: System,
-        layout: Option<System>,
-        root: Option<UnitId>,
-        options: JourneyOptions,
-    ) -> Self {
         let root = root.or_else(|| system.entries().first().map(|e| e.unit.clone()));
-        let placed = layout.as_ref().unwrap_or(&system);
-        let map = codeviz_layout::map(placed, &MapConfig::default());
-        let clustering = Clustering::default();
-        let mut graph = ForceGraph::new(placed, &map, clustering.forces());
+        let map = codeviz_layout::map(&system, &MapConfig::default());
+        let mut graph = ForceGraph::new(&system, &map, forces());
         for _ in 0..PRESETTLE_STEPS {
             graph.step();
         }
-        let tiles = map.tiles.len();
+        for _ in 0..SETTLE_STEPS {
+            if graph.step() < SETTLED_SPEED {
+                break;
+            }
+        }
+        // Round nothing for now: gathered for real once the journey is set.
+        let nucleus = Nucleus::gather(&graph, None, Hidden::default(), Trail::default(), false);
         let module_names = {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
                 .map(|cluster| {
                     let id = graph.cluster_unit(cluster)?;
-                    let unit = system.unit(id).or_else(|| layout.as_ref()?.unit(id))?;
+                    let unit = system.unit(id)?;
                     Some((id.as_str(), unit.name.as_str()))
                 })
                 .collect();
@@ -407,23 +341,14 @@ impl Explorer {
         };
         let mut explorer = Self {
             system,
-            layout_system: layout,
             options,
             layout: LayoutConfig::default(),
             track: Track::default(),
             map,
             graph,
             module_names,
-            clustering,
-            settling: true,
-            journey_tiles: HashMap::new(),
             reach: None,
-            lens: Lens::default(),
-            distance_cache: Mutex::new(None),
             moved: 0,
-            rewired: 0,
-            visibility: vec![1.0; tiles],
-            changed_tiles: Vec::new(),
             history: History::default(),
             aim: 0,
             walking: false,
@@ -435,7 +360,7 @@ impl Explorer {
             spotlight: None,
             lane_colors: HashMap::new(),
             revision: 0,
-            nucleus: None,
+            nucleus,
             traced: None,
             hidden: Hidden::default(),
             mode: ViewMode::Journey,
@@ -456,33 +381,12 @@ impl Explorer {
         if let Some(root) = root {
             explorer.replace_root(root);
         }
+        explorer.gather();
         explorer
     }
 
     pub(crate) fn system(&self) -> &System {
         &self.system
-    }
-
-    /// A unit of the journey's system, or else of the wider one the graph lays out.
-    pub(crate) fn any_unit(&self, id: &UnitId) -> Option<&Unit> {
-        self.system
-            .unit(id)
-            .or_else(|| self.layout_system.as_ref()?.unit(id))
-    }
-
-    /// Moves every node to a given place, and stops the simulation moving them.
-    pub(crate) fn place_nodes(&mut self, positions: &[[f32; 3]]) {
-        self.graph.positions.clone_from_slice(positions);
-        self.settling = false;
-        self.moved += 1;
-    }
-
-    /// Calls the graph still lays out but that no longer run, as a diff's removed
-    /// calls: they stop counting as callers and callees.
-    pub(crate) fn retire_calls(&mut self, gone: &HashSet<(usize, usize)>) {
-        self.graph.retire(gone);
-        self.reach = None;
-        self.rewired += 1;
     }
 
     /// The journey.
@@ -502,19 +406,6 @@ impl Explorer {
         self.track().journey()
     }
 
-    pub(crate) fn scenarios(&self) -> &[Scenario] {
-        &self.track().scenarios
-    }
-
-    /// The outcome shown; `None` shows every path at once.
-    pub(crate) fn scenario(&self) -> Option<usize> {
-        self.track().scenario
-    }
-
-    pub(crate) fn divergences(&self) -> &[Divergence] {
-        self.track().divergences()
-    }
-
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
@@ -523,21 +414,17 @@ impl Explorer {
     fn view(&self) -> View {
         View {
             root: self.root().cloned(),
-            scenario: self.scenario(),
             cursor: self.selected(),
             disclose: self.disclose,
             expanded: self.track().expanded.clone(),
             spotlight: self.spotlight,
             aside: self.aside,
             hidden: self.hidden,
-            specks: self.nucleus.as_ref().is_some_and(Nucleus::specks_hidden),
+            specks: self.nucleus.specks_hidden(),
             mode: self.mode,
             selection: self.selection,
             outside: self.outside,
-            pose: Seen(
-                self.pose,
-                self.nucleus.as_ref().is_some_and(Nucleus::expanded),
-            ),
+            pose: Seen(self.pose, self.nucleus.expanded()),
         }
     }
 
@@ -550,8 +437,7 @@ impl Explorer {
         // Expanding is no place of its own: a camera that framed the nucleus expanded
         // is not put back on it shrunk, nor the other way round. The camera stays, and
         // shrinking back still returns to where it stood before X.
-        let expanded =
-            view.mode == ViewMode::Journey && self.nucleus.as_ref().is_some_and(Nucleus::expanded);
+        let expanded = view.mode == ViewMode::Journey && self.nucleus.expanded();
         if let Seen(Some(pose), seen_expanded) = view.pose
             && seen_expanded == expanded
         {
@@ -561,10 +447,6 @@ impl Explorer {
         if track.root != view.root {
             track.root = view.root;
             track.reroot(&self.system, &self.options, &self.layout);
-        }
-        if track.scenario != view.scenario {
-            track.scenario = view.scenario;
-            track.rebuild(&self.system, &self.options, &self.layout);
         }
         // A journey rebuilt since may no longer have the span.
         track.selected = view
@@ -579,19 +461,13 @@ impl Explorer {
         self.mode = view.mode;
         self.selection = view.selection;
         self.outside = view.outside;
-        if let Some(nucleus) = &mut self.nucleus {
-            nucleus.set_outside(&self.graph, self.outside);
-        }
+        self.nucleus.set_outside(&self.graph, self.outside);
         if self.hidden != view.hidden {
             self.hidden = view.hidden;
-            if let Some(nucleus) = &mut self.nucleus {
-                nucleus.set_hidden(&self.graph, self.hidden);
-            }
+            self.nucleus.set_hidden(&self.graph, self.hidden);
         }
-        if let Some(nucleus) = &mut self.nucleus
-            && nucleus.specks_hidden() != view.specks
-        {
-            nucleus.toggle_specks();
+        if self.nucleus.specks_hidden() != view.specks {
+            self.nucleus.toggle_specks();
         }
         self.walking = false;
         self.moved += 1;
@@ -785,19 +661,17 @@ impl Explorer {
     /// them out again; nothing already there moves.
     pub(crate) fn toggle_outside(&mut self) {
         self.outside = !self.outside;
-        if let Some(nucleus) = &mut self.nucleus {
-            nucleus.set_outside(&self.graph, self.outside);
-            self.moved += 1;
-        }
+        self.nucleus.set_outside(&self.graph, self.outside);
+        self.moved += 1;
     }
 
-    /// What I does: in a journey gathered round its start, brings in every outside
-    /// caller into it; else picks out the focus's callers.
+    /// What I does: in a journey, brings in every outside caller into it; browsing,
+    /// picks out the selection's callers.
     pub(crate) fn press_callers(&mut self, now: f32) {
-        if self.nucleus.is_some() && !self.browsing() {
-            self.toggle_outside();
-        } else {
+        if self.browsing() {
             self.toggle_spotlight(Side::Callers, now);
+        } else {
+            self.toggle_outside();
         }
     }
 
@@ -820,29 +694,6 @@ impl Explorer {
         self.recolor();
     }
 
-    /// Follows another outcome, landing on the exit it ends at.
-    pub(crate) fn set_scenario(&mut self, scenario: Option<usize>) {
-        self.navigate(|explorer| explorer.choose_scenario(scenario));
-    }
-
-    fn choose_scenario(&mut self, scenario: Option<usize>) {
-        if self.scenario() != scenario {
-            self.track_mut().scenario = scenario;
-            self.rebuild();
-            // Land on the exit the outcome ends at.
-            if scenario.is_some_and(|s| s > 0) {
-                let exit = self.journey().and_then(|j| {
-                    j.spans()
-                        .filter(|(_, s)| s.exits.iter().any(|e| e.kind != ExitKind::Return))
-                        .map(|(id, _)| id)
-                        .last()
-                        .or_else(|| j.spans().last().map(|(id, _)| id))
-                });
-                self.select(exit);
-            }
-        }
-    }
-
     /// Follows the focus: the journey starts there, whether the focus is the cursor's
     /// node, one clicked off the journey or the function selected browsing,
     /// remembering where it was.
@@ -862,34 +713,14 @@ impl Explorer {
         self.aim += 1;
     }
 
-    pub(crate) fn toggle_zoom(&mut self, unit: UnitId) {
-        let level = match self.options.zoom.level(&unit) {
-            Level::Summary => Level::Detail,
-            Level::Detail => Level::Summary,
-        };
-        self.options.zoom.set(unit, level);
-        self.reroot();
-    }
-
-    /// Rebuilds the journey.
-    pub(crate) fn rebuild(&mut self) {
-        self.track
-            .rebuild(&self.system, &self.options, &self.layout);
-        self.recolor();
-    }
-
     /// The codebase as a graph of calls.
     pub(crate) fn graph(&self) -> &ForceGraph {
         &self.graph
     }
 
-    /// Where a graph node sits in the world: in its module's sphere when the graph
-    /// is gathered round the focus's module, else where the simulation put it.
+    /// Where a graph node sits in the world: in its module's sphere.
     pub(crate) fn tile_point(&self, tile: usize) -> Option<Vec3> {
-        match &self.nucleus {
-            Some(nucleus) => nucleus.point(tile),
-            None => self.graph.positions.get(tile).map(|&p| Vec3::from(p)),
-        }
+        self.nucleus.point(tile)
     }
 
     /// Bumped whenever nodes move.
@@ -897,58 +728,37 @@ impl Explorer {
         self.moved
     }
 
-    /// The graph gathered round the focus's module, when it is.
-    pub(crate) fn nucleus(&self) -> Option<&Nucleus> {
-        self.nucleus.as_ref()
+    /// The graph gathered into module spheres.
+    pub(crate) fn nucleus(&self) -> &Nucleus {
+        &self.nucleus
     }
 
-    /// Gathers the graph round the focus's module, or lays it flat again. The
-    /// nucleus keeps its module's own map from the flat graph, so the graph settles
-    /// first.
-    pub(crate) fn set_nucleus(&mut self, on: bool) {
-        if on == self.nucleus.is_some() {
-            return;
-        }
-        if !on {
-            self.expand_pose = None;
-        }
-        self.nucleus = if on {
-            self.settle_now();
-            let focus = self.nucleus_focus();
-            self.traced = Some(self.trail_key(focus));
-            let mut nucleus = Nucleus::gather(
-                &self.graph,
-                focus,
-                self.hidden,
-                self.trail_from(focus),
-                self.browsing(),
-            );
-            nucleus.set_outside(&self.graph, self.outside);
-            while nucleus.advance(1.0) {}
-            Some(nucleus)
-        } else {
-            None
-        };
+    /// Gathers the graph into spheres round where the view now is, at once, with
+    /// nothing easing there: as the window opens.
+    pub(crate) fn gather(&mut self) {
+        let focus = self.nucleus_focus();
+        self.traced = Some(self.trail_key(focus));
+        let mut nucleus = Nucleus::gather(
+            &self.graph,
+            focus,
+            self.hidden,
+            self.trail_from(focus),
+            self.browsing(),
+        );
+        nucleus.set_outside(&self.graph, self.outside);
+        nucleus.mark(&self.graph, self.cursor_mark());
+        while nucleus.advance(1.0) {}
+        self.nucleus = nucleus;
         self.moved += 1;
     }
 
     /// In a journey, expands the nucleus to show how calls run inside its start's
-    /// module, or shrinks it back, round the start again; gathers the graph round that
-    /// module first when it lies flat.
+    /// module, or shrinks it back, round the start again.
     pub(crate) fn expand_nucleus(&mut self, on: bool) {
-        if self.browsing() {
+        if self.browsing() || self.nucleus.expanded() == on {
             return;
         }
-        if on {
-            self.set_nucleus(true);
-        }
-        let Some(nucleus) = &mut self.nucleus else {
-            return;
-        };
-        if nucleus.expanded() == on {
-            return;
-        }
-        nucleus.expand(&self.graph, on);
+        self.nucleus.expand(&self.graph, on);
         self.moved += 1;
         if on {
             self.expand_pose = self.pose;
@@ -961,18 +771,13 @@ impl Explorer {
     /// Tells the nucleus which function the pointer has settled on. Returns whether
     /// that changed.
     pub(crate) fn hover_nucleus(&mut self, tile: Option<usize>) -> bool {
-        self.nucleus
-            .as_mut()
-            .is_some_and(|nucleus| nucleus.hover(&self.graph, tile))
+        self.nucleus.hover(&self.graph, tile)
     }
 
-    /// The function under the pointer as drawn: gathered round the focus's module,
-    /// the one the pointer has settled on, so passing over a function does not flash.
+    /// The function under the pointer as drawn: the one the pointer has settled on, so
+    /// passing over a function does not flash.
     pub(crate) fn pointed(&self) -> Option<usize> {
-        match &self.nucleus {
-            Some(nucleus) => nucleus.hovered(),
-            None => self.hovered_tile,
-        }
+        self.nucleus.hovered()
     }
 
     /// The function the nucleus is arranged round: browsing, the one selected; in a
@@ -986,18 +791,14 @@ impl Explorer {
     }
 
     /// The node drawn as the focus, white, whose callers and callees light up: the
-    /// nucleus's middle when the graph is gathered round it, else the focus.
+    /// nucleus's middle.
     pub(crate) fn lit_focus(&self) -> Option<usize> {
-        match &self.nucleus {
-            Some(nucleus) => nucleus.focus(),
-            None => self.graph_focus(),
-        }
+        self.nucleus.focus()
     }
 
-    /// Gathered round a journey, the journey's cursor, the one pink node, marked
-    /// wherever it sits, the middle included.
+    /// In a journey, its cursor, the one pink node, marked wherever it sits, the middle
+    /// included.
     pub(crate) fn cursor_mark(&self) -> Option<usize> {
-        self.nucleus.as_ref()?;
         if self.browsing() {
             return None;
         }
@@ -1084,34 +885,25 @@ impl Explorer {
     /// Hides one side of the focus, with its calls, or shows it again.
     pub(crate) fn toggle_hidden(&mut self, side: Side) {
         self.hidden = self.hidden.toggled(side);
-        if let Some(nucleus) = &mut self.nucleus {
-            nucleus.set_hidden(&self.graph, self.hidden);
-            self.moved += 1;
-        }
+        self.nucleus.set_hidden(&self.graph, self.hidden);
+        self.moved += 1;
     }
 
     /// Hides the nucleus's nameless specks, or shows them again, in the view it is in.
     pub(crate) fn toggle_specks(&mut self) {
-        if let Some(nucleus) = &mut self.nucleus {
-            nucleus.toggle_specks();
-        }
+        self.nucleus.toggle_specks();
     }
 
     /// Re-centers the nucleus when the function it is arranged round changes, marks the
     /// journey's cursor where it sits, and eases it along by `dt` seconds. Returns
     /// whether what it shows changed, rather than only moved.
     pub(crate) fn ease_nucleus(&mut self, dt: f32) -> bool {
-        if self.nucleus.is_none() {
-            return false;
-        }
         let focus = self.nucleus_focus();
         let cursor = self.cursor_mark();
         let key = self.trail_key(focus);
         let trail = (self.traced != Some(key)).then(|| self.trail_from(focus));
         let browsing = self.browsing();
-        let Some(nucleus) = &mut self.nucleus else {
-            return false;
-        };
+        let nucleus = &mut self.nucleus;
         let mut recentered = nucleus.set_browse(&self.graph, browsing);
         nucleus.set_outside(&self.graph, self.outside);
         recentered |= nucleus.focus() != focus;
@@ -1129,45 +921,6 @@ impl Explorer {
         recentered || marked
     }
 
-    pub(crate) fn clustering(&self) -> Clustering {
-        self.clustering
-    }
-
-    /// Regathers the graph; it moves until it settles.
-    pub(crate) fn set_clustering(&mut self, clustering: Clustering) {
-        if self.clustering != clustering {
-            self.clustering = clustering;
-            self.graph.set_config(clustering.forces());
-            self.settling = true;
-        }
-    }
-
-    /// Runs the graph simulation a few steps while it is still moving. Returns whether
-    /// anything moved.
-    pub(crate) fn simulate(&mut self, steps: usize) -> bool {
-        if !self.settling {
-            return false;
-        }
-        let mut speed = 0.0;
-        for _ in 0..steps {
-            speed = self.graph.step();
-        }
-        self.settling = speed > SETTLED_SPEED;
-        self.moved += 1;
-        true
-    }
-
-    /// Runs the simulation until the graph settles, all at once.
-    pub(crate) fn settle_now(&mut self) {
-        for _ in 0..SETTLE_NOW_STEPS {
-            if self.graph.step() < SETTLED_SPEED {
-                break;
-            }
-        }
-        self.settling = false;
-        self.moved += 1;
-    }
-
     /// Gives lanes and containers their colors after the journey changed, and asks
     /// for a redraw.
     fn recolor(&mut self) {
@@ -1183,7 +936,6 @@ impl Explorer {
             })
             .collect();
         self.color_groups();
-        self.refresh_journey_tiles();
         self.revision += 1;
     }
 
@@ -1357,16 +1109,6 @@ impl Explorer {
         disclosed
     }
 
-    /// Whether a span of the journey shows.
-    pub(crate) fn disclosed(&self, span: SpanId) -> bool {
-        self.disclosure().shows(span)
-    }
-
-    /// The nodes the disclosed journey runs, each with its numbers in the journey.
-    pub(crate) fn disclosed_tiles(&self) -> HashMap<usize, Vec<String>> {
-        self.disclosure().tiles().clone()
-    }
-
     /// The function a node stands for.
     pub(crate) fn tile_unit(&self, tile: usize) -> Option<&UnitId> {
         self.map.tile(tile).map(|t| &t.unit)
@@ -1447,127 +1189,6 @@ impl Explorer {
         tiles
     }
 
-    pub(crate) fn lens(&self) -> Lens {
-        self.lens
-    }
-
-    pub(crate) fn set_lens(&mut self, lens: Lens) {
-        self.lens = lens;
-    }
-
-    /// The nodes a diff changed, for a lens that starts from them.
-    pub(crate) fn set_changed_tiles(&mut self, tiles: Vec<usize>) {
-        self.changed_tiles = tiles;
-    }
-
-    /// Where the lens starts: the focus, the changes, or the journey.
-    fn seeds(&self) -> Vec<usize> {
-        let mut seeds: Vec<usize> = match self.lens.source {
-            lens::Source::Focus => self.graph_focus().into_iter().collect(),
-            lens::Source::Changes => self.changed_tiles.clone(),
-            lens::Source::Journey => self.disclosed_tiles().into_keys().collect(),
-        };
-        seeds.sort_unstable();
-        seeds.dedup();
-        seeds
-    }
-
-    /// How far each node is from where the lens starts, worked out once per change of
-    /// where it starts, how it measures, or, measuring in space, where nodes sit.
-    fn distances(&self) -> Option<Arc<Distances>> {
-        let measure = self.lens.measure;
-        let moved = if measure == lens::Measure::Calls {
-            0
-        } else {
-            self.moved
-        };
-        let key = (self.seeds(), self.lens.source, measure, self.rewired, moved);
-        let mut cache = self
-            .distance_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some((cached, distances)) = cache.as_ref()
-            && *cached == key
-        {
-            return distances.clone();
-        }
-        let distances = self.lens.distances(&self.graph, &key.0).map(Arc::new);
-        *cache = Some((key, distances.clone()));
-        distances
-    }
-
-    /// The top of the lens's dial, where it shows everything: as far out as the
-    /// farthest node from where it starts, under how it measures.
-    pub(crate) fn lens_top(&self) -> u32 {
-        self.distances().map_or(1, |d| d.farthest())
-    }
-
-    /// How fully the lens would show each node, by tile, once eased there; `None`
-    /// when it shows everything. The journey's cursor always shows.
-    pub(crate) fn reveal_targets(&self) -> Option<Vec<f32>> {
-        let mut targets = if self.lens.changes_only && !self.changed_tiles.is_empty() {
-            // What changed, and where you stand: the focus and the journey's root.
-            let mut targets = vec![0.0; self.map.tiles.len()];
-            let root = self.root().and_then(|u| self.map.tile_of(u));
-            for tile in self
-                .changed_tiles
-                .iter()
-                .copied()
-                .chain(self.graph_focus())
-                .chain(root)
-            {
-                if let Some(target) = targets.get_mut(tile) {
-                    *target = 1.0;
-                }
-            }
-            targets
-        } else {
-            self.lens.targets(&*self.distances()?)?
-        };
-        // The disclosed journey always shows: it is what you opened. So does what the
-        // spotlight picks out.
-        for tile in self.disclosed_tiles().into_keys().chain(self.spotlit()) {
-            if let Some(target) = targets.get_mut(tile) {
-                *target = 1.0;
-            }
-        }
-        if let Some(cursor) = self.focus().and_then(|u| self.map.tile_of(u))
-            && let Some(target) = targets.get_mut(cursor)
-        {
-            *target = 1.0;
-        }
-        Some(targets)
-    }
-
-    /// Eases every node towards how fully the lens shows it. Returns whether any moved.
-    pub(crate) fn ease_visibility(&mut self, dt: f32) -> bool {
-        let targets = self.reveal_targets();
-        lens::ease(&mut self.visibility, targets.as_deref(), dt)
-    }
-
-    /// Puts every node where the lens shows it at once.
-    #[cfg(test)]
-    pub(crate) fn settle_visibility(&mut self) {
-        let targets = self.reveal_targets();
-        for (tile, shown) in self.visibility.iter_mut().enumerate() {
-            *shown = targets
-                .as_ref()
-                .and_then(|t| t.get(tile))
-                .copied()
-                .unwrap_or(1.0);
-        }
-    }
-
-    /// How fully a node shows, from 0 (a speck) to 1.
-    pub(crate) fn visibility(&self, tile: usize) -> f32 {
-        self.visibility.get(tile).copied().unwrap_or(1.0)
-    }
-
-    /// Whether a node shows as more than a speck.
-    pub(crate) fn shown(&self, tile: usize) -> bool {
-        self.visibility(tile) >= lens::SPECK
-    }
-
     /// What reaches the focus drawn and what it reaches, once
     /// [`Self::refresh_reach`] has run.
     pub(crate) fn reach(&self) -> Option<&Reach> {
@@ -1609,26 +1230,8 @@ impl Explorer {
         }
     }
 
-    fn refresh_journey_tiles(&mut self) {
-        let track = &self.track;
-        self.journey_tiles = track
-            .scene
-            .nodes
-            .iter()
-            .filter_map(|placed| {
-                let unit = track.unit_id(placed.span)?;
-                Some((self.map.tile_of(unit)?, track.color(placed.span)))
-            })
-            .collect();
-    }
-
     pub(crate) fn map(&self) -> &CodebaseMap {
         &self.map
-    }
-
-    /// The color a node is drawn in on the journey, if it runs it.
-    pub(crate) fn journey_lane(&self, tile: usize) -> Option<usize> {
-        self.journey_tiles.get(&tile).copied()
     }
 
     /// The unit under the cursor.
@@ -1644,10 +1247,6 @@ impl Explorer {
     /// The unit a span of the journey runs, if it resolved to exactly one.
     pub(crate) fn unit_id(&self, id: SpanId) -> Option<&UnitId> {
         self.track().unit_id(id)
-    }
-
-    pub(crate) fn unit(&self, id: SpanId) -> Option<&Unit> {
-        self.system.unit(self.unit_id(id)?)
     }
 
     pub(crate) fn label(&self, id: SpanId) -> String {
@@ -1677,10 +1276,7 @@ impl Explorer {
     }
 
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
-        match &self.layout_system {
-            Some(layout) if self.system.unit(id).is_none() => display_name(layout, id),
-            _ => display_name(&self.system, id),
-        }
+        display_name(&self.system, id)
     }
 
     /// The call stack at a span of the journey, outermost first.
@@ -1689,13 +1285,6 @@ impl Explorer {
             std::iter::successors(Some(id), |s| self.span(*s).and_then(|s| s.parent)).collect();
         stack.reverse();
         stack
-    }
-
-    /// Where the call that started `id` is written: the caller's file and line.
-    pub(crate) fn call_site(&self, id: SpanId) -> Option<(&UnitId, &Location)> {
-        let (caller, key) = self.span(id)?.call.as_ref()?;
-        let location = self.system.unit(caller)?.call(key)?.location.as_ref()?;
-        Some((caller, location))
     }
 
     /// Moves the cursor. Returns the new position. With the focus off the journey, it
@@ -1898,7 +1487,6 @@ pub(crate) mod tests {
     use codeviz_ir::Document;
 
     use super::*;
-    use crate::lens::Measure;
 
     /// `main -> (a -> c), b`
     pub(crate) fn explorer() -> Explorer {
@@ -2011,168 +1599,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_lens_measures_in_calls_space_or_both() {
-        let mut explorer = explorer();
-        let tile = |explorer: &Explorer, name: &str| {
-            explorer
-                .map()
-                .tile_of(&UnitId::new(format!("x:{name}")))
-                .unwrap()
-        };
-        let (main, a, b, c) = (
-            tile(&explorer, "main"),
-            tile(&explorer, "a"),
-            tile(&explorer, "b"),
-            tile(&explorer, "c"),
-        );
-        // b sits right next to a but only meets it through main.
-        let mut positions = vec![[0.0; 3]; explorer.map().tiles.len()];
-        positions[main] = [0.0, 0.0, 0.0];
-        positions[a] = [1.0, 0.0, 0.0];
-        positions[b] = [1.5, 0.0, 0.0];
-        positions[c] = [2.0, 0.0, 0.0];
-        explorer.place_nodes(&positions);
-        explorer.open_at(a);
-        let shown = |explorer: &mut Explorer, lens: Lens| {
-            explorer.set_lens(lens);
-            explorer.settle_visibility();
-            [main, a, b, c].map(|t| explorer.visibility(t))
-        };
-        let lens = |measure, reach| Lens {
-            measure,
-            reach: Some(reach),
-            ..Lens::default()
-        };
-
-        assert_eq!(
-            shown(&mut explorer, lens(Measure::Calls, 0)),
-            [0.3, 1.0, 0.0, 1.0],
-            "c is what a calls, disclosed by a's journey"
-        );
-        assert_eq!(
-            shown(&mut explorer, lens(Measure::Space, 0))[2],
-            1.0,
-            "in space, b is as near as anything"
-        );
-        assert_eq!(
-            shown(&mut explorer, lens(Measure::Blend, 0)),
-            [1.0, 1.0, 0.0, 1.0],
-            "a blend shows direct calls, and holds b back for the calls between"
-        );
-        assert_eq!(shown(&mut explorer, lens(Measure::Blend, 3))[2], 1.0);
-
-        explorer.set_changed_tiles(vec![c]);
-        let changes = Lens {
-            source: lens::Source::Changes,
-            ..lens(Measure::Calls, 1)
-        };
-        assert_eq!(
-            shown(&mut explorer, changes),
-            [0.3, 1.0, 0.0, 1.0],
-            "from changes, only what calls them counts"
-        );
-    }
-
-    #[test]
-    fn the_dial_fits_the_graph() {
-        let mut explorer = explorer();
-        assert_eq!(explorer.lens_top(), 2, "c is two calls from main");
-        let everything = explorer.lens();
-        let narrower = everything.narrower(explorer.lens_top());
-        assert_eq!(narrower.reach, Some(1), "- from everything drops one ring");
-        assert_eq!(narrower.narrower(2).reach, Some(1), "and stops at one");
-        assert_eq!(narrower.wider(2).reach, None, "= at the top is everything");
-        assert_eq!(narrower.level(2), 1);
-        assert_eq!(everything.level(2), 2);
-
-        explorer.open_at(tile(&explorer, "c"));
-        assert_eq!(explorer.lens_top(), 2, "main is two calls up from c");
-        explorer.open_at(tile(&explorer, "b"));
-        explorer.set_lens(Lens {
-            reach: Some(5),
-            ..Lens::default()
-        });
-        assert_eq!(explorer.lens().level(explorer.lens_top()), 1);
-        assert_eq!(
-            explorer.lens().narrower(explorer.lens_top()).reach,
-            Some(1),
-            "a reach past the top narrows from the top"
-        );
-    }
-
-    #[test]
-    fn only_changes_hides_the_rest_but_where_you_stand() {
-        let mut explorer = explorer();
-        let tile = |explorer: &Explorer, name: &str| {
-            explorer
-                .map()
-                .tile_of(&UnitId::new(format!("x:{name}")))
-                .unwrap()
-        };
-        let (main, a, b, c) = (
-            tile(&explorer, "main"),
-            tile(&explorer, "a"),
-            tile(&explorer, "b"),
-            tile(&explorer, "c"),
-        );
-        explorer.set_changed_tiles(vec![c]);
-        explorer.open_at(b);
-        explorer.set_lens(Lens {
-            changes_only: true,
-            ..Lens::default()
-        });
-        explorer.settle_visibility();
-        assert!(explorer.shown(c), "what changed");
-        assert!(explorer.shown(b), "the node opened");
-        assert!(
-            !explorer.shown(a) && !explorer.shown(main),
-            "and nothing else"
-        );
-    }
-
-    #[test]
-    fn the_lens_keeps_the_focus_neighborhood() {
-        let mut explorer = explorer();
-        let tile = |name: &str| {
-            explorer
-                .map()
-                .tile_of(&UnitId::new(format!("x:{name}")))
-                .unwrap()
-        };
-        let (main, a, b, c) = (tile("main"), tile("a"), tile("b"), tile("c"));
-        explorer.open_at(a);
-        explorer.refresh_reach();
-        explorer.set_lens(Lens {
-            reach: Some(0),
-            ..Lens::default()
-        });
-        explorer.settle_visibility();
-        assert!(explorer.shown(a) && explorer.shown(main) && explorer.shown(c));
-        assert!(
-            explorer.visibility(main) < 1.0,
-            "one call past the reach dims"
-        );
-        explorer.open_at(b);
-        explorer.refresh_reach();
-        explorer.settle_visibility();
-        assert!(!explorer.shown(c), "c is not on any call chain through b");
-        assert!(
-            !explorer.shown(a),
-            "siblings only meet through their caller"
-        );
-        assert!(explorer.go_back());
-        explorer.refresh_reach();
-        assert_eq!(explorer.graph_focus(), Some(a));
-    }
-
-    #[test]
     fn the_focus_reaches_up_its_callers() {
         let mut explorer = explorer();
-        explorer.set_disclose(Disclose::Depth(2));
-        explorer.step(Step::Into);
-        explorer.step(Step::Into);
-        assert_eq!(at(&explorer), "c");
-
+        let c = explorer.map().tile_of(&UnitId::new("x:c")).unwrap();
+        explorer.open_at(c);
+        explorer.ease_nucleus(1.0);
         explorer.refresh_reach();
         let tile = |name: &str| explorer.map().tile_of(&UnitId::new(name)).unwrap();
         let reach = explorer.reach().unwrap();
@@ -2231,7 +1662,10 @@ pub(crate) mod tests {
         assert_eq!(explorer.view(), before);
         assert_eq!(at(&explorer), "c", "the cursor where it was");
         assert_eq!(explorer.disclose(), Disclose::Depth(2));
-        assert!(explorer.disclosed(a_span), "a still opened by hand");
+        assert!(
+            explorer.disclosure().shows(a_span),
+            "a still opened by hand"
+        );
         assert_eq!(
             explorer.spotlight().map(|(side, _)| side),
             Some(Side::Callers),
@@ -2354,7 +1788,8 @@ pub(crate) mod tests {
         );
         let badge = |explorer: &Explorer, name: &str| {
             explorer
-                .disclosed_tiles()
+                .disclosure()
+                .tiles()
                 .get(&tile(explorer, name))
                 .cloned()
                 .unwrap_or_default()
@@ -2449,7 +1884,7 @@ pub(crate) mod tests {
         assert_eq!(at(&explorer), "c");
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
         assert!(
-            explorer.disclosed(explorer.selected().unwrap()),
+            explorer.disclosure().shows(explorer.selected().unwrap()),
             "its bar shows"
         );
         assert!(explorer.aside().is_none());
@@ -2489,17 +1924,17 @@ pub(crate) mod tests {
         assert!(explorer.go_back());
 
         // Gathered round the journey, a click moves the cursor and nothing else.
-        explorer.set_nucleus(true);
+        explorer.gather();
         explorer.ease_nucleus(1.0);
-        let middle = explorer.nucleus().and_then(Nucleus::focus);
+        let middle = explorer.nucleus().focus();
         assert_eq!(middle, Some(tile(&explorer, "a")), "the journey's start");
         explorer.focus_tile(tile(&explorer, "a"), None);
         explorer.ease_nucleus(1.0);
         assert_eq!(at(&explorer), "a");
-        assert_eq!(explorer.nucleus().and_then(Nucleus::focus), middle);
+        assert_eq!(explorer.nucleus().focus(), middle);
         assert!(explorer.go_back());
         explorer.ease_nucleus(1.0);
-        assert_eq!(explorer.nucleus().and_then(Nucleus::focus), middle);
+        assert_eq!(explorer.nucleus().focus(), middle);
         assert_eq!(at(&explorer), "c", "Back puts the cursor back");
     }
 
@@ -2595,7 +2030,7 @@ pub(crate) mod tests {
         explorer.open_at(main);
         let numbers = |explorer: &Explorer| {
             let mut tiles: Vec<(usize, Vec<String>)> =
-                explorer.disclosed_tiles().into_iter().collect();
+                explorer.disclosure().tiles().clone().into_iter().collect();
             tiles.sort();
             tiles
         };
@@ -2653,26 +2088,22 @@ pub(crate) mod tests {
             tile(&explorer, "a"),
             tile(&explorer, "b"),
         );
-        explorer.set_nucleus(true);
+        explorer.gather();
         explorer.ease_nucleus(1.0);
-        assert_eq!(explorer.nucleus().and_then(Nucleus::focus), Some(main));
+        assert_eq!(explorer.nucleus().focus(), Some(main));
 
         explorer.step(Step::Into);
         explorer.ease_nucleus(1.0);
         assert_eq!(explorer.graph_focus(), Some(a), "the cursor moved");
-        assert_eq!(
-            explorer.nucleus().and_then(Nucleus::focus),
-            Some(main),
-            "the middle did not"
-        );
+        assert_eq!(explorer.nucleus().focus(), Some(main), "the middle did not");
         assert_eq!(explorer.lit_focus(), Some(main));
         assert_eq!(explorer.cursor_mark(), Some(a), "the cursor is marked");
-        assert!(explorer.nucleus().is_some_and(|n| n.marks(a)));
+        assert!(explorer.nucleus().marks(a));
 
         explorer.focus_tile(b, None);
         explorer.ease_nucleus(1.0);
         assert_eq!(
-            explorer.nucleus().and_then(Nucleus::focus),
+            explorer.nucleus().focus(),
             Some(main),
             "a click moves the cursor, not the middle"
         );
@@ -2683,12 +2114,12 @@ pub(crate) mod tests {
         );
         explorer.step(Step::Back);
         explorer.ease_nucleus(1.0);
-        assert_eq!(explorer.nucleus().and_then(Nucleus::focus), Some(main));
+        assert_eq!(explorer.nucleus().focus(), Some(main));
 
         explorer.trace_from_focus();
         explorer.ease_nucleus(1.0);
         assert_eq!(
-            explorer.nucleus().and_then(Nucleus::focus),
+            explorer.nucleus().focus(),
             explorer.graph_focus(),
             "following the focus re-centers on it"
         );
@@ -2698,19 +2129,19 @@ pub(crate) mod tests {
     fn expanded_a_click_centres_the_cursor_and_keeps_the_journey() {
         let mut explorer = explorer();
         let [main, a, b] = ["main", "a", "b"].map(|name| tile(&explorer, name));
-        explorer.set_nucleus(true);
+        explorer.gather();
         explorer.expand_nucleus(true);
         explorer.ease_nucleus(1.0);
         let named = |explorer: &Explorer| {
-            let nucleus = explorer.nucleus().unwrap();
+            let nucleus = explorer.nucleus();
             [main, a, b].map(|t| nucleus.names(t) || nucleus.focus() == Some(t))
         };
         let before = named(&explorer);
-        assert_eq!(explorer.nucleus().and_then(Nucleus::centre), Some(main));
+        assert_eq!(explorer.nucleus().centre(), Some(main));
 
         explorer.focus_tile(a, None);
         explorer.ease_nucleus(1.0);
-        let nucleus = explorer.nucleus().unwrap();
+        let nucleus = explorer.nucleus();
         assert_eq!(
             nucleus.focus(),
             Some(main),
@@ -2723,17 +2154,13 @@ pub(crate) mod tests {
         explorer.step(Step::Next);
         explorer.ease_nucleus(1.0);
         assert_eq!(
-            explorer.nucleus().and_then(Nucleus::centre),
+            explorer.nucleus().centre(),
             Some(b),
             "a key centres the same way"
         );
         explorer.go_to(explorer.journey().unwrap().root());
         explorer.ease_nucleus(1.0);
-        assert_eq!(
-            explorer.nucleus().and_then(Nucleus::centre),
-            Some(main),
-            "and a bar"
-        );
+        assert_eq!(explorer.nucleus().centre(), Some(main), "and a bar");
     }
 
     #[test]
@@ -2789,7 +2216,7 @@ pub(crate) mod tests {
         let b = tile(&explorer, "b");
         explorer.see(before);
         explorer.expand_nucleus(true);
-        assert!(explorer.nucleus().is_some_and(Nucleus::expanded));
+        assert!(explorer.nucleus().expanded());
         explorer.see(moved);
         explorer.focus_tile(b, None);
         explorer.expand_nucleus(false);
@@ -2812,14 +2239,14 @@ pub(crate) mod tests {
     fn the_nucleus_names_the_journey_to_the_depth_and_no_more() {
         let mut explorer = explorer();
         let [a, b, c] = ["a", "b", "c"].map(|name| tile(&explorer, name));
-        explorer.set_nucleus(true);
+        explorer.gather();
         explorer.ease_nucleus(1.0);
         let names = |explorer: &Explorer| {
-            let nucleus = explorer.nucleus().unwrap();
+            let nucleus = explorer.nucleus();
             [a, b, c].map(|t| nucleus.names(t))
         };
         assert_eq!(names(&explorer), [true, true, false], "one level down");
-        assert_eq!(explorer.nucleus().unwrap().numbers(b), ["2"]);
+        assert_eq!(explorer.nucleus().numbers(b), ["2"]);
 
         explorer.focus_tile(c, None);
         explorer.ease_nucleus(1.0);
@@ -2829,7 +2256,7 @@ pub(crate) mod tests {
             [true, true, true],
             "the call clicked opens, as its bar does"
         );
-        assert!(explorer.nucleus().unwrap().marks(c), "and rings the cursor");
+        assert!(explorer.nucleus().marks(c), "and rings the cursor");
         explorer.toggle_expanded(explorer.stack(explorer.selected().unwrap())[1]);
         explorer.ease_nucleus(1.0);
         assert_eq!(
@@ -2841,8 +2268,8 @@ pub(crate) mod tests {
         explorer.set_disclose(Disclose::Depth(2));
         explorer.ease_nucleus(1.0);
         assert_eq!(names(&explorer), [true, true, true], "two levels down");
-        assert_eq!(explorer.nucleus().unwrap().numbers(c), ["1.1"]);
-        assert_eq!(explorer.nucleus().unwrap().level(c), Some(2));
+        assert_eq!(explorer.nucleus().numbers(c), ["1.1"]);
+        assert_eq!(explorer.nucleus().level(c), Some(2));
 
         explorer.toggle_hidden(Side::Callees);
         assert_eq!(
@@ -2855,7 +2282,9 @@ pub(crate) mod tests {
     #[test]
     fn hiding_a_side_unlights_it() {
         let mut explorer = explorer();
-        explorer.step(Step::Into);
+        let a = explorer.map().tile_of(&UnitId::new("x:a")).unwrap();
+        explorer.open_at(a);
+        explorer.ease_nucleus(1.0);
         explorer.refresh_reach();
         let main = explorer.map().tile_of(&UnitId::new("x:main")).unwrap();
         let reach = explorer.reach().unwrap().clone();
@@ -2875,18 +2304,21 @@ pub(crate) mod tests {
     fn browsing_a_click_selects_and_moves_nothing() {
         let mut explorer = explorer();
         let [main, a, b, c] = ["main", "a", "b", "c"].map(|name| tile(&explorer, name));
-        explorer.set_nucleus(true);
+        explorer.gather();
         explorer.ease_nucleus(1.0);
         explorer.leave_journey();
         explorer.ease_nucleus(1.0);
         assert!(explorer.browsing());
         assert_eq!(explorer.selection(), Some(main), "the cursor's function");
-        assert!(explorer.disclosed_tiles().is_empty(), "no journey numbers");
+        assert!(
+            explorer.disclosure().tiles().is_empty(),
+            "no journey numbers"
+        );
         let balls = |explorer: &Explorer| -> Vec<Vec3> {
-            let nucleus = explorer.nucleus().unwrap();
+            let nucleus = explorer.nucleus();
             nucleus.balls().map(|(_, ball)| ball.center).collect()
         };
-        let point = |explorer: &Explorer, tile: usize| explorer.nucleus().unwrap().point(tile);
+        let point = |explorer: &Explorer, tile: usize| explorer.nucleus().point(tile);
         let before = balls(&explorer);
         for tile in [a, c, b, main] {
             let at = point(&explorer, tile);
@@ -2996,16 +2428,13 @@ pub(crate) mod tests {
             JourneyOptions::default(),
         );
         let x = tile(&explorer, "x");
-        explorer.set_nucleus(true);
+        explorer.gather();
         explorer.ease_nucleus(1.0);
-        assert!(
-            !explorer.nucleus().unwrap().lit(x),
-            "off the journey, not shown"
-        );
+        assert!(!explorer.nucleus().lit(x), "off the journey, not shown");
         explorer.press_callers(0.0);
         explorer.ease_nucleus(1.0);
         assert!(explorer.outside_shown());
-        assert!(explorer.nucleus().unwrap().outside(x), "brought in");
+        assert!(explorer.nucleus().outside(x), "brought in");
         explorer.focus_tile(x, None);
         explorer.ease_nucleus(1.0);
         assert!(!explorer.browsing(), "still in the journey");

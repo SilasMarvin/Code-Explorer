@@ -10,7 +10,6 @@ use crate::{
     camera::OrbitCamera,
     explorer::Explorer,
     graph_view::{hidden_speck, speck},
-    journey_panel::{JourneyPanel, PanelMode},
     scene::Tile,
     ui,
 };
@@ -55,8 +54,7 @@ pub(crate) fn pick(spots: &[Spot], pointer: Vec2) -> Option<usize> {
 
 /// Whether a function can be pointed at: drawn, and not a speck left out.
 fn pointable(explorer: &Explorer, tile: usize) -> bool {
-    (explorer.shown(tile) || explorer.nucleus().is_some_and(|n| n.shows(tile)))
-        && !hidden_speck(explorer, tile)
+    explorer.nucleus().shows(tile) && !hidden_speck(explorer, tile)
 }
 
 /// Sets the function under the pointer: the one whose name the pointer is on, else
@@ -150,7 +148,6 @@ pub(crate) fn click(
     window: Single<&Window, With<PrimaryWindow>>,
     wants: Res<EguiWantsInput>,
     mut explorer: ResMut<Explorer>,
-    mut panel: ResMut<JourneyPanel>,
     mut pressed: Local<Option<Vec2>>,
 ) {
     let cursor = window.cursor_position();
@@ -167,7 +164,7 @@ pub(crate) fn click(
     let Some(tile) = explorer.hovered_tile.filter(|_| clicked) else {
         return;
     };
-    if !explorer.shown(tile) || hidden_speck(&explorer, tile) {
+    if !pointable(&explorer, tile) {
         return;
     }
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
@@ -176,10 +173,6 @@ pub(crate) fn click(
     } else {
         let number = explorer.pointed_number.clone();
         explorer.focus_tile(tile, number.as_deref());
-    }
-    // Opening a journey shows it in the panel.
-    if shift && panel.mode == PanelMode::Hidden {
-        panel.mode = PanelMode::Docked;
     }
 }
 

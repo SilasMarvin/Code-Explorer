@@ -106,8 +106,8 @@ impl Disclosed {
         disclosed.fails = track
             .divergences()
             .iter()
-            .filter_map(|divergence| {
-                std::iter::successors(Some(divergence.span), |&s| journey.span(s)?.parent)
+            .filter_map(|&divergence| {
+                std::iter::successors(Some(divergence), |&s| journey.span(s)?.parent)
                     .find(|s| disclosed.numbers.contains_key(s))
             })
             .collect();
