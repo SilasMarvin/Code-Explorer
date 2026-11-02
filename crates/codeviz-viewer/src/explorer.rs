@@ -24,7 +24,6 @@ use crate::{
     camera::Pose,
     disclosure::{self, Disclose, Disclosed},
     history::{History, Seen, View},
-    lens::{self, Distances, Lens},
     module_names,
     nucleus::{Nucleus, Trail},
 };
@@ -37,10 +36,6 @@ type DisclosureKey = (u64, Disclose, u64, Option<SpanId>);
 /// discloses, the spans opened, the cursor when that matters, the middle, and whether
 /// the view browses.
 type TrailKey = (u64, Disclose, u64, Option<SpanId>, Option<usize>, bool);
-
-/// What the lens's distances were worked out for: where it starts, how it measures,
-/// and, when measuring in space, how often nodes moved.
-type DistanceKey = (Vec<usize>, lens::Source, lens::Measure, u64);
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,13 +267,8 @@ pub(crate) struct Explorer {
     module_names: Vec<String>,
     /// What reaches the focus, and what it reaches.
     reach: Option<(usize, Reach)>,
-    /// How much of the graph shows.
-    lens: Lens,
-    distance_cache: Mutex<Option<(DistanceKey, Option<Arc<Distances>>)>>,
     /// Bumped whenever nodes move.
     moved: u64,
-    /// How fully each node shows, by tile, eased towards what the lens says.
-    visibility: Vec<f32>,
     /// How much of the journey shows.
     disclose: Disclose,
     /// Bumped whenever the journey's opened spans change.
@@ -353,7 +343,6 @@ impl Explorer {
         }
         // Round nothing for now: gathered for real once the journey is set.
         let nucleus = Nucleus::gather(&graph, None, Hidden::default(), Trail::default(), false);
-        let tiles = map.tiles.len();
         let module_names = {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
                 .map(|cluster| {
@@ -373,10 +362,7 @@ impl Explorer {
             graph,
             module_names,
             reach: None,
-            lens: Lens::default(),
-            distance_cache: Mutex::new(None),
             moved: 0,
-            visibility: vec![1.0; tiles],
             history: History::default(),
             aim: 0,
             walking: false,
@@ -1194,11 +1180,6 @@ impl Explorer {
         disclosed
     }
 
-    /// The nodes the disclosed journey runs, each with its numbers in the journey.
-    pub(crate) fn disclosed_tiles(&self) -> HashMap<usize, Vec<String>> {
-        self.disclosure().tiles().clone()
-    }
-
     /// The function a node stands for.
     pub(crate) fn tile_unit(&self, tile: usize) -> Option<&UnitId> {
         self.map.tile(tile).map(|t| &t.unit)
@@ -1277,103 +1258,6 @@ impl Explorer {
         tiles.dedup();
         tiles.retain(|&t| t != focus);
         tiles
-    }
-
-    pub(crate) fn lens(&self) -> Lens {
-        self.lens
-    }
-
-    pub(crate) fn set_lens(&mut self, lens: Lens) {
-        self.lens = lens;
-    }
-
-    /// Where the lens starts: the focus, the changes, or the journey.
-    fn seeds(&self) -> Vec<usize> {
-        let mut seeds: Vec<usize> = match self.lens.source {
-            lens::Source::Focus => self.graph_focus().into_iter().collect(),
-            lens::Source::Journey => self.disclosed_tiles().into_keys().collect(),
-        };
-        seeds.sort_unstable();
-        seeds.dedup();
-        seeds
-    }
-
-    /// How far each node is from where the lens starts, worked out once per change of
-    /// where it starts, how it measures, or, measuring in space, where nodes sit.
-    fn distances(&self) -> Option<Arc<Distances>> {
-        let measure = self.lens.measure;
-        let moved = if measure == lens::Measure::Calls {
-            0
-        } else {
-            self.moved
-        };
-        let key = (self.seeds(), self.lens.source, measure, moved);
-        let mut cache = self
-            .distance_cache
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some((cached, distances)) = cache.as_ref()
-            && *cached == key
-        {
-            return distances.clone();
-        }
-        let distances = self.lens.distances(&self.graph, &key.0).map(Arc::new);
-        *cache = Some((key, distances.clone()));
-        distances
-    }
-
-    /// The top of the lens's dial, where it shows everything: as far out as the
-    /// farthest node from where it starts, under how it measures.
-    pub(crate) fn lens_top(&self) -> u32 {
-        self.distances().map_or(1, |d| d.farthest())
-    }
-
-    /// How fully the lens would show each node, by tile, once eased there; `None`
-    /// when it shows everything. The journey's cursor always shows.
-    pub(crate) fn reveal_targets(&self) -> Option<Vec<f32>> {
-        let mut targets = self.lens.targets(&*self.distances()?)?;
-        // The disclosed journey always shows: it is what you opened. So does what the
-        // spotlight picks out.
-        for tile in self.disclosed_tiles().into_keys().chain(self.spotlit()) {
-            if let Some(target) = targets.get_mut(tile) {
-                *target = 1.0;
-            }
-        }
-        if let Some(cursor) = self.focus().and_then(|u| self.map.tile_of(u))
-            && let Some(target) = targets.get_mut(cursor)
-        {
-            *target = 1.0;
-        }
-        Some(targets)
-    }
-
-    /// Eases every node towards how fully the lens shows it. Returns whether any moved.
-    pub(crate) fn ease_visibility(&mut self, dt: f32) -> bool {
-        let targets = self.reveal_targets();
-        lens::ease(&mut self.visibility, targets.as_deref(), dt)
-    }
-
-    /// Puts every node where the lens shows it at once.
-    #[cfg(test)]
-    pub(crate) fn settle_visibility(&mut self) {
-        let targets = self.reveal_targets();
-        for (tile, shown) in self.visibility.iter_mut().enumerate() {
-            *shown = targets
-                .as_ref()
-                .and_then(|t| t.get(tile))
-                .copied()
-                .unwrap_or(1.0);
-        }
-    }
-
-    /// How fully a node shows, from 0 (a speck) to 1.
-    pub(crate) fn visibility(&self, tile: usize) -> f32 {
-        self.visibility.get(tile).copied().unwrap_or(1.0)
-    }
-
-    /// Whether a node shows as more than a speck.
-    pub(crate) fn shown(&self, tile: usize) -> bool {
-        self.visibility(tile) >= lens::SPECK
     }
 
     /// What reaches the focus drawn and what it reaches, once
@@ -1797,68 +1681,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_dial_fits_the_graph() {
-        let mut explorer = explorer();
-        assert_eq!(explorer.lens_top(), 2, "c is two calls from main");
-        let everything = explorer.lens();
-        let narrower = everything.narrower(explorer.lens_top());
-        assert_eq!(narrower.reach, Some(1), "- from everything drops one ring");
-        assert_eq!(narrower.narrower(2).reach, Some(1), "and stops at one");
-        assert_eq!(narrower.wider(2).reach, None, "= at the top is everything");
-        assert_eq!(narrower.level(2), 1);
-        assert_eq!(everything.level(2), 2);
-
-        explorer.open_at(tile(&explorer, "c"));
-        assert_eq!(explorer.lens_top(), 2, "main is two calls up from c");
-        explorer.open_at(tile(&explorer, "b"));
-        explorer.set_lens(Lens {
-            reach: Some(5),
-            ..Lens::default()
-        });
-        assert_eq!(explorer.lens().level(explorer.lens_top()), 1);
-        assert_eq!(
-            explorer.lens().narrower(explorer.lens_top()).reach,
-            Some(1),
-            "a reach past the top narrows from the top"
-        );
-    }
-
-    #[test]
-    fn the_lens_keeps_the_focus_neighborhood() {
-        let mut explorer = explorer();
-        let tile = |name: &str| {
-            explorer
-                .map()
-                .tile_of(&UnitId::new(format!("x:{name}")))
-                .unwrap()
-        };
-        let (main, a, b, c) = (tile("main"), tile("a"), tile("b"), tile("c"));
-        explorer.open_at(a);
-        explorer.refresh_reach();
-        explorer.set_lens(Lens {
-            reach: Some(0),
-            ..Lens::default()
-        });
-        explorer.settle_visibility();
-        assert!(explorer.shown(a) && explorer.shown(main) && explorer.shown(c));
-        assert!(
-            explorer.visibility(main) < 1.0,
-            "one call past the reach dims"
-        );
-        explorer.open_at(b);
-        explorer.refresh_reach();
-        explorer.settle_visibility();
-        assert!(!explorer.shown(c), "c is not on any call chain through b");
-        assert!(
-            !explorer.shown(a),
-            "siblings only meet through their caller"
-        );
-        assert!(explorer.go_back());
-        explorer.refresh_reach();
-        assert_eq!(explorer.graph_focus(), Some(a));
-    }
-
-    #[test]
     fn the_focus_reaches_up_its_callers() {
         let mut explorer = explorer();
         let c = explorer.map().tile_of(&UnitId::new("x:c")).unwrap();
@@ -2048,7 +1870,8 @@ pub(crate) mod tests {
         );
         let badge = |explorer: &Explorer, name: &str| {
             explorer
-                .disclosed_tiles()
+                .disclosure()
+                .tiles()
                 .get(&tile(explorer, name))
                 .cloned()
                 .unwrap_or_default()
@@ -2289,7 +2112,7 @@ pub(crate) mod tests {
         explorer.open_at(main);
         let numbers = |explorer: &Explorer| {
             let mut tiles: Vec<(usize, Vec<String>)> =
-                explorer.disclosed_tiles().into_iter().collect();
+                explorer.disclosure().tiles().clone().into_iter().collect();
             tiles.sort();
             tiles
         };
@@ -2569,7 +2392,10 @@ pub(crate) mod tests {
         explorer.ease_nucleus(1.0);
         assert!(explorer.browsing());
         assert_eq!(explorer.selection(), Some(main), "the cursor's function");
-        assert!(explorer.disclosed_tiles().is_empty(), "no journey numbers");
+        assert!(
+            explorer.disclosure().tiles().is_empty(),
+            "no journey numbers"
+        );
         let balls = |explorer: &Explorer| -> Vec<Vec3> {
             let nucleus = explorer.nucleus();
             nucleus.balls().map(|(_, ball)| ball.center).collect()

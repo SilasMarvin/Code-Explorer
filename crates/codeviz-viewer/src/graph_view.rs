@@ -45,27 +45,23 @@ pub(crate) enum NodeLook {
     /// Calls into the focus or called from it, this many calls away (capped at
     /// [`FARTHEST_SHADE`]), in its module's color.
     Near(usize, u32),
-    /// Left out by quiet mode: a faint speck that keeps the shape of the graph.
-    Hidden,
     /// Unrelated to the focus.
     Faded(usize),
     /// Anything while nothing is focused, in its container's color.
     Plain(usize),
 }
 
-/// Steps of brightness a node fades through as the lens reveals or hides it.
-pub(crate) const LEVELS: u8 = 6;
+/// How bright a dimmed node is, against its full brightness.
+const DIM: f32 = 0.12 + 0.88 / 3.0;
 
-/// Every look at every level of brightness, [`LEVELS`] being full.
+/// Every look, in full and dimmed.
 pub(crate) fn node_materials(
     materials: &mut Assets<StandardMaterial>,
-) -> HashMap<(NodeLook, u8), Handle<StandardMaterial>> {
+) -> HashMap<(NodeLook, bool), Handle<StandardMaterial>> {
     let mut table = HashMap::new();
     for (look, material) in node_looks() {
-        for level in 0..=LEVELS {
-            let share = 0.12 + 0.88 * f32::from(level) / f32::from(LEVELS);
-            table.insert((look, level), materials.add(dimmed(&material, share)));
-        }
+        table.insert((look, false), materials.add(material.clone()));
+        table.insert((look, true), materials.add(dimmed(&material, DIM)));
     }
     table
 }
@@ -123,15 +119,6 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
             );
         }
     }
-    table.insert(
-        NodeLook::Hidden,
-        StandardMaterial {
-            base_color: Color::srgba(0.6, 0.65, 0.75, 0.08),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            ..default()
-        },
-    );
     for color in 0..PALETTE.len() {
         let base = lane_color(color);
         table.insert(NodeLook::Plain(color), glow(base, 0.6));
@@ -194,9 +181,6 @@ pub(crate) fn hidden_speck(explorer: &Explorer, tile: usize) -> bool {
 
 pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     let color = explorer.tile_color(tile) % PALETTE.len();
-    if !explorer.shown(tile) {
-        return NodeLook::Hidden;
-    }
     // The journey's cursor is the one pink node, wherever it is.
     if explorer.cursor_mark() == Some(tile) {
         return NodeLook::Cursor;
@@ -294,33 +278,18 @@ pub(crate) fn style_nodes(
             NodeLook::Near(color, _) if quiet => NodeLook::Faded(color),
             look => look,
         };
-        // What the lens leaves out shrinks as well as fades, down to a speck.
-        let shown = explorer.visibility(tile.0);
-        let (scale, level) = if look == NodeLook::Hidden {
-            (0.35, LEVELS)
-        } else {
-            let level = (shown * f32::from(LEVELS))
-                .round()
-                .clamp(0.0, f32::from(LEVELS));
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to 0..=LEVELS"
-            )]
-            (0.35 + 0.65 * shown, level as u8)
-        };
-        let (scale, level) = if quiet {
-            (nucleus.node_scale(true), LEVELS)
+        let (scale, dim) = if quiet {
+            (nucleus.node_scale(true), false)
         } else if outside {
-            (0.6 * nucleus.node_scale(false), LEVELS / 3)
+            (0.6 * nucleus.node_scale(false), true)
         } else {
-            (scale * nucleus.node_scale(false), level)
+            (nucleus.node_scale(false), false)
         };
         let size = node_size(explorer.graph(), tile.0) * scale;
         if (transform.scale.x - size).abs() > 0.001 {
             transform.scale = Vec3::splat(size);
         }
-        if let Some(wanted) = materials.0.get(&(look, level))
+        if let Some(wanted) = materials.0.get(&(look, dim))
             && &material.0 != wanted
         {
             material.0 = wanted.clone();
@@ -329,7 +298,7 @@ pub(crate) fn style_nodes(
 }
 
 #[derive(Resource, Debug)]
-pub(crate) struct NodeMaterials(pub(crate) HashMap<(NodeLook, u8), Handle<StandardMaterial>>);
+pub(crate) struct NodeMaterials(pub(crate) HashMap<(NodeLook, bool), Handle<StandardMaterial>>);
 
 pub(crate) fn create_node_materials(
     mut commands: Commands,

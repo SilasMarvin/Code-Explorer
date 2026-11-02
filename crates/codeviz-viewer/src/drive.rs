@@ -485,11 +485,10 @@ pub(crate) fn note_bars(ctx: &egui::Context, content: egui::Rect, bars: Vec<(Spa
 }
 
 /// egui areas that sit over the graph, by id.
-const OVERLAYS: [(&str, &str); 5] = [
+const OVERLAYS: [(&str, &str); 4] = [
     ("journey_panel", "journey panel"),
     ("key_help", "key help (H)"),
     ("search", "search box"),
-    ("depth_meter", "depth meter"),
     ("source", "side panel"),
 ];
 

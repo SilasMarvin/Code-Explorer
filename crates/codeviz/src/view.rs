@@ -34,16 +34,6 @@ struct Display {
     /// How the journey shows over the graph.
     #[arg(long, value_enum, default_value_t = JourneyArg::Docked)]
     journey: JourneyArg,
-    /// Show only what is within this many steps of where the reveal starts; the rest
-    /// dims, then shrinks to specks. Everything shows without it.
-    #[arg(long, value_name = "STEPS")]
-    reveal: Option<u32>,
-    /// What the reveal starts from; by default the focus.
-    #[arg(long, value_enum)]
-    reveal_around: Option<AroundArg>,
-    /// How the reveal measures nearness.
-    #[arg(long, value_enum, default_value_t = NearArg::Calls)]
-    reveal_by: NearArg,
     /// Open the journey that starts at this function (entry label or unit id suffix).
     /// Without it, the view opens browsing the whole codebase.
     #[arg(long, value_name = "UNIT")]
@@ -90,24 +80,6 @@ enum JourneyArg {
     Docked,
     /// Below a strip of graph.
     Full,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum AroundArg {
-    /// The focused function.
-    Focus,
-    /// The functions the active journey runs.
-    Journey,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum NearArg {
-    /// Calls between, along call chains.
-    Calls,
-    /// Distance in the graph, in steps of a typical call's length.
-    Space,
-    /// Distance in the graph, with each call between counting against it.
-    Blend,
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
@@ -164,19 +136,7 @@ fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result
             JourneyArg::Hidden => "hidden",
             JourneyArg::Docked => "docked",
             JourneyArg::Full => "full",
-        })
-        .with_reveal(
-            args.reveal_around.map(|around| match around {
-                AroundArg::Focus => "focus",
-                AroundArg::Journey => "journey",
-            }),
-            match args.reveal_by {
-                NearArg::Calls => "calls",
-                NearArg::Space => "space",
-                NearArg::Blend => "blend",
-            },
-            args.reveal,
-        );
+        });
     if let Some(depth) = args.depth {
         viewer = viewer.with_depth(depth);
     }

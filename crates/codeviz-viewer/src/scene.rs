@@ -14,7 +14,6 @@ use crate::{
     graph_view::{self, NodeMaterials},
     idle::Awake,
     journey_panel::{JourneyPanel, PanelMode},
-    lens::Lens,
     notice, nucleus, pick,
     ui::{Chrome, KeyHelp},
 };
@@ -48,7 +47,6 @@ impl Plugin for ScenePlugin {
                 nucleus::follow,
                 nucleus::hover,
                 place_nodes,
-                reveal,
                 nucleus::place_bodies,
                 graph_view::graph_keys.run_if(not(egui_wants_any_keyboard_input)),
                 nucleus::frame,
@@ -167,10 +165,8 @@ fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
 }
 
 /// The graph's keys: digits open the call numbered so on screen, Backspace goes back
-/// to the view before and Shift+Backspace forward again. - and = narrow and widen
-/// what shows, L picks what it shows around and G how it measures nearness. Returns
-/// whether one of those four was pressed, for the depth meter.
-fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) -> bool {
+/// to the view before and Shift+Backspace forward again.
+fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
     if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key)) {
         explorer.open_numbered(index + 1);
     }
@@ -180,29 +176,6 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
         } else {
             explorer.go_back();
         }
-    }
-    let lens = explorer.lens();
-    let dialed =
-        keys.any_just_pressed([KeyCode::Minus, KeyCode::Equal, KeyCode::KeyL, KeyCode::KeyG]);
-    let lens = if keys.just_pressed(KeyCode::Minus) {
-        lens.narrower(explorer.lens_top())
-    } else if keys.just_pressed(KeyCode::Equal) {
-        lens.wider(explorer.lens_top())
-    } else if keys.just_pressed(KeyCode::KeyL) {
-        Lens {
-            source: lens.source.next(),
-            ..lens
-        }
-    } else if keys.just_pressed(KeyCode::KeyG) {
-        Lens {
-            measure: lens.measure.next(),
-            ..lens
-        }
-    } else {
-        lens
-    };
-    if lens != explorer.lens() {
-        explorer.set_lens(lens);
     }
     // , and . disclose a level less or more of the journey; V switches between
     // disclosing by depth and by time.
@@ -228,7 +201,6 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
     }
-    dialed
 }
 
 fn keyboard(
@@ -245,9 +217,7 @@ fn keyboard(
         autoplay.playing = false;
         explorer.step(step);
     }
-    if graph_navigation(&keys, &mut explorer, shift) {
-        chrome.dial_turned = Some(time.elapsed_secs());
-    }
+    graph_navigation(&keys, &mut explorer, shift);
     if keys.just_pressed(KeyCode::Escape) {
         close_topmost(&mut explorer, &mut help, &mut chrome);
     }
@@ -330,17 +300,6 @@ fn autoplay(time: Res<Time>, mut autoplay: ResMut<Autoplay>, mut explorer: ResMu
         if explorer.step(Step::Into).is_none() {
             autoplay.playing = false;
         }
-    }
-}
-
-/// Fades nodes in and out as the lens moves.
-fn reveal(time: Res<Time>, mut explorer: ResMut<Explorer>, mut awake: ResMut<Awake>) {
-    if explorer
-        .bypass_change_detection()
-        .ease_visibility(time.delta_secs())
-    {
-        explorer.set_changed();
-        awake.0 = true;
     }
 }
 

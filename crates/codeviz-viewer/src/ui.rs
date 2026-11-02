@@ -18,11 +18,9 @@ use codeviz_ir::{ExitKind, Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
-    depth_meter,
     explorer::{Confidence, Explorer, Hidden, Side},
     graph_view::{self, CALLEE, CALLER, CURSOR, DEEPER},
     journey_panel::{self, JourneyPanel, PanelMode},
-    lens::{Measure, Source},
     nucleus::{self, Body, End, Flow},
     scene::{PALETTE, lane_color},
 };
@@ -127,14 +125,12 @@ const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 
 /// What draws around the graph: everything, or bare, with only the graph and the
-/// journey; whether the side panel and the search box are open; and when a key last
-/// turned the reveal's dial, for the depth meter.
+/// journey; and whether the side panel and the search box are open.
 #[derive(Resource, Default)]
 pub(crate) struct Chrome {
     pub(crate) bare: bool,
     pub(crate) side: bool,
     pub(crate) search: bool,
-    pub(crate) dial_turned: Option<f32>,
 }
 
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -211,17 +207,6 @@ fn draw_ui(
                 strip: mode == PanelMode::Full,
             },
         );
-        // The graph's right edge clear of a docked journey below, for the depth meter.
-        let clear = above(graph_area, panel_area);
-        if !chrome.bare && !help.0 {
-            depth_meter::draw(
-                ctx,
-                clear,
-                &explorer,
-                chrome.dial_turned,
-                time.elapsed_secs(),
-            );
-        }
         if chrome.search && !chrome.bare {
             search_box(
                 ctx,
@@ -307,8 +292,6 @@ fn panels(
             .default_size(460.0)
             .show(root_ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    view_settings(ui, explorer);
-                    ui.separator();
                     outcomes(ui, explorer);
                     ui.separator();
                     source(ui, explorer, sources);
@@ -323,19 +306,6 @@ fn panels(
         0.0
     };
     [top, 0.0, 0.0, right]
-}
-
-/// How the graph is drawn: what the lens shows.
-fn view_settings(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    ui.heading("View");
-    reveal_controls(ui, explorer);
-}
-
-/// The part of the graph above a docked journey, for what sits at its bottom.
-fn above(graph: egui::Rect, panel: Option<egui::Rect>) -> egui::Rect {
-    panel.map_or(graph, |p| {
-        egui::Rect::from_min_max(graph.min, egui::pos2(graph.max.x, p.min.y))
-    })
 }
 
 /// The bar under the pointer tied to the node it stands for.
@@ -1696,65 +1666,6 @@ fn label_job(
         job.append(&note, 6.0, format(MUTED, size - 1.5));
     }
     job
-}
-
-/// What the lens shows: how far, around what, and measured how.
-fn reveal_controls(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    let mut lens = explorer.lens();
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Show").small().color(MUTED));
-        if ui
-            .selectable_label(lens.reach.is_none(), "All")
-            .on_hover_text("Every function (=, until it shows all)")
-            .clicked()
-        {
-            lens.reach = None;
-        }
-        let top = explorer.lens_top();
-        let mut reach = lens.level(top);
-        let unit = match (lens.measure, lens.reach) {
-            (Measure::Calls, Some(1)) => "call",
-            (Measure::Calls, _) => "calls",
-            (_, Some(1)) => "step",
-            _ => "steps",
-        };
-        if ui
-            .add(
-                egui::Slider::new(&mut reach, 1..=top)
-                    .show_value(false)
-                    .custom_formatter(|_, _| String::new()),
-            )
-            .on_hover_text("How far out from the start shows in full (- and =)")
-            .changed()
-        {
-            lens.reach = (reach < top).then_some(reach);
-        }
-        if let Some(reach) = lens.reach {
-            ui.label(egui::RichText::new(format!("{reach} {unit}")).small());
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Around").small().color(MUTED));
-        for source in [Source::Focus, Source::Journey] {
-            ui.selectable_value(&mut lens.source, source, source.label())
-                .on_hover_text("What the reveal starts from (L)");
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Near by").small().color(MUTED));
-        ui.selectable_value(&mut lens.measure, Measure::Calls, "calls")
-            .on_hover_text("Calls between, along call chains (G)");
-        ui.selectable_value(&mut lens.measure, Measure::Space, "space")
-            .on_hover_text("Distance in the graph, in steps of a typical call's length (G)");
-        ui.selectable_value(&mut lens.measure, Measure::Blend, "blend")
-            .on_hover_text(
-                "Distance in the graph, with each call between counting against it; \
-                 direct callers and callees always show (G)",
-            );
-    });
-    if lens != explorer.lens() {
-        explorer.set_lens(lens);
-    }
 }
 
 /// Names beside graph nodes, most important first, each on a dark pill so it reads

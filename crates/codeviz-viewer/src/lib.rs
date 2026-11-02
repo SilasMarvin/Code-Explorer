@@ -12,7 +12,6 @@
 
 mod camera;
 mod capture;
-mod depth_meter;
 mod disclosure;
 mod drive;
 mod explorer;
@@ -20,7 +19,6 @@ mod graph_view;
 mod history;
 mod idle;
 mod journey_panel;
-mod lens;
 mod module_names;
 mod notice;
 mod nucleus;
@@ -40,7 +38,6 @@ use codeviz_ir::UnitId;
 use crate::{
     explorer::{Autoplay, Explorer},
     journey_panel::{JourneyPanel, PanelMode},
-    lens::{Lens, Measure, Source},
 };
 
 /// Configures and launches the viewer window.
@@ -58,7 +55,6 @@ pub struct Viewer {
     scenario: Option<usize>,
     step: usize,
     panel: PanelMode,
-    lens: Lens,
     focus: Option<UnitId>,
     /// The function a screenshot puts the pointer over.
     hover: Option<UnitId>,
@@ -104,7 +100,6 @@ impl Viewer {
             scenario: None,
             step: 0,
             panel: PanelMode::default(),
-            lens: Lens::default(),
             focus: None,
             hover: None,
             depth: None,
@@ -135,27 +130,6 @@ impl Viewer {
             "full" => PanelMode::Full,
             _ => PanelMode::Docked,
         };
-        self
-    }
-
-    /// Shows only what is near a starting point: `focus` or `journey` (by default
-    /// the focus), out to `reach` steps
-    /// measured in `calls`, `space` or a `blend` of both. Without a reach, everything
-    /// shows.
-    #[must_use]
-    pub fn with_reveal(mut self, source: Option<&str>, measure: &str, reach: Option<u32>) -> Self {
-        if let Some(source) = source {
-            self.lens.source = match source {
-                "journey" => Source::Journey,
-                _ => Source::Focus,
-            };
-        }
-        self.lens.measure = match measure {
-            "space" => Measure::Space,
-            "blend" => Measure::Blend,
-            _ => Measure::Calls,
-        };
-        self.lens.reach = reach;
         self
     }
 
@@ -252,7 +226,6 @@ impl Viewer {
                 explorer.step(explorer::Step::Into);
             }
         }
-        explorer.set_lens(self.lens);
         let focus = self
             .focus
             .take()

@@ -68,8 +68,6 @@ pub(crate) fn of(explorer: &Explorer) -> Value {
             explorer
                 .callers_of(tile)
                 .into_iter()
-                // Only those the lens shows, as the graph names them.
-                .filter(|&caller| explorer.visibility(caller) >= 0.5)
                 .map(|caller| node_name(explorer, caller))
                 .collect()
         }),
