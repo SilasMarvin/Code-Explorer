@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use crate::{
     camera::OrbitCamera,
     colors::{CURSOR, FURTHER},
+    drive::{Marks, RingMark},
     explorer::Explorer,
     nucleus::{Flow, SHADES},
     scene::Tile,
@@ -245,14 +246,21 @@ pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
     mut gizmos: Gizmos,
+    mut marks: ResMut<Marks>,
 ) {
+    marks.rings.clear();
     let Ok((camera, view)) = cameras.single() else {
         return;
     };
     let mut ring = |tile: usize, grow: f32, color: Color| {
         if let Some(at) = explorer.tile_point(tile) {
-            let radius = drawn_radius(&explorer, tile, camera, view);
-            gizmos.sphere(Isometry3d::from_translation(at), radius * grow, color);
+            let radius = drawn_radius(&explorer, tile, camera, view) * grow;
+            gizmos.sphere(Isometry3d::from_translation(at), radius, color);
+            marks.rings.push(RingMark {
+                tile,
+                radius,
+                color,
+            });
         }
     };
     let start = explorer.nucleus().start();

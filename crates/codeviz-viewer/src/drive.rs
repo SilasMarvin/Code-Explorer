@@ -36,14 +36,16 @@ use serde_json::{Value, json};
 
 use crate::{
     camera::OrbitCamera,
-    checks,
+    checks::{self, Since},
     explorer::Explorer,
     idle::Awake,
     keys::Press,
     labels::node_name,
+    nucleus::Flow,
     scene::Tile,
     script::{
-        Aim, Expect, Gesture, Kind, Line, Name, Step, close_matches, snap_label, snap_name, unknown,
+        Aim, Expect, Gesture, Kind, Line, Name, Step, bar_number, close_matches, snap_label,
+        snap_name, unknown,
     },
     ui::{Chrome, KeyHelp},
 };
@@ -127,6 +129,13 @@ pub(crate) fn resolve(lines: &[Line], explorer: &Explorer) -> Result<Names, Stri
             Some(Name::Module(query)) => find_module(explorer, query).map(|cluster| {
                 names.modules.insert(query.to_owned(), cluster);
             }),
+            // A bar may be named as it reads (`Explorer.spotlit`), found when it shows.
+            Some(Name::Bar(query)) => {
+                if let Ok(tile) = find_unit(explorer, query) {
+                    names.units.insert(query.to_owned(), tile);
+                }
+                Ok(())
+            }
         };
         if let Err(error) = found {
             errors.push(format!("line {}: {error}: `{}`", line.number, line.text));
@@ -264,6 +273,8 @@ enum Phase {
     Acting,
     /// Waiting for the view to come to rest, since this frame and time.
     Settling(u32, Duration),
+    /// Saving what shows on each frame, this many more, as the step before plays out.
+    Filming(u32),
     /// Waiting for a snapshot of the window to be taken, asked for on this frame.
     Capturing(u32),
     /// About to draw into an image instead of the window.
@@ -320,6 +331,18 @@ struct Drive {
     checked: Vec<(String, Value)>,
     /// How each `expect` line went.
     expects: Vec<Value>,
+    /// Whether the camera stands where a wheel turn, an orbit or a pan put it, since
+    /// the view last framed itself; and what the view was on when it last did.
+    by_hand: bool,
+    framed_on: (bool, Option<usize>),
+    /// What is worth knowing of the step under way that is no failure.
+    notes: Vec<String>,
+    /// Where the pointer was as the step under way began.
+    pointer_before: Option<Vec2>,
+    /// When the view last moved, as the step under way settles.
+    moved_at: Option<Duration>,
+    /// Frames of a transition saved so far, by the `frames` step under way.
+    filmed: u32,
 }
 
 /// The messages a window sends for a mouse and a keyboard.
@@ -621,6 +644,10 @@ pub(crate) struct Screen {
     /// Each function's name on the graph, a click on which picks it: its pill, and the
     /// function, bottom first.
     pub(crate) labels: Vec<(egui::Rect, usize)>,
+    /// The search box's rows, while it shows.
+    pub(crate) search: Option<SearchRows>,
+    /// Pixels to a point.
+    pub(crate) scale: f32,
 }
 
 impl Default for Screen {
@@ -633,6 +660,8 @@ impl Default for Screen {
             bars: None,
             overlays: Vec::new(),
             labels: Vec::new(),
+            search: None,
+            scale: 1.0,
         }
     }
 }
@@ -657,14 +686,22 @@ pub(crate) struct DrawnBars {
     /// Where the bars show; one outside it is scrolled out of view.
     pub(crate) content: egui::Rect,
     pub(crate) bars: Vec<(SpanId, egui::Rect)>,
+    /// The badges that unfold a bar's folded calls, by the bar's span.
+    pub(crate) chips: Vec<(SpanId, egui::Rect)>,
 }
 
 fn bars_id() -> egui::Id {
     egui::Id::new("drawn_journey_bars")
 }
 
-/// Notes where the journey panel drew its bars this pass.
-pub(crate) fn note_bars(ctx: &egui::Context, content: egui::Rect, bars: Vec<(SpanId, egui::Rect)>) {
+/// Notes where the journey panel drew its bars this pass, and the badges on them that
+/// unfold what is folded.
+pub(crate) fn note_bars(
+    ctx: &egui::Context,
+    content: egui::Rect,
+    bars: Vec<(SpanId, egui::Rect)>,
+    chips: Vec<(SpanId, egui::Rect)>,
+) {
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| {
         d.insert_temp(
@@ -673,6 +710,87 @@ pub(crate) fn note_bars(ctx: &egui::Context, content: egui::Rect, bars: Vec<(Spa
                 pass,
                 content,
                 bars,
+                chips,
+            },
+        );
+    });
+}
+
+/// What the graph drew this frame that a snapshot cannot read back from the scene:
+/// the calls drawn as lines, the arrows between modules, and the rings round
+/// functions, each noted by the system that draws it, in the world.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct Marks {
+    pub(crate) calls: Vec<CallMark>,
+    pub(crate) tubes: Vec<TubeMark>,
+    pub(crate) rings: Vec<RingMark>,
+}
+
+/// A call drawn from function to function: a line of the gizmos' width, and its head.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CallMark {
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) flow: Flow,
+    pub(crate) color: Color,
+    /// Where the head starts, along the line, and where its tip is.
+    pub(crate) back: Vec3,
+    pub(crate) tip: Vec3,
+    /// How far each of its barbs reaches out from the line, in the world.
+    pub(crate) spread: f32,
+}
+
+/// An arrow between two modules, by its index among the nucleus's: its shaft's
+/// radius, and its head, a cone from `back` to `tip` as wide as `spread` either side.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TubeMark {
+    pub(crate) index: usize,
+    pub(crate) radius: f32,
+    pub(crate) back: Vec3,
+    pub(crate) tip: Vec3,
+    pub(crate) spread: f32,
+}
+
+/// A ring round a function, so big in the world, in a color.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RingMark {
+    pub(crate) tile: usize,
+    pub(crate) radius: f32,
+    pub(crate) color: Color,
+}
+
+/// The rows the search box lists, top first, as last drawn: where each is, the
+/// function it finds, what it says, and whether Enter takes it.
+#[derive(Debug, Clone)]
+pub(crate) struct SearchRows {
+    pass: u64,
+    pub(crate) rows: Vec<SearchRow>,
+    /// Where the rows show; one outside it is scrolled out of view.
+    pub(crate) content: egui::Rect,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SearchRow {
+    pub(crate) rect: egui::Rect,
+    pub(crate) unit: String,
+    pub(crate) text: String,
+    pub(crate) highlighted: bool,
+}
+
+fn search_rows_id() -> egui::Id {
+    egui::Id::new("drawn_search_rows")
+}
+
+/// Notes the rows the search box drew this pass.
+pub(crate) fn note_search_rows(ctx: &egui::Context, content: egui::Rect, rows: Vec<SearchRow>) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            search_rows_id(),
+            SearchRows {
+                pass,
+                rows,
+                content,
             },
         );
     });
@@ -714,6 +832,9 @@ fn record(
     let bars = ctx
         .data_mut(|d| d.get_temp::<DrawnBars>(bars_id()))
         .filter(|bars| bars.pass + 1 == pass);
+    let search = ctx
+        .data_mut(|d| d.get_temp::<SearchRows>(search_rows_id()))
+        .filter(|rows| rows.pass + 1 == pass);
     let overlays = ctx.memory(|m| {
         let visible = m.areas().visible_layer_ids();
         OVERLAYS
@@ -737,6 +858,8 @@ fn record(
         bars,
         overlays,
         labels: crate::labels::drawn_labels(&ctx),
+        search,
+        scale: window.scale_factor(),
     };
 }
 
@@ -789,6 +912,8 @@ pub(crate) struct Drawn {
     pub(crate) radius: f32,
     /// Whether it is inside the graph's part of the window, in front of the camera.
     pub(crate) on_screen: bool,
+    /// What it is filled with.
+    pub(crate) color: Option<Color>,
 }
 
 /// Everything a snapshot reads.
@@ -798,6 +923,9 @@ pub(crate) struct View<'w, 's> {
     pub(crate) help: Res<'w, KeyHelp>,
     pub(crate) chrome: Res<'w, Chrome>,
     pub(crate) screen: Res<'w, Screen>,
+    pub(crate) marks: Res<'w, Marks>,
+    gizmos: Res<'w, GizmoConfigStore>,
+    materials: Res<'w, Assets<StandardMaterial>>,
     tiles: Query<
         'w,
         's,
@@ -805,6 +933,7 @@ pub(crate) struct View<'w, 's> {
             &'static Tile,
             &'static GlobalTransform,
             &'static InheritedVisibility,
+            Option<&'static MeshMaterial3d<StandardMaterial>>,
         ),
     >,
     cameras: Query<
@@ -845,8 +974,8 @@ impl View<'_, '_> {
         let mut drawn: Vec<Drawn> = self
             .tiles
             .iter()
-            .filter(|(_, _, visible)| visible.get())
-            .filter_map(|(tile, transform, _)| {
+            .filter(|(_, _, visible, _)| visible.get())
+            .filter_map(|(tile, transform, _, material)| {
                 let world = transform.translation();
                 let at = self.to_screen(world)?;
                 let world_radius = transform.scale().x * 0.5;
@@ -857,6 +986,9 @@ impl View<'_, '_> {
                     world_radius,
                     radius: self.screen_radius(world, world_radius),
                     on_screen: self.on_screen(at),
+                    color: material
+                        .and_then(|m| self.materials.get(&m.0))
+                        .map(|m| m.base_color),
                 })
             })
             .collect();
@@ -864,10 +996,16 @@ impl View<'_, '_> {
         drawn
     }
 
+    /// How wide the calls drawn as lines are, in points.
+    pub(crate) fn line_width(&self) -> f32 {
+        let (config, _) = self.gizmos.config::<DefaultGizmoConfigGroup>();
+        config.line.width / self.screen.scale.max(f32::EPSILON)
+    }
+
     /// One function as drawn, or why it is not.
     fn find(&self, tile: usize) -> Result<Drawn, String> {
         let name = || node_name(&self.explorer, tile);
-        let Some((_, transform, visible)) = self.tiles.iter().find(|(t, ..)| t.0 == tile) else {
+        let Some((_, transform, visible, _)) = self.tiles.iter().find(|(t, ..)| t.0 == tile) else {
             return Err(format!("{} has no node", name()));
         };
         if !visible.get() {
@@ -894,6 +1032,14 @@ impl View<'_, '_> {
                 at.y
             ));
         }
+        if let Some(overlay) = self.screen.overlay_at(at) {
+            return Err(format!(
+                "{} is drawn under the {overlay}, at ({:.0}, {:.0})",
+                name(),
+                at.x,
+                at.y
+            ));
+        }
         let world_radius = transform.scale().x * 0.5;
         Ok(Drawn {
             tile,
@@ -902,6 +1048,7 @@ impl View<'_, '_> {
             world_radius,
             radius: self.screen_radius(world, world_radius),
             on_screen: true,
+            color: None,
         })
     }
 
@@ -1038,10 +1185,32 @@ fn advance(
         }
         Phase::Acting => {
             if drive.acts.is_empty() {
+                drive.moved_at = None;
                 drive.phase = Phase::Settling(drive.frame, now);
+                // A `frames` step next saves the frames as this one plays out.
+                let next = drive.step.map_or(0, |i| i + 1);
+                if matches!(
+                    drive.lines.get(next).map(|l| &l.step),
+                    Some(Step::Frames(_))
+                ) {
+                    finish(&mut drive, &view, None);
+                    begin_next(&mut commands, &mut drive, &view, now);
+                }
             }
         }
+        Phase::Filming(left) => {
+            film(&mut commands, &mut drive, &view);
+            drive.phase = if left > 1 {
+                Phase::Filming(left - 1)
+            } else {
+                drive.moved_at = None;
+                Phase::Settling(drive.frame, now)
+            };
+        }
         Phase::Settling(frame, since) => {
+            if moving {
+                drive.moved_at = Some(now);
+            }
             let waited = now.saturating_sub(since);
             let rested = drive.calm >= CALM_FRAMES
                 && drive.frame >= frame + CALM_FRAMES
@@ -1054,7 +1223,10 @@ fn advance(
                     );
                     drive.trouble.push(trouble);
                 }
-                finish(&mut drive, &view, Some(waited));
+                let settled = drive
+                    .moved_at
+                    .map_or(Duration::ZERO, |at| at.saturating_sub(since));
+                finish(&mut drive, &view, Some((settled, waited)));
                 begin_next(&mut commands, &mut drive, &view, now);
             }
         }
@@ -1131,27 +1303,59 @@ fn photograph(
     false
 }
 
-/// Logs how the step under way went.
-fn finish(drive: &mut Drive, view: &View, waited: Option<Duration>) {
+/// Logs how the step under way went: whether it went as meant, where the pointer was
+/// as it began, and, when it settled, how long the view kept moving and how long the
+/// session waited.
+fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>) {
     let Some(index) = drive.step else {
         return;
     };
     let trouble = std::mem::take(&mut drive.trouble);
+    let notes = std::mem::take(&mut drive.notes);
     let mut entry = json!({
         "step": index + 1,
         "line": drive.lines[index].number,
         "do": drive.lines[index].text,
         "ok": trouble.is_empty(),
+        "pointer": drive.pointer_before.map(|at| [at.x.round(), at.y.round()]),
         "then": crate::truth::state(view),
     });
     if !trouble.is_empty() {
         entry["trouble"] = json!(trouble);
     }
-    if let Some(waited) = waited {
-        entry["settled_ms"] = json!(waited.as_millis());
+    if !notes.is_empty() {
+        entry["note"] = json!(notes);
+    }
+    if let Some((settled, waited)) = settled {
+        entry["settled_ms"] = json!(settled.as_millis());
+        entry["waited_ms"] = json!(waited.as_millis());
+    }
+    // Opening or leaving a journey, or another, frames the view anew.
+    let on = (view.explorer.browsing(), view.explorer.start());
+    if on != drive.framed_on {
+        drive.framed_on = on;
+        drive.by_hand = false;
     }
     info!("session: {entry}");
     drive.log.push(entry);
+}
+
+/// Whether a step leaves the camera where the user's hands put it: `Some(true)` for a
+/// wheel turn, an orbit or a pan, `Some(false)` for what frames the view itself.
+fn by_hand(kind: Kind) -> Option<bool> {
+    match kind {
+        Kind::Zoom { .. } | Kind::Orbit | Kind::Pan => Some(true),
+        Kind::FrameAll | Kind::FrameFocus | Kind::Expand => Some(false),
+        _ => None,
+    }
+}
+
+/// What happened since the last snapshot, as the checks read it.
+fn since(drive: &Drive) -> Since {
+    Since {
+        kinds: drive.kinds.clone(),
+        by_hand: drive.by_hand,
+    }
 }
 
 /// Starts the next step that has anything to do, logging those that fail before they
@@ -1168,7 +1372,16 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
             snap(commands, drive, view, label.as_deref());
             return;
         }
+        drive.pointer_before = drive.pointer;
+        if let Step::Frames(n) = step {
+            drive.filmed = 0;
+            drive.phase = Phase::Filming(n);
+            return;
+        }
         drive.kinds.push(step.kind());
+        if let Some(hand) = by_hand(step.kind()) {
+            drive.by_hand = hand;
+        }
         match plan(drive, view, &step) {
             Ok(acts) => {
                 drive.acts = acts.into();
@@ -1203,7 +1416,7 @@ fn snap(commands: &mut Commands, drive: &mut Drive, view: &View, label: Option<&
     if let Some((since, before)) = drive.snaps.last().zip(drive.last_scene.as_ref()) {
         scene["moved"] = checks::moved(before, &scene, since);
     }
-    let checked = checks::run(&scene, drive.last_scene.as_ref(), &drive.kinds);
+    let checked = checks::run(&scene, drive.last_scene.as_ref(), &since(drive));
     drive.kinds.clear();
     drive.checked.push((name.clone(), checked.clone()));
     drive
@@ -1223,6 +1436,28 @@ fn snap(commands: &mut Commands, drive: &mut Drive, view: &View, label: Option<&
     shoot(commands, Screenshot::primary_window(), &drive.dir, &name);
     drive.snaps.push(name);
     drive.phase = Phase::Capturing(drive.frame);
+}
+
+/// Saves the window as this frame shows it, mid-transition, and what it shows beside
+/// it, with the checks that hold of any one picture: none judged against the snapshot
+/// before, none counted in the session's verdict.
+fn film(commands: &mut Commands, drive: &mut Drive, view: &View) {
+    drive.filmed += 1;
+    let label = format!("frame {}", drive.filmed);
+    let name = snap_name(drive.snaps.len() + 1, Some(&label));
+    let mut scene = scene_now(drive, view);
+    scene["snap"] = json!(name);
+    scene["frame"] = json!(drive.filmed);
+    scene["checks"] = checks::run(&scene, None, &Since::default());
+    write(&drive.dir.join(format!("{name}.json")), &scene);
+    if drive.covered {
+        drive.trouble.push(format!(
+            "{name}: the window is covered, so the frame is not drawn"
+        ));
+    } else {
+        shoot(commands, Screenshot::primary_window(), &drive.dir, &name);
+    }
+    drive.snaps.push(name);
 }
 
 /// Takes the window, or the image, as it shows next, saving it unless it comes out
@@ -1276,7 +1511,12 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
         acts
     };
     Ok(match step {
-        Step::Key(press) => key(*press),
+        Step::Key(press) => {
+            if view.chrome.search && press.types() {
+                note_typing(drive);
+            }
+            key(*press)
+        }
         Step::Type(text) => text
             .chars()
             .flat_map(|c| {
@@ -1306,48 +1546,24 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
             acts.extend(PRESS);
             acts
         }
-        Step::DoubleClickModule(module) => {
-            let at = module_point(view, drive.names.module(module)?)?;
-            let mut acts = vec![Act::Pointer(at), Act::Frames(3), Act::ExpectClear];
-            acts.extend([PRESS, PRESS].concat());
-            acts
+        Step::DoubleClickModule(module) => double_click_module(drive, view, module)?,
+        Step::Bar(bar) => {
+            let span = bar_span(view, &drive.names, bar)?;
+            click(bar_point(view, span, bar)?)
         }
-        Step::Bar(number) => click(bar_point(view, number)?),
+        Step::Chip(bar) => {
+            let span = bar_span(view, &drive.names, bar)?;
+            click(chip_point(view, span, bar)?)
+        }
+        Step::SearchPick(text) => click(search_point(view, text)?),
         Step::Button(text) => {
             let (at, note) = button_point(view, text)?;
             drive.trouble.extend(note);
             click(at)
         }
-        Step::Drag(by) => {
-            let start = drive
-                .pointer
-                .filter(|&p| view.on_screen(p) && view.screen.overlay_at(p).is_none())
-                .unwrap_or_else(|| graph_middle(view));
-            let piece = *by / f32::from(DRAG_PIECES);
-            let mut acts = vec![
-                Act::Pointer(start),
-                Act::Frames(2),
-                Act::Mouse(MouseButton::Left, ButtonState::Pressed),
-                Act::Frames(1),
-            ];
-            acts.extend((0..DRAG_PIECES).map(|_| Act::Nudge(piece)));
-            acts.push(Act::Mouse(MouseButton::Left, ButtonState::Released));
-            acts.push(Act::Frames(1));
-            acts
-        }
-        Step::Scroll { by, at } => {
-            let to = match at {
-                Some(Aim::Unit(unit)) => Some(view.find(drive.names.unit(unit)?)?.at),
-                Some(Aim::At(point)) => Some(*point),
-                None => drive.pointer.is_none().then(|| graph_middle(view)),
-            };
-            let mut acts = Vec::new();
-            if let Some(to) = to {
-                acts.extend([Act::Pointer(to), Act::Frames(3)]);
-            }
-            acts.extend(wheel_acts(*by));
-            acts
-        }
+        Step::Drag(by) => drag(drive, view, *by, MouseButton::Left),
+        Step::Pan(by) => drag(drive, view, *by, MouseButton::Right),
+        Step::Scroll { by, at } => scroll(drive, view, *by, at.as_ref())?,
         Step::Window(size) => vec![Act::Resize(*size), Act::Frames(10)],
         Step::Wait(span) => vec![Act::Pause(*span)],
         Step::Expect(expect) => {
@@ -1356,8 +1572,81 @@ fn plan(drive: &mut Drive, view: &View, step: &Step) -> Result<Vec<Act>, String>
             judged?;
             Vec::new()
         }
-        Step::Snap(_) => Vec::new(),
+        Step::Snap(_) | Step::Frames(_) => Vec::new(),
     })
+}
+
+/// A double click on a module's sphere, clear of its functions and names where it
+/// can be, else on one of its functions, which expands the module as well.
+fn double_click_module(drive: &mut Drive, view: &View, module: &str) -> Result<Vec<Act>, String> {
+    let (at, clear) = module_point(view, drive.names.module(module)?)?;
+    let mut acts = vec![Act::Pointer(at), Act::Frames(3)];
+    if clear {
+        acts.push(Act::ExpectClear);
+    } else {
+        drive.notes.push(format!(
+            "no spot on module {module}'s sphere is clear of its functions and names: \
+             double-clicked on one of them, which expands its module too"
+        ));
+    }
+    acts.extend([PRESS, PRESS].concat());
+    Ok(acts)
+}
+
+/// A wheel turn with the pointer on a function or a point first, else where it is
+/// (the graph's middle before it has moved).
+fn scroll(drive: &Drive, view: &View, by: Vec2, at: Option<&Aim>) -> Result<Vec<Act>, String> {
+    let to = match at {
+        Some(Aim::Unit(unit)) => {
+            let drawn = view.find(drive.names.unit(unit)?).map_err(|why| {
+                format!(
+                    "cannot scroll at {unit}: {why}; scroll at a point, or bring it on \
+                     screen first (F, R or a pan)"
+                )
+            })?;
+            Some(drawn.at)
+        }
+        Some(Aim::At(point)) => Some(*point),
+        None => drive.pointer.is_none().then(|| graph_middle(view)),
+    };
+    let mut acts = Vec::new();
+    if let Some(to) = to {
+        acts.extend([Act::Pointer(to), Act::Frames(3)]);
+    }
+    acts.extend(wheel_acts(by));
+    Ok(acts)
+}
+
+/// Notes that a key step types into the open search box rather than reaching the
+/// view.
+fn note_typing(drive: &mut Drive) {
+    let line = &drive.lines[drive.step.unwrap_or_default()].text;
+    let note = format!(
+        "the search box has the keyboard: `{}` types into it rather than reaching the \
+         view (`type` for text; `key esc` closes the box)",
+        line.trim_start_matches("key ")
+    );
+    drive.notes.push(note);
+}
+
+/// A drag with a button held: the left orbits, the right pans. It starts where the
+/// pointer is, when that is on open graph, else in the graph's middle.
+fn drag(drive: &Drive, view: &View, by: Vec2, button: MouseButton) -> Vec<Act> {
+    let start = drive
+        .pointer
+        .filter(|&p| open_ground(view, p))
+        .unwrap_or_else(|| graph_middle(view));
+    let piece = by / f32::from(DRAG_PIECES);
+    let mut acts = vec![
+        Act::Pointer(start),
+        Act::Frames(2),
+        Act::Mouse(button, ButtonState::Pressed),
+        Act::Frames(1),
+    ];
+    acts.extend((0..DRAG_PIECES).map(|_| Act::Nudge(piece)));
+    acts.push(Act::Mouse(button, ButtonState::Released));
+    acts.push(Act::Frames(1));
+    acts
 }
 
 /// The press and release of the left button.
@@ -1474,14 +1763,18 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
             let Some(before) = &drive.last_scene else {
                 return Err("no snapshot before to compare with".to_owned());
             };
-            let result = checks::run(&scene_now(drive, view), Some(before), &[Kind::Still]);
+            let still = Since {
+                kinds: vec![Kind::Still],
+                by_hand: drive.by_hand,
+            };
+            let result = checks::run(&scene_now(drive, view), Some(before), &still);
             verdict_of("nothing-moved", &result["nothing-moved"], true)
         }
         Expect::Check { name, pass } => {
             let result = checks::run(
                 &scene_now(drive, view),
                 drive.last_scene.as_ref(),
-                &drive.kinds,
+                &since(drive),
             );
             verdict_of(name, &result[name.as_str()], *pass)
         }
@@ -1529,7 +1822,8 @@ fn camera_differs(then: &Value, now: &Value) -> Option<String> {
 }
 
 /// How the session went: whether it is clean, each check over the snaps, the `expect`
-/// lines, the steps that failed, and each snap's checks.
+/// lines, the steps that failed, the notes on steps that did not, and each snap's
+/// checks.
 fn summary(drive: &Drive) -> Value {
     let checked = checks::summarise(&drive.checked);
     let checks_pass = checked
@@ -1552,6 +1846,9 @@ fn summary(drive: &Drive) -> Value {
         "expects": drive.expects,
         "failed_steps": failed.iter().map(|s| json!({
             "step": s["step"], "line": s["line"], "do": s["do"], "trouble": s["trouble"],
+        })).collect::<Vec<_>>(),
+        "notes": drive.log.iter().filter(|s| s.get("note").is_some()).map(|s| json!({
+            "step": s["step"], "line": s["line"], "do": s["do"], "note": s["note"],
         })).collect::<Vec<_>>(),
         "snaps": snaps,
     })
@@ -1587,8 +1884,9 @@ fn open_ground(view: &View, at: Vec2) -> bool {
 }
 
 /// Where to double-click a module's sphere: the spot inside it farthest from its
-/// functions and names.
-fn module_point(view: &View, cluster: usize) -> Result<Vec2, String> {
+/// functions and names, and whether it is clear of them; where none is, the spot
+/// farthest from the names alone, which may be on a function.
+fn module_point(view: &View, cluster: usize) -> Result<(Vec2, bool), String> {
     let module = view.explorer.cluster_name(cluster);
     let nucleus = view.explorer.nucleus();
     let ball = nucleus
@@ -1606,15 +1904,19 @@ fn module_point(view: &View, cluster: usize) -> Result<Vec2, String> {
             centre + Vec2::from_angle(angle) * radius * share
         })
     });
-    spots
-        .filter(|&at| open_ground(view, at))
-        .map(|at| (clearance(view, &drawn, at), at))
-        .filter(|(room, _)| *room >= CLEAR_SPOT)
-        .max_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, at)| at)
-        .ok_or_else(|| {
-            format!("no spot on module {module}'s sphere is clear of its functions and names")
-        })
+    let spots: Vec<Vec2> = spots.filter(|&at| open_ground(view, at)).collect();
+    let best = |drawn: &[Drawn]| {
+        spots
+            .iter()
+            .map(|&at| (clearance(view, drawn, at), at))
+            .filter(|(room, _)| *room >= CLEAR_SPOT)
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, at)| at)
+    };
+    best(&drawn)
+        .map(|at| (at, true))
+        .or_else(|| best(&[]).map(|at| (at, false)))
+        .ok_or_else(|| format!("no spot on module {module}'s sphere is clear of its names"))
 }
 
 /// Where to click on nothing: of the spots on the graph roomily clear of every
@@ -1693,49 +1995,131 @@ fn label_point(view: &View, tile: usize) -> Result<Vec2, String> {
     Ok(Vec2::new(c.x, c.y))
 }
 
-/// Where to click the journey bar numbered `number` (or, failing that, named it, as
-/// the journey's start must be): inside its left end, clear of the badge that unfolds
+/// The journey bar a step names: by its number (`1.2`), else by its function (the
+/// start's bar first), else by the name it reads.
+fn bar_span(view: &View, names: &Names, bar: &str) -> Result<SpanId, String> {
+    let explorer = &*view.explorer;
+    if view.screen.bars.is_none() {
+        return Err("the journey panel is not showing: no journey is open".to_owned());
+    }
+    let disclosed = explorer.disclosure();
+    let spans: Vec<SpanId> = explorer
+        .journey()
+        .into_iter()
+        .flat_map(|journey| journey.spans().map(|(id, _)| id))
+        .filter(|&id| disclosed.shows(id))
+        .collect();
+    let track = explorer.track();
+    let tile = (!bar_number(bar)).then(|| names.unit(bar).ok()).flatten();
+    let found = if bar_number(bar) {
+        spans.iter().find(|&&id| disclosed.number(id) == Some(bar))
+    } else {
+        tile.and_then(|tile| {
+            let root = explorer.journey().map(codeviz_core::Journey::root);
+            let of = |id: &&SpanId| track.tile(**id, explorer.map()) == Some(tile);
+            spans
+                .iter()
+                .filter(of)
+                .find(|&&id| Some(id) == root)
+                .or_else(|| spans.iter().find(of))
+        })
+        .or_else(|| spans.iter().find(|&&id| explorer.label(id) == bar))
+    };
+    found.copied().ok_or_else(|| {
+        let numbers: Vec<&str> = spans
+            .iter()
+            .filter_map(|&id| disclosed.number(id))
+            .filter(|n| !n.is_empty())
+            .collect();
+        format!(
+            "no bar is numbered or named {bar} at this depth; bars: {}",
+            numbers.join(" ")
+        )
+    })
+}
+
+/// Where to click a journey bar: inside its left end, clear of the badge that unfolds
 /// it.
-fn bar_point(view: &View, number: &str) -> Result<Vec2, String> {
+fn bar_point(view: &View, span: SpanId, bar: &str) -> Result<Vec2, String> {
     let Some(drawn) = &view.screen.bars else {
         return Err("the journey panel is not showing: no journey is open".to_owned());
     };
-    let disclosed = view.explorer.disclosure();
-    // By number, else by the name on it, among the bars disclosed.
-    let find = |matches: &dyn Fn(SpanId) -> bool| {
-        view.explorer.journey().and_then(|journey| {
-            journey
-                .spans()
-                .map(|(id, _)| id)
-                .filter(|&id| disclosed.shows(id))
-                .find(|&id| matches(id))
-        })
-    };
-    let span = find(&|id| disclosed.number(id) == Some(number))
-        .or_else(|| find(&|id| view.explorer.label(id) == number))
-        .ok_or_else(|| {
-            let numbers: Vec<&str> = view
-                .explorer
-                .journey()
-                .into_iter()
-                .flat_map(|journey| journey.spans().map(|(id, _)| id))
-                .filter_map(|id| disclosed.number(id))
-                .filter(|n| !n.is_empty())
-                .collect();
-            format!(
-                "no bar is numbered or named {number} at this depth; bars: {}",
-                numbers.join(" ")
-            )
-        })?;
     let Some(&(_, rect)) = drawn.bars.iter().find(|(s, _)| *s == span) else {
-        return Err(format!("bar {number} is not drawn"));
+        return Err(format!("bar {bar} is not drawn"));
     };
     let shown = rect.intersect(drawn.content);
     if !shown.is_positive() {
-        return Err(format!("bar {number} is scrolled out of the journey panel"));
+        return Err(format!("bar {bar} is scrolled out of the journey panel"));
     }
     let x = shown.min.x + (shown.width() / 2.0).min(12.0);
     Ok(Vec2::new(x, shown.center().y))
+}
+
+/// Where to click the badge on a journey bar that unfolds what is folded under it.
+fn chip_point(view: &View, span: SpanId, bar: &str) -> Result<Vec2, String> {
+    let Some(drawn) = &view.screen.bars else {
+        return Err("the journey panel is not showing: no journey is open".to_owned());
+    };
+    let folded = view.explorer.disclosure().folded(span);
+    let Some(&(_, chip)) = drawn.chips.iter().find(|(s, _)| *s == span) else {
+        return Err(if folded == 0 {
+            format!("bar {bar} has nothing folded under it, so no badge")
+        } else {
+            format!("bar {bar} folds {folded} calls, but has no badge drawn (no room for one)")
+        });
+    };
+    let shown = chip.intersect(drawn.content);
+    if !shown.is_positive() {
+        return Err(format!(
+            "bar {bar}'s badge is scrolled out of the journey panel"
+        ));
+    }
+    let c = shown.center();
+    Ok(Vec2::new(c.x, c.y))
+}
+
+/// Where to click the search box's row for `text`: the row that says it, else whose
+/// function's id ends with it, else the first that holds it.
+fn search_point(view: &View, text: &str) -> Result<Vec2, String> {
+    let Some(search) = &view.screen.search else {
+        return Err("the search box is not open (`key /` opens it)".to_owned());
+    };
+    let wanted = text.trim().to_lowercase();
+    let rows = &search.rows;
+    let row = rows
+        .iter()
+        .find(|r| r.text.to_lowercase() == wanted)
+        .or_else(|| {
+            rows.iter().find(|r| {
+                let unit = r.unit.to_lowercase();
+                unit == wanted || unit.ends_with(&format!("::{wanted}"))
+            })
+        })
+        .or_else(|| {
+            rows.iter()
+                .find(|r| r.text.to_lowercase().contains(&wanted))
+        })
+        .ok_or_else(|| {
+            let listed: Vec<&str> = rows.iter().take(12).map(|r| r.text.as_str()).collect();
+            format!(
+                "no search row says `{text}`; rows: {}{}",
+                listed.join(" | "),
+                if rows.len() > listed.len() {
+                    " …"
+                } else {
+                    ""
+                }
+            )
+        })?;
+    let shown = row.rect.intersect(search.content);
+    if !shown.is_positive() {
+        return Err(format!(
+            "the search row `{}` is scrolled out of view",
+            row.text
+        ));
+    }
+    let c = shown.center();
+    Ok(Vec2::new(c.x, c.y))
 }
 
 /// Where to click the button or chip that says `text`, and a note when part of it

@@ -78,21 +78,34 @@ carries, in any case.
 | `hover UNIT`, `hover-label UNIT` | rests the pointer on the dot, or on the name, 0.4 s |
 | `shift+click UNIT` | as it says |
 | `doubleclick UNIT` | double-clicks the function's dot: the first click picks it, the double click expands its module |
-| `doubleclick-module MODULE` | double-clicks the module's sphere at the spot farthest from its dots and names |
-| `bar N` | clicks the journey bar numbered N (`2`, `1.2`), or named N (the start's bar has no number) |
-| `button TEXT` | clicks the button or chip that says TEXT (exact, any case; else a short label holding it) |
+| `doubleclick-module MODULE` | double-clicks the module's sphere at the spot farthest from its dots and names; where no spot is clear of its dots, on a dot (which expands the module too), with a note |
+| `bar N` | clicks the journey bar numbered N (`2`, `1.2`), or the bar of the function N (`Explorer::spotlit`, the start's bar first), or the bar that reads N |
+| `chip N` | clicks the badge on bar N (as `bar` finds it) that unfolds the calls folded under it |
+| `search-pick TEXT` | clicks the open search box's row that says TEXT (any case), else the row whose function's id ends with it, else the first row holding it |
+| `button TEXT` | clicks the button that says TEXT (exact, any case; else a short label holding it); `button Fit` frames as F does |
 | `drag DX DY` | orbits by a left drag from the pointer, or the graph's middle |
+| `pan DX DY` | pans by a right drag, from the same place |
 | `scroll N`, `scroll DX DY` | wheel notches at the pointer (the graph's middle at first); positive DY zooms in |
 | `scroll ... at UNIT`, `scroll ... at X Y` | moves the pointer there first: wheel zoom toward a point |
 | `window W H` | resizes the window, in points |
 | `wait MS` | lets time pass |
 | `snap [LABEL]` | writes `NN-label.png` and `NN-label.json`, with the checks run |
+| `frames N` | right after the step before it, without waiting for it to rest, snaps each of the next N frames (1 to 30) as `NN-frame-K`: the transition as it plays |
 
 After every step the harness waits until the camera, the spheres and the names stop
 moving (at least 0.5 s, at most 8 s, else the step's trouble says it was still moving).
-Pointer steps go through the window's real input path, so picking, egui and the
-viewer's handlers all see them; when the pointer lands on another function or on an
-overlay, the step fails saying what it is over (the click still happens).
+The step log's `settled_ms` is how long the view kept moving after the step's input,
+`waited_ms` how long the harness waited. Pointer steps go through the window's real
+input path, so picking, egui and the viewer's handlers all see them; when the pointer
+lands on another function or on an overlay, the step fails saying what it is over (the
+click still happens). A step that goes through but not quite as a person would mean it
+gets a `note`: a `key` that types a character while the search box has the keyboard
+(it goes into the box, not to the view), a `doubleclick-module` that had to land on a
+dot. A wheel turn `at UNIT` whose function is off the graph or under the panel fails
+saying so, before the wheel turns.
+
+Frames snaps carry the checks that hold of one picture, but are not counted in the
+session's verdict and are not the snap the next one is judged against.
 
 ### expect
 
@@ -124,11 +137,13 @@ Snap before the step you want to judge, then `expect` after it: `nothing-moved`,
 
 - `checks.json`: start here. `ok`; `checks` (each check: `pass`, `passed`, `failed`,
   `not_applied`, `failed_in` snaps); `expects` (each line, `ok`, `why`); `failed_steps`
-  (`step`, `line`, `do`, `trouble`); `snaps` (each snap's checks in full).
+  (`step`, `line`, `do`, `trouble`); `notes` (`step`, `line`, `do`, `note`); `snaps`
+  (each snap's checks in full).
 - `NN-label.png`: the window at that snap, in window points, the same as the JSON's.
 - `NN-label.json`: what that snap shows (below).
-- `session.json`: every step with `ok`, `trouble`, `settled_ms` and `then` (the state after
-  it); `script.txt`, `args.txt`, `viewer.log`.
+- `session.json`: every step with `ok`, `trouble`, `note`, `pointer` (where the pointer
+  was as it began), `settled_ms`, `waited_ms` and `then` (the state after it);
+  `script.txt`, `args.txt`, `viewer.log`.
 
 The JSON says what is there; the PNG says whether a person could see it. Read both.
 
@@ -138,7 +153,7 @@ Positions are window points; rectangles `[x0, y0, x1, y1]`; world positions are 
 scene's units.
 
 - `window`, `graph_area` (the graph's part of the window, under the top bar), `camera`
-  (`at`, `facing`), `snap`.
+  (`at` in the world, `facing`, `target_at`: where what it looks at shows), `snap`.
 - `state`: `mode` (`browse`, `journey`), `selection` (browsing), `start` (the
   journey's), `start_module` (the module in the middle: the start's, or the
   selection's), `cursor` (`number`, `name`), `aside` (the function set aside in a
@@ -151,23 +166,37 @@ scene's units.
   `selection`, `cursor`, `aside`, `caller`, `journey level N`, `opened`
   for a function of the module expanded while browsing, `hovered`, `speck` for a
   faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
-  screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `crowded_by`.
+  screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `crowded_by`,
+  `color` (its fill, `#rrggbbaa`), `rings` (each ring drawn round it: `radius` on
+  screen, `color`).
 - `modules`: each sphere: `name`, `body` (`nucleus`, `open`, `closed`, `faint`), `shown`,
   `functions`, `named`, `at`, `radius`, `world`, `world_radius`, `on_screen`, `label`,
   `label_rect`.
 - `labels`: every name on the graph: `text`, `rect`, `names` (`function`, `module`,
-  `other`) and `of`, `overlaps` (indices), `cut_off`, `under` (overlays over it),
-  `opacity`, `size` (font size).
-- `mislabelled`: names nearer another dot than their own, or far from every dot.
-- `arrows` (`from`, `to`, `role`, `color`) and `module_arrows` (`from`, `to`, `calls`).
+  `other`) and `of`, `unit` (a function's), `overlaps` (indices), `cut_off`, `under`
+  (overlays over it), `opacity`, `size` (font size). A function's name is the text the
+  label placer drew on that function's pill; a module's, the nearest text leading with
+  its name. The key hint, notices and footers name nothing (`other`).
+- `arrows`: every call drawn, function to function, as drawn: `from`, `to`,
+  `from_unit`, `to_unit`, `flow` (`into`, `journey` with `level`, `outside`, `module`),
+  `role` (in words), `color` (as drawn), `width` (the line, in points), `head` (its
+  length on screen), `head_width`, `tip`, `on_screen`.
+- `module_arrows`: each arrow between modules: `from`, `to`, `calls`, `flow`, `level`,
+  `role`, `drawn`, and when drawn `width` (the shaft), `head`, `head_width`, `tip`,
+  `on_screen`.
 - `bars`: journey bars in view: `number`, `name`, `unit`, `rect`, `cursor`, `lit`,
-  `cut_off`. `buttons`: `text`, `rect`, `enabled`, `cut_off`. `overlays`: `name`, `rect`,
-  `clipped`. `text`: every other text drawn, with `rect` and `size`.
+  `cut_off`, `folded` (calls folded under it), `chip` (the badge that unfolds them).
+  `search_rows` (while the search box shows): `text`, `unit`, `rect`, `shown`,
+  `highlighted` (what Enter takes). `buttons`: `text`, `rect`, `enabled`, `cut_off`.
+  `overlays`: `name`, `rect`, `clipped`. `text`: every other text drawn, with `rect`
+  and `size`.
 - `content`: what the view means to show: the `start` or the `selection`, its
-  callers, the disclosed calls with numbers and modules.
+  callers, its calls (in a journey the disclosed ones, with numbers and modules;
+  browsing the selection's own, unnumbered).
 - `moved`: against the snap before: `since`, `camera`, `nodes` (`compared`,
   `moved_in_world`, `moved_on_screen`, `most_world`, `most_screen`, `examples`),
-  `modules`, `labels`, `appeared`, `gone`.
+  `modules`, `labels` (`compared`, `moved`, `gone`: names gone whose dot or sphere
+  still shows), `appeared`, `gone`.
 - `checks`: each check's result (below). `log`: the steps so far.
 
 ## The checks
@@ -185,28 +214,42 @@ constant at the top of that file.
 | `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius | always |
 | `spheres-apart` | no two spheres intersect, in the world | two spheres or more |
 | `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion (the expanded one aside) | always |
-| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and every module's name within 40 points of its sphere's rim | always |
-| `labels-clear` | no name overlaps another, a function's name covers no other lit dot, a module's name lies over no other sphere | always |
-| `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel, help, search) | always |
+| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other lit dot is nearer it (by over 2 points); every module's name within 40 points of its sphere's rim | always |
+| `labels-clear` | no name overlaps another, and a function's name covers no other lit dot | always |
+| `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel, search) | unless the key help is open |
 | `text-sizes` | function names are 11 to 18 points; at most 4 font sizes show at once | always |
-| `panel-agrees` | each numbered bar's function carries that number on the graph, no other function does, and the cursor is the same in both | journey bars drawn |
+| `panel-agrees` | each numbered bar's function carries that number on the graph, no other function does; each bar reads the name the graph gives its function (what its label leads with after its numbers); with a cursor on the graph, exactly one cursor bar shows, for that function | journey bars drawn |
 | `expanded-fill` | the expanded module's (`state.expanded`) diameter is 60–90% of the free area's smaller side (the graph less a docked panel), and it lies inside it | after `x` or a double click, when expanded |
 | `framed` | after R: every sphere inside the free area, camera at the usual view the map opens at (yaw and pitch within 0.05 of it); after F: every lit dot (or the expanded module) inside it with a 4-point margin | when F or R is the last step since the snap before that moves the view |
-| `zoom-to-pointer` | the sphere nearest the pointer moved as a zoom about the pointer moves it (within 4 points plus 5% of its distance) | one wheel turn, nothing else that moves, since the snap before |
+| `zoom-to-pointer` | the sphere nearest the pointer (else any sphere, else any dot, drawn in both snaps) moved as a zoom about the pointer moves it (within 4 points plus 5% of its distance) | one wheel turn, nothing else that moves, since the snap before |
 | `zoom-bounds` | some of the map is on screen, and zoomed out it still spans 40% of the free area | after a wheel turn |
-| `nothing-moved` | no dot, sphere or name moved, nor the camera, since the snap before; after `,` or `.` the camera may move, the world may not | every step since is one that must move nothing |
+| `nothing-moved` | no dot, sphere or name moved, nor the camera, since the snap before (names matched by function, not by what they say), and no name went while its dot or sphere still shows (unless a click selected another function); after `,` `.` or a badge the camera may only draw back, and only when something that came in would have been off the free area from where it was; the world may not move | every step since is one that must move nothing |
+| `focus-on-screen` | the selection, the start and the cursor, where drawn, lie inside the free area | unless the camera is where the user's hands put it, or an expand since framed a module |
+| `camera-outside` | the camera is inside no sphere | always |
+| `map-on-screen` | when the whole map would fit in the free area, 90% of it (by sphere area) is there | after a wheel turn out, or R |
+| `spheres-unclipped` | no sphere is cut by an edge of the graph's part of the window that lies in open window (not the window's edge, not where a panel starts), however big it shows; one the camera is inside aside | always |
+| `arrow-sizes` | every arrow on screen is at most 2.5 points wide (3.5 for a module arrow of 10 calls or more), with a head 5 to 12 points long (or half as wide, seen end on; the whole map's faint module links need no head, but none over 12); a module arrow has no head of its own where a call drawn along it goes on to its dot | an arrow on screen |
+| `module-names` | a module's name is centred over its sphere (within 3 points) just above its top edge (2 below to 8 above), over no other sphere and none of its own dots | a module named |
+| `named-when-room` | a lit function with no name would have no room for one on any side of its dot, clear of the free area's edge, overlays, names and other lit dots; a shown module with no name, none above its sphere (the width a name takes from the names drawn) | always |
+| `journey-fills` | the journey's lit dots (start, calls, callers) and their names span at least 70% of the free area across or down, whichever they come nearer filling, and the dots lie inside it | in a journey, not expanded, after it opens, a depth change, R, F or Fit, unless the camera is where the user's hands put it |
+| `colours` | the function hovered has no white fill and no ring the selection's color (or white); each function's fill and each call's color is its role's hue: white the start or selection, pink the cursor, violet callers, blue the first level, amber deeper, grey the rest (pink allowed on a call into the cursor) | always |
 
 What a step may move decides which checks judge it:
 
 | kind | steps | may move |
 |---|---|---|
-| still | `hover`, `hover-label`, `key` arrows, `[`, `]`, `i`, `wait`, `expect` | nothing |
+| still | `hover`, `hover-label`, `key` arrows, `[`, `]`, `i`, `wait`, `expect`, `frames` | nothing |
 | click | `click UNIT`, `click-label`, `bar` | nothing; expanded in a journey it may re-centre |
-| depth | `key ,`, `key .` | the camera, to bring new calls on; nothing in the world |
+| depth | `key ,`, `key .`, `chip` | the camera, drawn back to bring new calls on; nothing in the world |
 | expand | `key x`, `doubleclick`, `doubleclick-module` | the view |
-| zoom | `scroll` | the camera |
-| frame | `key f`, `key r` | the camera |
-| moves | everything else (`enter`, `esc`, `backspace`, `/`, `type`, `drag`, `shift+click`, `button`, `click X Y`, `click-empty`, `window`) | the view |
+| zoom, orbit, pan | `scroll`, `drag`, `pan` | the camera, by hand |
+| frame | `key f`, `key r`, `button Fit` | the camera |
+| moves | everything else (`enter`, `esc`, `backspace`, `/`, `type`, `search-pick`, `shift+click`, `button`, `click X Y`, `click-empty`, `window`) | the view |
+
+The camera is where the user's hands put it from a wheel turn, an orbit or a pan until
+the view next frames itself: F, R, Fit, an expand or collapse, or a journey opened or
+left. Checks of where the view puts things (`focus-on-screen`, `journey-fills`) leave
+such a camera alone.
 
 ## The regression suite
 
@@ -218,6 +261,7 @@ What a step may move decides which checks judge it:
 | `axum-journey`, `ord-journey` | Enter opens the journey; cursor by arrows, `[ ]`, a bar, a click on a call and on a name, nothing moving; `.` and `,` depth; `i` outside callers; Esc back to Browse and the camera from before; Back and Forward |
 | `axum-expand`, `ord-expand` | X expands to fill the view, wheel and orbit while expanded, X back to the saved camera; double-click a module; Esc collapses; the same in a journey and browsing |
 | `axum-camera` | double-click on a function expands its module; Back and Forward while expanded; F expanded; the wheel's near bound; X back exactly; a click on empty space moves no camera; in a journey X on another module, Esc collapses, R from the usual view, Esc back to browsing as it was |
+| `axum-steps` | the harness's own steps: `search-pick`, `bar` by function, `chip`, `frames`, `button Fit` judged as F, `pan`; `map-on-screen` after R |
 | `axum-layout` | one sizing rule for every sphere, dots inside their spheres and apart, one size per role, few text sizes; a click on a lit function moves nothing; in a journey `.` and `i` move nothing and keep dots inside their modules; expanded, spheres apart and sized alike |
 
 `tools/drive suite` checks every script's names, then runs them one window at a time and
@@ -238,11 +282,19 @@ tools/test_drive.py` tests the runner's own logic.
 - Black PNGs: macOS stops drawing a window it counts as covered; the harness keeps the
   window on top and draws a covered snap offscreen, saying so in `trouble`. The JSON is
   right regardless.
-- Not faked: trackpad gestures (pinch, two-finger orbit), right-drag or Shift-drag pan,
-  hovering a journey bar, holding a key. `scroll` is a mouse wheel; `drag` a left-button
-  orbit.
+- Not faked: trackpad gestures (pinch, two-finger orbit), Shift-drag pan, hovering a
+  journey bar, holding a key. `scroll` is a mouse wheel; `drag` a left-button orbit;
+  `pan` a right-button drag.
 - The real mouse moving over the window mixes its events with the script's.
 - `click` aims at a dot's centre; a dot mostly hidden behind another is clicked where the
   other is, and `trouble` says so. `click-label` aims at the name instead.
-- Checks see what the snap's JSON reports: a dot drawn but missing from the JSON, or a
-  stroke's width, is beyond them. Arrow widths and idle CPU are not checked.
+- Checks see what the snap's JSON reports: a dot drawn but missing from the JSON is
+  beyond them. Arrows and rings are drawn as gizmos the scene cannot give back, so the
+  systems that draw them note each in `drive::Marks` (`nucleus::draw`,
+  `nucleus::place_bodies`, `graph_view::draw_graph`); the journey panel notes its bars
+  and badges (`drive::note_bars`) and the search box its rows
+  (`drive::note_search_rows`). A new way of drawing these must note them too, or the
+  JSON loses them. Idle CPU is not checked.
+- `named-when-room` guesses a name's width from the names drawn in the same snap, and
+  a function's name as its number and name without notes: it may call room where the
+  placer, with notes, found none.

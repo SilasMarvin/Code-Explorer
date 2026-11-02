@@ -21,6 +21,7 @@ def summary(ok=False):
         "expects": [{"line": 4, "expect": "expect mode journey", "ok": False,
                      "why": "mode is browse, not journey"},
                     {"line": 5, "expect": "expect depth 1", "ok": True}],
+        "notes": [{"step": 5, "line": 6, "do": "key x", "note": ["the search box has the keyboard"]}],
         "failed_steps": [{"step": 2, "line": 3, "do": "click f", "trouble": ["over g"]},
                          {"step": 3, "line": 4, "do": "expect mode journey",
                           "trouble": ["mode is browse"]}],
@@ -54,6 +55,7 @@ class DriveTest(unittest.TestCase):
         self.assertIn("expect failed, line 4 `expect mode journey`: mode is browse, not journey", text)
         self.assertIn('check dots-apart failed in 02-a (3 offenders in 02-a): {"functions": ["f", "g"]}', text)
         self.assertNotIn("labels-near", text)
+        self.assertIn("note, step 5 (line 6) `key x`: the search box has the keyboard", text)
 
     def test_tables_the_suite(self):
         text = drive.table([("a", summary()), ("b", summary(ok=True)),

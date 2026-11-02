@@ -34,12 +34,15 @@ Script steps (one per line; `#` comments; `#: view DATA [FLAGS]` gives the view 
   click-empty         clicks the graph clear of every dot, name and overlay
   hover UNIT          rests the pointer on the dot   hover-label UNIT   on its name
   shift+click UNIT    doubleclick UNIT               doubleclick-module MODULE
-  bar N               clicks journey bar N (1.2), or the bar named N
-  button TEXT         clicks the button or chip that says TEXT
-  drag DX DY          orbits by a left drag
+  bar N               clicks journey bar N (1.2), or the bar of function N (the start's first)
+  chip N              clicks the badge on bar N that unfolds what is folded under it
+  search-pick TEXT    clicks the search row that says TEXT (or finds the function TEXT)
+  button TEXT         clicks the button that says TEXT (`button Fit` frames as F does)
+  drag DX DY          orbits by a left drag     pan DX DY    pans by a right drag
   scroll N | scroll DX DY [at UNIT | at X Y]   wheel notches; positive DY zooms in
   window W H          resizes the window (points)
   wait MS             snap [LABEL]
+  frames N            snaps each of the next N frames as the step before plays out
   expect mode browse|journey   expect nucleus modules|expanded   expect depth N
   expect search|help|back|forward|outside_callers true|false
   expect selection|cursor|start UNIT|none     expect named|drawn UNIT
@@ -314,6 +317,9 @@ def report(summary):
             continue
         lines.append(f"  step {s.get('step')} (line {s.get('line')}) `{s.get('do')}`: "
                      + "; ".join(s.get("trouble") or []))
+    for n in summary.get("notes", []):
+        lines.append(f"  note, step {n.get('step')} (line {n.get('line')}) `{n.get('do')}`: "
+                     + "; ".join(n.get("note") or []))
     for e in expects:
         if not e.get("ok"):
             lines.append(f"  expect failed, line {e.get('line')} `{e.get('expect')}`: {e.get('why')}")

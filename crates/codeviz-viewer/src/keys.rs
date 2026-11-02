@@ -105,6 +105,11 @@ impl Press {
         (self.key, self.shift)
     }
 
+    /// Whether it types a character into a text box that has the keyboard.
+    pub(crate) fn types(self) -> bool {
+        self.key == KeyCode::Space || TYPED.iter().any(|(_, key)| *key == self.key)
+    }
+
     /// What the window sends for the key going down or up: Shift first going down,
     /// last coming up.
     pub(crate) fn messages(self, state: ButtonState, window: Entity) -> Vec<KeyboardInput> {

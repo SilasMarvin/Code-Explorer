@@ -1,0 +1,36 @@
+#: view demo/out/axum-server.json
+# The harness's own steps: search rows, a bar by its function, a fold badge, frames
+# of a transition, a pan, and the checks on what the view frames itself (F's from Fit,
+# the map's after R).
+snap open
+key /
+type place
+snap search
+search-pick orders::place
+expect selection orders::place
+expect search false
+snap picked
+key enter
+expect mode journey
+expect start orders::place
+snap journey
+key .
+frames 3
+expect depth 2
+snap deeper
+bar orders::place
+expect cursor orders::place
+snap start-bar
+chip 3.2
+expect depth 2
+snap unfolded
+button Fit
+expect check framed
+snap fit
+pan 150 60
+snap panned
+scroll -4
+snap out
+key r
+expect check map-on-screen
+snap r

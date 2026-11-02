@@ -210,6 +210,7 @@ impl Viewer {
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
         .init_resource::<JourneyPanel>()
+        .init_resource::<drive::Marks>()
         .init_resource::<idle::Awake>();
         if let (Some(dir), Some(lines)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.
