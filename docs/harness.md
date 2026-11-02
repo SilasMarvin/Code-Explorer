@@ -166,7 +166,8 @@ scene's units.
   last turned the other way panned to hold the map, or the sphere they zoom to, in
   the free area), `pointer`.
 - `nodes`: every function drawn: `name`, `unit`, `module`, `roles` (`start`,
-  `selection`, `cursor`, `aside`, `caller`, `journey level N`, `opened`
+  `selection`, `cursor`, `aside`, `caller`, `journey level N`, `calls back` for a
+  call that calls the start (or the selection) back, `opened`
   for a function of the module expanded while browsing, `hovered`, `speck` for a
   faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
   screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `crowded_by`,
@@ -188,9 +189,10 @@ scene's units.
   `role`, `drawn`, and when drawn `width` (the shaft), `head`, `head_width`, `tip`,
   `on_screen`.
 - `bars`: journey bars in view: `number`, `name`, `unit`, `rect`, `cursor`, `lit`,
-  `cut_off`, `folded` (calls folded under it), `chip` (the badge that unfolds them);
-  then the bars of the start's callers in the row above its bar: `caller` true, no
-  `number`, `aside` (the one set aside).
+  `color` (its fill, `#RRGGBB`), `guessed` (a call only guessed or handed off, drawn
+  faint), `cut_off`, `folded` (calls folded under it), `chip` (the badge that unfolds
+  them); then the bars of the start's callers in the row above its bar: `caller` true,
+  no `number`, `aside` (the one set aside), `color`.
   `search_rows` (while the search box shows): `text`, `unit`, `rect`, `shown`,
   `highlighted` (what Enter takes). `buttons`: `text`, `rect`, `enabled`, `cut_off`.
   `overlays`: `name`, `rect`, `clipped`. `text`: every other text drawn, with `rect`
@@ -233,11 +235,11 @@ constant at the top of that file.
 | `camera-outside` | the camera is inside no sphere | always |
 | `map-on-screen` | when the whole map would fit in the free area, 90% of it (by sphere area) is there, all of it after a pan; when it would not, after a pan, it lies over the free area's middle | after a wheel turn out, a pan, or R |
 | `spheres-unclipped` | no sphere is cut by an edge of the graph's part of the window that lies in open window (not the window's edge, not where a panel starts), however big it shows; one the camera is inside aside; nor, unless faint, by the top of the journey panel, unless the camera is where the user's hands put it, a module is expanded or one has just shrunk back | always |
-| `arrow-sizes` | every arrow on screen is at most 2.5 points wide (3.5 for a module arrow of 10 calls or more), with a head 5 to 12 points long (or half as wide, seen end on; the whole map's faint module links need no head, but none over 12); a module arrow has no head of its own where a call drawn along it goes on to its dot | an arrow on screen |
+| `arrow-sizes` | every arrow on screen is at most 2.5 points wide, a module arrow however many calls it carries, with a head 5 to 12 points long (or half as wide, seen end on; the whole map's faint module links need no head, but none over 12); a module arrow has no head of its own where a call drawn along it goes on to its dot | an arrow on screen |
 | `module-names` | a module's name is centred over its sphere (within 3 points) just above its top edge (2 below to 8 above), over no other sphere and none of its own dots | a module named |
 | `named-when-room` | a lit function with no name would have no room for one on any side of its dot, clear of the free area's edge, overlays, names and other lit dots; a shown module with no name, none above its sphere (the width a name takes from the names drawn) | always |
 | `journey-fills` | the journey's spheres (but faint ones), lit dots (start, calls, callers) and their names span at least 70% of the free area across or down, whichever they come nearer filling, and the dots and spheres lie inside it | in a journey, not expanded, after it opens, a depth change, R, F or Fit, unless the camera is where the user's hands put it |
-| `colours` | the function hovered has no white fill and no ring the selection's color (or white); each function's fill and each call's color is its role's hue: white the start or selection, pink the cursor, violet callers, blue the first level, amber deeper, grey the rest (pink allowed on a call into the cursor) | always |
+| `colours` | the function hovered has no white fill and no ring the selection's color (or white); each function's fill and each call's color is its role's hue: white the start or selection, pink the cursor, violet callers, blue the first level, amber deeper, grey the rest (pink allowed on a call into the cursor); a function that `calls back` into the start has a violet ring; each bar's `color` is its node's hue, but the cursor's function's and a call only `guessed` | always |
 
 What a step may move decides which checks judge it:
 
@@ -272,6 +274,7 @@ such a camera alone.
 | `axum-follow` | expanded in a journey, the expansion following the cursor from module to module and back, by keys and a bar; X back to the camera from before the first expand; a module expanded by a double click staying through a level more |
 | `axum-steps` | the harness's own steps: `search-pick`, `bar` by function, `chip`, `frames`, `button Fit` judged as F, `pan`; `map-on-screen` after R |
 | `axum-layout` | one sizing rule for every sphere, dots inside their spheres and apart, one size per role, few text sizes; a click on a lit function moves nothing; in a journey `.` and `i` move nothing and keep dots inside their modules; expanded, spheres apart and sized alike |
+| `axum-consistency`, `ord-consistency` | the same action the same everywhere: the journey keys browsing do nothing, Esc browsing clears the selection, a search in a journey moves the cursor or sets aside (drawn), the depth keys stop at the deepest level and at 1, with `i` on a cursor step moves nothing; a call that calls the start back ringed violet browsing and in a journey; Esc steps out one level at a time |
 | `axum-look`, `ord-look` | how the graph is drawn: arrow sizes, module names above their spheres, names wherever they fit (browsing too), hover unlike the selection, an expanded module showing and naming all its functions, a depth change and `i` taking no name away |
 | `axum-callers` | the way up a journey: ↑ from the start into the row of its callers, ← → along it, ↓ back, Enter and Shift-click open a caller's journey, a caller's bar sets it aside; `i` with nothing calling in from outside stays off; `inside` on the top bar; search ranks a function's own name before its module's |
 | `axum-search` | search: ↓ and Enter take the row highlighted; a route found by its path and its function's name, listed once; reopened, the last query is selected and typing replaces it; Esc from a journey selects its start |
