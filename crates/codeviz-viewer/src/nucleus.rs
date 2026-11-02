@@ -31,9 +31,7 @@ use crate::{
     camera::{Bounds, OrbitCamera},
     disclosure::Disclose,
     explorer::Explorer,
-    graph_view::{
-        CALLEE, CALLER, CURSOR, DEEPER, FURTHER, fit_distance, flow, hidden_speck, node_size,
-    },
+    graph_view::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, fit_distance, hidden_speck, node_size},
     idle::Awake,
     scene::{PALETTE, lane_color},
 };
@@ -3240,11 +3238,9 @@ fn dress(
 }
 
 /// A rim round each glass sphere, facing the camera, so its edge reads as one
-/// outline; and the named calls, function to function along their arrows, with dots
-/// flowing along those that touch the focus.
+/// outline; and the named calls, function to function along their arrows.
 pub(crate) fn draw(
     explorer: Res<Explorer>,
-    clock: Res<Time>,
     cameras: Query<&Transform, With<OrbitCamera>>,
     mut gizmos: Gizmos,
 ) {
@@ -3254,7 +3250,6 @@ pub(crate) fn draw(
     };
     draw_rims(nucleus, camera, &mut gizmos);
     let graph = explorer.graph();
-    let time = clock.elapsed_secs();
     let zoom = nucleus.zoom();
     // Short of a function's surface, so the head stays visible.
     let short = |from: Vec3, to: Vec3, tile: usize| {
@@ -3293,26 +3288,15 @@ pub(crate) fn draw(
         let bright = picked.iter().any(|(i, _)| *i == index);
         let color = link_color(nucleus, link, bright);
         let end = short(*last_but_one, *last, link.to);
-        // Thickened by a strand either side.
-        let widths: &[f32] = if bright { &[0.0, -0.09, 0.09] } else { &[0.0] };
-        for &width in widths {
-            let along = (end - *last_but_one).normalize_or_zero();
-            let beside = sideways(along) * width * zoom;
-            gizmos.linestrip(route[..route.len() - 1].iter().map(|&p| p + beside), color);
-            gizmos
-                .arrow(*last_but_one + beside, end + beside, color)
-                .with_tip_length(if bright { 1.1 } else { 0.8 } * zoom);
-        }
-        if bright || (link.flow.rank() <= 1 && !nucleus.folded(link.from)) {
-            for pair in route.windows(2) {
-                flow(&mut gizmos, pair[0], pair[1], color, time, index);
-            }
-        }
+        gizmos.linestrip(route[..route.len() - 1].iter().copied(), color);
+        gizmos
+            .arrow(*last_but_one, end, color)
+            .with_tip_length(if bright { 1.1 } else { 0.8 } * zoom);
     }
 }
 
-/// Rings round each sphere drawn, facing the camera, brighter towards the edge as glass
-/// is, with a faint halo outside it; browsing, fainter the further back.
+/// A rim round each sphere drawn, facing the camera; browsing, fainter the further
+/// back.
 fn draw_rims(nucleus: &Nucleus, camera: &Transform, gizmos: &mut Gizmos) {
     let facing = camera.rotation;
     let depths = nucleus.browsing().then(|| depths(nucleus, camera));
@@ -3322,29 +3306,20 @@ fn draw_rims(nucleus: &Nucleus, camera: &Transform, gizmos: &mut Gizmos) {
             .and_then(|d| d.get(cluster))
             .map_or(1.0, |depth| 1.0 - 0.8 * depth);
         let color = lane_color(cluster % PALETTE.len());
-        // Brighter towards the edge, as glass is, with a faint halo outside it.
-        let rims: &[(f32, f32)] = match ball.body {
-            Body::Nucleus => &[
-                (0.9, 0.05),
-                (0.94, 0.09),
-                (0.97, 0.16),
-                (0.99, 0.32),
-                (1.0, 0.85),
-                (1.025, 0.18),
-            ],
-            Body::Open => &[(0.92, 0.06), (0.96, 0.12), (0.985, 0.25), (1.0, 0.7)],
-            Body::Faint => &[(0.97, 0.05), (1.0, 0.2)],
-            Body::Closed => &[],
+        // One rim, so the glass's edge reads as one outline.
+        let alpha = match ball.body {
+            Body::Nucleus => 0.85,
+            Body::Open => 0.7,
+            Body::Faint => 0.2,
+            Body::Closed => continue,
         };
-        for &(grow, alpha) in rims {
-            gizmos
-                .circle(
-                    Isometry3d::new(ball.center, facing),
-                    ball.radius * grow,
-                    color.with_alpha(alpha * near),
-                )
-                .resolution(96);
-        }
+        gizmos
+            .circle(
+                Isometry3d::new(ball.center, facing),
+                ball.radius,
+                color.with_alpha(alpha * near),
+            )
+            .resolution(96);
     }
 }
 
