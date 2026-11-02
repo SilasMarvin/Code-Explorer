@@ -83,8 +83,6 @@ pub struct Span {
     pub refinement: bool,
     /// The level shown, when the unit has loaded refinements to zoom between.
     pub zoom: Option<Level>,
-    /// Spans merged into this one by [`Journey::collapse`]; 0 if not collapsed.
-    pub merged: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,10 +163,6 @@ impl Journey {
         })
     }
 
-    pub(crate) fn from_spans(spans: Vec<Span>) -> Self {
-        Self { spans }
-    }
-
     #[must_use]
     pub fn root(&self) -> SpanId {
         SpanId(0)
@@ -192,17 +186,6 @@ impl Journey {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.spans.is_empty()
-    }
-
-    /// The last tick on the clock.
-    #[must_use]
-    pub fn duration(&self) -> u32 {
-        self.spans.iter().map(|s| s.exit).max().unwrap_or(0)
-    }
-
-    #[must_use]
-    pub fn max_depth(&self) -> u32 {
-        self.spans.iter().map(|s| s.depth).max().unwrap_or(0)
     }
 }
 
@@ -275,7 +258,6 @@ impl Builder<'_> {
             stopped,
             refinement: false,
             zoom: None,
-            merged: 0,
         });
         if let Some(parent) = parent.and_then(|p| self.spans.get_mut(p.0)) {
             parent.children.push(id);

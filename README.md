@@ -38,7 +38,7 @@ pink ring, the function under the pointer one faint ring.
 ### Browse
 
 With no `--focus`, the view opens browsing the whole codebase with nothing selected,
-and a faint arrow runs from each module to the module it calls most. A click on a
+and a faint arrow runs from each module to every module it calls. A click on a
 function selects it where it sits: its callers light violet and its calls blue, each
 named, with arrows; their modules open where they are; nothing moves, not a function,
 not a module, not the camera. `Enter`, or a

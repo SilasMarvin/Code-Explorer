@@ -155,9 +155,6 @@ fn tags(span: &Span) -> String {
         Some(Level::Detail) => tags.push("zoomed in".to_owned()),
         None => {}
     }
-    if span.merged > 1 {
-        tags.push(format!("{} merged", span.merged));
-    }
     if span.repeats {
         tags.push("loop".to_owned());
     }

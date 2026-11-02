@@ -1357,10 +1357,10 @@ fn label_job(
 }
 
 /// Names beside graph nodes, most important first, each on a dark pill so it reads
-/// over links and glow. The start's callees lead with the order it calls them in, and
-/// its callers note where in their own calls they call it. A name tries each side of
-/// its node and is left out when none is free, and never covers a node that matters;
-/// zooming in makes room for more. Container names fill whatever space is left.
+/// over the arrows. A journey's functions lead with their numbers in it. A name tries
+/// each side of its node and is left out when none is free, and never covers a node
+/// that matters; zooming in makes room for more. Module names fill whatever space is
+/// left.
 #[expect(clippy::too_many_lines, reason = "one ranked pass")]
 fn draw_graph_labels(
     painter: &egui::Painter,
@@ -2762,7 +2762,6 @@ mod tests {
             let shown = ctx
                 .memory(|m| m.area_rect(egui::Id::new("key_help")))
                 .expect("the list shows");
-            eprintln!("{browsing}: {shown:?}");
             assert!(
                 area.contains_rect(shown),
                 "inside the window: {shown:?} in {area:?}"

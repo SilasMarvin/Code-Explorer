@@ -70,7 +70,7 @@ impl Disclosed {
         let Some(journey) = track.journey() else {
             return disclosed;
         };
-        let tile = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
+        let tile = |span: SpanId| track.tile(span, map);
         let root = journey.root();
         // Every call, numbered from the root, and the closures each runs.
         let mut inside: HashMap<SpanId, Vec<SpanId>> = HashMap::new();
@@ -291,9 +291,7 @@ pub(crate) fn calls_of(
         .span(span)
         .map_or_else(Vec::new, |s| s.children.iter().rev().copied().collect());
     while let Some(child) = pending.pop() {
-        let closure = tile(child).is_some()
-            && journey.span(child).and_then(|s| s.parent).and_then(tile) == tile(child);
-        if closure {
+        if is_closure(journey, tile, child) {
             inside.push(child);
             if let Some(s) = journey.span(child) {
                 pending.extend(s.children.iter().rev().copied());
@@ -303,6 +301,16 @@ pub(crate) fn calls_of(
         }
     }
     (children, inside)
+}
+
+/// Whether a span runs a closure: it runs the same function as the span that calls
+/// it, as a closure is drawn as part of the function around it.
+pub(crate) fn is_closure(
+    journey: &Journey,
+    tile: &impl Fn(SpanId) -> Option<usize>,
+    span: SpanId,
+) -> bool {
+    tile(span).is_some() && journey.span(span).and_then(|s| s.parent).and_then(tile) == tile(span)
 }
 
 /// A journey number as its parts, nearest the root first, so `2` sorts before `1.1`
@@ -320,7 +328,7 @@ pub(crate) fn trail(track: &Track, map: &CodebaseMap, disclosed: &Disclosed) -> 
     let Some(journey) = track.journey() else {
         return trail;
     };
-    let tile = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
+    let tile = |span: SpanId| track.tile(span, map);
     let start = journey.root();
     // Everything below the start at any depth, each at the fewest calls from it, so
     // the expanded nucleus is laid out once for every depth.

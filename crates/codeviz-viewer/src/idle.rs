@@ -1,6 +1,6 @@
 //! Draws only when something changes. Bevy would otherwise draw every frame the
 //! display allows, holding two cores busy over a still graph. The window wakes on
-//! input; while anything eases, plays or settles, each frame asks for the next.
+//! input; while anything eases, each frame asks for the next.
 
 use std::time::Duration;
 
@@ -22,7 +22,6 @@ impl Plugin for IdlePlugin {
             focused_mode: UpdateMode::reactive(Duration::from_secs(1)),
             unfocused_mode: UpdateMode::reactive_low_power(Duration::from_secs(10)),
         })
-        .init_resource::<Awake>()
         .add_systems(Last, keep_awake);
     }
 }

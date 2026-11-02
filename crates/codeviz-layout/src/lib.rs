@@ -5,5 +5,5 @@
 mod graph;
 mod map;
 
-pub use graph::{ForceConfig, ForceGraph, Reach};
+pub use graph::{ForceConfig, ForceGraph};
 pub use map::{CodebaseMap, map};

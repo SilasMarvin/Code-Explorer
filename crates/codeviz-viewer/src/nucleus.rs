@@ -2529,7 +2529,8 @@ pub(crate) fn create_looks(
         ..default()
     };
     let colors: Vec<Color> = (0..MODULE_SHADES).map(module_color).collect();
-    let flows: Vec<Flow> = [Flow::Into, Flow::Outside, Flow::Module]
+    // A call between modules browsing has its own looks, by how many calls it carries.
+    let flows: Vec<Flow> = [Flow::Into, Flow::Outside]
         .into_iter()
         .chain((1..=SHADES).map(Flow::Journey))
         .collect();
@@ -2558,22 +2559,14 @@ pub(crate) fn create_looks(
         shafts: flows
             .iter()
             .map(|&f| {
-                let alpha = match f {
-                    Flow::Module => 0.14,
-                    _ if f.rank() > 1 => 0.2,
-                    _ => 0.32,
-                };
+                let alpha = if f.rank() > 1 { 0.2 } else { 0.32 };
                 (f, materials.add(see_through(f.color(), alpha)))
             })
             .collect(),
         heads: flows
             .iter()
             .map(|&f| {
-                let alpha = match f {
-                    Flow::Module => 0.3,
-                    _ if f.rank() > 1 => 0.55,
-                    _ => 0.8,
-                };
+                let alpha = if f.rank() > 1 { 0.55 } else { 0.8 };
                 (f, materials.add(see_through(f.color(), alpha)))
             })
             .collect(),

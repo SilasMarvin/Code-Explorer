@@ -37,7 +37,7 @@ use std::path::PathBuf;
 
 use bevy::{prelude::*, window::WindowPlugin};
 use bevy_egui::EguiPlugin;
-use codeviz_core::{JourneyOptions, System};
+use codeviz_core::System;
 use codeviz_ir::UnitId;
 
 use crate::{explorer::Explorer, journey_panel::JourneyPanel};
@@ -46,7 +46,6 @@ use crate::{explorer::Explorer, journey_panel::JourneyPanel};
 #[derive(Debug)]
 pub struct Viewer {
     system: System,
-    options: JourneyOptions,
     title: String,
     screenshot: Option<PathBuf>,
     /// A session's steps, each with its line; with one, the screenshot path is the
@@ -84,7 +83,6 @@ impl Viewer {
     pub fn new(system: System) -> Self {
         Self {
             system,
-            options: JourneyOptions::default(),
             title: "codeviz".to_owned(),
             screenshot: None,
             script: None,
@@ -149,7 +147,7 @@ impl Viewer {
 
     fn explorer(&mut self) -> Explorer {
         // With no journey asked for, browsing, with nothing selected: the whole map.
-        let mut explorer = Explorer::new(std::mem::take(&mut self.system), self.options.clone());
+        let mut explorer = Explorer::new(std::mem::take(&mut self.system));
         let focus = self
             .focus
             .take()
@@ -209,7 +207,6 @@ impl Viewer {
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
         .init_resource::<JourneyPanel>()
-        .init_resource::<ui::Chrome>()
         .init_resource::<idle::Awake>();
         if let (Some(dir), Some(lines)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.

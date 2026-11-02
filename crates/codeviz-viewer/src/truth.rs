@@ -22,7 +22,7 @@ use crate::{
 pub(crate) fn of(explorer: &Explorer) -> Value {
     let disclosed = explorer.disclosure();
     let track = explorer.track();
-    let tile_of = |span| track.unit_id(span).and_then(|u| explorer.map().tile_of(u));
+    let tile_of = |span| track.tile(span, explorer.map());
     let mut calls: Vec<(Vec<u32>, Value)> = disclosed
         .numbered()
         .filter(|(_, number)| !number.is_empty())
@@ -543,7 +543,7 @@ fn bars(view: &View) -> Vec<Value> {
         .iter()
         .filter(|(_, r)| r.intersects(drawn.content))
         .map(|&(span, r)| {
-            let tile = track.unit_id(span).and_then(|u| explorer.map().tile_of(u));
+            let tile = track.tile(span, explorer.map());
             json!({
                 "number": disclosed.number(span),
                 "name": explorer.label(span),

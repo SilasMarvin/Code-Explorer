@@ -105,11 +105,6 @@ impl Press {
         (self.key, self.shift)
     }
 
-    /// The modifiers, each with whether it is held.
-    fn modifiers(self) -> [(bool, KeyCode, Key); 1] {
-        [(self.shift, KeyCode::ShiftLeft, Key::Shift)]
-    }
-
     /// What the window sends for the key going down or up: Shift first going down,
     /// last coming up.
     pub(crate) fn messages(self, state: ButtonState, window: Entity) -> Vec<KeyboardInput> {
@@ -127,14 +122,12 @@ impl Press {
             logical,
             text.filter(|_| state == ButtonState::Pressed),
         );
-        let modifiers = self
-            .modifiers()
-            .into_iter()
-            .filter(|&(on, ..)| on)
-            .map(|(_, code, logical)| message(code, logical, None));
+        let shift = self
+            .shift
+            .then(|| message(KeyCode::ShiftLeft, Key::Shift, None));
         match state {
-            ButtonState::Pressed => modifiers.chain([key]).collect(),
-            ButtonState::Released => [key].into_iter().chain(modifiers).collect(),
+            ButtonState::Pressed => shift.into_iter().chain([key]).collect(),
+            ButtonState::Released => [key].into_iter().chain(shift).collect(),
         }
     }
 

@@ -4,7 +4,7 @@
 //! on, functions in the same module also drift together. The viewer settles it once,
 //! to seed where each module's functions sit inside its sphere, and reads its calls.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use codeviz_core::System;
 use codeviz_ir::UnitId;
@@ -69,20 +69,13 @@ pub struct ForceGraph {
     pub calls: Vec<(usize, usize)>,
     /// Per tile, the tiles it calls in the order the calls are written, repeats kept.
     sequences: Vec<Vec<usize>>,
+    /// Per tile, how many links touch it.
+    degrees: Vec<usize>,
     config: ForceConfig,
 }
 
 /// Where a call is written: line, column, then declaration order as a tiebreak.
 type SiteKey = (u32, u32, usize);
-
-/// Fewest calls between a node and the tiles that reach it, or that it reaches.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Reach {
-    /// Tiles that call into the node, directly (1) or through others.
-    pub upstream: HashMap<usize, u32>,
-    /// Tiles the node calls, directly (1) or through others.
-    pub downstream: HashMap<usize, u32>,
-}
 
 impl ForceGraph {
     /// Seeds every tile at a deterministic point in a ball around the origin.
@@ -129,6 +122,11 @@ impl ForceGraph {
         links.sort_unstable();
         let mut calls: Vec<(usize, usize)> = calls.into_iter().collect();
         calls.sort_unstable();
+        let mut degrees = vec![0; map.tiles.len()];
+        for &(a, b) in &links {
+            degrees[a] += 1;
+            degrees[b] += 1;
+        }
 
         let (clusters, cluster_units) = module_clusters(system, map);
         let radius = (map.tiles.len() as f32).sqrt() * 2.0;
@@ -145,6 +143,7 @@ impl ForceGraph {
             links,
             calls,
             sequences,
+            degrees,
             config,
         }
     }
@@ -153,39 +152,6 @@ impl ForceGraph {
     #[must_use]
     pub fn sequence(&self, tile: usize) -> &[usize] {
         self.sequences.get(tile).map_or(&[], Vec::as_slice)
-    }
-
-    /// Everything that reaches `tile` and everything it reaches, by fewest calls.
-    #[must_use]
-    pub fn reach(&self, tile: usize) -> Reach {
-        Reach {
-            upstream: self.walk(tile, |(caller, callee)| (callee, caller)),
-            downstream: self.walk(tile, |call| call),
-        }
-    }
-
-    /// Breadth-first from `start` along calls turned `(from, to)` by `direction`.
-    fn walk(
-        &self,
-        start: usize,
-        direction: impl Fn((usize, usize)) -> (usize, usize),
-    ) -> HashMap<usize, u32> {
-        let mut next: HashMap<usize, Vec<usize>> = HashMap::new();
-        for &call in &self.calls {
-            let (from, to) = direction(call);
-            next.entry(from).or_default().push(to);
-        }
-        let mut found = HashMap::new();
-        let mut queue = VecDeque::from([(start, 0)]);
-        while let Some((tile, hops)) = queue.pop_front() {
-            for &to in next.get(&tile).into_iter().flatten() {
-                if to != start && !found.contains_key(&to) {
-                    found.insert(to, hops + 1);
-                    queue.push_back((to, hops + 1));
-                }
-            }
-        }
-        found
     }
 
     /// The module cluster a tile pulls into.
@@ -219,10 +185,7 @@ impl ForceGraph {
     /// How many links touch `tile`.
     #[must_use]
     pub fn degree(&self, tile: usize) -> usize {
-        self.links
-            .iter()
-            .filter(|(a, b)| *a == tile || *b == tile)
-            .count()
+        self.degrees.get(tile).copied().unwrap_or(0)
     }
 
     /// Advances the simulation one step. Returns the mean speed, which falls towards
@@ -454,16 +417,19 @@ mod tests {
     }
 
     #[test]
-    fn reach_counts_calls_both_ways() {
+    fn calls_run_one_way_in_the_order_written() {
         let system = system();
         let map = map(&system);
         let graph = ForceGraph::new(&system, &map, ForceConfig::default());
         let tile = |name: &str| map.tile_of(&codeviz_ir::UnitId::new(name)).unwrap();
-        let reach = graph.reach(tile("x:b"));
-        assert_eq!(reach.upstream, HashMap::from([(tile("x:a"), 1)]));
-        assert_eq!(reach.downstream, HashMap::from([(tile("x:c"), 1)]));
-        let from_a = graph.reach(tile("x:a"));
-        assert_eq!(from_a.downstream.get(&tile("x:c")), Some(&2));
+        assert_eq!(
+            graph.callers(tile("x:b")).collect::<Vec<_>>(),
+            [tile("x:a")]
+        );
+        assert_eq!(
+            graph.callees(tile("x:b")).collect::<Vec<_>>(),
+            [tile("x:c")]
+        );
         assert_eq!(graph.sequence(tile("x:a")), [tile("x:b")]);
     }
 

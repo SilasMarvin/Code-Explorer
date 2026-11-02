@@ -187,7 +187,7 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
     match nucleus.level(tile) {
         Some(-1) => NodeLook::Role(Flow::Into),
         Some(level) => NodeLook::Role(Flow::journey(level.unsigned_abs())),
-        None if nucleus.lit(tile) || explorer.reach().is_none() => NodeLook::Plain,
+        None if nucleus.lit(tile) || nucleus.start().is_none() => NodeLook::Plain,
         None => NodeLook::Faded,
     }
 }
@@ -200,13 +200,6 @@ pub(crate) fn node_color(explorer: &Explorer, tile: usize) -> Color {
         NodeLook::Cursor => CURSOR,
         NodeLook::Role(flow) => flow.color(),
         NodeLook::Plain | NodeLook::Faded => FURTHER,
-    }
-}
-
-/// Keeps what reaches the start current.
-pub(crate) fn track_attention(mut explorer: ResMut<Explorer>) {
-    if explorer.bypass_change_detection().refresh_reach() {
-        explorer.set_changed();
     }
 }
 

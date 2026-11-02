@@ -41,7 +41,6 @@ impl Plugin for ScenePlugin {
                 )
                     .chain(),
                 keyboard.run_if(not(egui_wants_any_keyboard_input)),
-                graph_view::track_attention,
                 pick::double_click.run_if(not(egui_wants_any_pointer_input)),
                 nucleus::follow,
                 pick::hover,

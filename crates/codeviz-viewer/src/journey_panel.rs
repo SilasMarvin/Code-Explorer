@@ -211,7 +211,7 @@ fn canvas(
         painter.text(
             content.center(),
             egui::Align2::CENTER_CENTER,
-            "No journey here. Focus a node and press Enter to trace from it.",
+            "No journey runs from this function.",
             egui::FontId::proportional(text::BODY),
             MUTED,
         );
@@ -220,12 +220,10 @@ fn canvas(
     // Only what is disclosed is laid out, a slot per call.
     let disclosed = explorer.disclosure();
     let (placed, slots) = disclosed.layout(journey.root());
-    let start = 0.0;
-    let end = slots.max(1.0);
-    let fit = content.width() / (end - start);
+    let fit = content.width() / slots.max(1.0);
     let scale = panel.zoom.unwrap_or(fit);
     if panel.zoom.is_none() {
-        panel.left = start;
+        panel.left = 0.0;
     }
     let pitch = ROW + ROW_GAP;
     let visible_rows = (content.height() / pitch).floor().max(1.0);
@@ -256,7 +254,7 @@ fn canvas(
     }
     if response.double_clicked() {
         panel.zoom = None;
-        panel.left = start;
+        panel.left = 0.0;
         panel.top_row = 0.0;
     }
 
@@ -283,7 +281,7 @@ fn canvas(
 
     let map = explorer.map();
     let current = explorer.current();
-    let tile_of = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
+    let tile_of = |span: SpanId| track.tile(span, map);
 
     // A bar per span, in the journey's order, so a span's index finds its bar.
     let bars: Vec<Bar> = journey

@@ -19,7 +19,7 @@ use codeviz_core::{
     scenarios,
 };
 use codeviz_ir::{Certainty, Mode, UnitId};
-use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, Reach};
+use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph};
 
 use crate::{
     camera::Pose,
@@ -85,17 +85,24 @@ impl Track {
         }
     }
 
+    /// The node of `map` a span runs, if it resolved to exactly one function.
+    pub(crate) fn tile(&self, id: SpanId, map: &CodebaseMap) -> Option<usize> {
+        self.unit_id(id).and_then(|unit| map.tile_of(unit))
+    }
+
     /// Unrolls the journey from its start on the happy path, with the cursor on the
     /// start and nothing opened by hand.
-    fn reroot(&mut self, system: &System, options: &JourneyOptions) {
+    fn reroot(&mut self, system: &System) {
+        let options = JourneyOptions::default();
         self.scenarios = self
             .start
             .as_ref()
             .map(|start| scenarios(system, start, &options.zoom))
             .unwrap_or_default();
-        self.journey = self.start.as_ref().and_then(|start| {
-            Journey::unroll(system, start, self.scenarios.first(), options.clone())
-        });
+        self.journey = self
+            .start
+            .as_ref()
+            .and_then(|start| Journey::unroll(system, start, self.scenarios.first(), options));
         self.divergences = self.find_divergences();
         self.cursor = self.journey.as_ref().map(Journey::root);
         // A rebuilt journey numbers its spans afresh.
@@ -157,7 +164,6 @@ pub(crate) enum ViewMode {
 #[derive(Resource, Debug)]
 pub(crate) struct Explorer {
     system: System,
-    pub(crate) options: JourneyOptions,
     /// The journey the cursor keys and the panel follow.
     track: Track,
     /// Every function, grouped by container; graph nodes are its tiles.
@@ -168,8 +174,6 @@ pub(crate) struct Explorer {
     /// What each module sphere is called, by cluster: its name, told apart from
     /// another module's of the same name.
     module_names: Vec<String>,
-    /// What reaches the function the nucleus is gathered round, and what it reaches.
-    reach: Option<(usize, Reach)>,
     /// Bumped whenever nodes move.
     moved: u64,
     /// How much of the journey shows.
@@ -240,7 +244,7 @@ pub(crate) enum Return {
 
 impl Explorer {
     /// Browsing, with nothing selected: the whole codebase, framed whole.
-    pub(crate) fn new(system: System, options: JourneyOptions) -> Self {
+    pub(crate) fn new(system: System) -> Self {
         let map = codeviz_layout::map(&system);
         let mut graph = ForceGraph::new(&system, &map, forces());
         for _ in 0..PRESETTLE_STEPS {
@@ -265,12 +269,10 @@ impl Explorer {
         };
         Self {
             system,
-            options,
             track: Track::default(),
             map,
             graph,
             module_names,
-            reach: None,
             moved: 0,
             history: History::default(),
             aim: 0,
@@ -360,7 +362,7 @@ impl Explorer {
         let track = &mut self.track;
         if track.start != view.start {
             track.start = view.start;
-            track.reroot(&self.system, &self.options);
+            track.reroot(&self.system);
         }
         // A journey rebuilt since may no longer have the span.
         track.cursor = view
@@ -579,7 +581,7 @@ impl Explorer {
     /// The one way a journey starts: at `tile`, as deep as the journey before it
     /// showed, with the cursor on its start, remembering where the view was. The
     /// journey it already starts at puts the cursor back on its start. Shift-click,
-    /// Enter, `--focus` and a search all come here.
+    /// Enter, `--focus` and a search in a journey all come here.
     pub(crate) fn open_at(&mut self, tile: usize) {
         let Some(unit) = self.tile_unit(tile).cloned() else {
             return;
@@ -596,7 +598,7 @@ impl Explorer {
                 explorer.track.start = Some(unit);
                 // A new journey brings in no one from outside it until asked.
                 explorer.outside = false;
-                explorer.track.reroot(&explorer.system, &explorer.options);
+                explorer.track.reroot(&explorer.system);
                 explorer.revision += 1;
                 explorer.disclose_again();
             }
@@ -864,26 +866,6 @@ impl Explorer {
         self.map.tile(tile).map(|t| &t.unit)
     }
 
-    /// What reaches the function drawn white and what it reaches, once
-    /// [`Self::refresh_reach`] has run.
-    pub(crate) fn reach(&self) -> Option<&Reach> {
-        self.reach
-            .as_ref()
-            .filter(|(tile, _)| Some(*tile) == self.nucleus.start())
-            .map(|(_, reach)| reach)
-    }
-
-    /// Recomputes [`Self::reach`] when the function drawn white changed. Returns
-    /// whether it did.
-    pub(crate) fn refresh_reach(&mut self) -> bool {
-        let start = self.nucleus.start();
-        if self.reach.as_ref().map(|(tile, _)| *tile) == start {
-            return false;
-        }
-        self.reach = start.map(|tile| (tile, self.graph.reach(tile)));
-        true
-    }
-
     /// A module's name, with as much of its path as tells it from another module's of
     /// the same name.
     pub(crate) fn cluster_name(&self, cluster: usize) -> String {
@@ -898,11 +880,6 @@ impl Explorer {
         self.track.span(id)
     }
 
-    /// The unit a span of the journey runs, if it resolved to exactly one.
-    pub(crate) fn unit_id(&self, id: SpanId) -> Option<&UnitId> {
-        self.track.unit_id(id)
-    }
-
     pub(crate) fn label(&self, id: SpanId) -> String {
         let Some(span) = self.span(id) else {
             return String::new();
@@ -915,11 +892,6 @@ impl Explorer {
                 ids.len()
             ),
             SpanTarget::Unresolved(text) => text.clone(),
-        };
-        let name = if span.merged > 1 {
-            format!("{name} ({} merged)", span.merged)
-        } else {
-            name
         };
         match span.stopped {
             Some(StopReason::Recursion) => format!("{name} ↻"),
@@ -963,14 +935,11 @@ impl Explorer {
         }
         let journey = self.journey()?;
         let current = self.cursor_span().unwrap_or_else(|| journey.root());
-        let tile = |span: SpanId| self.unit_id(span).and_then(|u| self.map.tile_of(u));
+        let tile = |span: SpanId| self.track.tile(span, &self.map);
         // A closure is drawn as part of the function around it, with no bar or node of
         // its own: the cursor never stops on one, and the calls made inside it are its
         // caller's.
-        let closure = |span: SpanId| {
-            tile(span).is_some()
-                && journey.span(span).and_then(|s| s.parent).and_then(tile) == tile(span)
-        };
+        let closure = |span: SpanId| disclosure::is_closure(journey, &tile, span);
         // The keys read the picture as it is: they stop only on a call drawn, one with
         // a node of its own (not a closure, nor a call to one of several functions)
         // and disclosed, so they never open a level or reach past the depth shown.
@@ -1081,7 +1050,7 @@ pub(crate) enum Step {
     Parent,
 }
 
-/// Whether a span is reached by a call that always happens on this path.
+/// Whether a span runs only sometimes on this path: under a condition, or in a loop.
 pub(crate) fn is_conditional(span: &Span) -> bool {
     !span.conditions.is_empty() || span.repeats
 }
@@ -1125,7 +1094,7 @@ pub(crate) mod tests {
 
     /// An explorer with the journey from `start` open, as if it had opened there.
     pub(crate) fn opened(system: System, start: &str) -> Explorer {
-        let mut explorer = Explorer::new(system, JourneyOptions::default());
+        let mut explorer = Explorer::new(system);
         let tile = explorer.map().tile_of(&UnitId::new(start)).unwrap();
         explorer.open_at(tile);
         explorer.forget_history();
@@ -1202,19 +1171,6 @@ pub(crate) mod tests {
             explorer.notice().map(|(_, t)| t),
             Some("Already at the journey's start")
         );
-    }
-
-    #[test]
-    fn the_start_reaches_up_its_callers() {
-        let mut explorer = explorer();
-        let c = explorer.map().tile_of(&UnitId::new("x:c")).unwrap();
-        explorer.open_at(c);
-        explorer.ease_nucleus(1.0);
-        explorer.refresh_reach();
-        let tile = |name: &str| explorer.map().tile_of(&UnitId::new(name)).unwrap();
-        let reach = explorer.reach().unwrap();
-        assert_eq!(reach.upstream.get(&tile("x:a")), Some(&1));
-        assert_eq!(reach.upstream.get(&tile("x:main")), Some(&2));
     }
 
     #[test]
@@ -1464,7 +1420,7 @@ pub(crate) mod tests {
 
         explorer.click(b, None);
         assert_eq!(explorer.aside(), Some(b));
-        assert_eq!(explorer.current(), Some(b), "I and O act on it");
+        assert_eq!(explorer.current(), Some(b), "Enter acts on it");
         assert_eq!(at(&explorer), "a", "the cursor stays put");
 
         assert_eq!(
@@ -1589,7 +1545,6 @@ pub(crate) mod tests {
         explorer.ease_nucleus(1.0);
         assert_eq!(explorer.current(), Some(a), "the cursor moved");
         assert_eq!(explorer.nucleus().start(), Some(main), "the middle did not");
-        assert_eq!(explorer.nucleus().start(), Some(main));
         assert_eq!(explorer.cursor(), Some(a), "the cursor is marked");
         assert_eq!(explorer.nucleus().cursor(), Some(a));
 
