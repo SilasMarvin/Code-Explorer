@@ -249,7 +249,7 @@ def check_script(script, wt=REPO, view_args=None):
     exe = binary(wt)
     with tempfile.TemporaryDirectory() as tmp:
         log = Path(tmp) / "check.log"
-        argv = [str(exe), *view_args, "--script", str(script), "--screenshot", tmp, "--check-script"]
+        argv = [str(exe), *view_args, "--check-script", str(script)]
         if guarded(argv, Path(wt).resolve(), log, 300) != 0:
             raise Trouble(f"{script.name}:\n{viewer_errors(log)}")
 
