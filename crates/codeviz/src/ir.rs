@@ -97,29 +97,6 @@ fn analyze_dir(root: &Path, source: &Source) -> anyhow::Result<Document> {
     }
 }
 
-#[derive(Debug, clap::Args)]
-pub(crate) struct ImportArgs {
-    /// A Buildkite pipeline YAML file.
-    pipeline: PathBuf,
-    /// The pipeline slug; defaults to the file name.
-    #[arg(long)]
-    slug: Option<String>,
-    /// Write the document here instead of stdout.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-}
-
-pub(crate) fn import(args: &ImportArgs) -> anyhow::Result<()> {
-    let slug = args.slug.clone().unwrap_or_else(|| {
-        args.pipeline.file_stem().map_or_else(
-            || "pipeline".to_owned(),
-            |s| s.to_string_lossy().into_owned(),
-        )
-    });
-    let document = codeviz_buildkite::import_file(&args.pipeline, &slug)?;
-    write(&document, args.output.as_ref())
-}
-
 fn write(document: &Document, output: Option<&PathBuf>) -> anyhow::Result<()> {
     let json = document.to_json()?;
     match output {
@@ -161,12 +138,6 @@ pub(crate) fn validate(args: &ValidateArgs) -> anyhow::Result<()> {
     if errors > 0 {
         bail!("{errors} validation errors");
     }
-    Ok(())
-}
-
-pub(crate) fn schema() -> anyhow::Result<()> {
-    let schema = serde_json::to_string_pretty(&codeviz_ir::json_schema())?;
-    writeln!(std::io::stdout().lock(), "{schema}")?;
     Ok(())
 }
 

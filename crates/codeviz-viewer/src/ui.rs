@@ -98,11 +98,9 @@ struct Search {
 
 pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 
-/// What draws around the graph: everything, or bare, with only the graph and the
-/// journey; and whether the search box is open.
+/// Whether the search box is open.
 #[derive(Resource, Default)]
 pub(crate) struct Chrome {
-    pub(crate) bare: bool,
     pub(crate) search: bool,
 }
 
@@ -127,11 +125,7 @@ fn draw_ui(
             .max_rect(ctx.viewport_rect()),
     );
 
-    let top = if chrome.bare {
-        0.0
-    } else {
-        top_bar(&mut root_ui, &mut explorer, &mut chrome)
-    };
+    let top = top_bar(&mut root_ui, &mut explorer, &mut chrome);
 
     let screen = ctx.viewport_rect();
     let central =
@@ -165,7 +159,7 @@ fn draw_ui(
             (transform.up().into(), transform.right().into()),
             settled,
         );
-        if chrome.search && !chrome.bare {
+        if chrome.search {
             search_box(
                 ctx,
                 graph_area,
@@ -174,9 +168,7 @@ fn draw_ui(
                 &mut chrome.search,
             );
         }
-        if !chrome.bare {
-            legend(ctx, graph_area, Showing::of(&explorer));
-        }
+        key_hint(ctx, graph_area, Showing::of(&explorer));
         if help.0 {
             // Down to the window's foot, over the journey panel where it must, so the
             // whole list fits rather than scrolls.
@@ -1954,7 +1946,7 @@ fn unnamed_note(painter: &egui::Painter, unnamed: usize, lit: usize) {
 }
 
 /// A hint at the keys along `foot`.
-fn legend(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
+fn key_hint(ctx: &egui::Context, foot: egui::Rect, view: Showing) {
     ctx.layer_painter(egui::LayerId::background())
         .with_clip_rect(foot)
         .text(
@@ -2147,7 +2139,7 @@ const KEYS: [KeyGroup; 7] = [
             ("R", "frame the journey from this angle", When::Journey),
         ],
     ),
-    ("Layout", &[("H", "this list", When::Always)]),
+    ("Help", &[("H", "this list", When::Always)]),
 ];
 
 /// What each color means, as the help leads with it.
@@ -2190,8 +2182,8 @@ fn reading(browsing: bool) -> &'static [&'static str] {
          show their types (Explorer.root, Track.root).",
         "The panel: a bar per call, left to right as they run, a row a level deeper. \
          Dashed: runs only sometimes, and says when (if …, in a loop). Pale: a call only \
-         guessed at, or handed off to run later. A triangle and a count: calls folded under it; a click opens them. A \
-         green end returns, a red one fails.",
+         guessed at, or handed off to run later. A triangle and a count: calls folded \
+         under it; a click opens them. A green end returns, a red one fails.",
     ]
 }
 

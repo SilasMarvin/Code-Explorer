@@ -1,17 +1,16 @@
-//! Non-interactive mode: render a few frames, press any keys asked for, save a
-//! screenshot and what the view means to show beside it (`shot.png`,
-//! `shot.truth.json`), exit.
+//! Non-interactive mode: render a few frames, save a screenshot and what the view
+//! means to show beside it (`shot.png`, `shot.truth.json`), exit. [`Press`], a key as
+//! the window sends it, is shared with scripted sessions.
 
 use std::{path::PathBuf, time::Duration};
 
 use bevy::{
     input::{
-        ButtonState, InputSystems,
+        ButtonState,
         keyboard::{Key, KeyboardInput},
     },
     prelude::*,
     render::view::screenshot::{Capturing, Screenshot, save_to_disk},
-    window::PrimaryWindow,
 };
 
 use crate::explorer::Explorer;
@@ -21,11 +20,6 @@ pub(crate) const SETTLE_FRAMES: u32 = 90;
 /// Time to let it settle as well: on a first run shaders compile in the background,
 /// and until they do the frames come quickly and draw nothing.
 pub(crate) const SETTLE_TIME: Duration = Duration::from_secs(2);
-/// Frames between one key and the next.
-const KEY_GAP: u32 = 15;
-/// Frames and time to let the view settle after the last key, as the camera glides.
-const AFTER_KEYS_FRAMES: u32 = 60;
-const AFTER_KEYS_TIME: Duration = Duration::from_millis(1500);
 /// Frames to wait after capture so the file write completes.
 pub(crate) const DRAIN_FRAMES: u32 = 30;
 
@@ -177,23 +171,16 @@ impl Press {
 
 pub(crate) struct CapturePlugin {
     pub(crate) path: PathBuf,
-    pub(crate) keys: Vec<Press>,
 }
 
 impl Plugin for CapturePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Capture {
             path: self.path.clone(),
-            keys: self.keys.clone(),
             frame: 0,
             started: None,
-            pressed: 0,
-            last_press: None,
-            held: None,
             requested_at: None,
         })
-        // Keys go in with the window's own input, so the frame's systems see them.
-        .add_systems(PreUpdate, press_keys.before(InputSystems))
         .add_systems(Update, capture);
     }
 }
@@ -201,63 +188,18 @@ impl Plugin for CapturePlugin {
 #[derive(Resource)]
 struct Capture {
     path: PathBuf,
-    keys: Vec<Press>,
     frame: u32,
     started: Option<Duration>,
-    /// How many of `keys` have been pressed.
-    pressed: usize,
-    /// The frame and time the last key went down.
-    last_press: Option<(u32, Duration)>,
-    /// The key down now, to let go of next frame.
-    held: Option<Press>,
     requested_at: Option<u32>,
 }
 
 impl Capture {
     /// Whether the scene has had time to settle since it started.
-    fn settled(&self, now: Duration) -> bool {
+    fn ready(&self, now: Duration) -> bool {
         self.started.is_some_and(|started| {
             self.frame >= SETTLE_FRAMES && now.saturating_sub(started) >= SETTLE_TIME
         })
     }
-
-    /// Whether every key has been pressed and the view has settled since the last.
-    fn ready(&self, now: Duration) -> bool {
-        self.settled(now)
-            && self.pressed == self.keys.len()
-            && self.held.is_none()
-            && self.last_press.is_none_or(|(frame, at)| {
-                self.frame >= frame + AFTER_KEYS_FRAMES && now.saturating_sub(at) >= AFTER_KEYS_TIME
-            })
-    }
-}
-
-/// Once the scene settles, presses each key in turn, a few frames apart. Keys go in
-/// as the window would send them, so egui sees them as well as the scene does.
-fn press_keys(
-    mut state: ResMut<Capture>,
-    mut input: MessageWriter<KeyboardInput>,
-    window: Single<Entity, With<PrimaryWindow>>,
-    time: Res<Time<Real>>,
-) {
-    if let Some(held) = state.held.take() {
-        input.write_batch(held.messages(ButtonState::Released, *window));
-        return;
-    }
-    let now = time.elapsed();
-    let due = state
-        .last_press
-        .is_none_or(|(frame, _)| state.frame >= frame + KEY_GAP);
-    if !state.settled(now) || !due {
-        return;
-    }
-    let Some(&press) = state.keys.get(state.pressed) else {
-        return;
-    };
-    input.write_batch(press.messages(ButtonState::Pressed, *window));
-    state.held = Some(press);
-    state.pressed += 1;
-    state.last_press = Some((state.frame, now));
 }
 
 fn capture(

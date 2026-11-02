@@ -163,8 +163,8 @@ pub(crate) fn speck(explorer: &Explorer, tile: usize) -> bool {
     n.shows(tile) && !n.lit(tile) && n.focus() != Some(tile)
 }
 
-/// Whether a function is a speck the nucleus leaves out altogether (N): not drawn,
-/// and not pointed at.
+/// Whether a function is a speck the nucleus leaves out altogether, as a journey
+/// does: not drawn, and not pointed at.
 pub(crate) fn hidden_speck(explorer: &Explorer, tile: usize) -> bool {
     explorer.nucleus().specks_hidden() && speck(explorer, tile)
 }

@@ -23,9 +23,3 @@ pub enum Error {
     #[error("unsupported schema `{found}`; this build reads `{SCHEMA}`")]
     Schema { found: String },
 }
-
-/// The JSON Schema for [`Document`].
-#[must_use]
-pub fn json_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(Document)).unwrap_or_default()
-}

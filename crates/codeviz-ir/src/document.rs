@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, fmt};
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
@@ -11,7 +10,7 @@ const SCHEMA_FAMILY: &str = "codeviz/";
 const SCHEMA_MAJOR: &str = "0";
 
 /// A snapshot of one system.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     /// `codeviz/<major>.<minor>`.
     pub schema: String,
@@ -87,13 +86,13 @@ impl Document {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Producer {
     pub name: String,
     pub version: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Revision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
@@ -105,9 +104,7 @@ pub struct Revision {
 }
 
 /// `<scheme>:<path>`. The path is opaque to consumers.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UnitId(String);
 
@@ -147,9 +144,7 @@ impl fmt::Display for UnitId {
 }
 
 /// Identifies a call site within its unit: `<text>#<n>`.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct CallKey(String);
 
@@ -177,7 +172,7 @@ impl fmt::Display for CallKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Unit {
     pub id: UnitId,
     pub name: String,
@@ -234,7 +229,7 @@ impl Unit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Group,
@@ -245,14 +240,14 @@ pub enum Role {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentHash {
     pub algo: String,
     pub value: String,
 }
 
 /// A scalar attribute value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Scalar {
     Bool(bool),
@@ -296,7 +291,7 @@ impl fmt::Display for Scalar {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Invocation {
     pub key: CallKey,
     /// The callee as written.
@@ -336,13 +331,13 @@ impl Invocation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     pub unit: UnitId,
     pub certainty: Certainty,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Certainty {
     /// Asserted by a person, agent, or manifest.
@@ -357,7 +352,7 @@ pub enum Certainty {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Dispatch {
     /// Exactly one target runs.
@@ -369,7 +364,7 @@ pub enum Dispatch {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     /// The caller waits for the target.
@@ -384,7 +379,7 @@ pub enum Mode {
 }
 
 /// A control-flow step. See `docs/ir.md` for semantics.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub enum Step {
     Call {
@@ -412,14 +407,14 @@ pub enum Step {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Arm {
     pub label: String,
     #[serde(default)]
     pub body: Vec<Step>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DagNode {
     pub id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -428,7 +423,7 @@ pub struct DagNode {
     pub body: Vec<Step>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitKind {
     Return,
@@ -438,7 +433,7 @@ pub enum ExitKind {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub unit: UnitId,
     pub label: String,
@@ -448,7 +443,7 @@ pub struct Entry {
     pub chain: Vec<UnitId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
     /// POSIX path relative to the document root, or an absolute URI.
     pub uri: String,
@@ -467,7 +462,7 @@ impl fmt::Display for Location {
 }
 
 /// 1-based lines; 1-based columns counting UTF-8 bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Range {
     pub start_line: u32,
     pub start_col: u32,
@@ -536,7 +531,7 @@ mod tests {
 }
 
 /// A correspondence between two units. Experimental.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     pub kind: LinkKind,
     pub from: UnitId,
@@ -547,7 +542,7 @@ pub struct Link {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkKind {
     /// `from` and `to` are the same thing described by two sources.

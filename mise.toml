@@ -14,26 +14,9 @@ description = "Regenerate the demo IR documents"
 run = [
   "cargo run -q -p codeviz -- analyze demo/axum-server -o demo/out/axum-server.json",
   "cargo run -q -p codeviz -- analyze demo/python-service -o demo/out/python-service.json",
-  "cargo run -q -p codeviz -- import demo/pipelines/deploy.yml --slug orders-deploy -o demo/out/deploy-pipeline.json",
-  "cargo run -q -p codeviz -- validate demo/out/*.json demo/architecture/orders-platform.json",
+  "cargo run -q -p codeviz -- validate demo/out/*.json",
 ]
 
 [tasks.demo]
 description = "Explore the Rust demo, starting at POST /users/{id}/orders"
 run = "cargo run -p codeviz -- view demo/out/axum-server.json --focus 'POST /users/{id}/orders'"
-
-[tasks.demo-merged]
-description = "Explore the architecture and Rust code as one system"
-run = "cargo run -p codeviz -- view demo/architecture/orders-platform.json demo/out/axum-server.json --entry 'POST /users/{id}/orders'"
-
-[tasks.demo-zoom]
-description = "Architecture + Rust + Python joined by the links document; zoom in from the viewer"
-run = "cargo run -p codeviz -- view demo/architecture/orders-platform.json demo/out/axum-server.json demo/out/python-service.json demo/links/orders-platform.links.json --entry arch:api-gateway/post-users-id-orders"
-
-[tasks.readability-render]
-description = "Screenshot the readability scenarios and write a quiz for each (target/readability/latest)"
-run = "python3 eval/readability/readability.py render"
-
-[tasks.readability-grade]
-description = "Score the answers readers gave for the latest readability run"
-run = "python3 eval/readability/readability.py grade"
