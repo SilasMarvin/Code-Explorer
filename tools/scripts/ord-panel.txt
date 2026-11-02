@@ -1,0 +1,51 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus Explorer::spotlit --depth 4
+# The panel on a crowded journey: every bar keeps its number, the cursor's bar keeps
+# to its slot, one bar only is the cursor's; a level less takes the cursor up to the
+# call still drawn; Esc selects the start. A function that calls itself says so.
+snap open d4
+key down
+key down
+expect cursor Explorer::graph_focus
+snap cursor at 1.1
+key ,
+key ,
+key ,
+expect depth 1
+expect cursor Explorer::spotlight
+snap depth 1
+key .
+key .
+key ]
+key ]
+key ]
+snap depth 3 walked
+window 1200 800
+snap small window
+key esc
+expect mode browse
+expect selection Explorer::spotlit
+snap left
+key /
+type Finder::walk
+key enter
+expect selection Finder::walk
+key enter
+expect start Finder::walk
+key .
+snap calls itself
+key /
+type walk
+snap search walk
+key esc
+key esc
+window 1600 1000
+key /
+type Index::walk
+key enter
+key enter
+expect start Index::walk
+key .
+key .
+snap index walk d3
+key ]
+snap index walk step
