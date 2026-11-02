@@ -1,6 +1,5 @@
-//! The journey as a flame graph over the graph: time left to right, each call
-//! on the row below its caller. Docked in a corner while the graph has the screen, or
-//! filling the screen below a strip of graph. Each bar is painted the color of its
+//! The journey as a flame graph docked along the foot of the window: time left to
+//! right, each call on the row below its caller. Each bar is painted the color of its
 //! node, and the cursor, hover and focus are shared with the graph, so a bar and its
 //! node light up together.
 
@@ -17,19 +16,9 @@ use crate::{
     ui::{egui_color, journey_title, short},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum PanelMode {
-    Hidden,
-    /// In the bottom-right corner over the graph.
-    #[default]
-    Docked,
-    /// Below the graph, which shrinks to a strip above it.
-    Full,
-}
-
+/// How the panel is zoomed and scrolled.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct JourneyPanel {
-    pub(crate) mode: PanelMode,
     /// Pixels per world unit of time; `None` fits the whole journey across.
     zoom: Option<f32>,
     /// The world time at the left edge.
@@ -42,17 +31,6 @@ pub(crate) struct JourneyPanel {
     lit_node: bool,
 }
 
-impl JourneyPanel {
-    pub(crate) fn new(mode: PanelMode) -> Self {
-        Self {
-            mode,
-            ..Self::default()
-        }
-    }
-}
-
-/// Share of the screen's height the graph keeps above a full-size journey.
-const GRAPH_STRIP: f32 = 0.34;
 const MARGIN: f32 = 12.0;
 const HEADER: f32 = 28.0;
 const PAD: f32 = 8.0;
@@ -81,47 +59,30 @@ pub(crate) fn rows(explorer: &Explorer) -> usize {
     }
 }
 
-/// Where the graph renders and where the panel sits, within the space between the
-/// side panels, with `rows` of bars to show.
-pub(crate) fn split(
-    mode: PanelMode,
-    area: egui::Rect,
-    rows: usize,
-) -> (egui::Rect, Option<egui::Rect>) {
-    match mode {
-        PanelMode::Hidden => (area, None),
-        // Along the foot of the window, as wide as it, and as tall as the levels shown,
-        // up to a few, past which it scrolls. The graph renders above the tallest it
-        // grows to, so a level more or less never moves the graph.
-        PanelMode::Docked => {
-            #[expect(clippy::cast_precision_loss, reason = "a handful of rows")]
-            let height = |rows: usize| {
-                (HEADER + PAD * 2.0 + rows as f32 * (ROW + ROW_GAP))
-                    .min((area.height() * 0.4).max(140.0))
-                    .min(area.height() - MARGIN * 2.0)
-            };
-            let tallest = height(DOCKED_ROWS);
-            let panel = egui::Rect::from_min_max(
-                egui::pos2(
-                    area.min.x + MARGIN,
-                    area.max.y - MARGIN - height(rows.clamp(2, DOCKED_ROWS)),
-                ),
-                area.max - egui::vec2(MARGIN, MARGIN),
-            );
-            let graph = egui::Rect::from_min_max(
-                area.min,
-                egui::pos2(area.max.x, area.max.y - MARGIN - tallest),
-            );
-            (graph, Some(panel))
-        }
-        PanelMode::Full => {
-            let strip = area.height() * GRAPH_STRIP;
-            let graph =
-                egui::Rect::from_min_max(area.min, egui::pos2(area.max.x, area.min.y + strip));
-            let panel = egui::Rect::from_min_max(egui::pos2(area.min.x, graph.max.y), area.max);
-            (graph, Some(panel))
-        }
-    }
+/// Where the graph renders and where the panel sits, within `area`, with `rows` of
+/// bars to show: along the foot of the window, as wide as it, and as tall as the
+/// levels shown, up to a few, past which it scrolls. The graph renders above the
+/// tallest it grows to, so a level more or less never moves the graph.
+pub(crate) fn split(area: egui::Rect, rows: usize) -> (egui::Rect, egui::Rect) {
+    #[expect(clippy::cast_precision_loss, reason = "a handful of rows")]
+    let height = |rows: usize| {
+        (HEADER + PAD * 2.0 + rows as f32 * (ROW + ROW_GAP))
+            .min((area.height() * 0.4).max(140.0))
+            .min(area.height() - MARGIN * 2.0)
+    };
+    let tallest = height(DOCKED_ROWS);
+    let panel = egui::Rect::from_min_max(
+        egui::pos2(
+            area.min.x + MARGIN,
+            area.max.y - MARGIN - height(rows.clamp(2, DOCKED_ROWS)),
+        ),
+        area.max - egui::vec2(MARGIN, MARGIN),
+    );
+    let graph = egui::Rect::from_min_max(
+        area.min,
+        egui::pos2(area.max.x, area.max.y - MARGIN - tallest),
+    );
+    (graph, panel)
 }
 
 /// One bar on screen.
@@ -155,14 +116,9 @@ pub(crate) fn draw(
         .show(ctx, |ui| {
             ui.set_clip_rect(rect);
             ui.allocate_rect(rect, egui::Sense::hover());
-            let rounding = if panel.mode == PanelMode::Full {
-                0.0
-            } else {
-                8.0
-            };
             ui.painter().rect(
                 rect,
-                rounding,
+                8.0,
                 BACKGROUND,
                 egui::Stroke::new(1.0, egui::Color32::from_white_alpha(28)),
                 egui::StrokeKind::Inside,
@@ -230,20 +186,6 @@ fn header_bar(
             // The controls first, so the title takes what room is left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .small_button("×")
-                    .on_hover_text("Hide the journey (J)")
-                    .clicked()
-                {
-                    panel.mode = PanelMode::Hidden;
-                }
-                let (label, hint, next) = match panel.mode {
-                    PanelMode::Full => ("⤡", "Give the graph the screen (M)", PanelMode::Docked),
-                    _ => ("⤢", "Give the journey the screen (M)", PanelMode::Full),
-                };
-                if ui.small_button(label).on_hover_text(hint).clicked() {
-                    panel.mode = next;
-                }
-                if ui
                     .small_button("Fit")
                     .on_hover_text("Fit the whole journey (double-click)")
                     .clicked()
@@ -260,7 +202,7 @@ fn header_bar(
     );
 }
 
-/// The journey's name and, when one is picked, the outcome it follows.
+/// The journey's name.
 fn title(ui: &mut egui::Ui, explorer: &Explorer) {
     ui.add(
         egui::Label::new(
@@ -270,22 +212,6 @@ fn title(ui: &mut egui::Ui, explorer: &Explorer) {
         )
         .truncate(),
     );
-    // The outcome only where it fits whole: the outline names it too.
-    if let Some(scenario) = explorer
-        .scenario()
-        .and_then(|i| explorer.scenarios().get(i))
-        .filter(|s| ui.available_width() > 16.0 + 6.0 * s.outcome.label.chars().count() as f32)
-    {
-        let (mark, color) = match scenario.outcome.kind {
-            ExitKind::Return => ("✔", OK),
-            _ => ("×", ERROR),
-        };
-        ui.label(
-            egui::RichText::new(format!("{mark} {}", scenario.outcome.label))
-                .color(color)
-                .small(),
-        );
-    }
 }
 
 #[expect(clippy::too_many_lines, reason = "one pass over the bars")]
@@ -381,9 +307,7 @@ fn canvas(
     let y_of = |row: f32| content.min.y + (row - panel.top_row) * pitch;
 
     let map = explorer.map();
-    let cursor_enter = cursor.and_then(|c| track.span(c)).map_or(0, |s| s.enter);
     let graph_focus = explorer.graph_focus();
-    let stepping = cursor.is_some_and(|c| track.journey().is_some_and(|j| j.root() != c));
     let tile_of = |span: SpanId| track.unit_id(span).and_then(|u| map.tile_of(u));
 
     let bars: Vec<Bar> = scene
@@ -465,16 +389,8 @@ fn canvas(
             |tile| node_color(explorer, tile),
         ));
         let faint = Confidence::of(span) == Confidence::Guessed || is_handoff(span);
-        // What runs after the cursor dims once you step through it; at the start,
-        // everything shows in full.
-        let future = stepping && span.enter > cursor_enter;
         let (fill, text) = if faint {
             (base.gamma_multiply(0.22), MUTED)
-        } else if future {
-            (
-                base.gamma_multiply(0.38),
-                egui::Color32::from_rgb(200, 205, 216),
-            )
         } else {
             (base, egui::Color32::from_rgb(14, 16, 22))
         };
@@ -622,20 +538,6 @@ fn canvas(
         }
     }
 
-    // A red end on the bars where other outcomes split off, inside the bar so it
-    // cannot be read as its neighbor's; click one to follow it.
-    let mut divergence_hit = None;
-    for divergence in track.divergences() {
-        let Some(rect) = rect_of(divergence.span) else {
-            continue;
-        };
-        let mark = egui::Rect::from_min_max(egui::pos2(rect.max.x - 5.0, rect.min.y), rect.max);
-        painter.rect_filled(mark, 2.0, ERROR);
-        if mouse.is_some_and(|p| mark.expand(3.0).contains(p)) {
-            divergence_hit = Some((divergence.scenario, divergence.label.clone()));
-        }
-    }
-
     // With the focus on a node off the journey, the journey steps back behind it; the
     // cursor still shows where an arrow key returns to.
     if explorer.aside().is_some() {
@@ -678,11 +580,7 @@ fn canvas(
         painter.galley(at, galley, egui::Color32::WHITE);
     }
 
-    if let Some((_, label)) = &divergence_hit {
-        response
-            .clone()
-            .on_hover_text(format!("× {label} (click to follow)"));
-    } else if let Some(span) = hovered {
+    if let Some(span) = hovered {
         if let Some(rect) = rect_of(span) {
             painter.rect_stroke(
                 rect.expand(1.0),
@@ -734,8 +632,6 @@ fn canvas(
     if response.clicked_by(egui::PointerButton::Primary) {
         if let Some(span) = fold_hit {
             explorer.toggle_expanded(span);
-        } else if let Some((scenario, _)) = divergence_hit {
-            explorer.set_scenario(Some(scenario));
         } else if let Some(span) = hovered {
             explorer.go_to(span);
         }

@@ -113,8 +113,6 @@ pub(crate) fn state(view: &View) -> Value {
         "spotlight": explorer.spotlight().map(|(side, _)| format!("{side:?}").to_lowercase()),
         "pointed": explorer.pointed().map(name),
         "under_pointer": explorer.hovered_tile.map(name),
-        "journey_panel": format!("{:?}", view.panel.mode).to_lowercase(),
-        "side_panel": view.chrome.side,
         "search": view.chrome.search,
         "help": view.help.0,
         "back": explorer.can_go_back(),

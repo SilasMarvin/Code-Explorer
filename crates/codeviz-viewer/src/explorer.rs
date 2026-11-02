@@ -14,10 +14,10 @@ use std::{
 
 use bevy::prelude::*;
 use codeviz_core::{
-    Journey, JourneyOptions, Level, Scenario, Span, SpanId, SpanTarget, StopReason, System,
-    display_name, scenarios,
+    Journey, JourneyOptions, Scenario, Span, SpanId, SpanTarget, StopReason, System, display_name,
+    scenarios,
 };
-use codeviz_ir::{Certainty, ExitKind, Location, Mode, Unit, UnitId};
+use codeviz_ir::{Certainty, Mode, UnitId};
 use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph, LayoutConfig, MapConfig, Reach, Scene};
 
 use crate::{
@@ -56,17 +56,8 @@ impl Confidence {
     }
 }
 
-/// A place in the happy path where another outcome splits off.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Divergence {
-    pub(crate) span: SpanId,
-    pub(crate) scenario: usize,
-    pub(crate) kind: ExitKind,
-    pub(crate) label: String,
-}
-
-/// The journey: where it starts, which outcome it shows, its cursor, and its layout
-/// in time and depth.
+/// The journey: where it starts, on its happy path, the outcomes that split off it,
+/// its cursor, and its layout in time and depth.
 #[derive(Debug, Default)]
 pub(crate) struct Track {
     root: Option<UnitId>,
@@ -74,7 +65,8 @@ pub(crate) struct Track {
     scenario: Option<usize>,
     journey: Option<Journey>,
     scene: Scene,
-    divergences: Vec<Divergence>,
+    /// Where each failing outcome splits off the happy path.
+    divergences: Vec<SpanId>,
     selected: Option<SpanId>,
     /// Spans opened one level past the disclosed depth, by hand or by the cursor.
     expanded: HashSet<SpanId>,
@@ -95,7 +87,8 @@ impl Track {
         &self.scene
     }
 
-    pub(crate) fn divergences(&self) -> &[Divergence] {
+    /// Where on the happy path each failing outcome splits off.
+    pub(crate) fn divergences(&self) -> &[SpanId] {
         &self.divergences
     }
 
@@ -154,26 +147,19 @@ impl Track {
 
     /// On the happy path, where each failing outcome splits off: the deepest unit on
     /// its chain that the happy path also runs.
-    fn find_divergences(&self) -> Vec<Divergence> {
+    fn find_divergences(&self) -> Vec<SpanId> {
         let (Some(journey), Some(0)) = (&self.journey, self.scenario) else {
             return Vec::new();
         };
         self.scenarios
             .iter()
-            .enumerate()
             .skip(1)
-            .filter_map(|(index, scenario)| {
-                let span = scenario.chain.iter().rev().find_map(|site| {
+            .filter_map(|scenario| {
+                scenario.chain.iter().rev().find_map(|site| {
                     journey
                         .spans()
                         .find(|(_, s)| s.target == SpanTarget::Unit(site.unit.clone()))
                         .map(|(id, _)| id)
-                })?;
-                Some(Divergence {
-                    span,
-                    scenario: index,
-                    kind: scenario.outcome.kind,
-                    label: scenario.outcome.label.clone(),
                 })
             })
             .collect()
@@ -420,19 +406,6 @@ impl Explorer {
         self.track().journey()
     }
 
-    pub(crate) fn scenarios(&self) -> &[Scenario] {
-        &self.track().scenarios
-    }
-
-    /// The outcome shown; `None` shows every path at once.
-    pub(crate) fn scenario(&self) -> Option<usize> {
-        self.track().scenario
-    }
-
-    pub(crate) fn divergences(&self) -> &[Divergence] {
-        self.track().divergences()
-    }
-
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
@@ -441,7 +414,6 @@ impl Explorer {
     fn view(&self) -> View {
         View {
             root: self.root().cloned(),
-            scenario: self.scenario(),
             cursor: self.selected(),
             disclose: self.disclose,
             expanded: self.track().expanded.clone(),
@@ -475,10 +447,6 @@ impl Explorer {
         if track.root != view.root {
             track.root = view.root;
             track.reroot(&self.system, &self.options, &self.layout);
-        }
-        if track.scenario != view.scenario {
-            track.scenario = view.scenario;
-            track.rebuild(&self.system, &self.options, &self.layout);
         }
         // A journey rebuilt since may no longer have the span.
         track.selected = view
@@ -726,29 +694,6 @@ impl Explorer {
         self.recolor();
     }
 
-    /// Follows another outcome, landing on the exit it ends at.
-    pub(crate) fn set_scenario(&mut self, scenario: Option<usize>) {
-        self.navigate(|explorer| explorer.choose_scenario(scenario));
-    }
-
-    fn choose_scenario(&mut self, scenario: Option<usize>) {
-        if self.scenario() != scenario {
-            self.track_mut().scenario = scenario;
-            self.rebuild();
-            // Land on the exit the outcome ends at.
-            if scenario.is_some_and(|s| s > 0) {
-                let exit = self.journey().and_then(|j| {
-                    j.spans()
-                        .filter(|(_, s)| s.exits.iter().any(|e| e.kind != ExitKind::Return))
-                        .map(|(id, _)| id)
-                        .last()
-                        .or_else(|| j.spans().last().map(|(id, _)| id))
-                });
-                self.select(exit);
-            }
-        }
-    }
-
     /// Follows the focus: the journey starts there, whether the focus is the cursor's
     /// node, one clicked off the journey or the function selected browsing,
     /// remembering where it was.
@@ -766,22 +711,6 @@ impl Explorer {
             }
         });
         self.aim += 1;
-    }
-
-    pub(crate) fn toggle_zoom(&mut self, unit: UnitId) {
-        let level = match self.options.zoom.level(&unit) {
-            Level::Summary => Level::Detail,
-            Level::Detail => Level::Summary,
-        };
-        self.options.zoom.set(unit, level);
-        self.reroot();
-    }
-
-    /// Rebuilds the journey.
-    pub(crate) fn rebuild(&mut self) {
-        self.track
-            .rebuild(&self.system, &self.options, &self.layout);
-        self.recolor();
     }
 
     /// The codebase as a graph of calls.
@@ -1320,10 +1249,6 @@ impl Explorer {
         self.track().unit_id(id)
     }
 
-    pub(crate) fn unit(&self, id: SpanId) -> Option<&Unit> {
-        self.system.unit(self.unit_id(id)?)
-    }
-
     pub(crate) fn label(&self, id: SpanId) -> String {
         let Some(span) = self.span(id) else {
             return String::new();
@@ -1360,13 +1285,6 @@ impl Explorer {
             std::iter::successors(Some(id), |s| self.span(*s).and_then(|s| s.parent)).collect();
         stack.reverse();
         stack
-    }
-
-    /// Where the call that started `id` is written: the caller's file and line.
-    pub(crate) fn call_site(&self, id: SpanId) -> Option<(&UnitId, &Location)> {
-        let (caller, key) = self.span(id)?.call.as_ref()?;
-        let location = self.system.unit(caller)?.call(key)?.location.as_ref()?;
-        Some((caller, location))
     }
 
     /// Moves the cursor. Returns the new position. With the focus off the journey, it

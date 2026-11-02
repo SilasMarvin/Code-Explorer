@@ -25,15 +25,9 @@ struct Display {
     /// Start with summaries, or the units they refine.
     #[arg(long, value_enum, default_value_t = crate::journey::ZoomArg::Summary)]
     zoom: crate::journey::ZoomArg,
-    /// Open on this outcome (as numbered by `codeviz journey`) instead of the happy path.
-    #[arg(long)]
-    scenario: Option<usize>,
     /// Open with the cursor this many steps into the journey.
     #[arg(long, default_value_t = 0)]
     step: usize,
-    /// How the journey shows over the graph.
-    #[arg(long, value_enum, default_value_t = JourneyArg::Docked)]
-    journey: JourneyArg,
     /// Open the journey that starts at this function (entry label or unit id suffix).
     /// Without it, the view opens browsing the whole codebase.
     #[arg(long, value_name = "UNIT")]
@@ -70,16 +64,6 @@ struct Display {
         conflicts_with = "keys"
     )]
     script: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum JourneyArg {
-    /// The graph alone.
-    Hidden,
-    /// Docked in a corner over the graph.
-    Docked,
-    /// Below a strip of graph.
-    Full,
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
@@ -127,16 +111,7 @@ fn open(documents: Vec<Document>, args: &Display, title: &str) -> anyhow::Result
     if let Some(hover) = hover {
         viewer = viewer.with_hover(hover);
     }
-    if let Some(scenario) = args.scenario {
-        viewer = viewer.with_scenario(scenario);
-    }
-    viewer = viewer
-        .with_step(args.step)
-        .with_journey(match args.journey {
-            JourneyArg::Hidden => "hidden",
-            JourneyArg::Docked => "docked",
-            JourneyArg::Full => "full",
-        });
+    viewer = viewer.with_step(args.step);
     if let Some(depth) = args.depth {
         viewer = viewer.with_depth(depth);
     }

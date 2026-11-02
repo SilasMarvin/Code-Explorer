@@ -37,7 +37,7 @@ use codeviz_ir::UnitId;
 
 use crate::{
     explorer::{Autoplay, Explorer},
-    journey_panel::{JourneyPanel, PanelMode},
+    journey_panel::JourneyPanel,
 };
 
 /// Configures and launches the viewer window.
@@ -52,9 +52,7 @@ pub struct Viewer {
     /// A session's steps, each with its line; with one, the screenshot path is the
     /// directory its snapshots go in.
     script: Option<Vec<(String, script::Step)>>,
-    scenario: Option<usize>,
     step: usize,
-    panel: PanelMode,
     focus: Option<UnitId>,
     /// The function a screenshot puts the pointer over.
     hover: Option<UnitId>,
@@ -97,9 +95,7 @@ impl Viewer {
             screenshot: None,
             keys: Vec::new(),
             script: None,
-            scenario: None,
             step: 0,
-            panel: PanelMode::default(),
             focus: None,
             hover: None,
             depth: None,
@@ -108,28 +104,10 @@ impl Viewer {
         }
     }
 
-    /// Opens on this outcome (index into the entry's scenarios) instead of the happy path.
-    #[must_use]
-    pub fn with_scenario(mut self, scenario: usize) -> Self {
-        self.scenario = Some(scenario);
-        self
-    }
-
     /// Opens with the cursor this many steps into the journey.
     #[must_use]
     pub fn with_step(mut self, step: usize) -> Self {
         self.step = step;
-        self
-    }
-
-    /// How the journey shows: `hidden`, `docked` over the graph, or `full` below it.
-    #[must_use]
-    pub fn with_journey(mut self, mode: &str) -> Self {
-        self.panel = match mode {
-            "hidden" => PanelMode::Hidden,
-            "full" => PanelMode::Full,
-            _ => PanelMode::Docked,
-        };
         self
     }
 
@@ -217,9 +195,6 @@ impl Viewer {
     fn explorer(&mut self) -> Explorer {
         let mut explorer =
             Explorer::new(std::mem::take(&mut self.system), None, self.options.clone());
-        if self.scenario.is_some() {
-            explorer.set_scenario(self.scenario);
-        }
         if self.step > 0 {
             explorer.select(explorer.journey().map(codeviz_core::Journey::root));
             for _ in 0..self.step {
@@ -272,7 +247,7 @@ impl Viewer {
         ))
         .insert_resource(ClearColor(Color::srgb(0.06, 0.07, 0.09)))
         .insert_resource(explorer)
-        .insert_resource(JourneyPanel::new(self.panel))
+        .init_resource::<JourneyPanel>()
         .insert_resource(ui::Chrome {
             bare: self.bare,
             ..default()

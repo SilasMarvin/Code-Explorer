@@ -10,7 +10,6 @@ use crate::{
     camera::OrbitCamera,
     explorer::Explorer,
     graph_view::{hidden_speck, speck},
-    journey_panel::{JourneyPanel, PanelMode},
     scene::Tile,
     ui,
 };
@@ -149,7 +148,6 @@ pub(crate) fn click(
     window: Single<&Window, With<PrimaryWindow>>,
     wants: Res<EguiWantsInput>,
     mut explorer: ResMut<Explorer>,
-    mut panel: ResMut<JourneyPanel>,
     mut pressed: Local<Option<Vec2>>,
 ) {
     let cursor = window.cursor_position();
@@ -175,10 +173,6 @@ pub(crate) fn click(
     } else {
         let number = explorer.pointed_number.clone();
         explorer.focus_tile(tile, number.as_deref());
-    }
-    // Opening a journey shows it in the panel.
-    if shift && panel.mode == PanelMode::Hidden {
-        panel.mode = PanelMode::Docked;
     }
 }
 

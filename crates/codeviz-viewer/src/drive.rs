@@ -34,7 +34,6 @@ use crate::{
     capture::{DRAIN_FRAMES, Press, SETTLE_FRAMES, SETTLE_TIME},
     explorer::Explorer,
     idle::Awake,
-    journey_panel::JourneyPanel,
     scene::Tile,
     script::{Gesture, Step, snap_name},
     ui::{Chrome, KeyHelp, node_name},
@@ -485,11 +484,10 @@ pub(crate) fn note_bars(ctx: &egui::Context, content: egui::Rect, bars: Vec<(Spa
 }
 
 /// egui areas that sit over the graph, by id.
-const OVERLAYS: [(&str, &str); 4] = [
+const OVERLAYS: [(&str, &str); 3] = [
     ("journey_panel", "journey panel"),
     ("key_help", "key help (H)"),
     ("search", "search box"),
-    ("source", "side panel"),
 ];
 
 fn record(
@@ -595,7 +593,6 @@ pub(crate) struct Drawn {
 pub(crate) struct View<'w, 's> {
     pub(crate) explorer: Res<'w, Explorer>,
     pub(crate) help: Res<'w, KeyHelp>,
-    pub(crate) panel: Res<'w, JourneyPanel>,
     pub(crate) chrome: Res<'w, Chrome>,
     pub(crate) screen: Res<'w, Screen>,
     tiles: Query<
@@ -734,7 +731,6 @@ impl View<'_, '_> {
                 e.aim(),
                 e.nucleus().expanded(),
                 self.help.0,
-                self.panel.mode,
             )
         )
     }
@@ -1165,11 +1161,11 @@ fn label_point(view: &View, tile: usize) -> Result<Vec2, String> {
 }
 
 /// Where to click the journey bar numbered `number` (or, failing that, named it, as
-/// the journey's start must be): inside its left end, clear of
-/// the badge that unfolds it and the mark where other outcomes split off.
+/// the journey's start must be): inside its left end, clear of the badge that unfolds
+/// it.
 fn bar_point(view: &View, number: &str) -> Result<Vec2, String> {
     let Some(drawn) = &view.screen.bars else {
-        return Err("the journey panel is not showing (J shows it)".to_owned());
+        return Err("the journey panel is not showing: no journey is open".to_owned());
     };
     let disclosed = view.explorer.disclosure();
     // By number, else by the name on it, among the bars disclosed.

@@ -1,26 +1,20 @@
-//! egui around the graph: call stack and the journey on top, and a side panel, hidden at
-//! first, with the view's settings, outcomes, source and details; on the canvas, the
-//! focus with what calls it and what it calls, names beside nodes, a key to the
-//! colors, and a search box on `/`.
+//! egui around the graph: the top bar, and the journey docked along the foot; on the
+//! canvas, names beside nodes, the key help on `H` and a search box on `/`.
 
-use std::{
-    collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
-};
+use std::collections::{HashMap, HashSet};
 
 use bevy::{camera::Viewport, prelude::*, window::PrimaryWindow};
 use bevy_egui::{
     EguiContext, EguiContexts, EguiInput, EguiPreUpdateSet, EguiPrimaryContextPass,
     PrimaryEguiContext, egui,
 };
-use codeviz_core::{Level, SpanId, SpanTarget};
-use codeviz_ir::{ExitKind, Role, UnitId};
+use codeviz_ir::{Role, UnitId};
 
 use crate::{
     camera::OrbitCamera,
-    explorer::{Confidence, Explorer, Hidden, Side},
+    explorer::{Explorer, Hidden, Side},
     graph_view::{self, CALLEE, CALLER, CURSOR, DEEPER},
-    journey_panel::{self, JourneyPanel, PanelMode},
+    journey_panel::{self, JourneyPanel},
     nucleus::{self, Body, End, Flow},
     scene::{PALETTE, lane_color},
 };
@@ -32,7 +26,6 @@ impl Plugin for UiPlugin {
         app.init_resource::<Search>()
             .init_resource::<KeyHelp>()
             .init_resource::<Chrome>()
-            .init_resource::<Sources>()
             .add_systems(
                 PreUpdate,
                 keys_to_the_graph
@@ -103,33 +96,13 @@ struct Search {
     query: String,
 }
 
-/// Source files read so far; `None` when a file could not be read.
-#[derive(Resource, Debug, Default)]
-struct Sources(HashMap<PathBuf, Option<Vec<String>>>);
-
-impl Sources {
-    fn lines(&mut self, path: &Path) -> Option<&[String]> {
-        self.0
-            .entry(path.to_path_buf())
-            .or_insert_with(|| {
-                std::fs::read_to_string(path)
-                    .ok()
-                    .map(|text| text.lines().map(str::to_owned).collect())
-            })
-            .as_deref()
-    }
-}
-
-const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
-const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 
 /// What draws around the graph: everything, or bare, with only the graph and the
-/// journey; and whether the side panel and the search box are open.
+/// journey; and whether the search box is open.
 #[derive(Resource, Default)]
 pub(crate) struct Chrome {
     pub(crate) bare: bool,
-    pub(crate) side: bool,
     pub(crate) search: bool,
 }
 
@@ -138,7 +111,6 @@ fn draw_ui(
     mut contexts: EguiContexts,
     mut explorer: ResMut<Explorer>,
     mut search: ResMut<Search>,
-    mut sources: ResMut<Sources>,
     mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
@@ -156,32 +128,27 @@ fn draw_ui(
             .max_rect(ctx.viewport_rect()),
     );
 
-    let [top, bottom, left, right] = if chrome.bare {
-        [0.0; 4]
+    let top = if chrome.bare {
+        0.0
     } else {
-        panels(
+        top_bar(
             &mut root_ui,
             &mut explorer,
-            &mut panel,
-            &mut sources,
             &mut chrome,
             time.elapsed_secs(),
         )
     };
 
     let screen = ctx.viewport_rect();
-    let central = egui::Rect::from_min_max(
-        egui::pos2(screen.min.x + left, screen.min.y + top),
-        egui::pos2(screen.max.x - right, screen.max.y - bottom),
-    );
+    let central =
+        egui::Rect::from_min_max(egui::pos2(screen.min.x, screen.min.y + top), screen.max);
     // Browsing, no journey is open, so its panel is not drawn.
-    let mode = if explorer.browsing() {
-        PanelMode::Hidden
+    let (graph_area, panel_area) = if explorer.browsing() {
+        (central, None)
     } else {
-        panel.mode
+        let (graph, panel) = journey_panel::split(central, journey_panel::rows(&explorer));
+        (graph, Some(panel))
     };
-    let rows = journey_panel::rows(&explorer);
-    let (graph_area, panel_area) = journey_panel::split(mode, central, rows);
     if let Ok((mut camera, transform, orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, graph_area);
         let to_screen = |position: Vec3| {
@@ -202,10 +169,7 @@ fn draw_ui(
             &to_screen,
             &explorer,
             (transform.up().into(), transform.right().into()),
-            Framing {
-                settled,
-                strip: mode == PanelMode::Full,
-            },
+            settled,
         );
         if chrome.search && !chrome.bare {
             search_box(
@@ -216,7 +180,7 @@ fn draw_ui(
                 &mut chrome.search,
             );
         }
-        if panel.mode != PanelMode::Full && !chrome.bare {
+        if !chrome.bare {
             legend(ctx, graph_area, Showing::of(&explorer));
         }
         if help.0 {
@@ -239,32 +203,13 @@ fn draw_ui(
     Ok(())
 }
 
-/// The panels around the graph, and how much of each edge they take: top, bottom, left
-/// and right. The side panel shows only when opened (S).
-fn panels(
-    root_ui: &mut egui::Ui,
-    explorer: &mut Explorer,
-    panel: &mut JourneyPanel,
-    sources: &mut Sources,
-    chrome: &mut Chrome,
-    now: f32,
-) -> [f32; 4] {
-    let top = egui::Panel::top("stack")
+/// The bar along the top: Back and Forward and which mode the view is in on the left;
+/// search and what the focus is on the right. Returns how tall it is.
+fn top_bar(root_ui: &mut egui::Ui, explorer: &mut Explorer, chrome: &mut Chrome, now: f32) -> f32 {
+    egui::Panel::top("stack")
         .show(root_ui, |ui| {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (label, hint) = if chrome.side {
-                        ("Hide panel", "Hide the side panel (S)")
-                    } else {
-                        ("Panel", "Settings, outcomes, source and details (S)")
-                    };
-                    if ui
-                        .selectable_label(chrome.side, label)
-                        .on_hover_text(hint)
-                        .clicked()
-                    {
-                        chrome.side = !chrome.side;
-                    }
                     if ui
                         .selectable_label(chrome.search, "Search")
                         .on_hover_text("Find a function (/)")
@@ -276,36 +221,13 @@ fn panels(
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         history_buttons(ui, explorer);
                         mode_label(ui, explorer);
-                        if !explorer.browsing() {
-                            breadcrumb(ui, explorer, panel);
-                        }
                     });
                 });
             });
         })
         .response
         .rect
-        .height();
-    let right = if chrome.side {
-        egui::Panel::right("source")
-            .resizable(true)
-            .default_size(460.0)
-            .show(root_ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    outcomes(ui, explorer);
-                    ui.separator();
-                    source(ui, explorer, sources);
-                    ui.separator();
-                    details(ui, explorer);
-                });
-            })
-            .response
-            .rect
-            .width()
-    } else {
-        0.0
-    };
-    [top, 0.0, 0.0, right]
+        .height()
 }
 
 /// The bar under the pointer tied to the node it stands for.
@@ -390,100 +312,6 @@ fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
             .on_hover_text(hint);
         });
     ui.separator();
-}
-
-fn breadcrumb(ui: &mut egui::Ui, explorer: &mut Explorer, panel: &mut JourneyPanel) {
-    ui.horizontal(|ui| {
-        for (mode, label, hint) in [
-            (
-                PanelMode::Hidden,
-                "Graph",
-                "The graph alone (J hides the journey)",
-            ),
-            (
-                PanelMode::Docked,
-                "Graph + journey",
-                "The journey docked over the graph (J)",
-            ),
-            (
-                PanelMode::Full,
-                "Journey",
-                "The journey below a strip of graph (M)",
-            ),
-        ] {
-            if ui
-                .selectable_label(panel.mode == mode, label)
-                .on_hover_text(hint)
-                .clicked()
-            {
-                panel.mode = mode;
-            }
-        }
-        ui.separator();
-        let Some(selected) = explorer.selected() else {
-            ui.label("Pick a unit on the left.");
-            return;
-        };
-        // The calls down to the cursor, closures left out as the panel leaves them
-        // out; where they do not all fit, those nearest the start give way first, so
-        // the line never runs under what the top bar shows on its right.
-        let mut frames: Vec<SpanId> = explorer
-            .stack(selected)
-            .into_iter()
-            .filter(|&frame| {
-                frame == selected
-                    || !explorer
-                        .unit_id(frame)
-                        .is_some_and(|unit| unit.as_str().contains("{closure"))
-            })
-            .collect();
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let gap = ui.spacing().item_spacing.x;
-        let width_of = |text: &str| {
-            ui.painter()
-                .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE)
-                .size()
-                .x
-        };
-        let crumb = |frame: SpanId| width_of(&explorer.label(frame)) + width_of("›") + gap * 2.0;
-        let room = ui.available_width() - 8.0;
-        let mut elided = false;
-        while frames.len() > 2
-            && frames.iter().map(|&f| crumb(f)).sum::<f32>()
-                + if elided {
-                    width_of("…") + gap * 2.0
-                } else {
-                    0.0
-                }
-                > room
-        {
-            frames.remove(1);
-            elided = true;
-        }
-        let mut chosen = None;
-        for (index, frame) in frames.into_iter().enumerate() {
-            if index > 0 {
-                ui.label(egui::RichText::new("›").color(MUTED));
-            }
-            if index == 1 && elided {
-                ui.label(egui::RichText::new("…").color(MUTED))
-                    .on_hover_text("Calls between, left out for room");
-                ui.label(egui::RichText::new("›").color(MUTED));
-            }
-            let text = egui::RichText::new(explorer.label(frame));
-            let text = if frame == selected {
-                text.strong()
-            } else {
-                text
-            };
-            if ui.link(text).clicked() {
-                chosen = Some(frame);
-            }
-        }
-        if let Some(frame) = chosen {
-            explorer.go_to(frame);
-        }
-    });
 }
 
 /// A box to find a function by name, over the top of the graph: Enter or a click
@@ -587,41 +415,6 @@ fn search_box(
     }
 }
 
-fn outcomes(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    ui.heading("Outcomes");
-    let mut chosen = None;
-    let current = explorer.scenario();
-    for (index, scenario) in explorer.scenarios().iter().enumerate() {
-        let (mark, color) = match scenario.outcome.kind {
-            ExitKind::Return => ("✔", OK),
-            _ => ("×", ERROR),
-        };
-        let text = egui::RichText::new(format!("{mark} {}", scenario.outcome.label)).color(color);
-        let via: Vec<String> = scenario
-            .chain
-            .iter()
-            .skip(1)
-            .map(|site| explorer.unit_name(&site.unit))
-            .collect();
-        let response = ui.selectable_label(current == Some(index), text);
-        let response = if via.is_empty() {
-            response
-        } else {
-            response.on_hover_text(format!("via {}", via.join(" → ")))
-        };
-        if response.clicked() {
-            chosen = Some(Some(index));
-        }
-    }
-    let all = egui::RichText::new("All paths at once").color(MUTED);
-    if ui.selectable_label(current.is_none(), all).clicked() {
-        chosen = Some(None);
-    }
-    if let Some(scenario) = chosen {
-        explorer.set_scenario(scenario);
-    }
-}
-
 /// How well `query` finds a function, best first, or `None` when it does not: its
 /// name exactly, then its name's start, then anywhere in its path, then each word of
 /// the query in order along the path. `.` and `::` are the same, so `orders.place`
@@ -650,164 +443,6 @@ fn search_rank(query: &str, id: &str, name: &str) -> Option<u8> {
         rest = &rest[at + word.len()..];
     }
     Some(3)
-}
-
-/// The caller's source around the line that made the selected call; for the root,
-/// its own definition.
-fn source(ui: &mut egui::Ui, explorer: &Explorer, sources: &mut Sources) {
-    let Some(selected) = explorer.selected() else {
-        return;
-    };
-    let (owner, location, title) = if let Some((caller, location)) = explorer.call_site(selected) {
-        let title = format!(
-            "{} calls {}",
-            explorer.unit_name(caller),
-            explorer.label(selected)
-        );
-        (caller.clone(), location.clone(), title)
-    } else {
-        let Some(unit) = explorer.unit(selected) else {
-            return;
-        };
-        let Some(location) = unit.location.clone() else {
-            ui.label(egui::RichText::new("No source location.").color(MUTED));
-            return;
-        };
-        let title = format!("{} starts here", explorer.label(selected));
-        (unit.id.clone(), location, title)
-    };
-    ui.label(egui::RichText::new(title).strong());
-    ui.label(
-        egui::RichText::new(location.to_string())
-            .small()
-            .color(MUTED),
-    );
-    let Some(path) = explorer.system().local_path(&owner, &location.uri) else {
-        return;
-    };
-    let Some(lines) = sources.lines(&path) else {
-        ui.label(egui::RichText::new(format!("Cannot read {}", path.display())).color(MUTED));
-        return;
-    };
-    let line = location.range.map_or(1, |r| r.start_line) as usize;
-    // The whole enclosing function when known, otherwise a window around the line.
-    let (first, last) = explorer
-        .system()
-        .unit(&owner)
-        .and_then(|u| u.location.as_ref())
-        .and_then(|l| l.range)
-        .filter(|r| (r.start_line as usize..=r.end_line as usize).contains(&line))
-        .map_or((line.saturating_sub(8).max(1), line + 8), |r| {
-            (r.start_line as usize, r.end_line as usize)
-        });
-    let font = egui::FontId::monospace(12.5);
-    for number in first..=last.min(lines.len()) {
-        let Some(text) = lines.get(number - 1) else {
-            break;
-        };
-        let current = number == line;
-        let row = egui::RichText::new(format!("{number:>4} {text}")).font(font.clone());
-        let row = if current {
-            row.color(egui::Color32::WHITE)
-                .background_color(egui::Color32::from_rgb(52, 70, 110))
-        } else {
-            row.color(egui::Color32::from_rgb(190, 196, 210))
-        };
-        let response = ui.label(row);
-        if current {
-            response.scroll_to_me(Some(egui::Align::Center));
-        }
-    }
-}
-
-fn details(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    let Some(selected) = explorer.selected() else {
-        return;
-    };
-    let Some(span) = explorer.span(selected).cloned() else {
-        return;
-    };
-    ui.label(
-        egui::RichText::new(explorer.label(selected))
-            .strong()
-            .size(15.0),
-    );
-    if let Some(unit) = explorer.unit(selected) {
-        ui.label(egui::RichText::new(unit.id.as_str()).small().color(MUTED));
-        if let Some(signature) = unit.attributes.get("signature") {
-            ui.label(egui::RichText::new(signature.to_string()).monospace());
-        }
-        if let Some(doc) = &unit.doc {
-            ui.label(egui::RichText::new(doc).italics());
-        }
-    }
-    if Confidence::of(&span) == Confidence::Guessed {
-        ui.label(egui::RichText::new("Guessed: matched by name, not resolved").color(MUTED));
-    }
-    if let SpanTarget::Ambiguous(ids) = &span.target {
-        ui.label("Could be any of:");
-        for id in ids {
-            ui.label(egui::RichText::new(explorer.unit_name(id)).monospace());
-        }
-    }
-    for condition in &span.conditions {
-        ui.label(format!(
-            "only when {} ⇒ {}",
-            condition.guard.as_deref().unwrap_or("?"),
-            condition.arm
-        ));
-    }
-    if span.repeats {
-        ui.label("inside a loop: may run many times");
-    }
-    for exit in &span.exits {
-        let color = if exit.kind == ExitKind::Return {
-            OK
-        } else {
-            ERROR
-        };
-        let text = format!("exits: {}", exit.label.as_deref().unwrap_or("returns"));
-        ui.label(egui::RichText::new(text).color(color));
-    }
-    let divergences: Vec<(usize, String)> = explorer
-        .divergences()
-        .iter()
-        .filter(|d| d.span == selected)
-        .map(|d| (d.scenario, d.label.clone()))
-        .collect();
-    for (scenario, label) in divergences {
-        let text = egui::RichText::new(format!("× can fail here: {label}")).color(ERROR);
-        if ui.link(text).clicked() {
-            explorer.set_scenario(Some(scenario));
-        }
-    }
-
-    ui.horizontal(|ui| {
-        let can_reroot = explorer.unit_id(selected).is_some() && span.parent.is_some();
-        if ui
-            .add_enabled(can_reroot, egui::Button::new("Start here"))
-            .clicked()
-            && let Some(unit) = explorer.unit_id(selected).cloned()
-        {
-            explorer.set_root(unit);
-        }
-        if ui
-            .add_enabled(explorer.can_go_back(), egui::Button::new("Back"))
-            .on_hover_text("The view before (Backspace)")
-            .clicked()
-        {
-            explorer.go_back();
-        }
-        if let (Some(level), SpanTarget::Unit(unit)) = (span.zoom, &span.target) {
-            let label = match level {
-                Level::Summary => "Zoom in",
-                Level::Detail => "Zoom out",
-            };
-            if ui.button(label).clicked() {
-                explorer.toggle_zoom(unit.clone());
-            }
-        }
-    });
 }
 
 /// Restricts 3D rendering to the area between the panels.
@@ -1009,24 +644,14 @@ type ShownLabels = HashMap<Named, Shown>;
 
 /// How long a label keeps the place it first took: browsing, for as long as the map
 /// is browsed; in a journey, for as long as that journey is open, gathered or expanded
-/// round its start, in the graph's usual frame or the strip above a full journey, and
-/// again when Back or Esc returns to it.
+/// round its start, and again when Back or Esc returns to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Scene {
     Browse,
     Journey {
         start: Option<usize>,
         expanded: bool,
-        strip: bool,
     },
-}
-
-/// How the graph's names are drawn this frame: whether the view rests, so a new
-/// name's place is for keeps, and whether the graph is the strip above a full journey.
-#[derive(Debug, Clone, Copy)]
-struct Framing {
-    settled: bool,
-    strip: bool,
 }
 
 /// Where each label went when it first showed, by scene.
@@ -1679,7 +1304,7 @@ fn draw_graph_labels(
     to_screen: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     (up, right): (Vec3, Vec3),
-    framing: Framing,
+    settled: bool,
 ) {
     let (graph, map) = (explorer.graph(), explorer.map());
     let center = explorer.lit_focus();
@@ -1922,7 +1547,6 @@ fn draw_graph_labels(
         Scene::Journey {
             start,
             expanded: nucleus.expanded(),
-            strip: framing.strip,
         }
     };
     let held = painter
@@ -1998,7 +1622,7 @@ fn draw_graph_labels(
     placer.landmarks = nucleus.browsing();
     let held_keys: HashSet<Named> = held.keys().copied().collect();
     placer.held = held;
-    placer.keep = framing.settled;
+    placer.keep = settled;
     placer.beside = [cursor, center, aside]
         .into_iter()
         .flatten()

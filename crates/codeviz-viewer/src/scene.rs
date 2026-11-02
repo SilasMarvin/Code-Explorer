@@ -13,7 +13,6 @@ use crate::{
     explorer::{Autoplay, Explorer, Side, Step},
     graph_view::{self, NodeMaterials},
     idle::Awake,
-    journey_panel::{JourneyPanel, PanelMode},
     notice, nucleus, pick,
     ui::{Chrome, KeyHelp},
 };
@@ -208,7 +207,6 @@ fn keyboard(
     time: Res<Time>,
     mut explorer: ResMut<Explorer>,
     mut autoplay: ResMut<Autoplay>,
-    mut panel: ResMut<JourneyPanel>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
 ) {
@@ -244,26 +242,10 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Enter) {
         explorer.trace_from_focus();
     }
-    if keys.just_pressed(KeyCode::KeyJ) {
-        panel.mode = if panel.mode == PanelMode::Hidden {
-            PanelMode::Docked
-        } else {
-            PanelMode::Hidden
-        };
-    }
-    if keys.just_pressed(KeyCode::KeyM) {
-        panel.mode = match panel.mode {
-            PanelMode::Full => PanelMode::Docked,
-            PanelMode::Hidden | PanelMode::Docked => PanelMode::Full,
-        };
-    }
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;
     }
     nucleus::toggle(&keys, &mut explorer);
-    if keys.just_pressed(KeyCode::KeyS) {
-        chrome.side = !chrome.side;
-    }
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;
     }
@@ -271,7 +253,7 @@ fn keyboard(
 
 /// Escape closes whatever is on top: the search box, the key list, the spotlight, a
 /// function selected off the journey, then the journey itself, for browsing with the
-/// cursor's function selected; browsing, the side panel.
+/// cursor's function selected.
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
     if chrome.search {
         chrome.search = false;
@@ -283,8 +265,6 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         explorer.clear_aside();
     } else if !explorer.browsing() {
         explorer.leave_journey();
-    } else if chrome.side {
-        chrome.side = false;
     }
 }
 
