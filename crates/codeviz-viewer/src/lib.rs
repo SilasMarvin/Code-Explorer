@@ -36,10 +36,7 @@ use bevy_egui::EguiPlugin;
 use codeviz_core::{JourneyOptions, System};
 use codeviz_ir::UnitId;
 
-use crate::{
-    explorer::{Autoplay, Explorer},
-    journey_panel::JourneyPanel,
-};
+use crate::{explorer::Explorer, journey_panel::JourneyPanel};
 
 /// Configures and launches the viewer window.
 #[derive(Debug)]
@@ -55,7 +52,6 @@ pub struct Viewer {
     script: Option<Vec<script::Line>>,
     /// Whether to look the script's names up and stop, without opening the window.
     check_script: bool,
-    step: usize,
     focus: Option<UnitId>,
     /// The function a screenshot puts the pointer over.
     hover: Option<UnitId>,
@@ -96,20 +92,12 @@ impl Viewer {
             keys: Vec::new(),
             script: None,
             check_script: false,
-            step: 0,
             focus: None,
             hover: None,
             depth: None,
             bare: false,
             expanded: false,
         }
-    }
-
-    /// Opens with the cursor this many steps into the journey.
-    #[must_use]
-    pub fn with_step(mut self, step: usize) -> Self {
-        self.step = step;
-        self
     }
 
     /// Opens the journey that starts at this function; without one, the view opens
@@ -203,12 +191,6 @@ impl Viewer {
     fn explorer(&mut self) -> Explorer {
         let mut explorer =
             Explorer::new(std::mem::take(&mut self.system), None, self.options.clone());
-        if self.step > 0 {
-            explorer.select(explorer.journey().map(codeviz_core::Journey::root));
-            for _ in 0..self.step {
-                explorer.step(explorer::Step::Into);
-            }
-        }
         let focus = self
             .focus
             .take()
@@ -234,7 +216,7 @@ impl Viewer {
     pub fn run(mut self) -> AppExit {
         let mut explorer = self.explorer();
         if let Some(depth) = self.depth {
-            explorer.set_disclose(disclosure::Disclose::Depth(depth));
+            explorer.set_disclose(disclosure::Disclose(depth));
         }
         // Back starts from the view as it opens.
         explorer.forget_history();
@@ -278,7 +260,6 @@ impl Viewer {
             bare: self.bare,
             ..default()
         })
-        .init_resource::<Autoplay>()
         .init_resource::<idle::Awake>();
         if let (Some(dir), Some(lines)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.

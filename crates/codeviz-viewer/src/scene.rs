@@ -10,7 +10,7 @@ use bevy_egui::{
 use crate::{
     camera,
     disclosure::Disclose,
-    explorer::{Autoplay, Explorer, Step},
+    explorer::{Explorer, Step},
     graph_view::{self, NodeMaterials},
     idle::Awake,
     notice, nucleus, pick,
@@ -33,14 +33,12 @@ impl Plugin for ScenePlugin {
         .add_systems(
             Update,
             (
-                stop_on_rebuild,
                 (
                     pick::point,
                     pick::click.run_if(not(egui_wants_any_pointer_input)),
                 )
                     .chain(),
                 keyboard.run_if(not(egui_wants_any_keyboard_input)),
-                autoplay,
                 graph_view::track_attention,
                 nucleus::double_click.run_if(not(egui_wants_any_pointer_input)),
                 nucleus::follow,
@@ -114,42 +112,10 @@ fn spawn_nodes(
     }
 }
 
-/// Stops autoplay when a journey is rebuilt under it.
-fn stop_on_rebuild(
-    explorer: Res<Explorer>,
-    mut built: Local<Option<u64>>,
-    mut autoplay: ResMut<Autoplay>,
-) {
-    if *built != Some(explorer.revision()) {
-        *built = Some(explorer.revision());
-        autoplay.playing = false;
-    }
-}
-
-/// Digit keys, for opening the call with that number.
-const DIGITS: [KeyCode; 9] = [
-    KeyCode::Digit1,
-    KeyCode::Digit2,
-    KeyCode::Digit3,
-    KeyCode::Digit4,
-    KeyCode::Digit5,
-    KeyCode::Digit6,
-    KeyCode::Digit7,
-    KeyCode::Digit8,
-    KeyCode::Digit9,
-];
-
 /// The arrows walk the journey's call tree: left and right between the calls one
 /// caller makes, down into a call, up to its caller. The brackets step through time
 /// one call at a time, the way the journey actually runs.
-fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
-    // With shift, ] steps over a call and ↑ steps out of it, as a debugger does.
-    if shift && keys.just_pressed(KeyCode::BracketRight) {
-        return Some(Step::Over);
-    }
-    if shift && keys.just_pressed(KeyCode::ArrowUp) {
-        return Some(Step::Out);
-    }
+fn journey_step(keys: &ButtonInput<KeyCode>) -> Option<Step> {
     [
         (KeyCode::ArrowRight, Step::Next),
         (KeyCode::ArrowLeft, Step::Previous),
@@ -163,12 +129,9 @@ fn journey_step(keys: &ButtonInput<KeyCode>, shift: bool) -> Option<Step> {
     .map(|(_, step)| step)
 }
 
-/// The graph's keys: digits open the call numbered so on screen, Backspace goes back
-/// to the view before and Shift+Backspace forward again.
+/// The graph's keys: Backspace goes back to the view before and Shift+Backspace
+/// forward again.
 fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift: bool) {
-    if let Some(index) = DIGITS.iter().position(|&key| keys.just_pressed(key)) {
-        explorer.open_numbered(index + 1);
-    }
     if keys.just_pressed(KeyCode::Backspace) {
         if shift {
             explorer.go_forward();
@@ -176,26 +139,14 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
             explorer.go_back();
         }
     }
-    // , and . disclose a level less or more of the journey; V switches between
-    // disclosing by depth and by time.
-    let disclose = explorer.disclose();
+    // , and . disclose a level less or more of the journey.
+    let Disclose(depth) = explorer.disclose();
     let disclose = if keys.just_pressed(KeyCode::Comma) {
-        match disclose {
-            Disclose::Depth(depth) => Disclose::Depth(depth.saturating_sub(1).max(1)),
-            Disclose::Time => Disclose::Time,
-        }
+        Disclose(depth.saturating_sub(1).max(1))
     } else if keys.just_pressed(KeyCode::Period) {
-        match disclose {
-            Disclose::Depth(depth) => Disclose::Depth(depth + 1),
-            Disclose::Time => Disclose::Time,
-        }
-    } else if keys.just_pressed(KeyCode::KeyV) {
-        match disclose {
-            Disclose::Depth(_) => Disclose::Time,
-            Disclose::Time => Disclose::default(),
-        }
+        Disclose(depth + 1)
     } else {
-        disclose
+        Disclose(depth)
     };
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
@@ -205,13 +156,11 @@ fn graph_navigation(keys: &ButtonInput<KeyCode>, explorer: &mut Explorer, shift:
 fn keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     mut explorer: ResMut<Explorer>,
-    mut autoplay: ResMut<Autoplay>,
     mut help: ResMut<KeyHelp>,
     mut chrome: ResMut<Chrome>,
 ) {
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if let Some(step) = journey_step(&keys, shift) {
-        autoplay.playing = false;
+    if let Some(step) = journey_step(&keys) {
         explorer.step(step);
     }
     graph_navigation(&keys, &mut explorer, shift);
@@ -222,9 +171,6 @@ fn keyboard(
     // them out again.
     if keys.just_pressed(KeyCode::KeyI) {
         explorer.toggle_outside();
-    }
-    if keys.just_pressed(KeyCode::Space) {
-        autoplay.playing = !autoplay.playing;
     }
     if keys.just_pressed(KeyCode::Enter) {
         explorer.trace_from_focus();
@@ -250,21 +196,6 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         explorer.clear_aside();
     } else if !explorer.browsing() {
         explorer.leave_journey();
-    }
-}
-
-fn autoplay(time: Res<Time>, mut autoplay: ResMut<Autoplay>, mut explorer: ResMut<Explorer>) {
-    if !autoplay.playing {
-        autoplay.elapsed = 0.0;
-        return;
-    }
-    autoplay.elapsed += time.delta_secs();
-    let interval = 1.0 / autoplay.steps_per_second;
-    if autoplay.elapsed >= interval {
-        autoplay.elapsed -= interval;
-        if explorer.step(Step::Into).is_none() {
-            autoplay.playing = false;
-        }
     }
 }
 

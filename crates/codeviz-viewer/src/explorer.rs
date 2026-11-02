@@ -28,14 +28,13 @@ use crate::{
     nucleus::{Nucleus, Trail},
 };
 
-/// What a disclosure was worked out for: the journey's revision, how it discloses,
-/// the spans opened by hand, and the cursor when that matters.
-type DisclosureKey = (u64, Disclose, u64, Option<SpanId>);
+/// What a disclosure was worked out for: the journey's revision, how deep it
+/// discloses, and the spans opened by hand.
+type DisclosureKey = (u64, Disclose, u64);
 
-/// What the nucleus's trail was worked out for: the journey's revision, how it
-/// discloses, the spans opened, the cursor when that matters, the middle, and whether
-/// the view browses.
-type TrailKey = (u64, Disclose, u64, Option<SpanId>, Option<usize>, bool);
+/// What the nucleus's trail was worked out for: the journey's revision, how deep it
+/// discloses, the spans opened, the middle, and whether the view browses.
+type TrailKey = (u64, Disclose, u64, Option<usize>, bool);
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,7 +371,6 @@ impl Explorer {
             disclose: self.disclose,
             expanded: self.track().expanded.clone(),
             aside: self.aside,
-            specks: self.nucleus.specks_hidden(),
             mode: self.mode,
             selection: self.selection,
             outside: self.outside,
@@ -413,9 +411,6 @@ impl Explorer {
         self.selection = view.selection;
         self.outside = view.outside;
         self.nucleus.set_outside(&self.graph, self.outside);
-        if self.nucleus.specks_hidden() != view.specks {
-            self.nucleus.toggle_specks();
-        }
         self.walking = false;
         self.moved += 1;
         self.recolor();
@@ -741,9 +736,6 @@ impl Explorer {
             self.revision,
             self.disclose,
             self.disclosure_epoch,
-            (self.disclose == Disclose::Time)
-                .then(|| self.selected())
-                .flatten(),
             centre,
             self.browsing(),
         )
@@ -805,11 +797,6 @@ impl Explorer {
             trail.add_own(centre, callee, numbers);
         }
         trail
-    }
-
-    /// Hides the nucleus's nameless specks, or shows them again, in the view it is in.
-    pub(crate) fn toggle_specks(&mut self) {
-        self.nucleus.toggle_specks();
     }
 
     /// Re-centers the nucleus when the function it is arranged round changes, marks the
@@ -992,14 +979,7 @@ impl Explorer {
         if self.browsing() {
             return Arc::new(Disclosed::default());
         }
-        let key = (
-            self.revision,
-            self.disclose,
-            self.disclosure_epoch,
-            (self.disclose == Disclose::Time)
-                .then(|| self.selected())
-                .flatten(),
-        );
+        let key = (self.revision, self.disclose, self.disclosure_epoch);
         let mut cache = self
             .disclosure_cache
             .lock()
@@ -1022,34 +1002,6 @@ impl Explorer {
     /// The function a node stands for.
     pub(crate) fn tile_unit(&self, tile: usize) -> Option<&UnitId> {
         self.map.tile(tile).map(|t| &t.unit)
-    }
-
-    /// Moves the focus to the call numbered `number` on screen: by the journey's own
-    /// numbering, as its bars and its nodes' badges show it, or with nothing of the
-    /// journey disclosed, the focus's calls in the order it makes them, as `#1`, `#2`
-    /// beside them, as a click on that node would. The journey stays where it starts.
-    pub(crate) fn open_numbered(&mut self, number: usize) {
-        let Some(index) = number.checked_sub(1) else {
-            return;
-        };
-        let disclosed = self.disclosure();
-        if !disclosed.opened() {
-            if let Some(&tile) = self
-                .graph_focus()
-                .and_then(|focus| self.graph.sequence(focus).get(index))
-            {
-                self.focus_tile(tile, None);
-            }
-            return;
-        }
-        let Some(&call) = self
-            .journey()
-            .and_then(|journey| disclosed.children(journey.root()).get(index))
-            .filter(|&&call| disclosed.number(call).is_some())
-        else {
-            return;
-        };
-        self.go_to(call);
     }
 
     /// What calls `tile`, each once.
@@ -1191,11 +1143,9 @@ impl Explorer {
         // The keys read the picture as it is: they stop only on a call drawn, one with
         // a node of its own (not a closure, nor a call to one of several functions)
         // and disclosed, so they never open a level or reach past the depth shown.
-        // Disclosing through time, the next call in time discloses itself.
         let disclosed = self.disclosure();
-        let by_time = self.disclose == Disclose::Time;
         let drawn = |span: SpanId| {
-            tile(span).is_some() && !closure(span) && (by_time || disclosed.number(span).is_some())
+            tile(span).is_some() && !closure(span) && disclosed.number(span).is_some()
         };
         let parent = |span: SpanId| {
             std::iter::successors(journey.span(span)?.parent, |&p| journey.span(p)?.parent)
@@ -1211,15 +1161,6 @@ impl Explorer {
         let onward = |span: Option<SpanId>| {
             std::iter::successors(span, |s| nth(s.index() + 1)).find(|&s| drawn(s))
         };
-        // The first span after `id`'s subtree, in pre-order.
-        let after = |id: SpanId| {
-            let end = journey.span(id).map_or(0, |s| s.exit);
-            journey
-                .spans()
-                .skip(id.index() + 1)
-                .find(|(other, s)| s.enter >= end || !is_within(journey, *other, id))
-                .map(|(id, _)| id)
-        };
         let siblings = || parent(current).map(calls).unwrap_or_default();
         let place = |list: &[SpanId]| list.iter().position(|&s| s == current);
         let next = match step {
@@ -1228,8 +1169,6 @@ impl Explorer {
                 .rev()
                 .filter_map(nth)
                 .find(|&s| drawn(s)),
-            Step::Over => onward(after(current)),
-            Step::Out => parent(current).and_then(|p| onward(after(p)).or(Some(p))),
             Step::Next => {
                 let list = siblings();
                 place(&list).and_then(|i| list.get(i + 1).copied())
@@ -1251,17 +1190,16 @@ impl Explorer {
             };
             // Calls past the depth shown: under the cursor for ↓, anywhere ahead
             // for ] and the like.
-            let folded = !by_time
-                && match step {
-                    Step::Child => disclosure::calls_of(journey, &tile, current)
-                        .0
-                        .into_iter()
-                        .any(hidden),
-                    _ => journey
-                        .spans()
-                        .skip(current.index() + 1)
-                        .any(|(span, _)| hidden(span)),
-                };
+            let folded = match step {
+                Step::Child => disclosure::calls_of(journey, &tile, current)
+                    .0
+                    .into_iter()
+                    .any(hidden),
+                _ => journey
+                    .spans()
+                    .skip(current.index() + 1)
+                    .any(|(span, _)| hidden(span)),
+            };
             let first = current == journey.root();
             self.say(stuck(step, first, folded));
         }
@@ -1293,16 +1231,9 @@ fn stuck(step: Step, first: bool, folded: bool) -> &'static str {
         Step::Previous => "No earlier call from the same caller",
         Step::Child if folded => "Its calls are folded: . shows a level more",
         Step::Child => "It makes no calls",
-        Step::Into | Step::Over | Step::Out if folded => {
-            "The end of what is shown: . shows a level more"
-        }
-        Step::Into | Step::Over | Step::Out => "The end of the journey",
+        Step::Into if folded => "The end of what is shown: . shows a level more",
+        Step::Into => "The end of the journey",
     }
-}
-
-fn is_within(journey: &Journey, span: SpanId, ancestor: SpanId) -> bool {
-    std::iter::successors(Some(span), |s| journey.span(*s).and_then(|s| s.parent))
-        .any(|s| s == ancestor)
 }
 
 /// Debugger-style cursor movement.
@@ -1310,10 +1241,6 @@ fn is_within(journey: &Journey, span: SpanId, ancestor: SpanId) -> bool {
 pub(crate) enum Step {
     /// The next call in time, entering callees.
     Into,
-    /// The next call after this one returns.
-    Over,
-    /// The next call after the caller returns.
-    Out,
     /// The previous call in time.
     Back,
     /// The next call made by the same caller.
@@ -1324,24 +1251,6 @@ pub(crate) enum Step {
     Child,
     /// The call that made this one.
     Parent,
-}
-
-/// Steps the cursor on a timer.
-#[derive(Resource, Debug)]
-pub(crate) struct Autoplay {
-    pub(crate) playing: bool,
-    pub(crate) steps_per_second: f32,
-    pub(crate) elapsed: f32,
-}
-
-impl Default for Autoplay {
-    fn default() -> Self {
-        Self {
-            playing: false,
-            steps_per_second: 2.0,
-            elapsed: 0.0,
-        }
-    }
 }
 
 /// Whether a span is reached by a call that always happens on this path.
@@ -1417,21 +1326,6 @@ pub(crate) mod tests {
             explorer.notice().is_none(),
             "said only until the cursor moves"
         );
-        explorer.set_disclose(Disclose::Depth(2));
-        explorer.step(Step::Over);
-        assert_eq!(at(&explorer), "b", "over skips a's callee c");
-
-        explorer.step(Step::Back);
-        explorer.step(Step::Back);
-        assert_eq!(at(&explorer), "a");
-        explorer.step(Step::Into);
-        assert_eq!(at(&explorer), "c");
-        explorer.step(Step::Out);
-        assert_eq!(
-            at(&explorer),
-            "b",
-            "out leaves a and lands on what follows it"
-        );
     }
 
     #[test]
@@ -1454,7 +1348,7 @@ pub(crate) mod tests {
             Some("Its calls are folded: . shows a level more"),
             "and it says so"
         );
-        explorer.set_disclose(Disclose::Depth(2));
+        explorer.set_disclose(Disclose(2));
         explorer.step(Step::Child);
         assert_eq!(at(&explorer), "c");
         assert_eq!(explorer.step(Step::Child), None);
@@ -1513,7 +1407,7 @@ pub(crate) mod tests {
         let mut explorer = explorer();
         let main = explorer.journey().unwrap().root();
         let a_span = explorer.journey().unwrap().span(main).unwrap().children[0];
-        explorer.set_disclose(Disclose::Depth(2));
+        explorer.set_disclose(Disclose(2));
         explorer.toggle_expanded(a_span);
         explorer.step(Step::Into);
         explorer.step(Step::Into);
@@ -1523,14 +1417,14 @@ pub(crate) mod tests {
         assert_eq!(explorer.root().map(UnitId::as_str), Some("x:b"));
         assert_eq!(
             explorer.disclose(),
-            Disclose::Depth(2),
+            Disclose(2),
             "b opens as deep as the journey before it"
         );
 
         assert!(explorer.go_back());
         assert_eq!(explorer.view(), before);
         assert_eq!(at(&explorer), "c", "the cursor where it was");
-        assert_eq!(explorer.disclose(), Disclose::Depth(2));
+        assert_eq!(explorer.disclose(), Disclose(2));
         assert!(
             explorer.disclosure().shows(a_span),
             "a still opened by hand"
@@ -1565,7 +1459,7 @@ pub(crate) mod tests {
     #[test]
     fn only_moves_are_remembered() {
         let mut explorer = explorer();
-        explorer.set_disclose(Disclose::Depth(3));
+        explorer.set_disclose(Disclose(3));
         assert!(!explorer.can_go_back(), "showing more is not a move");
         explorer.step(Step::Into);
 
@@ -1590,7 +1484,7 @@ pub(crate) mod tests {
     fn a_walk_with_the_keys_is_one_move() {
         let mut explorer = explorer();
         explorer.step(Step::Into);
-        explorer.set_disclose(Disclose::Depth(2));
+        explorer.set_disclose(Disclose(2));
         explorer.step(Step::Into);
         assert_eq!(at(&explorer), "c");
         explorer.step(Step::Back);
@@ -1607,72 +1501,13 @@ pub(crate) mod tests {
 
         // A click ends the walk; the next walk is a move of its own.
         explorer.focus_tile(tile(&explorer, "main"), None);
-        explorer.set_disclose(Disclose::Depth(2));
+        explorer.set_disclose(Disclose(2));
         explorer.step(Step::Into);
         explorer.step(Step::Into);
         assert!(explorer.go_back());
         assert_eq!(at(&explorer), "main", "back to where the second walk began");
         assert!(explorer.go_back());
         assert_eq!(at(&explorer), "a", "then to before the click");
-    }
-
-    #[test]
-    fn digits_open_the_calls_as_numbered_on_screen() {
-        // main's first call could run either b or c; its second runs d.
-        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
-            { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [
-                { "key": "dyn#0", "text": "handler.run", "targets": [
-                    { "unit": "x:b", "certainty": "exact" }, { "unit": "x:c", "certainty": "exact" } ] },
-                { "key": "d#0", "text": "d", "targets": [ { "unit": "x:d", "certainty": "exact" } ] } ] },
-            { "id": "x:b", "name": "b", "kind": "fn", "role": "invocable" },
-            { "id": "x:c", "name": "c", "kind": "fn", "role": "invocable" },
-            { "id": "x:d", "name": "d", "kind": "fn", "role": "invocable" } ] }"#;
-        let system = System::new([Document::from_json(json).unwrap()]);
-        let mut explorer = Explorer::new(
-            system,
-            Some(UnitId::new("x:main")),
-            JourneyOptions::default(),
-        );
-        let badge = |explorer: &Explorer, name: &str| {
-            explorer
-                .disclosure()
-                .tiles()
-                .get(&tile(explorer, name))
-                .cloned()
-                .unwrap_or_default()
-        };
-        assert_eq!(badge(&explorer, "d"), ["2"]);
-
-        explorer.open_numbered(2);
-        assert_eq!(
-            explorer.focus().map(UnitId::as_str),
-            Some("x:d"),
-            "2 goes to the node badged 2, not the second function written"
-        );
-        assert_eq!(
-            explorer.root().map(UnitId::as_str),
-            Some("x:main"),
-            "and the journey stays where it starts"
-        );
-        assert!(
-            explorer.can_go_back(),
-            "a digit is remembered, as a click is"
-        );
-        explorer.open_numbered(1);
-        assert_eq!(explorer.root().map(UnitId::as_str), Some("x:main"));
-        assert!(
-            explorer
-                .label(explorer.selected().unwrap())
-                .contains("one of 2"),
-            "a call to one of several functions has no node, so the cursor goes to its bar"
-        );
-        explorer.open_numbered(9);
-        assert!(
-            explorer
-                .label(explorer.selected().unwrap())
-                .contains("one of 2"),
-            "no 9th call"
-        );
     }
 
     #[test]
@@ -1744,14 +1579,14 @@ pub(crate) mod tests {
         let mut explorer = explorer();
         explorer.open_at(tile(&explorer, "a"));
         explorer.forget_history();
-        explorer.set_disclose(Disclose::Depth(2));
+        explorer.set_disclose(Disclose(2));
         explorer.step(Step::Into);
         assert_eq!(at(&explorer), "c");
         let b = tile(&explorer, "b");
 
         // Off the journey, at another depth.
         explorer.focus_tile(b, None);
-        explorer.set_disclose(Disclose::Depth(1));
+        explorer.set_disclose(Disclose(1));
         assert_eq!(explorer.aside(), Some(b));
         assert!(explorer.go_back());
         assert_eq!(explorer.aside(), None, "the node clicked off it is let go");
@@ -1760,11 +1595,7 @@ pub(crate) mod tests {
             "c",
             "the cursor is back where the keys left it"
         );
-        assert_eq!(
-            explorer.disclose(),
-            Disclose::Depth(2),
-            "at the depth it was"
-        );
+        assert_eq!(explorer.disclose(), Disclose(2), "at the depth it was");
 
         assert!(explorer.go_forward());
         assert_eq!(explorer.aside(), Some(b), "forward clicks it again");
@@ -1886,16 +1717,10 @@ pub(crate) mod tests {
         explorer.toggle_expanded(a_span.unwrap());
         assert!(numbers(&explorer).contains(&(c, vec!["1.1".to_owned()])));
         explorer.toggle_expanded(a_span.unwrap());
-        explorer.set_disclose(Disclose::Depth(2));
+        explorer.set_disclose(Disclose(2));
         assert!(numbers(&explorer).contains(&(c, vec!["1.1".to_owned()])));
 
-        explorer.set_disclose(Disclose::Time);
-        assert_eq!(numbers(&explorer), vec![(main, vec![])], "nothing yet");
         explorer.step(Step::Into);
-        assert!(
-            numbers(&explorer).iter().any(|(t, _)| *t == a),
-            "a, once reached"
-        );
         assert_eq!(explorer.anchor(), Some(main), "the camera stays on main");
 
         assert!(explorer.go_back(), "back over the walk");
@@ -2094,7 +1919,7 @@ pub(crate) mod tests {
             "folded again by hand"
         );
 
-        explorer.set_disclose(Disclose::Depth(2));
+        explorer.set_disclose(Disclose(2));
         explorer.ease_nucleus(1.0);
         assert_eq!(names(&explorer), [true, true, true], "two levels down");
         assert_eq!(explorer.nucleus().numbers(c), ["1.1"]);

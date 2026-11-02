@@ -49,14 +49,9 @@ const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
 const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 
-/// The rows of bars the journey shows: a row a level, the start's included. Shown
-/// by time, as many as a docked panel holds, so the panel keeps its height while the
-/// cursor moves.
+/// The rows of bars the journey shows: a row a level, the start's included.
 pub(crate) fn rows(explorer: &Explorer) -> usize {
-    match explorer.disclose() {
-        Disclose::Time => DOCKED_ROWS,
-        Disclose::Depth(_) => explorer.disclosure().rows(),
-    }
+    explorer.disclosure().rows()
 }
 
 /// Where the graph renders and where the panel sits, within `area`, with `rows` of
@@ -133,40 +128,26 @@ pub(crate) fn draw(
     tethers
 }
 
-/// How much of the journey shows: levels of calls below the root, or everything up to
-/// the cursor in time.
+/// How much of the journey shows: levels of calls below the root.
 fn disclosure(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    let mut disclose = explorer.disclose();
-    let by_time = disclose == Disclose::Time;
+    let Disclose(depth) = explorer.disclose();
+    let mut disclose = Disclose(depth);
     if ui
-        .selectable_label(by_time, "time")
-        .on_hover_text("Show calls as the cursor reaches them: ] and [ step, Space plays (V)")
+        .small_button("+")
+        .on_hover_text("One more level of calls (.)")
         .clicked()
     {
-        disclose = if by_time {
-            Disclose::default()
-        } else {
-            Disclose::Time
-        };
+        disclose = Disclose(depth + 1);
     }
-    if let Disclose::Depth(depth) = disclose {
-        if ui
-            .small_button("+")
-            .on_hover_text("One more level of calls (.)")
-            .clicked()
-        {
-            disclose = Disclose::Depth(depth + 1);
-        }
-        ui.label(egui::RichText::new(format!("{depth}")).small());
-        if ui
-            .small_button("−")
-            .on_hover_text("One level of calls fewer (,)")
-            .clicked()
-        {
-            disclose = Disclose::Depth(depth.saturating_sub(1).max(1));
-        }
-        ui.label(egui::RichText::new("depth").small().color(MUTED));
+    ui.label(egui::RichText::new(format!("{depth}")).small());
+    if ui
+        .small_button("−")
+        .on_hover_text("One level of calls fewer (,)")
+        .clicked()
+    {
+        disclose = Disclose(depth.saturating_sub(1).max(1));
     }
+    ui.label(egui::RichText::new("depth").small().color(MUTED));
     if disclose != explorer.disclose() {
         explorer.set_disclose(disclose);
     }

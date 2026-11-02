@@ -29,8 +29,6 @@ pub(crate) struct View {
     pub(crate) expanded: HashSet<SpanId>,
     /// A node clicked off the journey, the focus while it was.
     pub(crate) aside: Option<usize>,
-    /// Whether the nucleus's specks were left out.
-    pub(crate) specks: bool,
     /// Whether a journey was open, or the view browsed.
     pub(crate) mode: ViewMode,
     /// Browsing, the function selected.
