@@ -531,6 +531,11 @@ impl Nucleus {
         self.cursor
     }
 
+    /// The function set aside in a journey.
+    pub(crate) fn aside(&self) -> Option<usize> {
+        self.aside
+    }
+
     fn is_cursor(&self, tile: usize) -> bool {
         self.cursor == Some(tile)
     }
