@@ -287,6 +287,9 @@ struct Placer {
     /// The calls the view could draw at any depth, each caller and callee and the
     /// line it runs along: a name would rather not lie across one.
     lines: Vec<CallLine>,
+    /// By dot, the last [`INCOMING`] points of every call of `lines` coming into it,
+    /// each from the dot's middle back along its line: its name keeps off them.
+    arrivals: HashMap<usize, Vec<Vec<egui::Pos2>>>,
 }
 
 impl Placer {
@@ -307,7 +310,35 @@ impl Placer {
             spheres,
             outside: false,
             lines: Vec::new(),
+            arrivals: HashMap::new(),
         }
+    }
+
+    /// Keeps names off `lines`, and each off the ends of those coming into its dot.
+    fn keep_off(&mut self, lines: Vec<CallLine>) {
+        let at: HashMap<usize, egui::Pos2> = self.dots.iter().map(|d| (d.tile, d.at)).collect();
+        let tail = |dot: egui::Pos2, line: &[egui::Pos2]| {
+            let mut tail = vec![dot];
+            let mut left = INCOMING;
+            for &far in line.iter().rev() {
+                let near = tail[tail.len() - 1];
+                let piece = near.distance(far);
+                if piece >= left {
+                    tail.push(near + (far - near) * (left / piece));
+                    break;
+                }
+                tail.push(far);
+                left -= piece;
+            }
+            tail
+        };
+        self.arrivals.clear();
+        for (_, to, line) in &lines {
+            if let Some(&dot) = at.get(to) {
+                self.arrivals.entry(*to).or_default().push(tail(dot, line));
+            }
+        }
+        self.lines = lines;
     }
 
     /// How many calls not of `own` a name at `pill` would lie across.
@@ -383,36 +414,11 @@ impl Placer {
     /// Whether `pill` lies across the last [`INCOMING`] points of a call coming into
     /// `own`'s dot: the side its own calls arrive from.
     fn on_arrival(&self, own: usize, pill: egui::Rect) -> bool {
-        self.arrivals(own)
-            .iter()
-            .any(|tail| tail.windows(2).any(|p| crosses(p[0], p[1], pill)))
-    }
-
-    /// The last [`INCOMING`] points of every call coming into `own`'s dot, each from
-    /// the dot's middle back along its line.
-    fn arrivals(&self, own: usize) -> Vec<Vec<egui::Pos2>> {
-        let Some(dot) = self.dots.iter().find(|d| d.tile == own) else {
-            return Vec::new();
-        };
-        let tail = |line: &[egui::Pos2]| {
-            let mut tail = vec![dot.at];
-            let mut left = INCOMING;
-            for &far in line.iter().rev() {
-                let near = tail[tail.len() - 1];
-                let piece = near.distance(far);
-                if piece >= left {
-                    tail.push(near + (far - near) * (left / piece));
-                    break;
-                }
-                tail.push(far);
-                left -= piece;
-            }
-            tail
-        };
-        (self.lines.iter())
-            .filter(|(_, to, _)| *to == own)
-            .map(|(_, _, line)| tail(line))
-            .collect()
+        self.arrivals.get(&own).is_some_and(|tails| {
+            tails
+                .iter()
+                .any(|tail| tail.windows(2).any(|p| crosses(p[0], p[1], pill)))
+        })
     }
 
     /// Every place round a dot at `node` a function's name of `size` may take,
@@ -1544,13 +1550,8 @@ pub(crate) fn graph_names(
         .iter()
         .map(|d| (d.tile, d.at, d.radius))
         .collect();
-    let arrivals: Vec<(usize, Vec<egui::Pos2>)> = (placer.dots.iter())
-        .flat_map(|d| {
-            placer
-                .arrivals(d.tile)
-                .into_iter()
-                .map(|tail| (d.tile, tail))
-        })
+    let arrivals: Vec<(usize, Vec<egui::Pos2>)> = (placer.arrivals.iter())
+        .flat_map(|(&tile, tails)| tails.iter().map(move |tail| (tile, tail.clone())))
         .collect();
     painter.ctx().data_mut(|d| {
         d.insert_temp(name_sizes_id(), Arc::new(laid_out));
@@ -1626,7 +1627,7 @@ fn place(
     let mut placer = Placer::new(painter.clip_rect(), naming.dots(neutral), naming.spheres());
     // Browsing, the neutral view selects nothing, so draws no call.
     if !(neutral && nucleus.browsing()) {
-        placer.lines = lines.to_vec();
+        placer.keep_off(lines.to_vec());
     }
     // Names keep off the search box while it shows, as last laid out, and browsing,
     // off the hint at the keys along the graph's foot.
@@ -1800,20 +1801,20 @@ mod tests {
     fn a_name_keeps_off_the_side_its_own_call_comes_in_from() {
         let node = egui::pos2(100.0, 100.0);
         let mut placer = Placer::new(bounds(), vec![disc(0, 100.0, 100.0, true)], Vec::new());
-        placer.lines = vec![(
+        placer.keep_off(vec![(
             1,
             0,
             vec![egui::pos2(300.0, 100.0), egui::pos2(106.0, 100.0)],
-        )];
+        )]);
         let ((side, _), pill) = first(&placer, 0, node, SIZE, true).expect("room");
         assert_ne!(side, 0, "the call comes in from the right");
         assert!(pill.max.x < 100.0 || pill.min.y > 100.0 || pill.max.y < 100.0);
         // A call it makes goes out where it likes.
-        placer.lines = vec![(
+        placer.keep_off(vec![(
             0,
             1,
             vec![egui::pos2(106.0, 100.0), egui::pos2(300.0, 100.0)],
-        )];
+        )]);
         assert_eq!(
             first(&placer, 0, node, SIZE, true).map(|(s, _)| s.0),
             Some(0)
