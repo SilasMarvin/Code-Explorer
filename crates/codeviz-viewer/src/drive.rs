@@ -29,7 +29,11 @@ use bevy::{
         render_resource::TextureFormat,
         view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk},
     },
-    window::{CursorMoved, PrimaryWindow, WindowEvent, WindowLevel, WindowOccluded},
+    window::{
+        CursorMoved, CursorOptions, Monitor, PrimaryMonitor, PrimaryWindow, WindowEvent,
+        WindowLevel, WindowOccluded, WindowPosition,
+    },
+    winit::WinitSettings,
 };
 use bevy_egui::{EguiContext, EguiFullOutput, EguiPostUpdateSet, PrimaryEguiContext, egui};
 use codeviz_core::SpanId;
@@ -218,7 +222,9 @@ impl Plugin for DrivePlugin {
             ..Drive::default()
         })
         .init_resource::<Screen>()
-        .add_systems(Startup, stay_on_top)
+        // The window is never focused; it draws every frame all the same.
+        .insert_resource(WinitSettings::continuous())
+        .add_systems(First, tuck_away)
         // Input goes in with the window's own, so the frame's systems see it.
         .add_systems(PreUpdate, act.before(InputSystems))
         .add_systems(
@@ -232,10 +238,67 @@ impl Plugin for DrivePlugin {
     }
 }
 
-/// Keeps the window over the others: once covered, macOS stops drawing it, and
-/// snapshots come out black.
-fn stay_on_top(mut window: Single<&mut Window, With<PrimaryWindow>>) {
+/// Points of the window left on screen, in a screen's bottom corner.
+const PEEK: f32 = 4.0;
+
+/// Shows the window, which opened hidden, over the others but all off screen except
+/// a corner `PEEK` points square: macOS stops drawing a window that is covered or
+/// wholly off screen, and snapshots come out black. The corner is on one screen and
+/// the rest on none; it takes no clicks. Waits for winit to report the screens.
+fn tuck_away(
+    mut window: Single<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
+    monitors: Query<(&Monitor, Has<PrimaryMonitor>)>,
+) {
+    let (window, cursor) = &mut *window;
+    if window.visible {
+        return;
+    }
+    // Screens in points, the main one first.
+    let mut screens: Vec<(Rect, bool)> = monitors
+        .iter()
+        .map(|(monitor, main)| {
+            let scale = monitor.scale_factor;
+            let at = (monitor.physical_position.as_dvec2() / scale).as_vec2();
+            let size = (monitor.physical_size().as_dvec2() / scale).as_vec2();
+            (Rect::from_corners(at, at + size), main)
+        })
+        .collect();
+    screens.sort_by_key(|&(_, main)| !main);
+    let size = window.resolution.size();
+    // The window's top left in a screen's bottom right, or its top right in the
+    // bottom left.
+    let corners: Vec<Vec2> = screens
+        .iter()
+        .flat_map(|(screen, _)| {
+            let y = screen.max.y - PEEK;
+            [
+                Vec2::new(screen.max.x - PEEK, y),
+                Vec2::new(screen.min.x + PEEK - size.x, y),
+            ]
+        })
+        .collect();
+    // How much of the window a place leaves on the screens.
+    let shown = |at: Vec2| -> f32 {
+        let placed = Rect::from_corners(at, at + size);
+        screens
+            .iter()
+            .map(|(screen, _)| screen.intersect(placed))
+            .filter(|seen| !seen.is_empty())
+            .map(|seen| seen.width() * seen.height())
+            .sum()
+    };
+    let Some(&at) = corners
+        .iter()
+        .find(|&&at| shown(at) <= PEEK * PEEK + 1.0)
+        .or(corners.first())
+    else {
+        return;
+    };
+    let at = (at * window.scale_factor()).round().as_ivec2();
+    window.position = WindowPosition::At(at);
     window.window_level = WindowLevel::AlwaysOnTop;
+    window.visible = true;
+    cursor.hit_test = false;
 }
 
 /// What the hands do next, a frame at a time.
