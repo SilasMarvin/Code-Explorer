@@ -178,6 +178,7 @@ pub(crate) fn scene(view: &View) -> Value {
                 "name_size": name_size(screen, Named::Node(d.tile)),
                 "kept_off": screen.kept_off.iter().find(|k| k.0 == d.tile).map(|k| round(k.2)),
                 "arrivals": arrivals(screen, d.tile),
+                "home": screen.homes.get(&d.tile).map(|r| rect(*r)),
                 "crowded_by": crowding(explorer, &drawn, d),
                 "color": d.color.map(hex),
                 "rings": rings(view, d),
@@ -206,11 +207,6 @@ pub(crate) fn scene(view: &View) -> Value {
             }))
         })
         .collect();
-    let overlays: Vec<Value> = screen
-        .overlays
-        .iter()
-        .map(|(name, r)| json!({ "name": name, "rect": rect(*r), "clipped": !window.contains_rect(*r) }))
-        .collect();
     let label_list = label_entries(explorer, screen, &labels, &named);
     let help = view.help.0.then(|| {
         screen
@@ -238,7 +234,9 @@ pub(crate) fn scene(view: &View) -> Value {
         "buttons": screen.widgets.iter().map(|w| json!({
             "text": w.text, "rect": rect(w.rect), "enabled": w.enabled, "cut_off": w.cut_off(),
         })).collect::<Vec<_>>(),
-        "overlays": overlays,
+        "overlays": screen.overlays.iter().map(|(name, r)| json!({
+            "name": name, "rect": rect(*r), "clipped": !window.contains_rect(*r),
+        })).collect::<Vec<_>>(),
         "help": help.flatten(),
         "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect), "size": t.size })).collect::<Vec<_>>(),
         "content": of(explorer),

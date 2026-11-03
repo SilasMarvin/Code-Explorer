@@ -723,6 +723,9 @@ pub(crate) struct Screen {
     /// Where names keep off the calls coming into each dot: the function, the line's
     /// last stretch from the dot back.
     pub(crate) arrivals: Arc<Vec<(usize, Vec<egui::Pos2>)>>,
+    /// Lit functions left out where a name placed before them took their place: that
+    /// place.
+    pub(crate) homes: Arc<HashMap<usize, egui::Rect>>,
     pub(crate) texts: Vec<Painted>,
     pub(crate) widgets: Vec<Widget>,
     pub(crate) bars: Option<DrawnBars>,
@@ -744,6 +747,7 @@ impl Default for Screen {
             name_sizes: Arc::default(),
             kept_off: Arc::default(),
             arrivals: Arc::default(),
+            homes: Arc::default(),
             texts: Vec::new(),
             widgets: Vec::new(),
             bars: None,
@@ -977,6 +981,7 @@ fn record(
         name_sizes: crate::labels::name_sizes(&ctx),
         kept_off: crate::labels::kept_off(&ctx),
         arrivals: crate::labels::arrivals(&ctx),
+        homes: crate::labels::homes(&ctx),
         texts,
         widgets: clickable,
         bars,
