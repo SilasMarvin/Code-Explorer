@@ -2171,14 +2171,22 @@ fn colours(s: &Snap) -> Value {
         .iter()
         .find(|n| n.is("hovered"))
         .and_then(|n| n.unit.clone());
+    let aside = s
+        .nodes
+        .iter()
+        .find(|n| n.is("aside"))
+        .and_then(|n| n.unit.clone());
     for a in &s.arrows {
         let Some(got) = a.color.as_deref().and_then(rgb) else {
             continue;
         };
         // A call among the expanded module's functions that the journey does not
-        // make stays faint, into the cursor too; only pointing at one lights it.
+        // make stays faint, into the cursor too; only pointing at one, or setting
+        // aside the function it is from, lights it.
         let alpha = a.color.as_deref().and_then(alpha).unwrap_or(1.0);
-        if a.flow == "inner" && alpha > FAINT && (hovered.is_none() || a.to_unit != hovered) {
+        let lit = (hovered.is_some() && a.to_unit == hovered)
+            || (aside.is_some() && a.from_unit == aside);
+        if a.flow == "inner" && alpha > FAINT && !lit {
             let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": "a call off the journey drawn bright", "most_alpha": FAINT });
             offenders.push((1.0, offender));
             continue;
@@ -3340,6 +3348,11 @@ mod tests {
         assert_eq!(result["offenders"][0]["arrow"], json!(["g", "h"]));
         // Pointed at, it may light.
         s["nodes"][2]["roles"] = json!(["journey level 1", "cursor", "hovered"]);
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
+        // Out of the function set aside, too.
+        s["nodes"][2]["roles"] = json!(["journey level 1", "cursor"]);
+        s["nodes"][1]["roles"] = json!(["aside"]);
+        s["arrows"][0]["from_unit"] = json!("x:a::g");
         assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
     }
 

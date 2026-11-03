@@ -726,8 +726,8 @@ impl Explorer {
     /// expanded. With a module expanded, shrinks it back, and the camera returns to
     /// exactly where it stood before, however it moved meanwhile. Otherwise expands
     /// `module`, or with none given, the focus's ([`Self::focus_module`]), remembering
-    /// where the camera stands; the camera then flies in until the module fills the
-    /// view.
+    /// where the camera stands; the camera then flies in until the module takes what
+    /// its functions need of the view.
     pub(crate) fn toggle_expand(&mut self, module: Option<usize>) {
         if self.nucleus.expanded() {
             self.nucleus.expand(&self.graph, None);

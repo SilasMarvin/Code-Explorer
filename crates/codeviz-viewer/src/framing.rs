@@ -102,8 +102,9 @@ const CURSOR_ROOM: f32 = 0.85;
 ///   to the usual view and frames it: in a journey, the start, the cursor, every
 ///   function the journey lights and the spheres they lie in, whole, with room for
 ///   their names; browsing, the selection and every module it touches, or the whole
-///   codebase. Expanding turns there too and comes in until the expanded module fills
-///   the view, as does a cursor that takes the expansion to another module. Browsing,
+///   codebase. Expanding turns there too and comes in until the expanded module takes
+///   the share of the view its functions need ([`fill`]), as does a cursor, or a
+///   pick, that takes the expansion to another module. Browsing,
 ///   it holds the camera's angle near the usual view, so the flattened map never
 ///   turns edge-on, and frames the selection only then, so a click moves nothing.
 ///   Expanded in a journey, it pans just enough to keep the cursor in view within the
@@ -113,7 +114,7 @@ const CURSOR_ROOM: f32 = 0.85;
 ///   frames the journey afresh, coming no nearer.
 /// - F, or the panel's Fit, frames the focus from the angle the camera has:
 ///   browsing, the selection and what it lights; in a journey, the journey and what
-///   the view is on ([`Explorer::current`]); expanded, the module, filling the view,
+///   the view is on ([`Explorer::current`]); expanded, the module, as expanding frames it,
 ///   and the cursor. R shrinks back what is expanded, turns back to the usual
 ///   three-quarter view and frames everything shown: in a journey, its spheres and
 ///   what it lights. Either has the last word over the view pointed anew.
@@ -303,7 +304,7 @@ fn follow_view(
             camera.aim_rotation()
         };
         if now.expanded.is_some() {
-            // Expanding blows the module up to fill the view; shrinking back returns
+            // Expanding blows the module up as its functions need; shrinking back returns
             // to where the camera stood before (the explorer's pose).
             let cursor = cursor.filter(|_| !opening);
             fill(nucleus, cursor, camera, rotation, (views, chars));

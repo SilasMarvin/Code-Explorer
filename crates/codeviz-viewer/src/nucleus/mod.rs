@@ -14,7 +14,7 @@
 //! Expanded (`X`, a double click on a module, or `--expand`), a module opens where it
 //! stands, browsing or in a journey alike: every one of its functions drawn, spread in
 //! rows inside its sphere, with the calls among them. Nothing else moves; the camera
-//! comes in until it fills the view.
+//! comes in until it is as big as its functions need to sit comfortably.
 //!
 //! This file holds what the nucleus is and answers; [`browse`], [`journey`] and
 //! [`inside`] arrange it for each mode, and [`draw`] puts it in the scene. The browsing map itself is [`codeviz_layout::atlas`]'s.
