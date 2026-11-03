@@ -824,10 +824,14 @@ impl Explorer {
     }
 
     /// Esc browsing with nothing above it: the selection goes, remembering it, and
-    /// the camera stays.
+    /// the camera stays; with nothing selected, says there is nothing to close.
     pub(crate) fn deselect(&mut self) {
         if self.selection().is_some() {
             self.navigate(|explorer| explorer.selection = None);
+        } else {
+            self.say(
+                "Nothing to close: Esc steps back out of search, help, a journey or a selection",
+            );
         }
     }
 
