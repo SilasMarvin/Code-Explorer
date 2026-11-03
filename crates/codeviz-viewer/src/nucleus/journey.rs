@@ -134,6 +134,8 @@ impl Nucleus {
             middle,
             &cluster_of,
         );
+        let drawn = |t: usize| outside.contains(&t) || aside == Some(t);
+        let seated = seats.wait(&mut points, &placed, drawn, self.aside, &cluster_of);
         Arrangement {
             start,
             middle,
@@ -145,6 +147,7 @@ impl Nucleus {
             ring: order,
             outside,
             aside,
+            seated,
             folded,
             tubes: Vec::new(),
             links,
@@ -658,6 +661,29 @@ impl Seats {
         let at = *self.seat.get(&tile)?;
         let held = aside.is_some_and(|a| a != tile && self.seat.get(&a) == Some(&at));
         Some(if held { self.kept(at.0) - 1 } else { at.1 })
+    }
+
+    /// Puts each caller with a seat that the journey neither lays out nor draws
+    /// (`drawn`) at its place, undrawn, and returns them: names keep off where I may
+    /// bring one in, as off a deeper level's calls.
+    fn wait(
+        &self,
+        points: &mut [Vec3],
+        placed: &Placed,
+        drawn: impl Fn(usize) -> bool,
+        aside: Option<usize>,
+        cluster_of: &impl Fn(usize) -> usize,
+    ) -> Vec<usize> {
+        let mut waiting: Vec<usize> = self.seat.keys().copied().collect();
+        waiting.retain(|&t| !drawn(t) && !placed.points.contains_key(&t));
+        waiting.sort_unstable();
+        for &tile in &waiting {
+            let free = placed.free.get(&cluster_of(tile));
+            if let Some(&at) = free.and_then(|free| free.get(self.of(tile, aside)?)) {
+                points[tile] = at;
+            }
+        }
+        waiting
     }
 
     /// Which of `cluster`'s places the function set aside, `tile`, takes: its seat,

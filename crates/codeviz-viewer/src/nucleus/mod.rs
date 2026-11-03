@@ -226,6 +226,9 @@ struct Arrangement {
     /// In a journey, the function set aside, when it is drawn only for that: picked
     /// by a search where the journey draws nothing of it.
     aside: Option<usize>,
+    /// In a journey, the callers from off it that I could bring in, undrawn, each
+    /// where it would show.
+    seated: Vec<usize>,
     /// In a journey, the start's callers beyond the few nearest it: drawn quietly and
     /// named only under the pointer, counted on their module's name instead.
     folded: HashSet<usize>,
@@ -654,10 +657,15 @@ impl Nucleus {
         self.now.shown.get(tile).copied().unwrap_or(false)
     }
 
-    /// Every function the open journey could light at some depth: what it runs below
-    /// the start, wherever it shows.
+    /// Every function the open journey could light at some depth, or I bring in: what
+    /// it runs below the start, and the callers from off it, wherever they show.
     pub(crate) fn could_light(&self) -> impl Iterator<Item = usize> + '_ {
-        self.trail.whole.keys().copied().filter(|_| !self.browse)
+        self.trail
+            .whole
+            .keys()
+            .chain(&self.now.seated)
+            .copied()
+            .filter(|_| !self.browse)
     }
 
     /// How many calls below the start the open journey first runs a function, at
