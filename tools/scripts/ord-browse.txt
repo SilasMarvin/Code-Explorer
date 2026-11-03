@@ -14,10 +14,11 @@ expect named Explorer::spotlit
 expect nothing-moved
 snap searched
 
-# A name drawn at the whole map: callers are named before calls, so the crowd
-# round spotlit leaves graph_focus, a call, unnamed there.
-click-label Explorer::reveal_targets
-expect selection Explorer::reveal_targets
+# At the whole map the crowd round spotlit leaves most of its callers and calls
+# unnamed: a name that would have to move as the selection changes goes instead.
+# A click on a name or on a dot selects, and moves nothing.
+click-label ui::draw_graph_labels
+expect selection ui::draw_graph_labels
 expect nothing-moved
 snap select by name
 
@@ -26,9 +27,21 @@ expect selection Explorer::spotlit
 expect nothing-moved
 snap select by dot
 
-hover-label Explorer::spotlight
+click Explorer::reveal_targets
+expect selection Explorer::reveal_targets
 expect nothing-moved
-snap hover name
+snap select its caller
+
+click Explorer::spotlit
+expect selection Explorer::spotlit
+expect nothing-moved
+snap select back
+
+# Pointing names what has no room for a name, and moves nothing.
+hover Explorer::spotlight
+expect named Explorer::spotlight
+expect nothing-moved
+snap hover unnamed
 
 key f
 expect check framed

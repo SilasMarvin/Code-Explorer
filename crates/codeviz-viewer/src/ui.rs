@@ -22,7 +22,7 @@ use crate::{
     journey_panel::{self, JourneyPanel},
     key_help::{hint, key_help, key_hint},
     labels::draw_graph_labels,
-    text,
+    notice, text,
 };
 
 pub(crate) struct UiPlugin;
@@ -233,28 +233,27 @@ fn draw_ui(
 /// The bar along the top: Back and Forward and which mode the view is in on the left;
 /// search and the chip for a function set aside on the right. Returns how tall it is.
 fn top_bar(root_ui: &mut egui::Ui, explorer: &mut Explorer, chrome: &mut Chrome) -> f32 {
-    egui::Panel::top("stack")
-        .show(root_ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .selectable_label(chrome.search, "Search")
-                        .on_hover_text("Find a function (/)")
-                        .clicked()
-                    {
-                        chrome.search = !chrome.search;
-                    }
-                    aside_chip(ui, explorer);
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        history_buttons(ui, explorer);
-                        mode_label(ui, explorer);
-                    });
+    let panel = egui::Panel::top("stack").show(root_ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .selectable_label(chrome.search, "Search")
+                    .on_hover_text("Find a function (/)")
+                    .clicked()
+                {
+                    chrome.search = !chrome.search;
+                }
+                aside_chip(ui, explorer);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    history_buttons(ui, explorer);
+                    mode_label(ui, explorer);
                 });
             });
-        })
-        .response
-        .rect
-        .height()
+        });
+    });
+    let bar = panel.response.rect;
+    notice::note_top_bar(root_ui.ctx(), bar);
+    bar.height()
 }
 
 /// The bar under the pointer tied to the node it stands for.

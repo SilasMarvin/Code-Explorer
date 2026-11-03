@@ -4,7 +4,10 @@
 //! start, the cursor, the selection, the modules, the journey's numbered calls level
 //! by level in number order, the callers, whatever else is lit, then the rest. A name
 //! lower in that order never displaces a higher one, and the same view always shows
-//! the same names in the same places, whatever came before. In a journey a module
+//! the same names in the same places, whatever came before. A name stays where it
+//! was or goes, never moves: it keeps the side it takes in a neutral view, or else
+//! a home its dot's neighbours alone decide, and dots keep names off as though each
+//! were the cursor's. In a journey a module
 //! round the nucleus keeps the room for its name at every depth, shown or not, and
 //! what I brings in comes after everything else lit, so neither a depth nor I moves a
 //! name. What the pointer is on is named over the rest, taking no room, so pointing
@@ -128,11 +131,18 @@ fn above(middle: egui::Pos2, radius: f32, size: egui::Vec2) -> egui::Rect {
 struct Disc {
     tile: usize,
     at: egui::Pos2,
+    /// As names keep off it: a dot drawn bigger than a speck as big as the cursor's,
+    /// whatever it is to the view, so a name stays put as the cursor or the selection
+    /// comes and goes beside it.
     radius: f32,
-    /// As big as it is drawn, or as a lit one when that is bigger: the same whatever
-    /// is selected.
+    /// As big as the cursor's: the same whatever is selected, for the order a name
+    /// tries its spots in.
     steady: f32,
-    /// Lit, the start or the cursor: no name ever covers it.
+    /// As small as it is drawn lit, or as a speck: how near its own name reads as
+    /// its, whatever it comes to be, so no other dot ever reads as nearer.
+    least: f32,
+    /// Lit, the start or the cursor: no name ever covers it. An expanded module's
+    /// functions that nothing else lights are not: a lit name may lie over them.
     lit: bool,
     /// A caller from off the journey (I): only names of what I brings in keep off it,
     /// so I moves no other name.
@@ -251,7 +261,7 @@ impl Placer {
             .dots
             .iter()
             .find(|d| d.tile == own)
-            .map_or(0.0, |d| text.distance_to_pos(d.at) - d.radius);
+            .map_or(0.0, |d| text.distance_to_pos(d.at) - d.least);
         self.dot_grid
             .near(pill.expand(mine.max(0.0) + CLEAR))
             .into_iter()
@@ -306,39 +316,68 @@ impl Placer {
         node: egui::Pos2,
         reach: f32,
         (size, bare): (egui::Vec2, egui::Vec2),
+        keep: Keep,
     ) -> Option<(usize, f32)> {
-        // Dots that may light first, then any.
-        let covered = |pill: egui::Rect| {
-            let under: Vec<Disc> = self
-                .dot_grid
-                .near(pill.expand(reach + CLEAR))
-                .into_iter()
-                .map(|i| self.dots[i])
-                .filter(|d| {
-                    self.sees(d) && d.tile != own && pill.distance_to_pos(d.at) < d.steady + CLEAR
-                })
-                .collect();
-            (under.iter().filter(|d| d.may_light).count(), under.len())
-        };
-        let mut spots: Vec<((usize, usize), usize, egui::Rect)> = (0..SPOTS.len())
-            .map(|i| {
-                (
-                    covered(spot(i, node, reach, bare)),
-                    i,
-                    spot(i, node, reach, size),
-                )
-            })
+        let mut spots: Vec<((usize, usize), usize)> = (0..SPOTS.len())
+            .map(|i| (self.covered(own, reach, spot(i, node, reach, bare)), i))
             .collect();
-        spots.sort_by_key(|&(covers, i, _)| (covers, i));
+        spots.sort_unstable();
         // Each spot as it is, else nudged half its height along its side, before the
         // next: a name a little off level beside its dot reads better than one moved
         // round it.
-        spots.into_iter().find_map(|(_, i, _)| {
+        spots.into_iter().find_map(|(_, i)| {
             [0.0, NUDGE, -NUDGE]
                 .into_iter()
-                .find(|&by| self.fits(slid(i, node, reach, size, by), own, Keep::LitDots))
+                .find(|&by| self.fits(slid(i, node, reach, size, by), own, keep))
                 .map(|by| (i, by))
         })
+    }
+
+    /// How many dots other than `own` a name at `pill` would cover or lie nearer than
+    /// its own, every other dot as big as the cursor's and its own as small as it is
+    /// drawn lit: those that may light, then all.
+    fn covered(&self, own: usize, reach: f32, pill: egui::Rect) -> (usize, usize) {
+        let text = pill.shrink2(PILL_PAD);
+        let mine = self
+            .dots
+            .iter()
+            .find(|d| d.tile == own)
+            .map_or(0.0, |d| text.distance_to_pos(d.at) - d.least);
+        let under: Vec<Disc> = self
+            .dot_grid
+            .near(pill.expand(reach.max(mine) + CLEAR))
+            .into_iter()
+            .map(|i| self.dots[i])
+            .filter(|d| {
+                self.sees(d)
+                    && d.tile != own
+                    && (pill.distance_to_pos(d.at) < d.steady + CLEAR
+                        || text.distance_to_pos(d.at) - d.steady < mine - NEARER)
+            })
+            .collect();
+        (under.iter().filter(|d| d.may_light).count(), under.len())
+    }
+
+    /// A name's home: of the spots round its dot, as they are or nudged, the one a
+    /// pill of `bare`, the name alone, covers fewest dots at, whatever names are
+    /// placed and whatever is lit. A name with no side of its own from the neutral
+    /// view goes there or nowhere, so a click that names others first never moves it.
+    fn home(&self, own: usize, node: egui::Pos2, reach: f32, bare: egui::Vec2) -> (usize, f32) {
+        (0..SPOTS.len())
+            .flat_map(|i| {
+                [0.0, NUDGE, -NUDGE]
+                    .into_iter()
+                    .enumerate()
+                    .map(move |n| (i, n))
+            })
+            .min_by_key(|&(i, (nudged, by))| {
+                (
+                    self.covered(own, reach, slid(i, node, reach, bare, by)),
+                    i,
+                    nudged,
+                )
+            })
+            .map_or((0, 0.0), |(i, (_, by))| (i, by))
     }
 
     /// For a lit name with no spot that fits: the first of the spots slid along
@@ -349,11 +388,12 @@ impl Placer {
         node: egui::Pos2,
         reach: f32,
         size: egui::Vec2,
-    ) -> Option<egui::Rect> {
+        keep: Keep,
+    ) -> Option<(usize, f32)> {
         SLIDES.iter().find_map(|&by| {
             (0..SPOTS.len())
-                .map(|i| slid(i, node, reach, size, by))
-                .find(|&pill| self.fits(pill, own, Keep::LitDots))
+                .find(|&i| self.fits(slid(i, node, reach, size, by), own, keep))
+                .map(|i| (i, by))
         })
     }
 
@@ -399,9 +439,9 @@ impl Placer {
 /// A name ready to paint: its pill, its text and border.
 struct Label {
     named: Named,
-    /// A function's name: which of [`SPOTS`] round its dot it took, unless slid along
-    /// one.
-    side: Option<usize>,
+    /// A function's name: which of [`SPOTS`] round its dot it took, and how far it
+    /// is slid along it, as [`slid`] has it.
+    side: Option<(usize, f32)>,
     pill: egui::Rect,
     galley: Arc<egui::Galley>,
     stroke: Option<egui::Color32>,
@@ -422,6 +462,28 @@ fn name_sizes_id() -> egui::Id {
 pub(crate) fn name_sizes(ctx: &egui::Context) -> Arc<HashMap<Named, egui::Vec2>> {
     ctx.data(|d| d.get_temp(name_sizes_id()))
         .unwrap_or_default()
+}
+
+fn name_spots_id() -> egui::Id {
+    egui::Id::new("graph_name_spots")
+}
+
+/// Where each function's name was last tried as the view is, its pill: the side it
+/// holds from the neutral view, or its home, whether it fit or not. A lit function
+/// left unnamed was left out for want of room there, and nowhere else.
+pub(crate) fn name_spots(ctx: &egui::Context) -> Arc<HashMap<Named, egui::Rect>> {
+    ctx.data(|d| d.get_temp(name_spots_id()))
+        .unwrap_or_default()
+}
+
+fn kept_off_id() -> egui::Id {
+    egui::Id::new("graph_names_kept_off")
+}
+
+/// Every dot names were last kept off, drawn or held for a deeper level: the
+/// function, where it is and how far from its middle names were kept, in points.
+pub(crate) fn kept_off(ctx: &egui::Context) -> Arc<Vec<(usize, egui::Pos2, f32)>> {
+    ctx.data(|d| d.get_temp(kept_off_id())).unwrap_or_default()
 }
 
 fn names_area_id() -> egui::Id {
@@ -543,6 +605,9 @@ struct Naming<'a> {
     /// How big each name laid out is, its text without the pill, whether it found
     /// room or not.
     sizes: RefCell<HashMap<Named, egui::Vec2>>,
+    /// Where each function's name was tried as the view is, its held side or its
+    /// home, whether it fit or not.
+    spots: RefCell<HashMap<Named, egui::Rect>>,
     /// By cluster, whether its plain functions may be named: [`Naming::roomy`].
     roomy: RefCell<HashMap<usize, bool>>,
 }
@@ -590,23 +655,29 @@ impl<'a> Naming<'a> {
             discs: Vec::new(),
             ladder: ladder.into_iter().map(|(_, tile)| tile).collect(),
             sizes: RefCell::default(),
+            spots: RefCell::default(),
             roomy: RefCell::default(),
         };
-        let reach = Dot::Focus.radius();
         naming.discs = (0..explorer.map().tiles.len())
             .map(|tile| {
                 let world = explorer.tile_point(tile).filter(|_| nucleus.drawn(tile))?;
                 let at = (naming.to_screen)(world).filter(|at| area.contains(*at))?;
-                let edge =
-                    (naming.to_screen)(world + naming.up * reach).map_or(8.0, |p| p.distance(at));
-                Some((at, Dot::Focus.clamp(edge) + GAP))
+                Some((at, naming.shows(tile, world, at, Dot::Focus) + GAP))
             })
             .collect();
         naming
     }
 
-    /// Every dot on the graph as names keep off it: as big as it is drawn, or for
-    /// the `neutral` view at least as big as a lit one.
+    /// How big `tile`'s dot shows in `dot`'s role, at `world` in the world and `at`
+    /// on screen.
+    fn shows(&self, tile: usize, world: Vec3, at: egui::Pos2, dot: Dot) -> f32 {
+        let radius = dot.radius() * self.nucleus.dot_scale(tile);
+        dot.clamp((self.to_screen)(world + self.up * radius).map_or(2.0, |p| p.distance(at)))
+    }
+
+    /// Every dot on the graph as names keep off it: one drawn bigger than a speck as
+    /// big as the cursor's; a speck as big as it is drawn, or for the `neutral` view
+    /// as a lit one.
     fn dots(&self, neutral: bool) -> Vec<Disc> {
         let nucleus = self.nucleus;
         self.discs
@@ -616,17 +687,28 @@ impl<'a> Naming<'a> {
                 let (at, _) = (*disc)?;
                 let dot = graph_view::dot(self.explorer, tile);
                 let world = self.explorer.tile_point(tile)?;
-                let edge = (self.to_screen)(world + self.up * dot.radius())
-                    .map_or(2.0, |p| p.distance(at));
-                let lit_edge = (self.to_screen)(world + self.up * Dot::Lit.radius())
-                    .map_or(2.0, |p| p.distance(at));
-                let steady = dot.clamp(edge).max(Dot::Lit.clamp(lit_edge));
+                let steady = self.shows(tile, world, at, Dot::Focus);
+                let radius = match dot {
+                    Dot::Speck if neutral => self.shows(tile, world, at, Dot::Lit),
+                    Dot::Speck => self.shows(tile, world, at, Dot::Speck),
+                    _ => steady,
+                };
+                // An expanded module's function that nothing else lights.
+                let plain = nucleus.opened_up(tile)
+                    && dot == Dot::Lit
+                    && nucleus.level(tile).is_none()
+                    && !nucleus.outside(tile);
+                let least = match dot {
+                    Dot::Speck => self.shows(tile, world, at, Dot::Speck),
+                    _ => self.shows(tile, world, at, Dot::Lit),
+                };
                 Some(Disc {
                     tile,
                     at,
-                    radius: if neutral { steady } else { dot.clamp(edge) },
+                    radius,
                     steady,
-                    lit: dot != Dot::Speck,
+                    least,
+                    lit: dot != Dot::Speck && !plain,
                     outside: nucleus.outside(tile),
                     may_light: dot != Dot::Speck
                         || nucleus.browsing()
@@ -638,8 +720,8 @@ impl<'a> Naming<'a> {
     }
 
     /// Where the journey's functions not drawn at this depth would show, as big as
-    /// lit: names keep off them as off the lit dots drawn, so a name takes the same
-    /// side at every depth, and a level more takes away no room.
+    /// the cursor's: names keep off them as off the lit dots drawn, so a name takes
+    /// the same side at every depth, and a level more takes away no room.
     fn ghosts(&self) -> impl Iterator<Item = Disc> + '_ {
         let nucleus = self.nucleus;
         nucleus
@@ -648,14 +730,13 @@ impl<'a> Naming<'a> {
             .filter_map(move |tile| {
                 let world = self.explorer.tile_point(tile)?;
                 let at = (self.to_screen)(world)?;
-                let edge = (self.to_screen)(world + self.up * Dot::Lit.radius())
-                    .map_or(2.0, |p| p.distance(at));
-                let radius = Dot::Lit.clamp(edge);
+                let radius = self.shows(tile, world, at, Dot::Focus);
                 Some(Disc {
                     tile,
                     at,
                     radius,
                     steady: radius,
+                    least: self.shows(tile, world, at, Dot::Lit),
                     lit: true,
                     outside: false,
                     may_light: true,
@@ -947,62 +1028,68 @@ impl<'a> Naming<'a> {
     }
 
     /// A function's name beside its dot, of `tier`, where it fits; one that must show
-    /// wherever it covers least. With the `sides` names took in the neutral view, a
-    /// name goes on its side there, so a click or a step that lights or unlights
-    /// others moves it only when what lights takes that side: then a plain name goes
-    /// unnamed, a lit one to the first side free. A plain function is named only
-    /// where its sphere shows big enough to keep names by their own dots.
+    /// wherever it covers least. As the view is, with the `sides` names took in the
+    /// neutral view, a name stays on its side there, or else at its [`Placer::home`],
+    /// or goes: so a click or a step that lights or unlights others never moves a
+    /// name, only takes it away where what lights takes its place. The start, the
+    /// cursor and the selection are named come what may. A plain function is named
+    /// only where its sphere shows big enough to keep names by their own dots, and
+    /// keeps off every dot; a lit one may lie over a dot nothing lights.
     fn function_name(
         &self,
         painter: &egui::Painter,
         placer: &Placer,
         (tile, tier): (usize, Tier),
-        sides: Option<&HashMap<usize, usize>>,
+        sides: Option<&HashMap<usize, (usize, f32)>>,
     ) -> Option<Label> {
         let (node, reach) = self.discs[tile]?;
-        let (job, stroke, number) = self.function_label(tile, tier);
-        let lit = tier != Tier::Plain;
         if tier == Tier::Plain && !self.roomy(tile) {
             return None;
         }
+        let (job, stroke, number) = self.function_label(tile, tier);
+        let lit = tier != Tier::Plain;
+        let keep = if lit { Keep::LitDots } else { Keep::EveryDot };
         // An expanded module's own functions are named as the lit are, after them.
         let ranked = lit || self.nucleus.opened_up(tile);
+        let label = |side: Option<(usize, f32)>, pill: egui::Rect, galley| Label {
+            named: Named::Node(tile),
+            side,
+            pill,
+            galley,
+            stroke,
+            number: number.clone(),
+        };
+        let name = node_name(self.explorer, tile);
+        let bare = || {
+            pill_of(
+                painter,
+                label_job(None, &name, None, PLAIN_TEXT, text::BODY),
+            )
+            .1
+        };
         if let Some(sides) = sides {
-            if let Some(&side) = sides.get(&tile) {
-                let keep = if ranked {
-                    Keep::LitDots
-                } else {
-                    Keep::EveryDot
-                };
-                let (galley, size) = self.pill(painter, Named::Node(tile), job.clone());
-                let pill = spot(side, node, reach, size);
-                if placer.fits(pill, tile, keep) {
-                    return Some(Label {
-                        named: Named::Node(tile),
-                        side: Some(side),
-                        pill,
-                        galley,
-                        stroke,
-                        number,
-                    });
-                }
+            let held = sides
+                .get(&tile)
+                .copied()
+                .or_else(|| ranked.then(|| placer.home(tile, node, reach, bare())));
+            let (index, by) = held?;
+            let (galley, size) = self.pill(painter, Named::Node(tile), job.clone());
+            let pill = slid(index, node, reach, size, by);
+            self.spots.borrow_mut().insert(Named::Node(tile), pill);
+            if placer.fits(pill, tile, keep) {
+                return Some(label(Some((index, by)), pill, galley));
             }
-            if !ranked {
+            if !tier.always() {
                 return None;
             }
         }
         if ranked {
-            // Lit, with its side taken or none of its own: the side its dot's
-            // neighbours, at every depth, leave most room on, that is free. One a
-            // deeper level numbers, shown unnumbered, keeps room for its number, so a
-            // level more or less leaves it where it is.
+            // In the neutral view, or come what may: the side its dot's neighbours, at
+            // every depth, leave most room on, that is free. One a deeper level
+            // numbers, shown unnumbered, keeps room for its number, so a level more or
+            // less leaves it where it is.
             let (galley, size) = self.pill(painter, Named::Node(tile), job.clone());
-            let name = node_name(self.explorer, tile);
-            let bare = pill_of(
-                painter,
-                label_job(None, &name, None, PLAIN_TEXT, text::BODY),
-            )
-            .1;
+            let bare = bare();
             let numbered = self
                 .nucleus
                 .journey_level(tile)
@@ -1018,20 +1105,16 @@ impl<'a> Naming<'a> {
                 });
             let found = numbered
                 .map(|room| room.max(size))
-                .and_then(|room| placer.find_by_dots(tile, node, reach, (room, bare)))
-                .or_else(|| placer.find_by_dots(tile, node, reach, (size, bare)));
+                .and_then(|room| placer.find_by_dots(tile, node, reach, (room, bare), keep))
+                .or_else(|| placer.find_by_dots(tile, node, reach, (size, bare), keep));
             if let Some((free, by)) = found {
-                return Some(Label {
-                    named: Named::Node(tile),
-                    side: Some(free),
-                    pill: slid(free, node, reach, size, by),
+                return Some(label(
+                    Some((free, by)),
+                    slid(free, node, reach, size, by),
                     galley,
-                    stroke,
-                    number,
-                });
+                ));
             }
-        }
-        if !ranked {
+        } else {
             // Most plain names have no room: see whether one could, before laying it
             // out.
             #[expect(clippy::cast_precision_loss, reason = "a name's length")]
@@ -1042,25 +1125,21 @@ impl<'a> Naming<'a> {
             placer.find(tile, node, reach, guess, false)?;
         }
         let (galley, size) = self.pill(painter, Named::Node(tile), job);
-        let (taken, pill) = match placer.find(tile, node, reach, size, ranked) {
-            Some((index, at)) => (Some(index), at),
-            None => match placer.find_slid(tile, node, reach, size).filter(|_| ranked) {
-                Some(slid) => (None, slid),
+        let (taken, pill) = match placer.find(tile, node, reach, size, lit) {
+            Some((index, at)) => ((index, 0.0), at),
+            None => match placer
+                .find_slid(tile, node, reach, size, keep)
+                .filter(|_| ranked)
+            {
+                Some((index, by)) => ((index, by), slid(index, node, reach, size, by)),
                 None if tier.always() => {
                     let (index, at) = placer.least_over(tile, node, reach, size);
-                    (Some(index), at)
+                    ((index, 0.0), at)
                 }
                 None => return None,
             },
         };
-        Some(Label {
-            named: Named::Node(tile),
-            side: taken,
-            pill,
-            galley,
-            stroke,
-            number,
-        })
+        Some(label(Some(taken), pill, galley))
     }
 
     /// What the pointer is on and is not named already: the function hovered, beside
@@ -1079,7 +1158,7 @@ impl<'a> Naming<'a> {
                 .unwrap_or_else(|| placer.least_over(tile, node, reach, size));
             over.push(Label {
                 named: Named::Node(tile),
-                side: Some(taken),
+                side: Some((taken, 0.0)),
                 pill,
                 galley,
                 stroke,
@@ -1166,7 +1245,7 @@ pub(crate) fn draw_graph_labels(
     // First as though nothing were selected and the cursor on no call, for the side
     // each name takes, then as the view is.
     let (neutral, _) = place(&naming, painter, None);
-    let sides: HashMap<usize, usize> = neutral
+    let sides: HashMap<usize, (usize, f32)> = neutral
         .iter()
         .filter_map(|l| match (l.named, l.side) {
             (Named::Node(tile), Some(side)) => Some((tile, side)),
@@ -1175,9 +1254,17 @@ pub(crate) fn draw_graph_labels(
         .collect();
     let (mut labels, placer) = place(&naming, painter, Some(&sides));
     let laid_out = naming.sizes.take();
-    painter
-        .ctx()
-        .data_mut(|d| d.insert_temp(name_sizes_id(), Arc::new(laid_out)));
+    let tried = naming.spots.take();
+    let kept_off: Vec<(usize, egui::Pos2, f32)> = placer
+        .dots
+        .iter()
+        .map(|d| (d.tile, d.at, d.radius))
+        .collect();
+    painter.ctx().data_mut(|d| {
+        d.insert_temp(name_sizes_id(), Arc::new(laid_out));
+        d.insert_temp(name_spots_id(), Arc::new(tried));
+        d.insert_temp(kept_off_id(), Arc::new(kept_off));
+    });
     let over = naming.pointed(painter, &placer, &labels);
     // Every function lit and on screen is named, or counted here as not.
     let lit: Vec<usize> = (0..naming.discs.len())
@@ -1238,7 +1325,7 @@ fn paint(painter: &egui::Painter, labels: &[Label]) {
 fn place(
     naming: &Naming,
     painter: &egui::Painter,
-    sides: Option<&HashMap<usize, usize>>,
+    sides: Option<&HashMap<usize, (usize, f32)>>,
 ) -> (Vec<Label>, Placer) {
     let nucleus = naming.nucleus;
     let neutral = sides.is_none();
@@ -1319,6 +1406,7 @@ mod tests {
             at: egui::pos2(x, y),
             radius: 4.0,
             steady: 4.0,
+            least: 4.0,
             lit,
             outside: false,
             may_light: lit,
@@ -1365,6 +1453,24 @@ mod tests {
         let right = spot(0, egui::pos2(100.0, 100.0), 12.0, SIZE);
         assert!(!placer.fits(right, 0, Keep::EveryDot));
         assert!(placer.fits(right, 0, Keep::LitDots));
+    }
+
+    #[test]
+    fn a_names_home_hangs_on_the_dots_alone() {
+        let node = egui::pos2(100.0, 100.0);
+        let mut placer = Placer::new(
+            bounds(),
+            vec![disc(0, 100.0, 100.0, true), disc(1, 140.0, 100.0, false)],
+            Vec::new(),
+        );
+        let (side, by) = placer.home(0, node, 12.0, SIZE);
+        assert_ne!(side, 0, "right covers the other dot, lit or not");
+        placer.take(slid(side, node, 12.0, SIZE, by));
+        assert_eq!(
+            placer.home(0, node, 12.0, SIZE),
+            (side, by),
+            "names take no home"
+        );
     }
 
     #[test]

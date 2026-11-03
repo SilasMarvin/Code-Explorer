@@ -4,6 +4,8 @@
 //! only sometimes runs. A scripted session's snapshots say more: what is
 //! drawn where on screen, by name, and what can be clicked ([`scene`]).
 
+use std::collections::{HashMap, HashSet};
+
 use bevy::{
     color::Color,
     math::{Vec2, Vec3},
@@ -154,6 +156,7 @@ pub(crate) fn scene(view: &View) -> Value {
     let named = match_labels(explorer, &labels, &screen.labels, &balls);
     let label_of = |what: Labelled| named.iter().position(|&n| n == Some(what));
 
+    let kept: HashMap<usize, f32> = screen.kept_off.iter().map(|k| (k.0, k.2)).collect();
     let nodes: Vec<Value> = drawn
         .iter()
         .map(|d| {
@@ -172,6 +175,8 @@ pub(crate) fn scene(view: &View) -> Value {
                 "label": label.map(|i| labels[i].text.clone()),
                 "label_rect": label.map(|i| rect(labels[i].rect)),
                 "name_size": name_size(screen, Named::Node(d.tile)),
+                "name_spot": screen.name_spots.get(&Named::Node(d.tile)).map(|r| rect(*r)),
+                "kept_off": kept.get(&d.tile).map(|&r| round(r)),
                 "crowded_by": crowding(explorer, &drawn, d),
                 "color": d.color.map(hex),
                 "rings": rings(view, d),
@@ -220,6 +225,7 @@ pub(crate) fn scene(view: &View) -> Value {
         "camera": camera(view),
         "state": state(view),
         "nodes": nodes,
+        "held": held(explorer, screen, &drawn),
         "modules": modules,
         "arrows": arrows(view),
         "module_arrows": module_arrows(view),
@@ -234,6 +240,25 @@ pub(crate) fn scene(view: &View) -> Value {
         "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect), "size": t.size })).collect::<Vec<_>>(),
         "content": of(explorer),
     })
+}
+
+/// Where the journey's calls a deeper level shows would be, which names keep off:
+/// each with where, and how far names keep from it.
+fn held(explorer: &Explorer, screen: &Screen, drawn: &[Drawn]) -> Vec<Value> {
+    let shown: HashSet<usize> = drawn.iter().map(|d| d.tile).collect();
+    screen
+        .kept_off
+        .iter()
+        .filter(|k| !shown.contains(&k.0))
+        .map(|&(tile, at, radius)| {
+            json!({
+                "name": node_name(explorer, tile),
+                "unit": explorer.tile_unit(tile).map(ToString::to_string),
+                "at": [round(at.x), round(at.y)],
+                "radius": round(radius),
+            })
+        })
+        .collect()
 }
 
 /// Where the camera is in the world, and which way it faces.
