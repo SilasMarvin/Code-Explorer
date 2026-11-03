@@ -16,8 +16,13 @@
       Prints the summary of a session already run.
   tools/drive shot NAME [--wt DIR] -- VIEW ARGS [--keys "K1 K2"] [--hover UNIT]
       One picture: $CODEVIZ_SHOTS/NAME.png, NAME.json (the snap) and NAME.truth.json.
-  tools/drive live [DIR] -- VIEW ARGS
-      An interactive window under the memory guard, no time limit.
+  tools/drive live [DIR] [--limit SECONDS] -- VIEW ARGS
+      An interactive window under the memory guard and the render lock, closed after
+      SECONDS (default 1800).
+  tools/drive idle [--wt DIR] [--seconds N] -- VIEW ARGS
+      Opens the viewer as a person would (no script), lets it settle, and prints how
+      much of a core it uses over N seconds (default 10) while nothing happens. Keep
+      the mouse off the window while it runs.
   tools/drive WORKTREE NAME SCRIPT -- VIEW ARGS
       The older form of `run`.
 
@@ -76,6 +81,8 @@ LOCK = Path(os.environ.get("CODEVIZ_LOCK", TOOLS / "shots" / ".lock"))
 SCRIPTS = REPO / "tools" / "scripts"
 
 LIMIT_MB = 3000
+# Seconds a live window stays open at most; seconds an idle window settles first.
+LIVE_SECONDS, IDLE_SETTLE = 1800, 10
 # Seconds a session may take: a base, more per step and per waited millisecond, a cap.
 BASE_SECONDS, STEP_SECONDS, MOST_SECONDS = 60, 12, 480
 # A lock older than this, or whose holder is gone, was left by a killed run.
@@ -459,10 +466,61 @@ def main(argv):
             raise Trouble("usage: tools/drive shot NAME [--wt DIR] -- VIEW ARGS [--keys K] [--hover UNIT]")
         return shot(mine[0], wt, view_args)
     if command == "live":
+        limit = int(option(mine, "--limit", LIVE_SECONDS))
         target = mine[0] if mine else wt
-        code = guarded([str(binary(target)), *view_args], Path(target).resolve(), os.devnull)
-        return code
+        argv = [str(binary(target)), *view_args]
+        return locked(lambda: guarded(argv, Path(target).resolve(), os.devnull, limit))
+    if command == "idle":
+        seconds = float(option(mine, "--seconds", 10))
+        share = idle(wt, view_args, seconds)
+        print(f"idle: {share:.1%} of a core over {seconds:.0f} s ({shlex.join(view_args)})")
+        return 0
     raise Trouble(f"unknown command `{command}`; see tools/drive --help")
+
+
+def cpu_seconds(pid):
+    """CPU time a process and its children have used, in seconds."""
+    rows = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,cputime="],
+                          capture_output=True, text=True).stdout.splitlines()
+    table = [row.split() for row in rows if len(row.split()) == 3]
+    tree = {pid}
+    for _ in range(4):
+        tree |= {int(p) for p, parent, _ in table if int(parent) in tree}
+    total = 0.0
+    for p, _, time_used in table:
+        if int(p) in tree:
+            parts = [float(x) for x in time_used.replace("-", ":").split(":")]
+            total += sum(v * 60 ** i for i, v in enumerate(reversed(parts)))
+    return total
+
+
+def idle(wt, view_args, seconds):
+    """Opens the viewer with no script under the lock and the memory guard, lets it
+    settle, and returns the share of a core it uses over `seconds` while left alone."""
+    if not view_args:
+        raise Trouble("usage: tools/drive idle [--wt DIR] [--seconds N] -- VIEW ARGS")
+    argv = [str(binary(wt)), *view_args]
+
+    def measure():
+        p = subprocess.Popen(argv, cwd=Path(wt).resolve(), stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            deadline = time.monotonic() + IDLE_SETTLE
+            while time.monotonic() < deadline:
+                if p.poll() is not None:
+                    raise Trouble(f"the viewer exited {p.returncode} before it settled")
+                if tree_mb(p.pid) > LIMIT_MB:
+                    raise Trouble(f"killed past {LIMIT_MB} MB")
+                time.sleep(0.2)
+            start, began = cpu_seconds(p.pid), time.monotonic()
+            time.sleep(seconds)
+            return (cpu_seconds(p.pid) - start) / (time.monotonic() - began)
+        finally:
+            if p.poll() is None:
+                os.killpg(p.pid, signal.SIGKILL)
+                p.wait()
+
+    return locked(measure)
 
 
 def shot(name, wt, view_args):

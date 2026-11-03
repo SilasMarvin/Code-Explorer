@@ -199,9 +199,14 @@ pub(crate) struct Since {
 }
 
 impl Since {
-    /// The last step since that moves the view, if any.
+    /// The last step since that moves the view, if any: a window sized anew frames
+    /// the view again as the step before it did, so it is passed over.
     fn last_move(&self) -> Option<Kind> {
-        self.kinds.iter().rev().copied().find(|k| *k != Kind::Still)
+        self.kinds
+            .iter()
+            .rev()
+            .copied()
+            .find(|k| !matches!(k, Kind::Still | Kind::Resize))
     }
 
     fn has(&self, kind: Kind) -> bool {
@@ -3344,6 +3349,8 @@ mod tests {
         let result = framed(&s);
         assert_eq!(result["count"], 2);
         assert_eq!(result["offenders"][1]["sticks_out_by"], 60.0);
+        let resized = after(&s, &s, &[Kind::FrameAll, Kind::Resize], "framed");
+        assert_eq!(resized["count"], 2, "a window sized anew frames as R did");
         assert_eq!(
             after(&s, &s, &[Kind::FrameAll, IN], "framed")["pass"],
             Value::Null

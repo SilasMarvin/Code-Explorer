@@ -344,6 +344,9 @@ struct Drive {
     expanded_by_hand: Option<bool>,
     /// What is worth knowing of the step under way that is no failure.
     notes: Vec<String>,
+    /// The notice said last as the step under way began, by its count: an `expect
+    /// notice` and a pan judge only what was said since.
+    said_before: Option<u64>,
     /// Where the pointer was as the step under way began.
     pointer_before: Option<Vec2>,
     /// When the view last moved, as the step under way settles.
@@ -1359,6 +1362,19 @@ fn photograph(
     false
 }
 
+/// How far a pan may fall short of the drag, or overshoot it, without a bound saying
+/// why: a share of the drag, and at least this many points.
+const PAN_SLACK: f32 = 0.1;
+const PAN_SLACK_POINTS: f32 = 4.0;
+
+/// What a notice said since the step under way began, if anything.
+fn said_since<'a>(drive: &Drive, view: &'a View) -> Option<&'a str> {
+    view.explorer
+        .notice()
+        .filter(|&(count, _)| Some(count) != drive.said_before)
+        .map(|(_, text)| text)
+}
+
 /// Logs how the step under way went: whether it went as meant, where the pointer was
 /// as it began, and, when it settled, how long the view kept moving and how long the
 /// session waited.
@@ -1366,8 +1382,29 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
     let Some(index) = drive.step else {
         return;
     };
-    let trouble = std::mem::take(&mut drive.trouble);
+    let mut trouble = std::mem::take(&mut drive.trouble);
     let notes = std::mem::take(&mut drive.notes);
+    // A pan says how far the view moved, against how far the drag went: what lay
+    // under the hand moves with it, and only a bound, which says so, stops it.
+    let pan = match (drive.pan_from.take(), &drive.lines[index].step) {
+        (Some((world, was)), Step::Pan(asked)) => {
+            let by = view.to_screen(world).map_or(Vec2::ZERO, |now| now - was);
+            let said = said_since(drive, view);
+            let short = (by - *asked).length() > (asked.length() * PAN_SLACK).max(PAN_SLACK_POINTS);
+            if short && said.is_none() {
+                trouble.push(format!(
+                    "the pan moved the view by {by:.0} of {asked:.0} dragged, and nothing said why"
+                ));
+            }
+            if !short && said.is_some_and(|t| t.contains("edge")) {
+                trouble.push(
+                    "said the map's edge stopped the pan, yet it moved all the way".to_owned(),
+                );
+            }
+            Some((by, *asked))
+        }
+        _ => None,
+    };
     let mut entry = json!({
         "step": index + 1,
         "line": drive.lines[index].number,
@@ -1386,11 +1423,7 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
         entry["settled_ms"] = json!(settled.as_millis());
         entry["waited_ms"] = json!(waited.as_millis());
     }
-    // A pan says how far the view moved, against how far the drag went.
-    if let (Some((world, was)), Step::Pan(asked)) =
-        (drive.pan_from.take(), &drive.lines[index].step)
-    {
-        let by = view.to_screen(world).map_or(Vec2::ZERO, |now| now - was);
+    if let Some((by, asked)) = pan {
         entry["view_moved"] = json!(by.length() >= 1.0);
         entry["moved_by"] = json!([by.x.round(), by.y.round()]);
         entry["dragged_by"] = json!([asked.x.round(), asked.y.round()]);
@@ -1466,6 +1499,9 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
             drive.filmed = 0;
             drive.phase = Phase::Filming(n);
             return;
+        }
+        if !matches!(step, Step::Expect(_)) {
+            drive.said_before = view.explorer.notice().map(|(count, _)| count);
         }
         drive.kinds.push(step.kind());
         drive.moves += usize::from(step.kind() != Kind::Still);
@@ -1852,19 +1888,15 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
             }
         }
         Expect::Drawn(unit) => view.find(drive.names.unit(unit)?).map(|_| ()),
+        // Only what the step before said, not a notice left from earlier.
         Expect::Notice(words) => {
             let words = words.to_lowercase();
-            let scene = scene_now(drive, view);
-            let texts: Vec<&str> = scene["text"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|t| t["text"].as_str())
-                .collect();
-            if texts.iter().any(|t| t.to_lowercase().contains(&words)) {
-                Ok(())
-            } else {
-                Err(format!("no notice says `{words}`"))
+            match said_since(drive, view) {
+                Some(text) if text.to_lowercase().contains(&words) => Ok(()),
+                Some(text) => Err(format!("the step before said `{text}`, not `{words}`")),
+                None => Err(format!(
+                    "the step before said nothing; no notice says `{words}`"
+                )),
             }
         }
         Expect::CameraSameAs(label) => {
