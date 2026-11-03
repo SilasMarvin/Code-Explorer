@@ -694,6 +694,19 @@ impl Nucleus {
                 .any(|c| c.from == link.from && c.to == link.to && c.guessed)
     }
 
+    /// Every call the view could draw at any depth, caller to callee: what names
+    /// would rather not lie across, at every depth alike.
+    pub(crate) fn every_call(&self) -> Vec<(usize, usize)> {
+        let reach = self.trail.reach.iter().copied().filter(|_| !self.browse);
+        self.now
+            .links
+            .iter()
+            .filter(|l| l.flow != Flow::Inner)
+            .map(|l| (l.from, l.to))
+            .chain(reach)
+            .collect()
+    }
+
     /// Whether a journey function's name goes on its dot's left, where both sides are
     /// as free, as its functions were spread out: clear of the calls drawn.
     pub(crate) fn name_left(&self, tile: usize) -> bool {

@@ -130,6 +130,27 @@ fn above(middle: egui::Pos2, radius: f32, size: egui::Vec2) -> egui::Rect {
     )
 }
 
+/// Whether the line from `a` to `b` runs through `rect`.
+fn crosses(a: egui::Pos2, b: egui::Pos2, rect: egui::Rect) -> bool {
+    let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
+    let along = b - a;
+    for (start, delta, low, high) in [
+        (a.x, along.x, rect.min.x, rect.max.x),
+        (a.y, along.y, rect.min.y, rect.max.y),
+    ] {
+        if delta.abs() < f32::EPSILON {
+            if start < low || start > high {
+                return false;
+            }
+            continue;
+        }
+        let (u0, u1) = ((low - start) / delta, (high - start) / delta);
+        t0 = t0.max(u0.min(u1));
+        t1 = t1.min(u0.max(u1));
+    }
+    t0 < t1
+}
+
 /// Where a module's name goes when the room above its sphere is taken: smaller,
 /// centred just inside the top of its sphere, a disc of `radius` at `middle`.
 fn inside(middle: egui::Pos2, radius: f32, size: egui::Vec2) -> egui::Rect {
@@ -226,6 +247,9 @@ struct Placer {
     spheres: Vec<(usize, egui::Pos2, f32)>,
     /// Whether the names placed now are of what I brings in, which keep off its dots.
     outside: bool,
+    /// The calls the view could draw at any depth, each caller and callee and where
+    /// they show: a name would rather not lie across one.
+    lines: Vec<(usize, usize, egui::Pos2, egui::Pos2)>,
 }
 
 impl Placer {
@@ -245,7 +269,16 @@ impl Placer {
             dot_grid,
             spheres,
             outside: false,
+            lines: Vec::new(),
         }
+    }
+
+    /// How many calls not of `own` a name at `pill` would lie across.
+    fn crossed(&self, own: usize, pill: egui::Rect) -> usize {
+        self.lines
+            .iter()
+            .filter(|&&(from, to, a, b)| from != own && to != own && crosses(a, b, pill))
+            .count()
     }
 
     /// Whether names placed now keep off `dot`.
@@ -336,10 +369,13 @@ impl Placer {
         keep: Keep,
     ) -> Option<(usize, f32)> {
         let first = self.first_side(own);
-        let mut spots: Vec<((usize, usize), bool, usize)> = (0..SPOTS.len())
+        let mut spots: Vec<((usize, usize), usize, bool, usize)> = (0..SPOTS.len())
             .map(|i| {
+                let pill = spot(i, node, reach, bare);
                 (
-                    self.covered(own, reach, spot(i, node, reach, bare)),
+                    self.covered(own, reach, pill),
+                    // Judged at its full size, as it will lie.
+                    self.crossed(own, spot(i, node, reach, size)),
                     i != first,
                     i,
                 )
@@ -349,7 +385,7 @@ impl Placer {
         // Each spot as it is, else nudged half its height along its side, before the
         // next: a name a little off level beside its dot reads better than one moved
         // round it.
-        spots.into_iter().find_map(|(_, _, i)| {
+        spots.into_iter().find_map(|(_, _, _, i)| {
             [0.0, NUDGE, -NUDGE]
                 .into_iter()
                 .find(|&by| self.fits(slid(i, node, reach, size, by), own, keep))
@@ -396,8 +432,10 @@ impl Placer {
                     .map(move |n| (i, n))
             })
             .min_by_key(|&(i, (nudged, by))| {
+                let pill = slid(i, node, reach, bare, by);
                 (
-                    self.covered(own, reach, slid(i, node, reach, bare, by)),
+                    self.covered(own, reach, pill),
+                    self.crossed(own, pill),
                     i != first,
                     i,
                     nudged,
@@ -1031,6 +1069,16 @@ impl<'a> Naming<'a> {
         })
     }
 
+    /// Every call the view could draw at any depth, and where its ends show.
+    fn lines(&self) -> Vec<(usize, usize, egui::Pos2, egui::Pos2)> {
+        let at = |tile: usize| (self.to_screen)(self.explorer.tile_point(tile)?);
+        self.nucleus
+            .every_call()
+            .into_iter()
+            .filter_map(|(from, to)| Some((from, to, at(from)?, at(to)?)))
+            .collect()
+    }
+
     /// The dots of a module drawn on the graph.
     fn own_dots(&self, cluster: usize) -> Vec<usize> {
         let graph = self.explorer.graph();
@@ -1431,6 +1479,7 @@ fn place(
     let nucleus = naming.nucleus;
     let neutral = sides.is_none();
     let mut placer = Placer::new(painter.clip_rect(), naming.dots(neutral), naming.spheres());
+    placer.lines = naming.lines();
     // Names keep off the search box while it shows, as last laid out, and browsing,
     // off the hint at the keys along the graph's foot and the note on names left out
     // above it.
