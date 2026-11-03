@@ -1942,13 +1942,14 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
                 return Err("no snapshot before to compare with".to_owned());
             };
             // Judged as the steps since may move things: a click expanded in a
-            // journey may re-centre, a depth change draw the camera back; any other
-            // step is held to moving nothing.
+            // journey may re-centre, a depth change draw the camera back, X in a
+            // journey move the camera but none of its dots; any other step is held
+            // to moving nothing.
             let kinds = drive
                 .kinds
                 .iter()
                 .map(|&k| match k {
-                    Kind::Click | Kind::Depth => k,
+                    Kind::Click | Kind::Depth | Kind::Expand => k,
                     _ => Kind::Still,
                 })
                 .chain([Kind::Still])
