@@ -21,7 +21,7 @@ use crate::{
     idle::Awake,
     journey_panel::{self, JourneyPanel},
     key_help::{hint, key_help, key_hint},
-    labels::graph_names,
+    labels::{GraphNames, graph_names},
     notice, text,
 };
 
@@ -155,6 +155,7 @@ fn draw_ui(
     mut graph_view: ResMut<GraphView>,
     mut marks: ResMut<Marks>,
     mut awake: ResMut<Awake>,
+    mut drawn: Local<Drawn>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let mut root_ui = egui::Ui::new(
@@ -187,12 +188,36 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
-        // The calls under the names, keeping off them, on under the journey panel as
-        // the spheres are.
-        let names = graph_names(&painter, &project, &explorer, transform.up().into());
+        // The calls' lines first, then the names keeping off them, worked out again
+        // only when what they hang on changes; the calls under the names, on under
+        // the journey panel as the spheres are.
         let under = painter.with_clip_rect(central);
-        arrows::draw(&under, &explorer, (&camera, transform), &names, &mut marks);
-        names.paint(&painter);
+        let routes_for = routes_key(&explorer, (&camera, transform), central);
+        if drawn.routes_for != Some(routes_for) {
+            drawn.routes = arrows::route(&explorer, (&camera, transform));
+            drawn.routes_for = Some(routes_for);
+            drawn.names_for = None;
+        }
+        let names_for = names_key(ctx, &explorer, routes_for, graph_area);
+        if drawn.names_for != Some(names_for) || drawn.names.is_none() {
+            let lines = drawn.routes.lines();
+            let up = transform.up().into();
+            let names = graph_names(&painter, &project, &explorer, (up, &lines));
+            drawn.calls = arrows::draw(
+                &under,
+                &explorer,
+                (&camera, transform),
+                &drawn.routes,
+                &names,
+                &mut marks,
+            );
+            drawn.names = Some(names);
+            drawn.names_for = Some(names_for);
+        }
+        under.extend(drawn.calls.iter().cloned());
+        if let Some(names) = &drawn.names {
+            names.paint(&painter);
+        }
         let opening = chrome.search && !search.was_open;
         search.was_open = chrome.search;
         if chrome.search {
@@ -230,6 +255,92 @@ fn draw_ui(
         }
     }
     Ok(())
+}
+
+/// The calls' lines and the names on the graph as last worked out, and for what:
+/// a frame that changes none of it only paints them again.
+#[derive(Default)]
+struct Drawn {
+    routes_for: Option<u64>,
+    routes: arrows::Routes,
+    names_for: Option<u64>,
+    names: Option<GraphNames>,
+    /// The calls as painted, and the labels where they leave the free area.
+    calls: Vec<egui::Shape>,
+}
+
+/// What the calls' lines hang on: where the camera stands and how it sees, the
+/// graph's part of the window, and how things lie and which calls show.
+fn routes_key(
+    explorer: &Explorer,
+    (camera, view): (&Camera, &GlobalTransform),
+    central: egui::Rect,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    let floats = view
+        .to_matrix()
+        .to_cols_array()
+        .into_iter()
+        .chain(camera.clip_from_view().to_cols_array())
+        .chain([central.min.x, central.min.y, central.max.x, central.max.y]);
+    for float in floats {
+        float.to_bits().hash(&mut hasher);
+    }
+    let nucleus = explorer.nucleus();
+    (
+        explorer.moved(),
+        nucleus.browsing(),
+        nucleus.expanded_module(),
+        nucleus.start(),
+    )
+        .hash(&mut hasher);
+    for link in nucleus.links() {
+        (link.from, link.to, link.flow).hash(&mut hasher);
+    }
+    nucleus.every_call().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What the names and the labels where calls leave hang on besides the lines: the
+/// free area, what the view is on and the pointer, the search box, and the fonts
+/// for the first frames, before they are all loaded.
+fn names_key(ctx: &egui::Context, explorer: &Explorer, routes: u64, area: egui::Rect) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    let search = egui::Id::new("search");
+    let search = ctx.memory(|m| {
+        m.areas()
+            .visible_layer_ids()
+            .iter()
+            .any(|l| l.id == search)
+            .then(|| m.area_rect(search))
+            .flatten()
+    });
+    let pointer = ctx.input(|i| i.pointer.hover_pos());
+    let floats = [area.min.x, area.min.y, area.max.x, area.max.y]
+        .into_iter()
+        .chain(
+            search
+                .into_iter()
+                .flat_map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]),
+        )
+        .chain(pointer.into_iter().flat_map(|p| [p.x, p.y]))
+        .chain([ctx.pixels_per_point()]);
+    for float in floats {
+        float.to_bits().hash(&mut hasher);
+    }
+    (
+        routes,
+        explorer.cursor(),
+        explorer.aside(),
+        explorer.hovered(),
+        // Browsing has none, made afresh each time it is asked for.
+        (!explorer.browsing()).then(|| std::sync::Arc::as_ptr(&explorer.disclosure())),
+        ctx.cumulative_pass_nr().min(3),
+    )
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The bar along the top: Back and Forward and which mode the view is in on the left;

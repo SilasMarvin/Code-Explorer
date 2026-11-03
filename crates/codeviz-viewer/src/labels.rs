@@ -160,6 +160,9 @@ fn inside(middle: egui::Pos2, radius: f32, size: egui::Vec2) -> egui::Rect {
     )
 }
 
+/// A call's caller and callee, and the line it runs along on screen.
+pub(crate) type CallLine = (usize, usize, Vec<egui::Pos2>);
+
 /// A dot on screen, as names keep off it.
 #[derive(Debug, Clone, Copy)]
 struct Disc {
@@ -247,9 +250,9 @@ struct Placer {
     spheres: Vec<(usize, egui::Pos2, f32)>,
     /// Whether the names placed now are of what I brings in, which keep off its dots.
     outside: bool,
-    /// The calls the view could draw at any depth, each caller and callee and where
-    /// they show: a name would rather not lie across one.
-    lines: Vec<(usize, usize, egui::Pos2, egui::Pos2)>,
+    /// The calls the view could draw at any depth, each caller and callee and the
+    /// line it runs along: a name would rather not lie across one.
+    lines: Vec<CallLine>,
 }
 
 impl Placer {
@@ -277,7 +280,9 @@ impl Placer {
     fn crossed(&self, own: usize, pill: egui::Rect) -> usize {
         self.lines
             .iter()
-            .filter(|&&(from, to, a, b)| from != own && to != own && crosses(a, b, pill))
+            .filter(|(from, to, line)| {
+                *from != own && *to != own && line.windows(2).any(|p| crosses(p[0], p[1], pill))
+            })
             .count()
     }
 
@@ -1069,16 +1074,6 @@ impl<'a> Naming<'a> {
         })
     }
 
-    /// Every call the view could draw at any depth, and where its ends show.
-    fn lines(&self) -> Vec<(usize, usize, egui::Pos2, egui::Pos2)> {
-        let at = |tile: usize| (self.to_screen)(self.explorer.tile_point(tile)?);
-        self.nucleus
-            .every_call()
-            .into_iter()
-            .filter_map(|(from, to)| Some((from, to, at(from)?, at(to)?)))
-            .collect()
-    }
-
     /// The dots of a module drawn on the graph.
     fn own_dots(&self, cluster: usize) -> Vec<usize> {
         let graph = self.explorer.graph();
@@ -1345,13 +1340,16 @@ fn pill_of(painter: &egui::Painter, job: egui::text::LayoutJob) -> (Arc<egui::Ga
 /// Names beside graph dots and above module spheres, each on a dark pill so it reads
 /// over the arrows, placed in [`Naming::order`] wherever each fits; a journey's
 /// functions lead with their numbers in it.
-/// The names placed on the graph this frame, ready to paint over the calls, which
-/// keep off them.
+/// The names placed on the graph, ready to paint over the calls, keeping off their
+/// lines where they can.
 pub(crate) struct GraphNames {
     /// Where names go: the graph less a docked panel.
     pub(crate) area: egui::Rect,
-    /// The first placed last, and what the pointer is on after everything.
+    /// The first placed last.
     labels: Vec<Label>,
+    /// What the pointer is on, painted over everything; nothing keeps off it, so
+    /// pointing moves nothing.
+    pointed: Vec<Label>,
     /// How many functions lit and on screen went unnamed, of how many.
     unnamed: (usize, usize),
 }
@@ -1372,7 +1370,7 @@ impl GraphNames {
 
     /// Paints the names, the last on top, and the note on those left out.
     pub(crate) fn paint(&self, painter: &egui::Painter) {
-        paint(painter, &self.labels);
+        paint(painter, self.labels.iter().chain(&self.pointed));
         let (unnamed, lit) = self.unnamed;
         if unnamed > 0 {
             unnamed_note(painter, unnamed, lit);
@@ -1386,13 +1384,13 @@ pub(crate) fn graph_names(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
-    up: Vec3,
+    (up, lines): (Vec3, &[CallLine]),
 ) -> GraphNames {
     let naming = Naming::new(explorer, project, up, painter.clip_rect());
     let nucleus = naming.nucleus;
     // First as though nothing were selected and the cursor on no call, for the side
     // each name takes, then as the view is.
-    let (neutral, _) = place(&naming, painter, None);
+    let (neutral, _) = place(&naming, painter, lines, None);
     let sides: HashMap<usize, (usize, f32)> = neutral
         .iter()
         .filter_map(|l| match (l.named, l.side) {
@@ -1400,7 +1398,7 @@ pub(crate) fn graph_names(
             _ => None,
         })
         .collect();
-    let (mut labels, placer) = place(&naming, painter, Some(&sides));
+    let (mut labels, placer) = place(&naming, painter, lines, Some(&sides));
     let laid_out = naming.sizes.take();
     let tried = naming.spots.take();
     let kept_off: Vec<(usize, egui::Pos2, f32)> = placer
@@ -1431,17 +1429,17 @@ pub(crate) fn graph_names(
         .count();
     // The first placed on top, and what the pointer is on over everything.
     labels.reverse();
-    labels.extend(over);
     GraphNames {
         area: painter.clip_rect(),
         labels,
+        pointed: over,
         unnamed: (unnamed, lit.len()),
     }
 }
 
 /// Paints `labels`, the last on top, and remembers where each function's name is,
 /// so a click on it picks it.
-fn paint(painter: &egui::Painter, labels: &[Label]) {
+fn paint<'a>(painter: &egui::Painter, labels: impl Iterator<Item = &'a Label>) {
     let mut hits: Vec<LabelHit> = Vec::new();
     for label in labels {
         painter.rect_filled(label.pill, 4.0, PILL);
@@ -1474,12 +1472,13 @@ fn paint(painter: &egui::Painter, labels: &[Label]) {
 fn place(
     naming: &Naming,
     painter: &egui::Painter,
+    lines: &[CallLine],
     sides: Option<&HashMap<usize, (usize, f32)>>,
 ) -> (Vec<Label>, Placer) {
     let nucleus = naming.nucleus;
     let neutral = sides.is_none();
     let mut placer = Placer::new(painter.clip_rect(), naming.dots(neutral), naming.spheres());
-    placer.lines = naming.lines();
+    placer.lines = lines.to_vec();
     // Names keep off the search box while it shows, as last laid out, and browsing,
     // off the hint at the keys along the graph's foot and the note on names left out
     // above it.

@@ -126,7 +126,17 @@ pub(crate) fn drawn_radius(
     camera: &Camera,
     view: &GlobalTransform,
 ) -> f32 {
-    let dot = dot(explorer, tile);
+    radius_as(explorer, tile, dot(explorer, tile), camera, view)
+}
+
+/// How big a function would be drawn in the world in `dot`'s role, whatever it is.
+pub(crate) fn radius_as(
+    explorer: &Explorer,
+    tile: usize,
+    dot: Dot,
+    camera: &Camera,
+    view: &GlobalTransform,
+) -> f32 {
     let world = dot.radius() * explorer.nucleus().dot_scale(tile);
     let shows = |at: Vec3| camera.world_to_viewport(view, at).ok();
     let per_unit = explorer
@@ -319,4 +329,4 @@ pub(crate) fn draw_graph(
 }
 
 /// How far out a ring sits, against its function's radius.
-const RING: f32 = 1.6;
+pub(crate) const RING: f32 = 1.6;
