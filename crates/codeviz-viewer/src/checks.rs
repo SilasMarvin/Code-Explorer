@@ -2191,8 +2191,9 @@ fn module_names(s: &Snap) -> Value {
             continue;
         };
         named += 1;
-        // Over its sphere's middle, centred or slid along.
-        let off_middle = (r.min.x - m.at[0]).max(m.at[0] - r.max.x).max(0.0);
+        // Its pill over its sphere's middle, centred or slid along.
+        let pill = r.expand2(NAME_PILL);
+        let off_middle = (pill.min.x - m.at[0]).max(m.at[0] - pill.max.x).max(0.0);
         let above = m.at[1] - m.radius - r.max.y;
         // Where the room above is taken, smaller inside the top of its sphere: its
         // corners within the rim, over the sphere's middle.
