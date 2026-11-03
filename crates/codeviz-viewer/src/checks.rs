@@ -859,6 +859,11 @@ fn sphere_sizes(s: &Snap) -> Value {
 
 fn labels_near(s: &Snap) -> Value {
     let mut offenders = Vec::new();
+    // The start, the cursor, the selection and the function set aside are named come
+    // what may: one with room nowhere round its dot lies where it covers least.
+    let room = std::cell::OnceCell::new();
+    let crowded =
+        |n: &Node| n.focus() && room.get_or_init(|| Room::new(s)).function_spot(n).is_none();
     let gap = |r: egui::Rect, n: &Node| (r.distance_to_pos(pos(n.at)) - n.radius).max(0.0);
     let drawn: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen).collect();
     for n in &s.nodes {
@@ -887,6 +892,7 @@ fn labels_near(s: &Snap) -> Value {
             offenders.push((mine, offender));
         } else if let Some((other, theirs)) = nearest
             && theirs + NEARER < mine
+            && !crowded(n)
         {
             let offender = json!({
                 "function": n.name, "label": label, "nearer_dot": other.name,
@@ -2206,23 +2212,44 @@ fn hidden(pill: egui::Rect, n: &Node) -> bool {
             ))
 }
 
-fn named_when_room(s: &Snap) -> Value {
-    let free = s.free();
-    // How far the placer kept names from a dot, leaning to less room either way.
-    let kept = |n: &Node| n.kept_off.unwrap_or(n.radius) + ROUNDING;
-    // Its own as drawn: the placer takes it as small as it is drawn lit.
-    let own_kept = |n: &Node| n.radius - ROUNDING;
-    let taken = names_by_rank(s);
-    let guess =
-        |text: &str, kind: &str, size: f32, width: f32| guess_size(s, text, kind, (size, width));
-    let drawn: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen).collect();
-    let spheres: Vec<&Module> = s.spheres().filter(|m| m.radius > 0.0).collect();
-    // Whether a pill at `r` would fit: in the free area, under no overlay, over no
-    // name placed as early; a function's off every other dot drawn (as far as the
-    // placer keeps names, the calls a deeper level shows among them) but those it
-    // would hide, and nearer none of them than its own; a module's off every other
-    // sphere and its own dots, but those it would hide inside its sphere.
-    let clear = |r: egui::Rect, rank: u8, own: Option<&Node>, module: Option<(&str, bool)>| {
+/// Where a name could go, as the placer has room for it: in the free area, under no
+/// overlay, over no name placed as early, a function's off the dots drawn and those a
+/// deeper level shows, a module's off other spheres and its own dots.
+struct Room<'a> {
+    s: &'a Snap,
+    free: egui::Rect,
+    taken: Vec<(egui::Rect, u8, Option<&'a str>)>,
+    drawn: Vec<&'a Node>,
+    spheres: Vec<&'a Module>,
+}
+
+impl<'a> Room<'a> {
+    fn new(s: &'a Snap) -> Self {
+        Self {
+            s,
+            free: s.free(),
+            taken: names_by_rank(s),
+            drawn: s.nodes.iter().filter(|n| n.on_screen).collect(),
+            spheres: s.spheres().filter(|m| m.radius > 0.0).collect(),
+        }
+    }
+
+    /// Whether a pill at `r` would fit: in the free area, under no overlay, over no
+    /// name placed as early but `own`'s; a function's off every other dot drawn (as
+    /// far as the placer keeps names, the calls a deeper level shows among them) but
+    /// those it would hide, and nearer none of them than its own; a module's off every
+    /// other sphere and its own dots, but those it would hide inside its sphere.
+    fn clear(
+        &self,
+        r: egui::Rect,
+        rank: u8,
+        own: Option<&Node>,
+        module: Option<(&str, bool)>,
+    ) -> bool {
+        // How far the placer kept names from a dot, leaning to less room either way.
+        let kept = |n: &Node| n.kept_off.unwrap_or(n.radius) + ROUNDING;
+        // Its own as drawn: the placer takes it as small as it is drawn lit.
+        let own_kept = |n: &Node| n.radius - ROUNDING;
         // Over a dot judged by the pill, nearer one by the text, as labels-near does.
         let text = r.shrink2(NAME_PILL);
         let gap = |at: [f32; 2], radius: f32| text.distance_to_pos(pos(at)) - radius;
@@ -2230,63 +2257,77 @@ fn named_when_room(s: &Snap) -> Value {
         let near = |at: [f32; 2], radius: f32| {
             r.distance_to_pos(pos(at)) - radius < NAME_CLEAR || gap(at, radius) < mine - NEARER
         };
-        free.contains_rect(r)
-            && !s.under_overlay(r)
-            && !taken
-                .iter()
-                .any(|&(t, by)| by <= rank && t.intersects(r.expand(NAME_CLEAR)))
+        let unit = own.and_then(|n| n.unit.as_deref());
+        self.free.contains_rect(r)
+            && !self.s.under_overlay(r)
+            && !self.taken.iter().any(|&(t, by, of)| {
+                by <= rank && (unit.is_none() || of != unit) && t.intersects(r.expand(NAME_CLEAR))
+            })
             && own.is_none_or(|own| {
-                !drawn.iter().any(|n| {
+                !self.drawn.iter().any(|n| {
                     n.unit != own.unit
                         && !(own.lit() && !own.plain() && (n.faded() || hidden(r, n)))
                         && near(n.at, kept(n))
                 })
             })
-            && !s.held.iter().any(|h| near(h.at, h.radius + ROUNDING))
+            && !self.s.held.iter().any(|h| near(h.at, h.radius + ROUNDING))
             && module.is_none_or(|(module, within)| {
-                !spheres
+                !self
+                    .spheres
                     .iter()
                     .any(|m| m.name != module && r.distance_to_pos(pos(m.at)) < m.radius - 0.5)
-                    && !s.nodes.iter().any(|n| {
+                    && !self.s.nodes.iter().any(|n| {
                         n.on_screen
                             && n.module.as_deref() == Some(module)
                             && !(within && (!n.lit() || n.plain()))
                             && near(n.at, kept(n))
                     })
             })
-    };
-    let mut offenders = Vec::new();
-    // A dot off the free area, under the panel or past its edge, is no one's to name
-    // beside it: an exit label carries it.
-    for n in drawn
-        .iter()
-        .filter(|n| n.lit() && !n.plain() && free.contains(pos(n.at)))
-    {
-        if n.label.is_some() || n.unit.is_none() {
-            continue;
-        }
+    }
+
+    /// The first place round `n`'s dot the placer tries where its name would fit, as
+    /// big as the placer laid it out, its own name drawn aside.
+    fn function_spot(&self, n: &Node) -> Option<egui::Rect> {
         let size = n.name_size.map_or_else(
             || {
                 let text = match n.numbers.first() {
                     Some(number) => format!("{number}  {}", n.name),
                     None => n.name.clone(),
                 };
-                guess(&text, "function", 12.5, text::CHAR_WIDTH)
+                guess_size(self.s, &text, "function", (12.5, text::CHAR_WIDTH))
             },
             |[w, h]| egui::vec2(w, h),
         );
         let size = size + 2.0 * NAME_PILL;
         let reach = n.kept_off.unwrap_or(n.radius) + NAME_GAP;
         // Every place round its dot the placer tries.
-        let places = (0..labels::SPOTS.len())
+        let rank = n.rank();
+        (0..labels::SPOTS.len())
             .filter(|&i| labels::spot_takes(i, size))
             .flat_map(|i| {
                 labels::SLIDES
                     .iter()
                     .map(move |&by| labels::slid(i, pos(n.at), reach, size, by))
-            });
-        let rank = n.rank();
-        if let Some(spot) = places.into_iter().find(|r| clear(*r, rank, Some(n), None)) {
+            })
+            .find(|r| self.clear(*r, rank, Some(n), None))
+    }
+}
+
+fn named_when_room(s: &Snap) -> Value {
+    let room = Room::new(s);
+    let free = s.free();
+    let mut offenders = Vec::new();
+    // A dot off the free area, under the panel or past its edge, is no one's to name
+    // beside it: an exit label carries it.
+    for n in room
+        .drawn
+        .iter()
+        .filter(|n| n.lit() && !n.plain() && free.contains(pos(n.at)))
+    {
+        if n.label.is_some() || n.unit.is_none() {
+            continue;
+        }
+        if let Some(spot) = room.function_spot(n) {
             let offender = json!({ "function": n.name, "roles": n.roles, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
             offenders.push((1.0 + f32::from(u8::from(n.focus())), offender));
         }
@@ -2296,14 +2337,14 @@ fn named_when_room(s: &Snap) -> Value {
         .filter(|m| m.on_screen && m.radius > 0.0 && m.label.is_none())
     {
         let size = m.name_size.map_or_else(
-            || guess(&m.name.to_uppercase(), "module", 13.5, CAPITAL_WIDTH),
+            || guess_size(s, &m.name.to_uppercase(), "module", (13.5, CAPITAL_WIDTH)),
             |[w, h]| egui::vec2(w, h),
         );
         let [above, inside] = module_spots(m, size);
         let fits = [(above, false), (inside, true)]
             .into_iter()
             .find_map(|(spot, within)| {
-                spot.filter(|&spot| clear(spot, m.rank(), None, Some((&m.name, within))))
+                spot.filter(|&spot| room.clear(spot, m.rank(), None, Some((&m.name, within))))
             });
         if let Some(spot) = fits {
             let offender = json!({ "module": m.name, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
@@ -2329,7 +2370,7 @@ fn module_spots(m: &Module, size: egui::Vec2) -> [Option<egui::Rect>; 2] {
 
 /// Each name drawn, its pill round it, with the rank of what it names: only those
 /// placed before what is left out, or as early, could have taken its room.
-fn names_by_rank(s: &Snap) -> Vec<(egui::Rect, u8)> {
+fn names_by_rank(s: &Snap) -> Vec<(egui::Rect, u8, Option<&str>)> {
     s.labels
         .iter()
         .map(|l| {
@@ -2346,7 +2387,7 @@ fn names_by_rank(s: &Snap) -> Vec<(egui::Rect, u8)> {
                     .map_or(0, Module::rank),
                 _ => 0,
             };
-            (rect(l.rect).expand2(NAME_PILL), rank)
+            (rect(l.rect).expand2(NAME_PILL), rank, l.unit.as_deref())
         })
         .collect()
 }
@@ -4023,6 +4064,24 @@ mod tests {
         s["nodes"][0]["label_rect"] = json!([416.0, 494.0, 440.0, 506.0]);
         let result = check(&s, "labels-near");
         assert_eq!(result["offenders"][0]["nearer_dot"], "g", "{result}");
+    }
+
+    #[test]
+    fn a_name_shown_come_what_may_with_room_nowhere_may_lie_nearer_another_dot() {
+        let mut s = scene();
+        s["nodes"][0]["roles"] = json!(["start"]);
+        s["nodes"][1]["roles"] = json!(["caller"]);
+        s["nodes"][1]["at"] = json!([420.0, 500.0]);
+        s["nodes"][0]["label_rect"] = json!([416.0, 494.0, 440.0, 506.0]);
+        let result = check(&s, "labels-near");
+        assert_eq!(
+            result["offenders"][0]["nearer_dot"], "g",
+            "room on its left: {result}"
+        );
+
+        s["graph_area"] = json!([360.0, 496.0, 440.0, 504.0]);
+        let result = check(&s, "labels-near");
+        assert!(passes(&result), "room nowhere: {result}");
     }
 
     /// The scene in a journey from `f`, the cursor on `h`, numbered 1, with its bar.

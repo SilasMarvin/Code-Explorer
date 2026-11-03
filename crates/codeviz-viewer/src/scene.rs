@@ -3,10 +3,7 @@
 //! drawn; with the keys that move the cursor and change what is shown.
 
 use bevy::{prelude::*, transform::TransformSystems};
-use bevy_egui::{
-    EguiPrimaryContextPass,
-    input::{egui_wants_any_keyboard_input, egui_wants_any_pointer_input},
-};
+use bevy_egui::input::{egui_wants_any_keyboard_input, egui_wants_any_pointer_input};
 
 use crate::{
     camera::{self, OrbitCamera},
@@ -14,7 +11,7 @@ use crate::{
     framing::{self, GraphView},
     graph_view::{self, NodeMaterials},
     idle::Awake,
-    notice, nucleus, pick,
+    nucleus, pick,
     ui::{self, Chrome, KeyHelp},
 };
 
@@ -59,8 +56,7 @@ impl Plugin for ScenePlugin {
             graph_view::size_nodes
                 .after(camera::apply_camera)
                 .before(TransformSystems::Propagate),
-        )
-        .add_systems(EguiPrimaryContextPass, notice::draw);
+        );
     }
 }
 

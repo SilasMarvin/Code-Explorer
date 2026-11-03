@@ -40,6 +40,9 @@ pub(crate) struct Disclosed {
     levels: HashMap<SpanId, u32>,
     /// The nodes shown, each with the numbers of its spans.
     tiles: HashMap<usize, Vec<String>>,
+    /// The nodes the journey runs at any depth, each with the numbers of its spans,
+    /// shown or not.
+    every: HashMap<usize, Vec<String>>,
     /// Shown spans where another outcome splits off: where the failure happens, or the
     /// nearest shown call it happens under.
     fails: HashSet<SpanId>,
@@ -125,25 +128,29 @@ impl Disclosed {
             })
             .collect();
         disclosed.mark_tiles(journey, &ends, root);
-        let mut tiles: HashMap<usize, Vec<String>> = HashMap::new();
-        let mut unseen = HashSet::new();
-        for (span, number) in disclosed.numbered() {
-            let ends = ends(span);
-            if ends.is_empty() {
-                unseen.insert(span);
-            }
-            for tile in ends {
-                let list = tiles.entry(tile).or_default();
-                if !number.is_empty() {
-                    list.push(number.to_owned());
+        let by_tile = |spans: &mut dyn Iterator<Item = (SpanId, &str)>| {
+            let mut tiles: HashMap<usize, Vec<String>> = HashMap::new();
+            for (span, number) in spans {
+                for tile in ends(span) {
+                    let list = tiles.entry(tile).or_default();
+                    if !number.is_empty() {
+                        list.push(number.to_owned());
+                    }
                 }
             }
-        }
-        for numbers in tiles.values_mut() {
-            numbers.sort_by_key(|n| number_order(n));
-        }
-        disclosed.tiles = tiles;
-        disclosed.unseen = unseen;
+            for numbers in tiles.values_mut() {
+                numbers.sort_by_key(|n| number_order(n));
+            }
+            tiles
+        };
+        let tiles = by_tile(&mut disclosed.numbered());
+        let every = by_tile(&mut disclosed.numbers.iter().map(|(&s, n)| (s, n.as_str())));
+        let unseen = disclosed
+            .numbered()
+            .filter(|&(span, _)| ends(span).is_empty())
+            .map(|(span, _)| span)
+            .collect();
+        (disclosed.tiles, disclosed.every, disclosed.unseen) = (tiles, every, unseen);
         disclosed.trail = disclosed.trace(
             (&tile, &ends),
             &|span| journey.span(span).is_some_and(guessed),
@@ -368,6 +375,12 @@ impl Disclosed {
     /// The nodes shown, each with the numbers of the calls that run it.
     pub(crate) fn tiles(&self) -> &HashMap<usize, Vec<String>> {
         &self.tiles
+    }
+
+    /// The nodes the journey runs at any depth, each with the numbers of the calls
+    /// that run it, shown or not, in number order.
+    pub(crate) fn every_tile(&self) -> &HashMap<usize, Vec<String>> {
+        &self.every
     }
 
     /// Rows the shown spans take, one per level.

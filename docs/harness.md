@@ -223,7 +223,8 @@ scene's units.
   `search_rows` (while the search box shows): `text`, `unit`, `rect`, `shown`,
   `highlighted` (what Enter takes). `buttons`: `text`, `rect`, `enabled`, `cut_off`.
   `overlays`: `name`, `rect`, `clipped` (the journey panel, the key help, the search
-  box, and a notice while one shows, in the bar along the top). `text`: every other text drawn, with `rect`
+  box, and a notice while one shows, in the bar along the top, or while none does, how
+  many functions lit have no room for a name). `text`: every other text drawn, with `rect`
   and `size`.
 - `content`: what the view means to show: the `start` or the `selection`, its
   callers, its calls (in a journey the disclosed ones, with numbers and modules;
@@ -250,7 +251,7 @@ constant at the top of that file.
 | `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius | always |
 | `spheres-apart` | no two spheres intersect, in the world | two spheres or more |
 | `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion (the expanded one aside) | always |
-| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other dot drawn, lit, plain or a speck, is nearer it (by over 2 points), but for a lit name one drawn faded (alpha under 0.5) or one nothing lights that its opaque pill hides wholly; every module's name within 40 points of its sphere's rim | always |
+| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other dot drawn, lit, plain or a speck, is nearer it (by over 2 points), but for a lit name one drawn faded (alpha under 0.5) or one nothing lights that its opaque pill hides wholly, and but for a name shown come what may (the start, the cursor, the selection, the function set aside) with room nowhere round its dot, as `named-when-room` judges room; every module's name within 40 points of its sphere's rim | always |
 | `labels-clear` | no name overlaps another or lies under a notice, no exit label lies over a name, and a function's name covers no other lit dot (a lit name may lie over a plain one, `opened`) | always |
 | `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel; not the search box, which opens over the graph for a moment) | unless the key help is open |
 | `text-sizes` | function names are 11 to 18 points; at most 4 font sizes show at once | always |
