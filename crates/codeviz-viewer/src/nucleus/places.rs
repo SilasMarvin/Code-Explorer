@@ -35,6 +35,9 @@ const START_NOTE: usize = 22;
 /// much further apart along a row than between rows, as names run along.
 const PLACES_EACH: usize = 4;
 const LEAST_PLACES: usize = 12;
+/// What a module round the nucleus offers places for besides its names, whatever it
+/// keeps free: so where its names go never hangs on who else may come in.
+const BESIDES: usize = 3;
 const ROW_WIDE: f32 = 2.0;
 /// What a place costs: a call's line through a dot, through a name, a name or a dot
 /// over another's, its name on its left rather than its right, and each unit from its
@@ -220,6 +223,16 @@ impl Board<'_> {
                 cost += OVER;
             }
         }
+        // A place kept free keeps off a name on either side of its dot: the name may
+        // take either, and whoever comes in later is drawn under neither.
+        if tile.is_none() {
+            for (&named, &there) in &self.at {
+                let other_side = self.name(Some(named), there, !self.left.contains(&named));
+                if other_side.near(at, self.dot) {
+                    cost += OVER;
+                }
+            }
+        }
         // Its lines: through no dot and no name put before it.
         if let Some(tile) = tile {
             let ends: Vec<(usize, Vec2)> = self
@@ -328,11 +341,15 @@ pub(super) fn place(
     let mut spare_key = usize::MAX;
     for room in rooms {
         let middle = flat(room.center);
-        let wanted = room.tiles.len() + room.spare + usize::from(room.middle.is_some());
+        let laid = room.tiles.len() + usize::from(room.middle.is_some());
+        let besides = if room.middle.is_some() { 0 } else { BESIDES };
         let reach = atlas::disc(room.radius);
         // Rows no nearer than a name is high, where the sphere has room enough.
         let mut spots: Vec<Option<Vec2>> = spaced(
-            (wanted, (wanted * PLACES_EACH).max(LEAST_PLACES)),
+            (
+                laid + room.spare,
+                ((laid + besides) * PLACES_EACH).max(LEAST_PLACES),
+            ),
             reach,
             ROW_WIDE,
             board.high + board.dot,
