@@ -28,7 +28,10 @@ try` prints the summary again.
 
 Run `tools/drive` from the worktree whose viewer you want, or pass `--wt DIR`. Never
 start the viewer any other way: the runner kills it past 3000 MB or its time limit, and
-holds a lock so only one viewer window renders at a time across every agent.
+holds a lock so only one viewer window renders at a time across every agent. A
+session's window never takes the keyboard or brings codeviz to the front, and covers
+nothing: borderless, over other windows but off screen except a 4-point corner at a
+screen's bottom right (or bottom left), and click-through. `live` opens as usual.
 
 ## Commands
 
@@ -321,13 +324,13 @@ tools/test_drive.py` tests the runner's own logic.
 
 ## Limits
 
-- Black PNGs: macOS stops drawing a window it counts as covered; the harness keeps the
-  window on top and draws a covered snap offscreen, saying so in `trouble`. The JSON is
-  right regardless.
+- Black PNGs: macOS stops drawing a window it counts as covered or wholly off screen;
+  the harness keeps a corner of the window on screen and on top. A snap of a covered
+  window is retried offscreen, which also comes out black today, saying so in
+  `trouble`. The JSON is right regardless.
 - Not faked: trackpad gestures (pinch, two-finger orbit), Shift-drag pan, hovering a
   journey bar, holding a key. `scroll` is a mouse wheel; `drag` a left-button orbit;
   `pan` a right-button drag.
-- The real mouse moving over the window mixes its events with the script's.
 - `click` aims at a dot's centre; a dot mostly hidden behind another is clicked where the
   other is, and `trouble` says so. `click-label` aims at the name instead.
 - Checks see what the snap's JSON reports: a dot drawn but missing from the JSON is
