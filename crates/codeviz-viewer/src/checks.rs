@@ -2371,10 +2371,11 @@ fn call_colours(s: &Snap, cursor: Option<&str>, offenders: &mut Vec<(f32, Value)
 }
 
 /// No call's line runs through a lit dot, or a lit function's name in a sphere it
-/// leaves or enters, but its own ends': it goes round them. The faint calls among an expanded module's functions are left
-/// out, and faint unnamed dots; and an expanded module's plain functions, dots and
-/// names, which in a crowded one no line could keep off (it breaks round a dot); and
-/// browsing, names, which sit where the map's dots leave room.
+/// leaves or enters, but its own ends': it goes round them. Left out: the faint
+/// calls, among an expanded module's functions or only guessed; faint unnamed dots;
+/// an expanded module's plain functions, dots and names, which in a crowded one no
+/// line could keep off (it breaks round a dot); and browsing, names, which sit where
+/// the map's dots leave room.
 fn arrows_clear(s: &Snap) -> Value {
     let dots: Vec<&Node> = s
         .nodes
