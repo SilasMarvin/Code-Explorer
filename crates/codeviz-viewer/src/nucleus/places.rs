@@ -35,8 +35,9 @@ const START_NOTE: usize = 22;
 /// much further apart along a row than between rows, as names run along.
 const PLACES_EACH: usize = 4;
 const LEAST_PLACES: usize = 12;
-/// What a module round the nucleus offers places for besides its names, whatever it
-/// keeps free: so where its names go never hangs on who else may come in.
+/// How many places a module round the nucleus keeps free as its names are put, so
+/// where the names go never hangs on who else may come in: any more it keeps are
+/// found once every sphere's names are put.
 const BESIDES: usize = 3;
 const ROW_WIDE: f32 = 2.0;
 /// What a place costs: a call's line through a dot, through a name, a name or a dot
@@ -296,6 +297,28 @@ impl Board<'_> {
     }
 }
 
+/// The cheapest of `spots` for `tile` (or a place kept free, with none) in the
+/// sphere whose middle and room are given, taken from them, and its name's side.
+fn best(
+    board: &Board,
+    tile: Option<usize>,
+    spots: &mut [Option<Vec2>],
+    sphere: (Vec2, f32),
+) -> Option<(Vec2, bool)> {
+    let (index, at, left) = spots
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| Some((i, (*p)?)))
+        .map(|(i, at)| {
+            let (cost, left) = board.cost(tile, at, sphere);
+            (cost, i, at, left)
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+        .map(|(_, i, at, left)| (i, at, left))?;
+    spots[index] = None;
+    Some((at, left))
+}
+
 /// Where each of `rooms`' functions goes, the rooms in turn and each one's in order,
 /// clear of the lines of `calls` (caller, callee) and of each other, names `chars`
 /// characters long; and the places each room leaves free.
@@ -339,6 +362,19 @@ pub(super) fn place(
     let mut placed = Placed::default();
     // Places left free are kept clear as dots are, under keys no function has.
     let mut spare_key = usize::MAX;
+    let mut keep_free = |board: &mut Board, room: &Room, spots: &mut [Option<Vec2>], count| {
+        let (middle, reach) = (flat(room.center), atlas::disc(room.radius));
+        let free = placed.free.entry(room.cluster).or_default();
+        for _ in 0..count {
+            if let Some((at, left)) = best(board, None, spots, (middle, reach)) {
+                // Kept for whoever takes it: what is put after keeps off it.
+                board.put(spare_key, at, left);
+                spare_key -= 1;
+                free.push(room.center + world(at - middle));
+            }
+        }
+    };
+    let mut left_over = Vec::new();
     for room in rooms {
         let middle = flat(room.center);
         let laid = room.tiles.len() + usize::from(room.middle.is_some());
@@ -347,7 +383,7 @@ pub(super) fn place(
         // Rows no nearer than a name is high, where the sphere has room enough.
         let mut spots: Vec<Option<Vec2>> = spaced(
             (
-                laid + room.spare,
+                laid + besides,
                 ((laid + besides) * PLACES_EACH).max(LEAST_PLACES),
             ),
             reach,
@@ -363,40 +399,32 @@ pub(super) fn place(
             board.put(tile, at, false);
             spots[0] = None;
         }
-        let best = |board: &Board, tile: Option<usize>, spots: &mut [Option<Vec2>]| {
-            let (index, at, left) = spots
-                .iter()
-                .enumerate()
-                .filter_map(|(i, p)| Some((i, (*p)?)))
-                .map(|(i, at)| {
-                    let (cost, left) = board.cost(tile, at, (middle, reach));
-                    (cost, i, at, left)
-                })
-                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
-                .map(|(_, i, at, left)| (i, at, left))?;
-            spots[index] = None;
-            Some((at, left))
-        };
         for &tile in room.tiles.iter().filter(|&&t| Some(t) != room.middle) {
-            if let Some((at, left)) = best(&board, Some(tile), &mut spots) {
+            if let Some((at, left)) = best(&board, Some(tile), &mut spots, (middle, reach)) {
                 board.put(tile, at, left);
             }
         }
-        let mut free = Vec::new();
-        for _ in 0..room.spare {
-            if let Some((at, left)) = best(&board, None, &mut spots) {
-                // Kept for whoever takes it: what is put after keeps off it.
-                board.put(spare_key, at, left);
-                spare_key -= 1;
-                free.push(room.center + world(at - middle));
-            }
-        }
-        placed.free.insert(room.cluster, free);
+        // As many free as every sphere round the nucleus keeps, so the spheres laid
+        // out after lie the same whoever may come in; the rest once every function
+        // is put.
+        keep_free(&mut board, room, &mut spots, besides);
+        left_over.push((room, laid, spots));
         for &tile in room.tiles.iter().chain(&room.middle) {
             if let Some(&at) = board.at.get(&tile) {
                 placed.points.insert(tile, room.center + world(at - middle));
             }
         }
+    }
+    for (room, laid, mut spots) in left_over {
+        let kept = if room.middle.is_some() { 0 } else { BESIDES };
+        let more = room.spare.saturating_sub(kept);
+        // Short of places, closer ones: a name may then reach over one.
+        if spots.iter().flatten().count() < more {
+            let count = laid + kept + more;
+            let closer = spaced((count, count), atlas::disc(room.radius), ROW_WIDE, 0.0);
+            spots.extend(closer.into_iter().map(|at| Some(flat(room.center) + at)));
+        }
+        keep_free(&mut board, room, &mut spots, more);
     }
     placed.left = board.left;
     placed
