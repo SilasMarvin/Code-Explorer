@@ -16,7 +16,7 @@ use crate::{
         egui_color,
     },
     disclosure::Disclose,
-    explorer::{Confidence, Explorer, is_conditional, is_handoff},
+    explorer::{Explorer, is_conditional},
     graph_view::{look_color, role_look},
     text,
     ui::{journey_title, short},
@@ -621,7 +621,7 @@ type CallerBar = (usize, egui::Rect);
 
 /// The row above the start's bar: the functions that call the start, each painted as
 /// its node is (violet, or as the call when the journey runs it too), the one set
-/// aside white, as many across as fit at the narrowest a bar is drawn, from the
+/// aside outlined white, as many across as fit at the narrowest a bar is drawn, from the
 /// first, or as far along as keeps the one set aside in view. Returns the caller under
 /// the pointer, and where each caller's bar is.
 #[expect(
@@ -727,13 +727,11 @@ pub(crate) fn bar_fill(explorer: &Explorer, span: SpanId) -> egui::Color32 {
 
 /// Whether a call is only guessed, or handed off to run later: its bar is faint.
 pub(crate) fn guessed(explorer: &Explorer, span: SpanId) -> bool {
-    explorer
-        .span(span)
-        .is_some_and(|s| Confidence::of(s) == Confidence::Guessed || is_handoff(s))
+    explorer.span(span).is_some_and(crate::disclosure::guessed)
 }
 
 /// A bar in the row of the start's callers: painted as its node is, so one the
-/// journey runs too reads as the call it is; the one set aside white.
+/// journey runs too reads as the call it is, the one set aside too.
 pub(crate) fn caller_fill(explorer: &Explorer, tile: usize) -> egui::Color32 {
     egui_color(look_color(role_look(explorer, tile)))
 }
@@ -763,17 +761,19 @@ fn bar_text(
     let disclosed = explorer.disclosure();
     let number = disclosed.number(span).unwrap_or_default();
     let mut name = explorer.label(span);
+    // What the graph's name says of it calling round, the same words; said so, the
+    // mark of a journey stopped where it runs already would say it twice.
+    let note = explorer
+        .track()
+        .tile(span, explorer.map())
+        .and_then(|tile| crate::labels::round_note(explorer, tile));
     match explorer.stop_mark(span) {
         Some(mark @ "→") => name = format!("{mark} {name}"),
+        Some("↻") if note.is_some() => {}
         Some(mark) => name = format!("{name} {mark}"),
         None => {}
     }
-    // What the graph's name says of it calling round, the same words.
-    if let Some(note) = explorer
-        .track()
-        .tile(span, explorer.map())
-        .and_then(|tile| crate::labels::round_note(explorer, tile))
-    {
+    if let Some(note) = note {
         name = format!("{name}  {note}");
     }
     let named = if number.is_empty() {

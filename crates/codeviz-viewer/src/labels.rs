@@ -36,8 +36,10 @@ use crate::{
 pub(crate) const PILL_PAD: egui::Vec2 = egui::vec2(5.0, 2.0);
 /// Between a dot's edge and its name, in points.
 const GAP: f32 = 4.0;
-/// Between a module's sphere and its name above it, in points.
+/// Between a module's sphere and its name above it, in points; and between its
+/// sphere's top and its name inside, where above is taken.
 const ABOVE: f32 = 2.0;
+const INSIDE: f32 = 3.0;
 /// Kept clear round a name: no other name or dot comes nearer, in points.
 const CLEAR: f32 = 1.0;
 /// How much nearer than its own another dot may lie to a name, in points: a name
@@ -126,6 +128,15 @@ fn above(middle: egui::Pos2, radius: f32, size: egui::Vec2) -> egui::Rect {
     )
 }
 
+/// Where a module's name goes when the room above its sphere is taken: smaller,
+/// centred just inside the top of its sphere, a disc of `radius` at `middle`.
+fn inside(middle: egui::Pos2, radius: f32, size: egui::Vec2) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(middle.x - size.x / 2.0, middle.y - radius + INSIDE),
+        size,
+    )
+}
+
 /// A dot on screen, as names keep off it.
 #[derive(Debug, Clone, Copy)]
 struct Disc {
@@ -150,6 +161,10 @@ struct Disc {
     /// Lit, or lit at another depth or by another selection: a name would rather not
     /// cover it, so that one more lit takes no name's side.
     may_light: bool,
+    /// The spot its name tries first where others are as free: its left (1) where
+    /// the journey laid its functions out so, clear of the calls drawn, else its
+    /// right (0).
+    first: usize,
 }
 
 /// Rectangles and dots by where they are on screen, so a name looks only at what is
@@ -318,14 +333,21 @@ impl Placer {
         (size, bare): (egui::Vec2, egui::Vec2),
         keep: Keep,
     ) -> Option<(usize, f32)> {
-        let mut spots: Vec<((usize, usize), usize)> = (0..SPOTS.len())
-            .map(|i| (self.covered(own, reach, spot(i, node, reach, bare)), i))
+        let first = self.first_side(own);
+        let mut spots: Vec<((usize, usize), bool, usize)> = (0..SPOTS.len())
+            .map(|i| {
+                (
+                    self.covered(own, reach, spot(i, node, reach, bare)),
+                    i != first,
+                    i,
+                )
+            })
             .collect();
         spots.sort_unstable();
         // Each spot as it is, else nudged half its height along its side, before the
         // next: a name a little off level beside its dot reads better than one moved
         // round it.
-        spots.into_iter().find_map(|(_, i)| {
+        spots.into_iter().find_map(|(_, _, i)| {
             [0.0, NUDGE, -NUDGE]
                 .into_iter()
                 .find(|&by| self.fits(slid(i, node, reach, size, by), own, keep))
@@ -363,6 +385,7 @@ impl Placer {
     /// placed and whatever is lit. A name with no side of its own from the neutral
     /// view goes there or nowhere, so a click that names others first never moves it.
     fn home(&self, own: usize, node: egui::Pos2, reach: f32, bare: egui::Vec2) -> (usize, f32) {
+        let first = self.first_side(own);
         (0..SPOTS.len())
             .flat_map(|i| {
                 [0.0, NUDGE, -NUDGE]
@@ -373,11 +396,21 @@ impl Placer {
             .min_by_key(|&(i, (nudged, by))| {
                 (
                     self.covered(own, reach, slid(i, node, reach, bare, by)),
+                    i != first,
                     i,
                     nudged,
                 )
             })
             .map_or((0, 0.0), |(i, (_, by))| (i, by))
+    }
+
+    /// The spot `own`'s name tries first where others are as free: its left where the
+    /// journey laid it out so, else its right.
+    fn first_side(&self, own: usize) -> usize {
+        self.dots
+            .iter()
+            .find(|d| d.tile == own)
+            .map_or(0, |d| d.first)
     }
 
     /// For a lit name with no spot that fits: the first of the spots slid along
@@ -713,6 +746,7 @@ impl<'a> Naming<'a> {
                     may_light: dot != Dot::Speck
                         || nucleus.browsing()
                         || nucleus.journey_level(tile).is_some(),
+                    first: usize::from(nucleus.name_left(tile)),
                 })
             })
             .chain(self.ghosts())
@@ -740,6 +774,7 @@ impl<'a> Naming<'a> {
                     lit: true,
                     outside: false,
                     may_light: true,
+                    first: usize::from(nucleus.name_left(tile)),
                 })
             })
     }
@@ -857,14 +892,14 @@ impl<'a> Naming<'a> {
     }
 
     /// A module's name as drawn.
-    fn module_label(&self, group: usize) -> egui::text::LayoutJob {
+    fn module_label(&self, group: usize, size: f32) -> egui::text::LayoutJob {
         let body = self.nucleus.ball(group).map(|b| b.body);
         let color = egui_color(module_color(group)).gamma_multiply(match body {
             Some(Body::Faint) if !self.nucleus.browsing() => 0.6,
             _ => 1.0,
         });
         let label = self.explorer.cluster_name(group);
-        label_job(None, &label.to_uppercase(), None, color, text::TITLE)
+        label_job(None, &label.to_uppercase(), None, color, size)
     }
 
     /// A function's name as drawn, `tier` its rank's: the text, its pill's border, and
@@ -963,6 +998,15 @@ impl<'a> Naming<'a> {
             Some(2..) => Some(egui_color(DEEPER)),
             _ => None,
         };
+        // A call only guessed is named as faintly as its dot is drawn.
+        let (color, stroke) = if graph_view::guessed(explorer, tile) {
+            (
+                color.gamma_multiply(0.6),
+                stroke.map(|s| s.gamma_multiply(0.45)),
+            )
+        } else {
+            (color, stroke)
+        };
         // One size for every function's name, so a click that makes one the selection
         // or the cursor never moves it.
         let job = label_job(lead, &name, said, color, text::BODY);
@@ -1005,26 +1049,44 @@ impl<'a> Naming<'a> {
         (galley, size)
     }
 
-    /// A module's name, centred above its sphere, where it fits.
+    /// A module's name, centred above its sphere, where it fits; or `within`, smaller
+    /// inside the top of its sphere, over none of its dots lit.
     fn module_name(
         &self,
         painter: &egui::Painter,
         placer: &Placer,
-        cluster: usize,
+        (cluster, within): (usize, bool),
     ) -> Option<Label> {
         let (middle, edge) = self.sphere_on_screen(cluster)?;
-        let (galley, size) = self.pill(painter, Named::Group(cluster), self.module_label(cluster));
-        let pill = above(middle, edge, size);
+        let label = |pill, galley| Label {
+            named: Named::Group(cluster),
+            side: None,
+            pill,
+            galley,
+            stroke: None,
+            number: None,
+        };
+        let own = self.own_dots(cluster);
+        if !within {
+            let (galley, size) = self.pill(
+                painter,
+                Named::Group(cluster),
+                self.module_label(cluster, text::TITLE),
+            );
+            let pill = above(middle, edge, size);
+            return placer
+                .module_fits(cluster, &own, pill)
+                .then(|| label(pill, galley));
+        }
+        let (galley, size) = pill_of(painter, self.module_label(cluster, text::SMALL));
+        let pill = inside(middle, edge, size);
+        let lit: Vec<usize> = own
+            .into_iter()
+            .filter(|&tile| placer.dots.iter().any(|d| d.tile == tile && d.lit))
+            .collect();
         placer
-            .module_fits(cluster, &self.own_dots(cluster), pill)
-            .then_some(Label {
-                named: Named::Group(cluster),
-                side: None,
-                pill,
-                galley,
-                stroke: None,
-                number: None,
-            })
+            .module_fits(cluster, &lit, pill)
+            .then(|| label(pill, galley))
     }
 
     /// A function's name beside its dot, of `tier`, where it fits; one that must show
@@ -1177,7 +1239,7 @@ impl<'a> Naming<'a> {
         if let Some(cluster) = module.filter(|&c| !named(Named::Group(c)))
             && let Some((middle, edge)) = self.sphere_on_screen(cluster)
         {
-            let (galley, size) = pill_of(painter, self.module_label(cluster));
+            let (galley, size) = pill_of(painter, self.module_label(cluster, text::TITLE));
             let pill = above(middle, edge, size);
             // Not over a name placed: pointing hides no name.
             if !placer.bounds.contains_rect(pill) || placer.over_names(pill) > 0 {
@@ -1234,12 +1296,44 @@ fn pill_of(painter: &egui::Painter, job: egui::text::LayoutJob) -> (Arc<egui::Ga
 /// Names beside graph dots and above module spheres, each on a dark pill so it reads
 /// over the arrows, placed in [`Naming::order`] wherever each fits; a journey's
 /// functions lead with their numbers in it.
-pub(crate) fn draw_graph_labels(
+/// The names placed on the graph this frame, ready to paint over the calls, which
+/// keep off them.
+pub(crate) struct GraphNames {
+    /// Where names go: the graph less a docked panel.
+    pub(crate) area: egui::Rect,
+    /// The first placed last, and what the pointer is on after everything.
+    labels: Vec<Label>,
+    /// How many functions lit and on screen went unnamed, of how many.
+    unnamed: (usize, usize),
+}
+
+impl GraphNames {
+    /// Each function's name, its pill and the function.
+    pub(crate) fn pills(&self) -> impl Iterator<Item = (egui::Rect, usize)> + '_ {
+        self.labels.iter().filter_map(|l| match l.named {
+            Named::Node(tile) => Some((l.pill, tile)),
+            Named::Group(_) => None,
+        })
+    }
+
+    /// Paints the names, the last on top, and the note on those left out.
+    pub(crate) fn paint(&self, painter: &egui::Painter) {
+        paint(painter, &self.labels);
+        let (unnamed, lit) = self.unnamed;
+        if unnamed > 0 {
+            unnamed_note(painter, unnamed, lit);
+        }
+    }
+}
+
+/// Places every name on the graph that fits, in the order of importance, for
+/// [`GraphNames::paint`] to paint once the calls are drawn.
+pub(crate) fn graph_names(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
     up: Vec3,
-) {
+) -> GraphNames {
     let naming = Naming::new(explorer, project, up, painter.clip_rect());
     let nucleus = naming.nucleus;
     // First as though nothing were selected and the cursor on no call, for the side
@@ -1284,9 +1378,10 @@ pub(crate) fn draw_graph_labels(
     // The first placed on top, and what the pointer is on over everything.
     labels.reverse();
     labels.extend(over);
-    paint(painter, &labels);
-    if unnamed > 0 {
-        unnamed_note(painter, unnamed, lit.len());
+    GraphNames {
+        area: painter.clip_rect(),
+        labels,
+        unnamed: (unnamed, lit.len()),
     }
 }
 
@@ -1352,7 +1447,7 @@ fn place(
     for ((tier, ..), named) in naming.order(neutral) {
         placer.outside = tier == Tier::Beyond;
         let label = match named {
-            Named::Group(cluster) => naming.module_name(painter, &placer, cluster),
+            Named::Group(cluster) => naming.module_name(painter, &placer, (cluster, false)),
             Named::Node(tile) => naming.function_name(painter, &placer, (tile, tier), sides),
         };
         if let Some(label) = label {
@@ -1365,6 +1460,29 @@ fn place(
                 Named::Node(_) => true,
             };
             if shown {
+                labels.push(label);
+            }
+        }
+    }
+    // Browsing, a module with no room above its sphere is named, smaller, inside the
+    // top of it, where that takes no other name's room: after every other name.
+    if nucleus.browsing() {
+        let named: Vec<usize> = labels
+            .iter()
+            .filter_map(|l| match l.named {
+                Named::Group(cluster) => Some(cluster),
+                Named::Node(_) => None,
+            })
+            .collect();
+        let mut unnamed: Vec<(usize, usize)> = nucleus
+            .balls()
+            .filter(|&(cluster, _)| !named.contains(&cluster))
+            .map(|(cluster, _)| (usize::MAX - nucleus.count(cluster), cluster))
+            .collect();
+        unnamed.sort_unstable();
+        for (_, cluster) in unnamed {
+            if let Some(label) = naming.module_name(painter, &placer, (cluster, true)) {
+                placer.take(label.pill);
                 labels.push(label);
             }
         }
@@ -1410,6 +1528,7 @@ mod tests {
             lit,
             outside: false,
             may_light: lit,
+            first: 0,
         }
     }
 

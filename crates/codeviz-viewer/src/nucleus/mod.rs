@@ -23,10 +23,14 @@ mod browse;
 mod draw;
 mod inside;
 mod journey;
+mod places;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use bevy::prelude::*;
 use codeviz_layout::{
@@ -108,6 +112,8 @@ pub(crate) struct Call {
     pub(crate) to: usize,
     /// Levels below the start: 1 for a call the start makes.
     pub(crate) level: u32,
+    /// Whether every run of it shown is only guessed, or handed off: drawn faint.
+    pub(crate) guessed: bool,
 }
 
 /// The open journey from its start down to the disclosed depth, each call once, in
@@ -122,14 +128,27 @@ pub(crate) struct Trail {
     /// Every function below the start at any depth, in the order the journey first
     /// runs it, which orders the modules round the nucleus.
     pub(crate) order: Vec<usize>,
+    /// Every call the journey makes at any depth, caller to callee, once: what its
+    /// functions are spread out in their spheres to keep clear of, so a new depth
+    /// moves nothing.
+    pub(crate) reach: Vec<(usize, usize)>,
 }
 
 impl Trail {
-    /// Adds a call the journey makes; one already there keeps its shallowest level.
-    pub(crate) fn add(&mut self, from: usize, to: usize, level: u32) {
+    /// Adds a call the journey makes, `guessed` when only guessed or handed off; one
+    /// already there keeps its shallowest level, and is guessed only if every run is.
+    pub(crate) fn add(&mut self, from: usize, to: usize, level: u32, guessed: bool) {
         match self.calls.iter_mut().find(|c| c.from == from && c.to == to) {
-            Some(call) => call.level = call.level.min(level),
-            None => self.calls.push(Call { from, to, level }),
+            Some(call) => {
+                call.level = call.level.min(level);
+                call.guessed &= guessed;
+            }
+            None => self.calls.push(Call {
+                from,
+                to,
+                level,
+                guessed,
+            }),
         }
     }
 }
@@ -266,7 +285,16 @@ pub(crate) struct Nucleus {
     from: Option<(Vec<Ball>, Vec<Vec3>)>,
     /// How far along that re-centering is, 0 to 1.
     progress: f32,
+    /// How many characters each function's name has, by tile: how much room its name
+    /// takes beside its dot.
+    name_chars: Vec<usize>,
+    /// Where the open journey's functions were last spread out in their spheres, for
+    /// its start and calls, so a step that lays nothing out again moves nothing.
+    spread: Option<(SpreadKey, Arc<places::Placed>)>,
 }
+
+/// What a journey's functions are spread out for: its start and every call it names.
+type SpreadKey = (Option<usize>, Vec<(usize, usize)>);
 
 impl Nucleus {
     /// Gathers the graph round `start`'s module, naming its callers and `trail`, the
@@ -326,9 +354,18 @@ impl Nucleus {
             outside: false,
             from: None,
             progress: 1.0,
+            name_chars: Vec::new(),
+            spread: None,
         };
         nucleus.now = nucleus.arrange(graph, start);
         nucleus
+    }
+
+    /// Says how many characters each function's name has, by tile, for the room a
+    /// journey keeps for names beside their dots.
+    pub(crate) fn name_chars(&mut self, chars: Vec<usize>) {
+        self.name_chars = chars;
+        self.spread = None;
     }
 
     /// The function the nucleus is gathered round, drawn white: the journey's start,
@@ -644,6 +681,27 @@ impl Nucleus {
                 .links
                 .iter()
                 .any(|l| l.flow == Flow::Into && l.from == tile)
+    }
+
+    /// Whether a call of the journey is only guessed, or handed off, every time it
+    /// shows: drawn faint, as its bar is.
+    pub(crate) fn guessed(&self, link: &Link) -> bool {
+        matches!(link.flow, Flow::Journey(_))
+            && self
+                .trail
+                .calls
+                .iter()
+                .any(|c| c.from == link.from && c.to == link.to && c.guessed)
+    }
+
+    /// Whether a journey function's name goes on its dot's left, where both sides are
+    /// as free, as its functions were spread out: clear of the calls drawn.
+    pub(crate) fn name_left(&self, tile: usize) -> bool {
+        !self.browse
+            && self
+                .spread
+                .as_ref()
+                .is_some_and(|(_, placed)| placed.left.contains(&tile))
     }
 
     /// How many functions a module holds.

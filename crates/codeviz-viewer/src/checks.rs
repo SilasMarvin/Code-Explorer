@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    colors::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER},
+    colors::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, GROUND},
     nucleus::VIEW,
     script::Kind,
 };
@@ -97,9 +97,11 @@ const ARROW_WIDTH: f32 = 2.5;
 /// half its width when that is more, as for a head seen end on.
 const HEAD_SIZE: (f32, f32) = (5.0, 12.0);
 /// How far a module's name may sit off its sphere's middle, across, and how far
-/// above its top edge, in points.
+/// above its top edge (or below it, inside, where it is smaller: at most this font
+/// size), in points.
 const NAME_CENTRED: f32 = 3.0;
 const NAME_ABOVE: f32 = 8.0;
+const INSIDE_NAME: f32 = 11.5;
 /// How far from its dot a name's pill would be put to see whether it fits, the pill
 /// round its text, and the room kept clear round a pill, in points: as the label
 /// placer has them.
@@ -119,8 +121,14 @@ const JOURNEY_FILL: f32 = 0.7;
 /// is that carries no role's hue (saturation, 0 to 1).
 const HUE_SLACK: f32 = 25.0;
 const GREY: f32 = 0.3;
-/// The most alpha a faint call is drawn with.
+/// The most alpha a faint call or bar is drawn with.
 const FAINT: f32 = 0.5;
+/// A call's line, in points, and how much of its color it keeps, as drawn when not
+/// followed: wider or stronger is followed.
+const CALL_WIDTH: f32 = 1.5;
+const CALL_STRENGTH: f32 = 0.85;
+/// How bright a dot only guessed is drawn at most, against its role's color.
+const GUESSED_DOT: f32 = 0.8;
 /// A color this near white, in every channel (0 to 1), reads as the selection's.
 const WHITE: f32 = 0.85;
 /// Room the framing leaves round a lit dot or a sphere for it to show whole, in
@@ -129,11 +137,14 @@ const WHITE: f32 = 0.85;
 const SHOWN_WHOLE: f32 = 10.0;
 /// Room the framing leaves above a journey's sphere for its name, in points.
 const NAME_ROOM: f32 = 24.0;
+/// How far into a dot, or a name's pill, a call's line may run before it counts as
+/// passing through, in points: rounding, not leeway.
+const ARROW_SLACK: f32 = 1.0;
 /// Offenders listed per check; `count` says how many in all.
 const LISTED: usize = 12;
 
 /// Every check, in the order a snapshot lists them.
-pub(crate) const NAMES: [&str; 24] = [
+pub(crate) const NAMES: [&str; 28] = [
     "dots-in-spheres",
     "dots-apart",
     "dot-sizes",
@@ -158,6 +169,10 @@ pub(crate) const NAMES: [&str; 24] = [
     "named-when-room",
     "journey-fills",
     "colours",
+    "arrows-clear",
+    "names-distinct",
+    "exits-named",
+    "calls-drawn",
 ];
 
 /// What happened since the snapshot before: what each step may move, and whether the
@@ -203,10 +218,51 @@ struct Snap {
     modules: Vec<Module>,
     arrows: Vec<Arrow>,
     module_arrows: Vec<Arrow>,
+    exits: Vec<Exit>,
+    content: Content,
     labels: Vec<Label>,
     bars: Vec<Bar>,
+    /// While the search box shows.
+    search_rows: Option<Vec<SearchRow>>,
     overlays: Vec<Overlay>,
     text: Vec<Text>,
+}
+
+/// What the view means to show: the selection or the start, its callers, its calls.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Content {
+    selection: Option<String>,
+    start: Option<String>,
+    callers: Vec<String>,
+    calls: Vec<ContentCall>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ContentCall {
+    name: String,
+    /// The number of the call it is made from: empty for the start's own.
+    parent: Option<String>,
+}
+
+/// Where a call leaves the free area, labelled with the function at its far end.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Exit {
+    from_unit: Option<String>,
+    to_unit: Option<String>,
+    far: String,
+    text: String,
+    rect: [f32; 4],
+}
+
+/// A row the search box lists: what it says, and the function it finds.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct SearchRow {
+    text: String,
+    unit: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -248,6 +304,10 @@ struct Arrow {
     head: Option<f32>,
     head_width: Option<f32>,
     on_screen: bool,
+    /// A call only guessed, or handed off: drawn faint.
+    guessed: bool,
+    /// The points its line runs through, from its start to its tip.
+    path: Vec<[f32; 2]>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -548,6 +608,10 @@ pub(crate) fn run(now: &Value, before: Option<&Value>, since: &Since) -> Value {
         named_when_room(&now),
         journey_fills(&now, before, since),
         colours(&now),
+        arrows_clear(&now),
+        names_distinct(&now),
+        exits_named(&now),
+        calls_drawn(&now),
     ];
     NAMES
         .iter()
@@ -1722,6 +1786,23 @@ fn arrow_sizes(s: &Snap) -> Value {
             }
         }
     }
+    // The whole map's links between modules are one width, however many calls each
+    // carries.
+    let widths: Vec<f32> = s
+        .module_arrows
+        .iter()
+        .filter(shown)
+        .filter_map(|a| a.width)
+        .collect();
+    let (thinnest, widest) = widths
+        .iter()
+        .fold((f32::INFINITY, 0.0_f32), |(lo, hi), &w| {
+            (lo.min(w), hi.max(w))
+        });
+    if widest - thinnest > 0.1 {
+        let offender = json!({ "arrow": "module", "why": "the whole map's links differ in width", "widths": [r1(thinnest), r1(widest)] });
+        offenders.push((widest - thinnest, offender));
+    }
     // One head per arrow: a module arrow ends in a head at the sphere's edge only
     // when no call drawn along it goes on to a dot with a head of its own.
     let module = |unit: &Option<String>| {
@@ -1760,11 +1841,21 @@ fn module_names(s: &Snap) -> Value {
         named += 1;
         let r = rect(r);
         let off_middle = (r.center().x - m.at[0]).abs();
-        let above = (m.at[1] - m.radius) - r.max.y;
-        if off_middle > NAME_CENTRED || !(-EDGE..=NAME_ABOVE).contains(&above) {
+        let top = m.at[1] - m.radius;
+        let above = top - r.max.y;
+        // Browsing, where the room above is taken, smaller just inside its top.
+        let size = s
+            .labels
+            .iter()
+            .find(|l| l.names == "module" && l.of.as_ref() == Some(&m.name))
+            .map_or(0.0, |l| l.size);
+        let within = s.state.mode == "browse"
+            && size <= INSIDE_NAME
+            && (0.0..=NAME_ABOVE).contains(&(r.min.y - top));
+        if off_middle > NAME_CENTRED || !((-EDGE..=NAME_ABOVE).contains(&above) || within) {
             let offender = json!({
                 "module": m.name, "label": label,
-                "why": "not centred just above its sphere's top edge",
+                "why": "not centred just above its sphere's top edge, nor smaller just inside it",
                 "off_middle": r1(off_middle), "above_top_by": r1(above),
             });
             offenders.push((off_middle.max(above.abs()), offender));
@@ -1779,10 +1870,12 @@ fn module_names(s: &Snap) -> Value {
                 offenders.push((into + 100.0, offender));
             }
         }
-        let own = s
-            .nodes
-            .iter()
-            .filter(|n| n.on_screen && n.module.as_ref() == Some(&m.name) && n.radius > 0.0);
+        let own = s.nodes.iter().filter(|n| {
+            n.on_screen
+                && n.module.as_ref() == Some(&m.name)
+                && n.radius > 0.0
+                && (!within || n.lit())
+        });
         for n in own {
             let into = n.radius - r.shrink(1.0).distance_to_pos(pos(n.at));
             if into > 0.0 {
@@ -1813,7 +1906,7 @@ fn named_when_room(s: &Snap) -> Value {
     // name placed as early, off every other dot that keeps its name off (as far as
     // the placer keeps names, the calls a deeper level shows among them) and nearer
     // none of them than its own; a module's off every other sphere and its own dots.
-    let clear = |r: egui::Rect, rank: u8, own: Option<&Node>, module: Option<&str>| {
+    let clear = |r: egui::Rect, rank: u8, own: Option<&Node>, module: Option<(&str, bool)>| {
         // Over a dot judged by the pill, nearer one by the text, as labels-near does.
         let text = r.shrink2(NAME_PILL);
         let gap = |at: [f32; 2], radius: f32| text.distance_to_pos(pos(at)) - radius;
@@ -1831,12 +1924,15 @@ fn named_when_room(s: &Snap) -> Value {
                 n.unit != own.and_then(|o| o.unit.clone()) && keeps_off(n) && near(n.at, kept(n))
             })
             && !s.held.iter().any(|h| near(h.at, h.radius + ROUNDING))
-            && module.is_none_or(|module| {
+            && module.is_none_or(|(module, within)| {
                 !spheres
                     .iter()
                     .any(|m| m.name != module && r.distance_to_pos(pos(m.at)) < m.radius - 0.5)
                     && !s.nodes.iter().any(|n| {
-                        n.on_screen && n.module.as_deref() == Some(module) && near(n.at, n.radius)
+                        n.on_screen
+                            && n.module.as_deref() == Some(module)
+                            && (!within || n.lit())
+                            && near(n.at, n.radius)
                     })
             })
     };
@@ -1884,16 +1980,31 @@ fn named_when_room(s: &Snap) -> Value {
             || guess(&m.name.to_uppercase(), "module", 13.5, CAPITAL_WIDTH),
             |[w, h]| egui::vec2(w, h),
         );
-        let size = size + 2.0 * NAME_PILL;
-        let top = m.at[1] - m.radius - 2.0;
-        let spot =
-            egui::Rect::from_min_size(egui::pos2(m.at[0] - size.x / 2.0, top - size.y), size);
-        if clear(spot, m.rank(journey), None, Some(&m.name)) {
+        let [spot, inside] = module_spots(m, size);
+        let fits = if clear(spot, m.rank(journey), None, Some((&m.name, false))) {
+            Some(spot)
+        } else {
+            (!journey && clear(inside, u8::MAX, None, Some((&m.name, true)))).then_some(inside)
+        };
+        if let Some(spot) = fits {
             let offender = json!({ "module": m.name, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
             offenders.push((0.5, offender));
         }
     }
     verdict(offenders)
+}
+
+/// Where a module's name of `size` (its text, at the size above its sphere) would go:
+/// just above its sphere, and browsing where that is taken, smaller just inside its
+/// top.
+fn module_spots(m: &Module, size: egui::Vec2) -> [egui::Rect; 2] {
+    let top = m.at[1] - m.radius;
+    let pill = size + 2.0 * NAME_PILL;
+    let above =
+        egui::Rect::from_min_size(egui::pos2(m.at[0] - pill.x / 2.0, top - 2.0 - pill.y), pill);
+    let small = size * (INSIDE_NAME / 13.0) + 2.0 * NAME_PILL;
+    let inside = egui::Rect::from_min_size(egui::pos2(m.at[0] - small.x / 2.0, top + 3.0), small);
+    [above, inside]
 }
 
 /// Each name drawn, its pill round it, with the rank of what it names: only those
@@ -2045,6 +2156,29 @@ fn colours(s: &Snap) -> Value {
             offenders.push((1.0, offender));
         }
     }
+    // The function set aside keeps its role's fill, and a white ring says it is.
+    for n in s.nodes.iter().filter(|n| n.is("aside") && !n.is("cursor")) {
+        let white = n.rings.iter().filter_map(|r| rgb(&r.color)).any(whitish);
+        if !white {
+            let offender = json!({ "function": n.name, "why": "set aside, but no white ring", "rings": n.rings.iter().map(|r| &r.color).collect::<Vec<_>>() });
+            offenders.push((1.0, offender));
+        }
+        if n.color.as_deref().and_then(rgb).is_some_and(whitish) {
+            let offender = json!({ "function": n.name, "why": "set aside, but filled white as the start is", "fill": n.color });
+            offenders.push((1.0, offender));
+        }
+    }
+    // A call only guessed is drawn faint, as its bar is: darker than its role's.
+    for n in s.nodes.iter().filter(|n| n.is("guessed")) {
+        let (Some(got), Some(want)) = (n.color.as_deref().and_then(rgb), node_role_color(n)) else {
+            continue;
+        };
+        let bright = |c: [f32; 3]| c[0].max(c[1]).max(c[2]);
+        if bright(got) > GUESSED_DOT * bright(want) {
+            let offender = json!({ "function": n.name, "why": "only guessed, but drawn as bright as a sure call", "fill": n.color, "role_color": hex3(want) });
+            offenders.push((1.0, offender));
+        }
+    }
     // A call that calls the start back is ringed in the caller's violet.
     for n in s.nodes.iter().filter(|n| n.is("calls back") && !n.focus()) {
         let violet = n
@@ -2058,46 +2192,308 @@ fn colours(s: &Snap) -> Value {
         }
     }
     // A bar is painted as its node is: the cursor's other runs as it would be were
-    // the cursor elsewhere, a call only guessed faint.
-    for bar in s.bars.iter().filter(|b| !b.cursor && !b.guessed) {
+    // the cursor elsewhere; a call only guessed in the same hue, faint.
+    for bar in s.bars.iter().filter(|b| !b.cursor) {
         let (Some(unit), Some(got)) = (&bar.unit, bar.color.as_deref().and_then(rgb)) else {
             continue;
         };
+        let strength = bar.color.as_deref().and_then(alpha).unwrap_or(1.0);
+        if bar.guessed && strength > FAINT {
+            let offender = json!({ "bar": bar.number, "name": bar.name, "bar_color": bar.color, "why": "only guessed, but not faint", "most_alpha": FAINT });
+            offenders.push((1.0, offender));
+        }
         let Some(n) = s.node(unit).filter(|n| !n.is("cursor")) else {
             continue;
         };
-        if let Some(want) = n.color.as_deref().and_then(rgb)
+        let want = if n.is("guessed") {
+            node_role_color(n)
+        } else {
+            n.color.as_deref().and_then(rgb)
+        };
+        if let Some(want) = want
             && !like(got, want)
         {
             let offender = json!({ "bar": bar.number, "name": bar.name, "bar_color": bar.color, "node_color": n.color });
             offenders.push((1.0, offender));
         }
     }
-    let hovered = s
+    call_colours(s, cursor.as_deref(), &mut offenders);
+    verdict(offenders)
+}
+
+/// Each call's color is its role's: none reads white; only the journey's call into
+/// the `cursor` and the calls of the function set aside are drawn followed; a call
+/// off the journey among the expanded module's functions, and one only guessed, are
+/// faint.
+fn call_colours(s: &Snap, cursor: Option<&str>, offenders: &mut Vec<(f32, Value)>) {
+    let aside = s
         .nodes
         .iter()
-        .find(|n| n.is("hovered"))
-        .and_then(|n| n.unit.clone());
+        .find(|n| n.is("aside"))
+        .and_then(|n| n.unit.as_deref());
     for a in &s.arrows {
         let Some(got) = a.color.as_deref().and_then(rgb) else {
             continue;
         };
-        // A call among the expanded module's functions that the journey does not
-        // make stays faint, into the cursor too; only pointing at one lights it.
-        let alpha = a.color.as_deref().and_then(alpha).unwrap_or(1.0);
-        if a.flow == "inner" && alpha > FAINT && (hovered.is_none() || a.to_unit != hovered) {
-            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": "a call off the journey drawn bright", "most_alpha": FAINT });
+        let strength = a.color.as_deref().and_then(alpha).unwrap_or(1.0);
+        let from_aside = aside.is_some() && a.from_unit.as_deref() == aside;
+        let into_cursor = cursor.is_some() && a.to_unit.as_deref() == cursor && a.flow == "journey";
+        // White is the selection's and the start's alone: no call reads white on the
+        // ground, a grey one from off the journey followed least of all.
+        let shown = over_ground(got, strength);
+        if whitish(shown) {
+            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": "a call that reads white, as the selection does", "shows": hex3(shown) });
+            offenders.push((1.0, offender));
+            continue;
+        }
+        // Only the journey's call into the cursor and the calls of the function set
+        // aside are drawn stronger or wider than the rest: pointing at a function
+        // lights none.
+        let bright = strength > CALL_STRENGTH + 0.05 || a.width.unwrap_or(0.0) > CALL_WIDTH + 0.25;
+        if bright && !from_aside && !into_cursor {
+            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "width": a.width, "why": "drawn as followed, but neither into the cursor nor from the function set aside" });
+            offenders.push((1.0, offender));
+            continue;
+        }
+        // A call among the expanded module's functions that the journey does not make,
+        // and a call only guessed, are faint.
+        let faint = (a.flow == "inner" && !from_aside) || a.guessed;
+        if faint && strength > FAINT {
+            let why = if a.guessed {
+                "a call only guessed drawn strong"
+            } else {
+                "a call off the journey drawn bright"
+            };
+            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": why, "most_alpha": FAINT });
             offenders.push((1.0, offender));
             continue;
         }
         let want = flow_color(&a.flow, a.level);
-        let into_cursor = cursor.is_some() && a.to_unit == cursor && like(got, srgb(CURSOR));
-        if !like(got, want) && !into_cursor {
+        let pink = into_cursor && like(got, srgb(CURSOR));
+        if !like(got, want) && !pink {
             let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "level": a.level, "color": a.color, "role_color": hex3(want) });
             offenders.push((1.0, offender));
         }
     }
+}
+
+/// No call's line runs through a dot or a function's name but its own ends': it goes
+/// round them. The faint calls among an expanded module's functions are left out, and
+/// faint unnamed dots.
+fn arrows_clear(s: &Snap) -> Value {
+    let dots: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen && n.lit()).collect();
+    let lit = |unit: &Option<String>| dots.iter().any(|n| n.unit.is_some() && n.unit == *unit);
+    let names: Vec<&Label> = s
+        .labels
+        .iter()
+        .filter(|l| l.names == "function" && lit(&l.unit))
+        .collect();
+    let mut offenders = Vec::new();
+    let mut judged = 0;
+    for a in s
+        .arrows
+        .iter()
+        .filter(|a| a.flow != "inner" && a.path.len() >= 2)
+    {
+        judged += 1;
+        let own =
+            |unit: &Option<String>| unit.is_some() && (*unit == a.from_unit || *unit == a.to_unit);
+        let pieces: Vec<(Vec2, Vec2)> = a.path.windows(2).map(|p| (v2(p[0]), v2(p[1]))).collect();
+        for n in dots.iter().filter(|n| !own(&n.unit)) {
+            let near = pieces
+                .iter()
+                .map(|&(p, q)| piece_distance(p, q, v2(n.at)))
+                .fold(f32::INFINITY, f32::min);
+            if near < n.radius - ARROW_SLACK {
+                let offender = json!({ "arrow": [a.from, a.to], "through": "dot", "function": n.name, "at": pt(n.at), "off_by": r1(n.radius - near) });
+                offenders.push((n.radius - near, offender));
+            }
+        }
+        for l in names.iter().filter(|l| !own(&l.unit)) {
+            let pill = rect(l.rect).shrink(ARROW_SLACK);
+            if pieces.iter().any(|&(p, q)| crosses_rect(p, q, pill)) {
+                let offender = json!({ "arrow": [a.from, a.to], "through": "name", "label": l.text, "rect": rect_json(l.rect) });
+                offenders.push((1.0, offender));
+            }
+        }
+    }
+    if judged == 0 {
+        return skip("no call drawn");
+    }
     verdict(offenders)
+}
+
+/// No two functions read the same name: on the graph, in the journey's bars, or
+/// among the search's rows, each list judged on its own. Two alike are told apart by
+/// their type or module.
+fn names_distinct(s: &Snap) -> Value {
+    let graph = s
+        .labels
+        .iter()
+        .filter(|l| l.names == "function")
+        .filter_map(|l| Some((l.of.clone()?, l.unit.clone()?)));
+    let bars = s
+        .bars
+        .iter()
+        .filter_map(|b| Some((b.name.clone(), b.unit.clone()?)));
+    let rows = s
+        .search_rows
+        .iter()
+        .flatten()
+        .filter_map(|r| Some((r.text.clone(), r.unit.clone()?)));
+    let lists: [(&str, Vec<(String, String)>); 3] = [
+        ("graph", graph.collect()),
+        ("bars", bars.collect()),
+        ("search rows", rows.collect()),
+    ];
+    let mut offenders = Vec::new();
+    let mut judged = 0;
+    for (place, names) in &lists {
+        judged += names.len();
+        let mut by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (name, unit) in names {
+            let units = by_name.entry(name.as_str()).or_default();
+            if !units.contains(&unit.as_str()) {
+                units.push(unit);
+            }
+        }
+        for (name, units) in by_name.into_iter().filter(|(_, u)| u.len() > 1) {
+            let offender = json!({ "in": place, "name": name, "functions": units });
+            offenders.push((1.0, offender));
+        }
+    }
+    if judged == 0 {
+        return skip("no function named");
+    }
+    verdict(offenders)
+}
+
+/// Expanded in a journey, every call drawn from a function in the free area to one
+/// off it is labelled where its line leaves, with the far function's name, on a pill
+/// inside the free area.
+fn exits_named(s: &Snap) -> Value {
+    if !(s.expanded() && s.state.mode == "journey") {
+        return skip("not expanded in a journey");
+    }
+    let free = s.free();
+    let inside = |at: [f32; 2]| free.contains(pos(at));
+    let mut offenders = Vec::new();
+    let mut judged = 0;
+    for a in s
+        .arrows
+        .iter()
+        .filter(|a| a.flow != "inner" && a.path.len() >= 2)
+    {
+        let (first, last) = (a.path[0], a.path[a.path.len() - 1]);
+        if inside(first) == inside(last) {
+            continue;
+        }
+        judged += 1;
+        let far = if inside(first) { &a.to } else { &a.from };
+        let exit = s
+            .exits
+            .iter()
+            .find(|e| e.from_unit == a.from_unit && e.to_unit == a.to_unit);
+        match exit {
+            Some(e)
+                if e.far == *far
+                    && e.text.contains(far.as_str())
+                    && free.contains_rect(rect(e.rect)) => {}
+            Some(e) => {
+                let offender = json!({ "arrow": [a.from, a.to], "why": "its exit label does not name the far function inside the free area", "label": e.text, "rect": rect_json(e.rect) });
+                offenders.push((1.0, offender));
+            }
+            None => {
+                let offender = json!({ "arrow": [a.from, a.to], "why": "leaves the free area unlabelled", "far": far });
+                offenders.push((1.0, offender));
+            }
+        }
+    }
+    if judged == 0 {
+        return skip("no call leaves the free area");
+    }
+    verdict(offenders)
+}
+
+/// Every call into the selection (or the start) and each of its own, between two dots
+/// drawn on screen apart, is drawn as an arrow: however near the two dots, so a
+/// function that both calls it and is called by it shows both.
+fn calls_drawn(s: &Snap) -> Value {
+    let Some(centre) = s.content.start.as_ref().or(s.content.selection.as_ref()) else {
+        return skip("nothing selected and no journey");
+    };
+    let node = |name: &str| s.nodes.iter().find(|n| n.name == name && n.on_screen);
+    if node(centre).is_none() {
+        return skip("the selection or the start is not on screen");
+    }
+    let own = s
+        .content
+        .calls
+        .iter()
+        .filter(|c| c.parent.as_deref().is_none_or(str::is_empty))
+        .map(|c| (centre.as_str(), c.name.as_str()));
+    let into = s
+        .content
+        .callers
+        .iter()
+        .map(|c| (c.as_str(), centre.as_str()));
+    let mut offenders = Vec::new();
+    let mut judged = 0;
+    for (from, to) in own.chain(into).filter(|(from, to)| from != to) {
+        let (Some(a), Some(b)) = (node(from), node(to)) else {
+            continue;
+        };
+        // Two dots touching leave no room for a line.
+        if v2(a.at).distance(v2(b.at)) <= a.radius + b.radius + HEAD_SIZE.0 {
+            continue;
+        }
+        judged += 1;
+        if !s.arrows.iter().any(|x| x.from == from && x.to == to) {
+            let offender = json!({ "call": [from, to], "apart": r1(v2(a.at).distance(v2(b.at))), "why": "not drawn" });
+            offenders.push((1.0, offender));
+        }
+    }
+    if judged == 0 {
+        return skip("no call between two dots on screen");
+    }
+    verdict(offenders)
+}
+
+/// How near the piece of line from `p` to `q` comes to `at`.
+fn piece_distance(p: Vec2, q: Vec2, at: Vec2) -> f32 {
+    let along = q - p;
+    let t = ((at - p).dot(along) / along.length_squared().max(f32::EPSILON)).clamp(0.0, 1.0);
+    (p + along * t).distance(at)
+}
+
+/// Whether the piece of line from `p` to `q` runs through `r`.
+fn crosses_rect(p: Vec2, q: Vec2, r: egui::Rect) -> bool {
+    if r.width() <= 0.0 || r.height() <= 0.0 {
+        return false;
+    }
+    let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
+    let along = q - p;
+    for (start, delta, low, high) in [
+        (p.x, along.x, r.min.x, r.max.x),
+        (p.y, along.y, r.min.y, r.max.y),
+    ] {
+        if delta.abs() < f32::EPSILON {
+            if start < low || start > high {
+                return false;
+            }
+            continue;
+        }
+        let (u0, u1) = ((low - start) / delta, (high - start) / delta);
+        t0 = t0.max(u0.min(u1));
+        t1 = t1.min(u0.max(u1));
+    }
+    t0 < t1
+}
+
+/// How `color` drawn at `strength` shows over the ground behind the graph.
+fn over_ground(color: [f32; 3], strength: f32) -> [f32; 3] {
+    let ground = srgb(GROUND);
+    [0, 1, 2].map(|i| color[i] * strength + ground[i] * (1.0 - strength))
 }
 
 /// The color a function's role gives its fill, if its roles name one.
@@ -2105,7 +2501,7 @@ fn node_role_color(n: &Node) -> Option<[f32; 3]> {
     if n.is("cursor") {
         return Some(srgb(CURSOR));
     }
-    if n.is("start") || n.is("selection") || n.is("aside") {
+    if n.is("start") || n.is("selection") {
         return Some([1.0, 1.0, 1.0]);
     }
     if n.is("caller") {
@@ -2114,8 +2510,13 @@ fn node_role_color(n: &Node) -> Option<[f32; 3]> {
     let level = n
         .roles
         .iter()
-        .find_map(|r| r.strip_prefix("journey level ")?.parse::<u32>().ok())?;
-    Some(flow_color("journey", Some(level)))
+        .find_map(|r| r.strip_prefix("journey level ")?.parse::<u32>().ok());
+    match level {
+        Some(level) => Some(flow_color("journey", Some(level))),
+        // Set aside off the journey: grey, its ring alone white.
+        None if n.is("aside") => Some(srgb(FURTHER)),
+        None => None,
+    }
 }
 
 /// The color an arrow's role gives it: violet into, blue the first level, amber
@@ -2384,6 +2785,150 @@ mod tests {
         }
         assert_eq!(results["nothing-moved"]["pass"], Value::Null);
         assert_eq!(results["panel-agrees"]["pass"], Value::Null);
+    }
+
+    #[test]
+    fn a_call_through_a_third_dot_or_name_is_named_and_one_bent_round_it_passes() {
+        let mut s = scene();
+        // From f straight to h, over f's own name, through g's spot made a lit dot.
+        s["nodes"][1]["roles"] = json!(["callee"]);
+        s["nodes"][1]["radius"] = json!(4.0);
+        s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
+            "flow": "journey", "level": 1, "path": [[386.0, 500.0], [994.0, 500.0]] }]);
+        let result = check(&s, "arrows-clear");
+        assert_eq!(result["count"], 1, "{result}");
+        assert_eq!(result["offenders"][0]["function"], "g");
+        // A name in the way is named too.
+        s["labels"]
+            .as_array_mut()
+            .expect("labels")
+            .push(json!({ "text": "g", "rect": [700.0, 494.0, 720.0, 506.0],
+                "names": "function", "of": "g", "unit": "x:a::g" }));
+        assert_eq!(check(&s, "arrows-clear")["count"], 2);
+        // Bent round both, it passes.
+        s["arrows"][0]["path"] = json!([
+            [386.0, 500.0],
+            [440.0, 530.0],
+            [710.0, 530.0],
+            [994.0, 500.0]
+        ]);
+        assert!(
+            passes(&check(&s, "arrows-clear")),
+            "{}",
+            check(&s, "arrows-clear")
+        );
+    }
+
+    #[test]
+    fn two_functions_reading_the_same_name_are_named() {
+        let mut s = scene();
+        s["labels"][2]["of"] = json!("f");
+        let result = check(&s, "names-distinct");
+        assert_eq!(result["count"], 1, "{result}");
+        assert_eq!(result["offenders"][0]["in"], "graph");
+        let mut s = scene();
+        s["search_rows"] = json!([
+            { "text": "reroot", "unit": "x:a::reroot" },
+            { "text": "reroot", "unit": "x:b::reroot" },
+        ]);
+        assert_eq!(
+            check(&s, "names-distinct")["offenders"][0]["in"],
+            "search rows"
+        );
+        s["search_rows"][1]["text"] = json!("Track.reroot");
+        assert!(passes(&check(&s, "names-distinct")));
+    }
+
+    #[test]
+    fn expanded_in_a_journey_a_call_off_the_free_area_is_labelled_where_it_leaves() {
+        let mut s = scene();
+        s["state"]["mode"] = json!("journey");
+        s["state"]["nucleus"] = json!("expanded");
+        s["arrows"] = json!([{ "from": "f", "to": "far", "from_unit": "x:a::f", "to_unit": "x:c::far",
+            "flow": "journey", "level": 1, "path": [[386.0, 500.0], [386.0, 1200.0]] }]);
+        assert_eq!(check(&s, "exits-named")["count"], 1);
+        s["exits"] = json!([{ "from_unit": "x:a::f", "to_unit": "x:c::far", "far": "far",
+            "text": "to far · C", "rect": [350.0, 975.0, 420.0, 995.0] }]);
+        assert!(
+            passes(&check(&s, "exits-named")),
+            "{}",
+            check(&s, "exits-named")
+        );
+        s["state"]["nucleus"] = json!("modules");
+        assert_eq!(check(&s, "exits-named")["pass"], Value::Null);
+    }
+
+    #[test]
+    fn a_call_between_dots_on_screen_is_drawn_however_near_they_are() {
+        let mut s = scene();
+        s["content"] = json!({ "selection": "f", "callers": ["h"], "calls": [{ "name": "h" }] });
+        s["arrows"] = json!([{ "from": "f", "to": "h" }]);
+        let result = check(&s, "calls-drawn");
+        assert_eq!(result["count"], 1, "{result}");
+        assert_eq!(result["offenders"][0]["call"], json!(["h", "f"]));
+        s["arrows"] = json!([{ "from": "f", "to": "h" }, { "from": "h", "to": "f" }]);
+        assert!(passes(&check(&s, "calls-drawn")));
+    }
+
+    #[test]
+    fn the_whole_maps_links_are_one_width() {
+        let mut s = scene();
+        s["module_arrows"] = json!([
+            { "from": "a", "to": "b", "flow": "module", "drawn": true, "on_screen": true, "width": 1.0, "head": 6.0 },
+            { "from": "b", "to": "a", "flow": "module", "drawn": true, "on_screen": true, "width": 2.0, "head": 6.0 },
+        ]);
+        assert!(!passes(&check(&s, "arrow-sizes")));
+        s["module_arrows"][1]["width"] = json!(1.0);
+        assert!(
+            passes(&check(&s, "arrow-sizes")),
+            "{}",
+            check(&s, "arrow-sizes")
+        );
+    }
+
+    #[test]
+    fn the_function_set_aside_keeps_its_fill_and_wears_a_white_ring() {
+        let mut s = journey();
+        let grey = "#d1d9ebff";
+        s["nodes"][1]["roles"] = json!(["aside"]);
+        s["nodes"][1]["color"] = json!("#ffffffff");
+        s["nodes"][1]["rings"] = json!([{ "radius": 6.0, "color": "#ffffffff" }]);
+        assert!(
+            !passes(&check(&s, "colours")),
+            "a white fill is the start's alone"
+        );
+        s["nodes"][1]["color"] = json!(grey);
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
+        s["nodes"][1]["rings"] = json!([]);
+        assert!(!passes(&check(&s, "colours")), "no white ring");
+    }
+
+    #[test]
+    fn a_call_reads_white_nowhere_and_only_the_followed_are_drawn_bright() {
+        let mut s = journey();
+        // A grey call from off the journey at full strength reads white.
+        s["arrows"] = json!([{ "from": "g", "to": "f", "from_unit": "x:a::g", "to_unit": "x:a::f",
+            "flow": "outside", "color": "#d1d9ebff", "width": 1.5 }]);
+        assert_eq!(check(&s, "colours")["count"], 1);
+        s["arrows"][0]["color"] = json!("#d1d9eb59");
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
+        // Pointing at it lights nothing: wider is followed.
+        s["arrows"][0]["width"] = json!(2.0);
+        assert_eq!(check(&s, "colours")["count"], 1);
+    }
+
+    #[test]
+    fn a_call_only_guessed_is_faint_on_the_graph_and_in_the_panel() {
+        let mut s = journey();
+        s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
+            "flow": "journey", "level": 1, "color": "#4db8ffd9", "width": 1.5, "guessed": true }]);
+        assert_eq!(check(&s, "colours")["count"], 1, "{}", check(&s, "colours"));
+        s["arrows"][0]["color"] = json!("#4db8ff4d");
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
+        s["bars"] = json!([{ "number": "1", "name": "h", "unit": "x:b::h", "color": "#4DB8FF", "guessed": true }]);
+        assert_eq!(check(&s, "colours")["count"], 1, "{}", check(&s, "colours"));
+        s["bars"][0]["color"] = json!("#4DB8FF38");
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
     }
 
     #[test]
@@ -3194,9 +3739,9 @@ mod tests {
         let result = check(&s, "colours");
         assert_eq!(result["count"], 1, "{result}");
         assert_eq!(result["offenders"][0]["arrow"], json!(["g", "h"]));
-        // Pointed at, it may light.
+        // Pointed at, it stays faint: hovering lights no call.
         s["nodes"][2]["roles"] = json!(["journey level 1", "cursor", "hovered"]);
-        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
+        assert_eq!(check(&s, "colours")["count"], 1);
     }
 
     #[test]

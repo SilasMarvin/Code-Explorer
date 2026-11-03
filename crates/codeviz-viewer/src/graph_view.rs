@@ -24,7 +24,8 @@ use crate::{
 /// the journey, as its call and its name are; its module shows in its sphere alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum NodeLook {
-    /// The start, the selection, or the function set aside: white.
+    /// The start or the selection: white. The function set aside keeps its role's
+    /// fill, and its ring alone is white.
     Start,
     /// The journey's cursor: pink.
     Cursor,
@@ -149,7 +150,7 @@ pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {
 /// the bars of its other runs.
 pub(crate) fn role_look(explorer: &Explorer, tile: usize) -> NodeLook {
     let nucleus = explorer.nucleus();
-    if nucleus.start() == Some(tile) || explorer.aside() == Some(tile) {
+    if nucleus.start() == Some(tile) {
         return NodeLook::Start;
     }
     match nucleus.level(tile) {
@@ -201,16 +202,25 @@ pub(crate) fn style_nodes(
             continue;
         }
         let look = node_look(&explorer, tile.0);
-        // Brought in from outside the journey, or a caller of the start folded into its
-        // module's count: there, but quieter than the journey.
+        // Brought in from outside the journey, a caller of the start folded into its
+        // module's count, or a call only guessed: there, but quieter than the journey.
         let outside =
-            (nucleus.outside(tile.0) || nucleus.folded(tile.0)) && explorer.aside() != Some(tile.0);
+            (nucleus.outside(tile.0) || nucleus.folded(tile.0) || guessed(&explorer, tile.0))
+                && explorer.aside() != Some(tile.0);
         if let Some(wanted) = materials.0.get(&(look, outside))
             && &material.0 != wanted
         {
             material.0 = wanted.clone();
         }
     }
+}
+
+/// Whether every call to a function the journey shows is only guessed, or handed
+/// off: its dot is drawn faint, as its bars are.
+pub(crate) fn guessed(explorer: &Explorer, tile: usize) -> bool {
+    !explorer.browsing()
+        && explorer.cursor() != Some(tile)
+        && explorer.disclosure().tile_guessed(tile)
 }
 
 #[derive(Resource, Debug)]

@@ -21,7 +21,7 @@ use crate::{
     idle::Awake,
     journey_panel::{self, JourneyPanel},
     key_help::{hint, key_help, key_hint},
-    labels::draw_graph_labels,
+    labels::graph_names,
     notice, text,
 };
 
@@ -187,10 +187,12 @@ fn draw_ui(
         let painter = ctx
             .layer_painter(egui::LayerId::background())
             .with_clip_rect(graph_area);
-        // The calls under the names, on under the journey panel as the spheres are.
+        // The calls under the names, keeping off them, on under the journey panel as
+        // the spheres are.
+        let names = graph_names(&painter, &project, &explorer, transform.up().into());
         let under = painter.with_clip_rect(central);
-        arrows::draw(&under, &explorer, (&camera, transform), &mut marks);
-        draw_graph_labels(&painter, &project, &explorer, transform.up().into());
+        arrows::draw(&under, &explorer, (&camera, transform), &names, &mut marks);
+        names.paint(&painter);
         let opening = chrome.search && !search.was_open;
         search.was_open = chrome.search;
         if chrome.search {
@@ -533,11 +535,17 @@ fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
         .collect();
     ranked.sort_by(|(a, x), (b, y)| (a, x.name.len(), &x.name).cmp(&(b, y.name.len(), &y.name)));
     let found = ranked.len();
-    let rows = ranked
+    let mut rows: Vec<Row> = ranked
         .into_iter()
         .take(LISTED)
         .map(|(_, row)| row)
         .collect();
+    // Two rows alike are told apart, as two names alike on the graph are.
+    let ids: Vec<&UnitId> = rows.iter().map(|row| &row.unit).collect();
+    let names = explorer.function_names(&ids);
+    for (row, name) in rows.iter_mut().zip(names) {
+        row.name = name;
+    }
     (rows, found)
 }
 

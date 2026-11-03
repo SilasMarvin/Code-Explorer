@@ -209,6 +209,9 @@ fn reading(browsing: bool) -> &'static [&'static str] {
          Dashed: runs only sometimes. ▼ and a count: calls hidden under it; click to \
          show them. A green end returns, a red one can fail. ↺ calls itself: it calls \
          itself straight back; ↺ calls back: it calls the start again.",
+        "Faint, a dot, its line and its bar: a call only guessed at (a trait or callback \
+         the code may not take) or handed off to run later. Ringed in white: a function \
+         picked off the journey, in its own color.",
     ]
 }
 

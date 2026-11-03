@@ -745,10 +745,24 @@ pub(crate) struct Marks {
     pub(crate) calls: Vec<CallMark>,
     pub(crate) tubes: Vec<TubeMark>,
     pub(crate) rings: Vec<RingMark>,
+    pub(crate) exits: Vec<ExitMark>,
+}
+
+/// Where a call leaves the free area, labelled with the function at its far end.
+#[derive(Debug, Clone)]
+pub(crate) struct ExitMark {
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    /// The function off the free area: the call's caller or callee.
+    pub(crate) far: usize,
+    pub(crate) text: String,
+    pub(crate) rect: egui::Rect,
+    /// Where the call's line crosses the free area's edge.
+    pub(crate) at: Vec2,
 }
 
 /// A call drawn from function to function.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct CallMark {
     pub(crate) from: usize,
     pub(crate) to: usize,
@@ -758,20 +772,22 @@ pub(crate) struct CallMark {
 }
 
 /// A line between two modules, by its index among the nucleus's.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct TubeMark {
     pub(crate) index: usize,
     pub(crate) shape: ArrowShape,
 }
 
 /// How an arrow shows on screen, in points: its line's width, its head's length and
-/// width, and where its tip is.
-#[derive(Debug, Clone, Copy)]
+/// width, where its tip is, and the points its line runs through, from its start to
+/// its tip.
+#[derive(Debug, Clone)]
 pub(crate) struct ArrowShape {
     pub(crate) width: f32,
     pub(crate) head: f32,
     pub(crate) head_width: f32,
     pub(crate) tip: Vec2,
+    pub(crate) path: Vec<Vec2>,
 }
 
 /// A ring round a function, so big in the world, in a color.

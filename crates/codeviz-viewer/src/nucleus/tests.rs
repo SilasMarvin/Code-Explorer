@@ -1,12 +1,18 @@
 use codeviz_core::System;
 use codeviz_ir::{Document, UnitId};
-use codeviz_layout::{CodebaseMap, ForceConfig, atlas::fibonacci, map};
+use codeviz_layout::{
+    CodebaseMap, ForceConfig,
+    atlas::{self, fibonacci},
+    map,
+};
 
 use super::{
-    inside::{lattice, spread},
-    journey::{OUTSIDE_SHOWN, ROWS, grid, names_grid},
+    inside::{ROW_WIDE, lattice, spread},
+    journey::OUTSIDE_SHOWN,
+    places::{Room, place},
     *,
 };
+use crate::sizes::Dot;
 
 /// Seven modules: `web::route` calls `core::run`, which calls `db::put`,
 /// `log::say` and `core::help`; `core::help` calls `core::idle` and `ext::lib`;
@@ -95,7 +101,7 @@ fn trail(graph: &ForceGraph, from: usize, depth: u32) -> Trail {
             }
         }
         for callee in callees {
-            trail.add(tile, callee, level + 1);
+            trail.add(tile, callee, level + 1, false);
             stack.push((callee, level + 1));
         }
     }
@@ -382,7 +388,7 @@ fn expanded_the_start_calls_in_and_out_of_its_module() {
 
 #[test]
 fn an_opened_module_spreads_in_rows_wider_along_than_between() {
-    let places = lattice(40, 10.0);
+    let places = lattice(40, 10.0, ROW_WIDE);
     assert_eq!(places.len(), 40);
     assert_eq!(places[0], Vec2::ZERO, "the middle first");
     for (i, a) in places.iter().enumerate() {
@@ -821,11 +827,11 @@ fn expanding_keeps_the_ring_in_its_order() {
 #[test]
 fn a_function_run_twice_shows_once_with_both_numbers() {
     let mut trail = Trail::default();
-    trail.add(0, 1, 1);
-    trail.add(0, 2, 1);
-    trail.add(2, 1, 2);
-    trail.add(1, 3, 3);
-    trail.add(1, 3, 2);
+    trail.add(0, 1, 1, false);
+    trail.add(0, 2, 1, false);
+    trail.add(2, 1, 2, false);
+    trail.add(1, 3, 3, false);
+    trail.add(1, 3, 2, false);
     assert_eq!(trail.calls.len(), 4, "each call once");
     assert_eq!(trail.calls[3].level, 2, "at its shallowest");
     let numbers: Vec<String> = ["2.1", "1"].map(str::to_owned).to_vec();
@@ -859,19 +865,64 @@ fn a_badge_keeps_the_call_nearest_the_root_wherever_the_cursor_is() {
 }
 
 #[test]
-fn names_past_a_column_spread_into_more_and_keep_inside() {
-    assert_eq!(grid(3, 100.0).len(), 3);
-    let many = grid(ROWS + 1, 100.0);
-    let right = view_rotation() * Vec3::X;
-    let across: Vec<f32> = many.iter().map(|p| p.dot(right)).collect();
-    assert!(across.iter().any(|&x| x < -1.0) && across.iter().any(|&x| x > 1.0));
-    for at in grid(ROWS * 3, 6.0) {
-        assert!(at.length() < 6.0, "drawn in to fit a small module: {at}");
+fn a_journey_spreads_its_functions_over_their_spheres_clear_of_each_others_calls() {
+    // The start in the middle of its sphere calls four functions in a sphere off to
+    // its right, which call each other in a chain.
+    let rotation = view_rotation();
+    let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+    let rooms = [
+        Room {
+            cluster: 0,
+            center: Vec3::ZERO,
+            radius: 6.0,
+            tiles: Vec::new(),
+            middle: Some(0),
+            spare: 0,
+        },
+        Room {
+            cluster: 1,
+            center: right * 30.0,
+            radius: 6.0,
+            tiles: vec![1, 2, 3, 4],
+            middle: None,
+            spare: OUTSIDE_SHOWN,
+        },
+    ];
+    let calls = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3)];
+    let placed = place(&rooms, &calls, &|_| 8);
+    let flat = |at: Vec3| Vec2::new(at.dot(right), at.dot(up));
+    let at = |tile: usize| flat(placed.points[&tile]);
+    assert!(at(0).length() < 1e-4, "the start in the middle");
+    for tile in 1..=4 {
+        assert!(
+            at(tile).distance(flat(right * 30.0)) < atlas::disc(6.0) + 1e-3,
+            "inside its sphere"
+        );
     }
-    let names = names_grid(3, 100.0);
+    let across: Vec<f32> = (1..=4).map(|t| at(t).x).collect();
+    let down: Vec<f32> = (1..=4).map(|t| at(t).y).collect();
+    let spread = |v: &[f32]| {
+        v.iter().fold(f32::MIN, |m, &x| m.max(x)) - v.iter().fold(f32::MAX, |m, &x| m.min(x))
+    };
+    assert!(
+        spread(&across) > 1.0 && spread(&down) > 1.0,
+        "over the sphere, not a column"
+    );
+    // No call's line runs through a third dot.
+    for &(from, to) in &calls {
+        for third in (0..=4).filter(|&t| t != from && t != to) {
+            let (a, b, c) = (at(from), at(to), at(third));
+            let along = b - a;
+            let t = ((c - a).dot(along) / along.length_squared()).clamp(0.0, 1.0);
+            assert!(
+                (a + along * t).distance(c) > Dot::Focus.radius(),
+                "{from}→{to} through {third}"
+            );
+        }
+    }
     assert_eq!(
-        names.len(),
-        3 + OUTSIDE_SHOWN,
+        placed.free[&1].len(),
+        OUTSIDE_SHOWN,
         "room kept for outside callers"
     );
 }

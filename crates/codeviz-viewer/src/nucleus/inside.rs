@@ -10,7 +10,7 @@ use codeviz_layout::{ForceGraph, atlas};
 use super::{Arrangement, Flow, Link, Nucleus, view_rotation};
 
 /// How much further apart two places along a row are than two rows.
-const ROW_WIDE: f32 = 4.0;
+pub(super) const ROW_WIDE: f32 = 4.0;
 
 impl Nucleus {
     /// Opens `cluster`, the module expanded, in `now`: every one of its functions
@@ -58,7 +58,7 @@ pub(super) fn spread(
 ) -> Vec<(usize, Vec3)> {
     let rotation = view_rotation();
     let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
-    let places = lattice(members.len(), reach);
+    let places = lattice(members.len(), reach, ROW_WIDE);
     let flat: Vec<Vec2> = members
         .iter()
         .map(|&(tile, at)| {
@@ -102,15 +102,14 @@ pub(super) fn spread(
 }
 
 /// `count` places over a disc of radius `reach` about its middle: rows as close as
-/// holds them all, [`ROW_WIDE`] times further apart along a row, as names run along,
-/// each row half a place along from the next; the middle one first, then the nearest
-/// it.
-pub(super) fn lattice(count: usize, reach: f32) -> Vec<Vec2> {
+/// holds them all, `wide` times further apart along a row, as names run along, each
+/// row half a place along from the next; the middle one first, then the nearest it.
+pub(super) fn lattice(count: usize, reach: f32, wide: f32) -> Vec<Vec2> {
     if count == 0 {
         return Vec::new();
     }
     let rows = |gap: f32| {
-        let along = gap * ROW_WIDE;
+        let along = gap * wide;
         let mut places = Vec::new();
         #[expect(clippy::cast_possible_truncation, reason = "a row count")]
         let most = (reach / gap) as i32;

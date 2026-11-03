@@ -13,7 +13,7 @@ use codeviz_core::{Journey, Span, SpanId};
 use codeviz_layout::CodebaseMap;
 
 use crate::{
-    explorer::{Track, is_conditional},
+    explorer::{Confidence, Track, is_conditional, is_handoff},
     nucleus::Trail,
 };
 
@@ -43,9 +43,11 @@ pub(crate) struct Disclosed {
     /// Shown spans where another outcome splits off: where the failure happens, or the
     /// nearest shown call it happens under.
     fails: HashSet<SpanId>,
-    /// Nodes that can fail, and nodes every shown run of which is conditional.
+    /// Nodes that can fail, nodes every shown run of which is conditional, and nodes
+    /// every shown call to which is only guessed or handed off.
     failing_tiles: HashSet<usize>,
     sometimes_tiles: HashSet<usize>,
+    guessed_tiles: HashSet<usize>,
     /// For a node every shown run of which is conditional, when it runs, where every
     /// run says the same.
     whens: HashMap<usize, Option<String>>,
@@ -117,33 +119,7 @@ impl Disclosed {
                     .find(|s| disclosed.levels.contains_key(s))
             })
             .collect();
-        let mut always = HashSet::new();
-        for &span in disclosed.levels.keys() {
-            let Some(tile) = tile(span) else {
-                continue;
-            };
-            if disclosed.fails.contains(&span) {
-                disclosed.failing_tiles.insert(tile);
-            }
-            if let Some(span) = journey.span(span).filter(|s| is_conditional(s)) {
-                disclosed.sometimes_tiles.insert(tile);
-                let said = when(span);
-                disclosed
-                    .whens
-                    .entry(tile)
-                    .and_modify(|before| {
-                        if *before != said {
-                            *before = None;
-                        }
-                    })
-                    .or_insert(said);
-            } else {
-                always.insert(tile);
-            }
-        }
-        disclosed
-            .sometimes_tiles
-            .retain(|tile| !always.contains(tile));
+        disclosed.mark_tiles(journey, &tile, root);
         let mut tiles: HashMap<usize, Vec<String>> = HashMap::new();
         for (span, number) in disclosed.numbered() {
             if let Some(tile) = tile(span) {
@@ -157,13 +133,61 @@ impl Disclosed {
             numbers.sort_by_key(|n| number_order(n));
         }
         disclosed.tiles = tiles;
-        disclosed.trail = disclosed.trace(&tile, root);
+        disclosed.trail =
+            disclosed.trace(&tile, &|span| journey.span(span).is_some_and(guessed), root);
         disclosed
+    }
+
+    /// Marks each node shown that can fail, that runs only sometimes every time it
+    /// shows (and when), and that every shown call to is only guessed.
+    fn mark_tiles(
+        &mut self,
+        journey: &Journey,
+        tile: &impl Fn(SpanId) -> Option<usize>,
+        root: SpanId,
+    ) {
+        let mut always = HashSet::new();
+        let mut sure = HashSet::new();
+        for &span in self.levels.keys() {
+            let Some(tile) = tile(span) else {
+                continue;
+            };
+            if span != root {
+                match journey.span(span).filter(|s| guessed(s)) {
+                    Some(_) => self.guessed_tiles.insert(tile),
+                    None => sure.insert(tile),
+                };
+            }
+            if self.fails.contains(&span) {
+                self.failing_tiles.insert(tile);
+            }
+            if let Some(span) = journey.span(span).filter(|s| is_conditional(s)) {
+                self.sometimes_tiles.insert(tile);
+                let said = when(span);
+                self.whens
+                    .entry(tile)
+                    .and_modify(|before| {
+                        if *before != said {
+                            *before = None;
+                        }
+                    })
+                    .or_insert(said);
+            } else {
+                always.insert(tile);
+            }
+        }
+        self.sometimes_tiles.retain(|tile| !always.contains(tile));
+        self.guessed_tiles.retain(|tile| !sure.contains(tile));
     }
 
     /// The journey from `start` as the nucleus draws it: each call shown, and every
     /// function below the start at any depth, by node.
-    fn trace(&self, tile: &impl Fn(SpanId) -> Option<usize>, start: SpanId) -> Trail {
+    fn trace(
+        &self,
+        tile: &impl Fn(SpanId) -> Option<usize>,
+        guessed: &impl Fn(SpanId) -> bool,
+        start: SpanId,
+    ) -> Trail {
         let mut trail = Trail::default();
         // Everything below the start at any depth, each at the fewest calls from it, so
         // the modules round the start are laid out once for every depth.
@@ -186,7 +210,8 @@ impl Disclosed {
             }
             wave = next;
         }
-        // Every function below the start in the order the journey first runs it.
+        // Every function below the start in the order the journey first runs it, and
+        // every call it makes, at any depth.
         let mut stack = vec![start];
         while let Some(span) = stack.pop() {
             if span != start
@@ -194,6 +219,16 @@ impl Disclosed {
                 && !trail.order.contains(&to)
             {
                 trail.order.push(to);
+            }
+            if let Some(from) = tile(span) {
+                for &child in self.children(span) {
+                    if let Some(to) = tile(child)
+                        && from != to
+                        && !trail.reach.contains(&(from, to))
+                    {
+                        trail.reach.push((from, to));
+                    }
+                }
             }
             stack.extend(self.children(span).iter().rev());
         }
@@ -212,7 +247,7 @@ impl Disclosed {
                 .collect();
             for &child in &open {
                 if let Some(to) = tile(child) {
-                    trail.add(from, to, level);
+                    trail.add(from, to, level, guessed(child));
                 }
             }
             stack.extend(open.into_iter().rev().map(|child| (child, level)));
@@ -274,6 +309,12 @@ impl Disclosed {
     /// journey reaches it.
     pub(crate) fn tile_sometimes(&self, tile: usize) -> bool {
         self.sometimes_tiles.contains(&tile)
+    }
+
+    /// Whether every shown call to a node is only guessed, or handed off to run later:
+    /// drawn faint, as its bars are.
+    pub(crate) fn tile_guessed(&self, tile: usize) -> bool {
+        self.guessed_tiles.contains(&tile)
     }
 
     /// When a node every shown run of which is conditional runs, where its runs agree.
@@ -339,6 +380,12 @@ impl Disclosed {
         };
         (out, width)
     }
+}
+
+/// Whether a call is only guessed, or handed off to run later: drawn faint, its bar,
+/// its line and its dot.
+pub(crate) fn guessed(span: &Span) -> bool {
+    Confidence::of(span) == Confidence::Guessed || is_handoff(span)
 }
 
 /// When a call runs, if not every time its caller does, as the panel and the graph

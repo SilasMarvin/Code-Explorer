@@ -18,7 +18,7 @@ use crate::{
     explorer::{Explorer, is_conditional},
     journey_panel::{bar_fill, caller_fill, guessed},
     labels::{Named, node_name},
-    nucleus::Flow,
+    nucleus::{Flow, Link},
 };
 
 /// The view's content, as JSON.
@@ -229,6 +229,7 @@ pub(crate) fn scene(view: &View) -> Value {
         "modules": modules,
         "arrows": arrows(view),
         "module_arrows": module_arrows(view),
+        "exits": exits(view),
         "labels": label_list,
         "bars": bars(view),
         "search_rows": search_rows(view),
@@ -481,6 +482,9 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     if n.opened_up(tile) && n.level(tile).is_none() && !is(n.start()) {
         roles.push("opened".to_owned());
     }
+    if crate::graph_view::guessed(explorer, tile) {
+        roles.push("guessed".to_owned());
+    }
     if is(n.hovered()) {
         roles.push("hovered".to_owned());
     }
@@ -530,6 +534,7 @@ fn shape(view: &View, shape: &ArrowShape) -> Value {
         "head": round(shape.head),
         "head_width": round(shape.head_width),
         "tip": point(shape.tip),
+        "path": shape.path.iter().map(|&p| point(p)).collect::<Vec<_>>(),
         "on_screen": view.on_screen(shape.tip),
     })
 }
@@ -545,6 +550,11 @@ fn arrows(view: &View) -> Vec<Value> {
         .iter()
         .map(|call| {
             let (flow, level) = flow_kind(call.flow);
+            let link = Link {
+                from: call.from,
+                to: call.to,
+                flow: call.flow,
+            };
             let mut arrow = json!({
                 "from": name(call.from),
                 "to": name(call.to),
@@ -554,9 +564,32 @@ fn arrows(view: &View) -> Vec<Value> {
                 "level": level,
                 "role": flow_role(call.flow),
                 "color": hex(call.color),
+                "guessed": explorer.nucleus().guessed(&link),
             });
             merge(&mut arrow, shape(view, &call.shape));
             arrow
+        })
+        .collect()
+}
+
+/// Expanded in a journey, where each call leaves the free area, labelled with the
+/// function at its far end: the call, that function, what the label says and where.
+fn exits(view: &View) -> Vec<Value> {
+    let explorer = &*view.explorer;
+    let unit = |tile: usize| explorer.tile_unit(tile).map(ToString::to_string);
+    view.marks
+        .exits
+        .iter()
+        .map(|exit| {
+            json!({
+                "from_unit": unit(exit.from),
+                "to_unit": unit(exit.to),
+                "far_unit": unit(exit.far),
+                "far": node_name(explorer, exit.far),
+                "text": exit.text,
+                "rect": rect(exit.rect),
+                "at": point(exit.at),
+            })
         })
         .collect()
 }
@@ -712,10 +745,15 @@ fn rect(r: egui::Rect) -> Value {
     ])
 }
 
-/// A panel color as [`hex`] writes a scene's.
+/// A panel color as [`hex`] writes a scene's: with its alpha after it where it is
+/// see-through, as a faint bar is.
 fn hex32(color: egui::Color32) -> String {
-    let [r, g, b, _] = color.to_srgba_unmultiplied();
-    format!("#{r:02X}{g:02X}{b:02X}")
+    let [r, g, b, a] = color.to_srgba_unmultiplied();
+    if a == u8::MAX {
+        format!("#{r:02X}{g:02X}{b:02X}")
+    } else {
+        format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
+    }
 }
 
 fn hex(color: Color) -> String {

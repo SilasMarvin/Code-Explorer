@@ -6,7 +6,8 @@
 use bevy::color::{Color, ColorToPacked, Mix};
 use bevy_egui::egui;
 
-/// The selection, the journey's start, and a function set aside in a journey.
+/// The selection and the journey's start; and the ring round a function set aside in
+/// a journey, whose fill stays its role's.
 pub(crate) const SELECTED: Color = Color::WHITE;
 /// Calls into the selection or the journey's start.
 pub(crate) const CALLER: Color = Color::srgb(0.74, 0.52, 1.0);
@@ -34,18 +35,17 @@ pub(crate) fn deeper(level: u32, last: u32) -> Color {
 
 /// How much of its color a call's line keeps, by what it is: a call the view names;
 /// one among the expanded module's functions no role names; a caller of the start
-/// folded into its module's count; a call in from off the journey (I); a line
-/// between modules on the whole map. A call being followed keeps all of it.
+/// folded into its module's count; a call in from off the journey (I); one only
+/// guessed, or handed off; a line between modules on the whole map. The calls of a
+/// function set aside keep all of it, a grey one [`PICKED_STRENGTH`]: grey still,
+/// never the selection's white.
 pub(crate) const CALL_STRENGTH: f32 = 0.85;
 pub(crate) const INNER_STRENGTH: f32 = 0.28;
 pub(crate) const FOLDED_STRENGTH: f32 = 0.25;
 pub(crate) const OUTSIDE_STRENGTH: f32 = 0.35;
-pub(crate) const MAP_STRENGTH: f32 = 0.16;
-
-/// A call being followed: its role's color, lighter.
-pub(crate) fn followed(color: Color) -> Color {
-    color.mix(&Color::WHITE, 0.35)
-}
+pub(crate) const GUESSED_STRENGTH: f32 = 0.3;
+pub(crate) const MAP_STRENGTH: f32 = 0.12;
+pub(crate) const PICKED_STRENGTH: f32 = 0.6;
 
 /// Behind the scene.
 pub(crate) const GROUND: Color = Color::srgb(0.06, 0.07, 0.09);

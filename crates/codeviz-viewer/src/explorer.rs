@@ -190,6 +190,9 @@ pub(crate) struct Explorer {
     /// What each module sphere is called, by cluster: its name, told apart from
     /// another module's of the same name.
     module_names: Vec<String>,
+    /// By cluster, the names two or more of its functions share: expanded, each of
+    /// those is named with its type or module before it.
+    module_homonyms: Vec<HashSet<String>>,
     /// Bumped whenever nodes move.
     moved: u64,
     /// How much of the journey shows.
@@ -273,7 +276,20 @@ impl Explorer {
                 break;
             }
         }
-        let nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
+        let mut nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
+        // As long as a name can be drawn: its route, or its name with its type.
+        nucleus.name_chars(
+            map.tiles
+                .iter()
+                .map(|tile| {
+                    let entry = system.entries().iter().find(|e| e.unit == tile.unit);
+                    entry.map_or_else(
+                        || display_name(&system, &tile.unit).chars().count(),
+                        |e| e.label.chars().count(),
+                    )
+                })
+                .collect(),
+        );
         let module_names = {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
                 .map(|cluster| {
@@ -284,12 +300,25 @@ impl Explorer {
                 .collect();
             module_names::qualified(&modules)
         };
+        let mut module_homonyms = vec![HashSet::new(); graph.cluster_count()];
+        let mut seen: HashMap<(usize, &str), usize> = HashMap::new();
+        for (tile, at) in map.tiles.iter().enumerate() {
+            let (Some(cluster), Some(unit)) = (graph.cluster(tile), system.unit(&at.unit)) else {
+                continue;
+            };
+            let count = seen.entry((cluster, unit.name.as_str())).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                module_homonyms[cluster].insert(unit.name.clone());
+            }
+        }
         Self {
             system,
             track: Track::default(),
             map,
             graph,
             module_names,
+            module_homonyms,
             moved: 0,
             history: History::default(),
             aim: 0,
@@ -1158,17 +1187,44 @@ impl Explorer {
 
     /// A function's name, the same wherever it shows (the graph, the panel's bars,
     /// the top bar, the search): an entry point's route, else its own name; with two
-    /// functions of that name in view, with its type or module before it
-    /// (`Track.root`, `Explorer.root`).
+    /// functions of that name in view, or in the module expanded, its own, with its
+    /// type or module before it (`Track.root`, `Explorer.root`).
     pub(crate) fn function_name(&self, id: &UnitId) -> String {
         if let Some(entry) = self.system.entries().iter().find(|e| &e.unit == id) {
             return entry.label.clone();
         }
+        let expanded = self.nucleus.expanded_module().and_then(|module| {
+            let own = self.map.tile_of(id).and_then(|t| self.graph.cluster(t));
+            (own == Some(module)).then(|| &self.module_homonyms[module])
+        });
         match self.system.unit(id) {
-            Some(unit) if !self.track.homonyms.contains(&unit.name) => unit.name.clone(),
+            Some(unit)
+                if !self.track.homonyms.contains(&unit.name)
+                    && !expanded.is_some_and(|shared| shared.contains(&unit.name)) =>
+            {
+                unit.name.clone()
+            }
             Some(_) => self.unit_name(id),
             None => id.to_string(),
         }
+    }
+
+    /// The names of `ids` as [`Self::function_name`] has them, but with any two of
+    /// them alike told apart by their type or module: a list read together, as the
+    /// search's rows are.
+    pub(crate) fn function_names(&self, ids: &[&UnitId]) -> Vec<String> {
+        let names: Vec<String> = ids.iter().map(|id| self.function_name(id)).collect();
+        names
+            .iter()
+            .zip(ids)
+            .map(|(name, id)| {
+                if names.iter().filter(|n| *n == name).count() > 1 {
+                    self.unit_name(id)
+                } else {
+                    name.clone()
+                }
+            })
+            .collect()
     }
 
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
@@ -1326,13 +1382,16 @@ impl Explorer {
 
 /// What a journey key says browsing.
 const NO_JOURNEY: &str = "Open a journey first (Enter)";
+/// What ↑ from the start says when nothing is found calling it: what the analysis
+/// cannot see may still call it.
+const NO_CALLERS: &str = "No callers found (callbacks and dynamic calls may not be traced)";
 
 /// What a key that cannot move the cursor says: why not, and what would. `first` is
 /// whether the cursor is on the journey's start, `folded` whether calls under it are
 /// past the depth shown.
 fn stuck(step: Step, first: bool, folded: bool) -> &'static str {
     match step {
-        Step::Parent if first => "Nothing calls the journey's start",
+        Step::Parent if first => NO_CALLERS,
         Step::Back if first => "Already at the journey's start",
         Step::Parent => "Nothing above this call is drawn",
         Step::Back => "No earlier call is drawn",
@@ -1479,10 +1538,7 @@ pub(crate) mod tests {
         assert_eq!(at(&explorer), "a");
         explorer.step(Step::Parent);
         assert_eq!(explorer.step(Step::Parent), None);
-        assert_eq!(
-            explorer.notice().map(|(_, t)| t),
-            Some("Nothing calls the journey's start")
-        );
+        assert_eq!(explorer.notice().map(|(_, t)| t), Some(NO_CALLERS));
     }
 
     #[test]
