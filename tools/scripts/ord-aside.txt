@@ -1,0 +1,64 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus Finder::walk
+# Expanded in a journey, the expansion follows the function set aside, and letting it
+# go takes the expansion back to the cursor's module: never a blank graph
+# (ux10-cons-3/21-22). Back within the journey puts back the module each place had
+# expanded (ux10-journey-3/22-24); Esc from a journey puts back Browse's expansion
+# (ux10-cons-1/61-63).
+snap journey walk
+key /
+type spotlit
+search-pick Explorer::spotlit
+expect aside Explorer::spotlit
+key x
+expect expanded explorer
+expect check expanded-drawn
+expect check expanded-fill
+snap x with aside
+key esc
+expect aside none
+expect expanded scenario
+expect check expanded-drawn
+expect check expanded-fill
+expect check focus-on-screen
+snap esc lets the aside go
+key /
+type spotlit
+search-pick Explorer::spotlit
+expect aside Explorer::spotlit
+expect expanded explorer
+expect check expanded-drawn
+expect check focus-on-screen
+snap search sets aside expanded
+
+# Back within the journey: each place with the module it had expanded.
+key esc
+expect expanded scenario
+bar 2
+expect cursor System::unit
+snap cursor on 2
+bar 1
+snap cursor on 1
+key backspace
+expect cursor System::unit
+expect check expanded-drawn
+snap back to 2
+key backspace
+expect expanded scenario
+snap back to walk
+
+# Esc from a journey entered from Browse expanded puts that expansion back.
+key x
+expect expanded none
+key esc
+expect mode browse
+expect selection Finder::walk
+key x
+expect expanded scenario
+snap browse expanded
+key enter
+expect mode journey
+key esc
+expect mode browse
+expect expanded scenario
+expect camera-same-as browse expanded
+snap esc back to browse expanded

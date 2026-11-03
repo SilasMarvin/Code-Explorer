@@ -1,8 +1,8 @@
-//! A line said for a moment in the bar along the top, as why a key moved nothing: the
+//! A line said in the bar along the top until the next key, as why a key moved nothing: the
 //! cursor already at the journey's start, no further call from the same caller, calls
 //! folded past the depth shown. Never over the graph, where it would hide a name.
 
-use bevy::prelude::*;
+use bevy::{input::mouse::AccumulatedMouseScroll, prelude::*};
 use bevy_egui::{EguiContexts, egui};
 
 use crate::{
@@ -11,9 +11,6 @@ use crate::{
     text,
 };
 
-/// Seconds a notice shows for, at most. It keeps nothing drawing: it goes with the
-/// first frame drawn after, which the window draws within a second when idle.
-const HOLD: f32 = 2.0;
 /// Room round its text, inside the top bar.
 const PAD: egui::Vec2 = egui::vec2(10.0, 2.0);
 
@@ -37,47 +34,47 @@ pub(crate) fn drawn(ctx: &egui::Context, pass: u64) -> Option<egui::Rect> {
         .map(|(_, rect)| rect)
 }
 
-/// The notice on screen: which, when it was said, and in which mode.
+/// The notice on screen: which, and in which mode.
 pub(crate) struct Said {
     count: u64,
-    at: f32,
     browsing: bool,
-    /// Whether the next key or click, or a change of mode, has put it away.
+    /// Whether the next key, click or wheel turn, or a change of mode, has put it
+    /// away.
     gone: bool,
 }
 
-/// Draws the explorer's last notice for a moment after it is said, until the next key
-/// or click, or until the view leaves the journey or enters one.
+/// Draws the explorer's last notice from when it is said until the next key, click
+/// or wheel turn that does not say it again, or until the view leaves the journey or
+/// enters one. Nothing times it out: a still window draws nothing.
 pub(crate) fn draw(
-    time: Res<Time>,
     explorer: Res<Explorer>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    scroll: Res<AccumulatedMouseScroll>,
     mut contexts: EguiContexts,
     mut said: Local<Option<Said>>,
 ) {
     let Some((count, text)) = explorer.notice() else {
         return;
     };
-    let now = time.elapsed_secs();
     let browsing = explorer.browsing();
     match &mut *said {
         Some(said) if said.count == count => {
             let acted = keys.get_just_pressed().next().is_some()
-                || buttons.get_just_pressed().next().is_some();
+                || buttons.get_just_pressed().next().is_some()
+                || scroll.delta != Vec2::ZERO;
             said.gone |= acted || said.browsing != browsing;
         }
         // Said this frame, by the key just pressed.
         _ => {
             *said = Some(Said {
                 count,
-                at: now,
                 browsing,
                 gone: false,
             });
         }
     }
-    if said.as_ref().is_none_or(|s| s.gone || now - s.at > HOLD) {
+    if said.as_ref().is_none_or(|s| s.gone) {
         return;
     }
     let Ok(ctx) = contexts.ctx_mut() else {

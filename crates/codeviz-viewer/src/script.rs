@@ -133,6 +133,9 @@ pub(crate) enum Kind {
     FrameFocus,
     /// `r`: frames everything from the front.
     FrameAll,
+    /// `window`: the window sized anew, which frames the view again as it was last
+    /// framed, unless the hands moved the camera since.
+    Resize,
     /// Anything else, which may move the view.
     Moves,
 }
@@ -581,8 +584,8 @@ impl Step {
             | Step::ClickAt(_)
             | Step::ClickEmpty
             | Step::SearchPick(_)
-            | Step::Button(_)
-            | Step::Window(_) => Kind::Moves,
+            | Step::Button(_) => Kind::Moves,
+            Step::Window(_) => Kind::Resize,
         }
     }
 
@@ -858,6 +861,7 @@ mod tests {
         assert_eq!(kind("button Fit"), Kind::FrameFocus);
         assert_eq!(kind("chip 2"), Kind::Depth);
         assert_eq!(kind("search-pick place"), Kind::Moves);
+        assert_eq!(kind("window 900 700"), Kind::Resize);
         assert_eq!(kind("frames 4"), Kind::Still);
     }
 

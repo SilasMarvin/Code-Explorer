@@ -74,3 +74,37 @@ key esc
 expect mode browse
 expect camera-same-as deselected
 snap left the journey
+
+# Keys at a bound say so, and the notice is the step's own: Esc with nothing to
+# close, the wheel at either end. A pan follows the hand, expanded too.
+key esc
+key esc
+expect selection none
+key esc
+expect notice Nothing to close
+scroll -40
+expect notice all the way out
+snap out as far as it goes
+key r
+click pricing::quote
+key x
+expect expanded pricing
+snap pricing expanded
+pan 120 40
+expect check expanded-drawn
+snap panned expanded
+scroll 40 at pricing::quote
+expect notice in as far as it goes
+expect check zoom-bounds
+snap in as far as it goes
+key x
+expect expanded none
+
+# A window sized anew frames the view again as R framed it.
+key r
+window 1000 700
+expect check framed
+expect check map-on-screen
+snap resized after r
+window 1600 1000
+snap resized back
