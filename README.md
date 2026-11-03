@@ -34,21 +34,28 @@ calls further down. Pink: the journey's cursor. Everything else is grey, and eac
 module's sphere has a muted hue of its own, only to tell modules apart. Each role gets
 one treatment: the selection and the start a white ring, the cursor a pink fill and one
 pink ring. A call that also calls back into the start keeps its call's fill and gets a
-violet ring, and its two arrows run side by side. What the pointer rests on gets one grey
-treatment wherever it is: a thin ring round its dot, an outline round its bar, and from
-a bar a grey line to its dot.
+violet ring, and its two arrows run side by side. A function set aside in a journey
+keeps its own fill (grey off the journey, violet if it calls the start) with a white
+ring, and its calls their own colors. What the pointer rests on gets one grey treatment
+wherever it is: a thin ring round its dot, an outline round its bar, and from a bar a
+grey line to its dot; it never lights a call. A call only guessed at is faint on the
+graph as in the panel. Calls bend round dots and names they would otherwise pass
+through.
 
 ### Browse
 
 With no `--focus`, the view opens browsing the whole codebase with nothing selected,
-and a faint arrow runs from each module to every module it calls. A click on a
+and a faint line, one width, runs behind the spheres from each module to every module
+it calls; a module whose name has no room above its sphere is named, smaller, inside
+its top. A click on a
 function selects it where it sits: its callers light violet and its calls blue, each
 named, with arrows; their modules open where they are; nothing moves, not a function,
 not a module, not the camera. `Enter`, or a
 `Shift`-click on a function, opens a journey there. `/` searches; picking a result is a
 click on it. `Esc` clears the selection. The journey keys (arrows, `[ ]`, `, .`, `I`)
 say "Open a journey first (Enter)". Two functions of the same name in view, the
-selection's callers or calls, are named with their type or module before them.
+selection's callers or calls, or in one module, are named with their type or module
+before them, wherever their names show, the search's rows too.
 
 ### Journey
 
@@ -56,7 +63,10 @@ A journey is the call tree from one start function, shown to a disclosed depth. 
 it is the one time the view moves for you: it gathers round the journey and frames it.
 Only the journey shows: its start in the middle of its module's sphere, what calls the
 start, and its calls down to the depth disclosed, every module they enter on a ring
-round the middle, clockwise in the order the journey first enters them. `,` and `.`
+round the middle, clockwise in the order the journey first enters them. In each sphere
+the journey's functions are spread out where no call runs through another's dot or
+name, laid out once for every depth. Zoomed into a module, a call that leaves the
+screen is labelled where it leaves with the function at its far end. `,` and `.`
 (or the panel's `−` and `+`) show a level less or more, from the start's own calls down
 to the journey's deepest, saying so at either end, and nothing else moves; a bar's
 triangle opens the calls folded under it. A closure counts as part of the function
