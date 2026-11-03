@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use codeviz_layout::{ForceGraph, atlas};
 
 use super::{Arrangement, Ball, Body, Flow, Link, Nucleus, view_rotation};
-use crate::sizes::module_radius;
+use crate::sizes::{Dot, module_radius};
 
 /// Rows of names an open module stacks before it starts another column.
 pub(super) const ROWS: usize = 8;
@@ -24,6 +24,9 @@ pub(super) const ROWS: usize = 8;
 const COLUMN_GAP: f32 = 11.0;
 /// Between two functions named in an open module.
 const SPACING: f32 = 2.8;
+/// Between two functions in a grid, the least for two of the biggest dots, the
+/// cursor's, to show apart: closer, every dot of the module is drawn smaller.
+const DOT_ROOM: f32 = 2.0 * Dot::Focus.radius() + 0.2;
 /// Between the nucleus and a module in the near ring, for its arrows to show.
 const NEAR_GAP: f32 = 15.0;
 /// Space kept clear between two spheres.
@@ -80,6 +83,15 @@ impl Nucleus {
         let order = self.ring_order(&every, middle, &cluster_of);
         place_ring(&mut balls, &order, middle);
         let (mut points, mut shown) = self.place_functions(&balls, &laid, middle, &cluster_of);
+        let mut dots: HashMap<usize, f32> = laid
+            .iter()
+            .enumerate()
+            .filter(|&(cluster, column)| cluster != middle && !column.is_empty())
+            .map(|(cluster, column)| {
+                let scale = grid_dots(column.len() + OUTSIDE_SHOWN, balls[cluster].radius);
+                (cluster, scale)
+            })
+            .collect();
         // The start's own module names what the journey runs in it at any depth in
         // columns round the start, as an open module does, so they show apart; the
         // rest of it stays where the map has it, faint.
@@ -94,6 +106,7 @@ impl Nucleus {
             for (tile, at) in core_grid(&named, start, balls[middle].radius) {
                 points[tile] = center + at;
             }
+            dots.insert(middle, grid_dots(named.len() + 1, balls[middle].radius));
         }
         // What only a deeper level names keeps its place, undrawn.
         for (cluster, column) in laid.iter().enumerate() {
@@ -134,6 +147,7 @@ impl Nucleus {
             folded,
             tubes: Vec::new(),
             links,
+            dots,
         }
     }
 
@@ -703,6 +717,19 @@ pub(super) fn grid(count: usize, radius: f32) -> Vec<Vec3> {
             (right * x + Vec3::Y * y) * fit
         })
         .collect()
+}
+
+/// How big, against their role's size, the dots of a [`grid`] of `count` in a sphere
+/// of `radius` are drawn: smaller where its places are drawn in closer than
+/// [`DOT_ROOM`], so two next to each other keep apart at any zoom.
+pub(super) fn grid_dots(count: usize, radius: f32) -> f32 {
+    let places = grid(count, radius);
+    let nearest = places
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| places[i + 1..].iter().map(move |b| a.distance(*b)))
+        .fold(f32::INFINITY, f32::min);
+    (nearest / DOT_ROOM).min(1.0)
 }
 
 /// Where the nucleus's `named` functions and its `start` sit about its middle, in a

@@ -2,7 +2,7 @@
 //! and what the selection touches lit where it sits; with nothing selected, an arrow
 //! from each module to every module it calls.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use codeviz_layout::{ForceGraph, atlas};
@@ -55,6 +55,7 @@ impl Nucleus {
             folded: HashSet::new(),
             tubes,
             links,
+            dots: HashMap::new(),
         }
     }
 

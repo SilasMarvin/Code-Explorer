@@ -117,7 +117,8 @@ pub(crate) fn dot(explorer: &Explorer, tile: usize) -> Dot {
 }
 
 /// How big a function is drawn in the world, seen from `view` through `camera`: its
-/// role's size, kept within that role's bounds on screen.
+/// role's size, less where its module's functions sit close, kept within that role's
+/// bounds on screen.
 pub(crate) fn drawn_radius(
     explorer: &Explorer,
     tile: usize,
@@ -125,7 +126,7 @@ pub(crate) fn drawn_radius(
     view: &GlobalTransform,
 ) -> f32 {
     let dot = dot(explorer, tile);
-    let world = dot.radius();
+    let world = dot.radius() * explorer.nucleus().dot_scale(tile);
     let shows = |at: Vec3| camera.world_to_viewport(view, at).ok();
     let per_unit = explorer
         .tile_point(tile)

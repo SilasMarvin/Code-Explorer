@@ -212,6 +212,9 @@ struct Arrangement {
     folded: HashSet<usize>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
+    /// By cluster, how big its dots are drawn against their role's size, where its
+    /// functions sit closer than the biggest two need: 1 where it is not listed.
+    dots: HashMap<usize, f32>,
 }
 
 /// Browsing, where every module and function sits: one layout of the whole codebase,
@@ -357,6 +360,18 @@ impl Nucleus {
         }
         self.expanded = cluster;
         self.recenter(graph, self.now.start);
+    }
+
+    /// How big a function's dot is drawn against its role's size: smaller in a
+    /// module whose functions sit too close for their dots at full size.
+    pub(crate) fn dot_scale(&self, tile: usize) -> f32 {
+        self.module_of
+            .get(tile)
+            .copied()
+            .flatten()
+            .and_then(|cluster| self.now.dots.get(&cluster))
+            .copied()
+            .unwrap_or(1.0)
     }
 
     /// Whether a function is one of the module expanded's: every one of them is
