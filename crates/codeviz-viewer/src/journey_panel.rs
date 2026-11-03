@@ -852,7 +852,8 @@ fn says(explorer: &Explorer, span: SpanId) -> Says {
 /// letters of its name; at the most, for all it says; with its badge of calls folded
 /// under it, and room round its text.
 fn needs(painter: &egui::Painter, says: &Says, folded: usize) -> (f32, f32) {
-    let room = 10.0 + BAR_GAP + if folded > 0 { BADGE + 2.0 } else { 0.0 };
+    // Its text's inset and a point either side, the gap after it, its badge.
+    let room = 12.0 + BAR_GAP + if folded > 0 { BADGE + 2.0 } else { 0.0 };
     let least = says.numbered(&short(&says.bare, LEAST_LETTERS));
     let least = text_width(painter, &least, BAR_TEXT_SMALL) + room;
     let most = text_width(painter, &says.whole, BAR_TEXT) + room;
@@ -861,7 +862,7 @@ fn needs(painter: &egui::Painter, says: &Says, folded: usize) -> (f32, f32) {
 
 /// What a bar says in `room` points, and at what size: all of it; then smaller; then
 /// without when it runs; then without its name's type or module; then cut short with
-/// an ellipsis, keeping the number and a couple of letters; then the number alone,
+/// an ellipsis, keeping the number and a letter at least; then the number alone,
 /// as a deep call's bar zoomed out by hand is narrow, so it still says which call it
 /// is; then, a bar with no number, its name cut short. `None` where not even that
 /// fits.
@@ -882,7 +883,7 @@ fn bar_text(painter: &egui::Painter, says: &Says, room: f32) -> Option<(String, 
     }
     let number = says.number.as_str();
     fit_text(painter, &bare, BAR_TEXT_SMALL, room)
-        .filter(|cut| cut.chars().count() > number.chars().count() + 4)
+        .filter(|cut| cut.chars().count() > number.chars().count() + 3)
         .or_else(|| {
             (text_width(painter, number, BAR_TEXT_SMALL) <= room).then(|| number.to_owned())
         })

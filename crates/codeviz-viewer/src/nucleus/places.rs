@@ -81,6 +81,9 @@ pub(super) struct Placed {
     pub(super) crowded: HashSet<(usize, usize)>,
     /// The functions whose names go on their left.
     pub(super) left: HashSet<usize>,
+    /// The functions put where another's call runs by: one brought in from off the
+    /// journey there would read as that call's.
+    pub(super) on_lines: HashSet<usize>,
 }
 
 /// A name's box, flat, as the usual view sees it.
@@ -371,26 +374,34 @@ fn closer(
 /// `placed` with the names `board` put on their left; and of the places kept free,
 /// those a call's line runs by, now every function is put, crowded: a line laid out
 /// after a place was kept may still run by it, and whoever took it would read as that
-/// call's.
+/// call's; and the functions so put, `on_lines`.
 fn finish(board: Board, mut placed: Placed) -> Placed {
     let rotation = view_rotation();
     let flat = |at: Vec3| Vec2::new(at.dot(rotation * Vec3::X), at.dot(rotation * Vec3::Y));
-    let by_line = |at: Vec2| {
+    // Whether another's call runs by `at`, as every function now lies.
+    let by_line = |at: Vec2, tile: Option<usize>| {
         board.calls.iter().any(|&(from, to)| {
             let (Some(&a), Some(&b)) = (board.at.get(&from), board.at.get(&to)) else {
                 return false;
             };
-            from != to && reach(a, b, at) < board.dot * 2.0
+            from != to
+                && Some(from) != tile
+                && Some(to) != tile
+                && reach(a, b, at) < board.dot * 2.0
         })
     };
     let crowded: Vec<(usize, usize)> = (placed.free.iter())
         .flat_map(|(&cluster, spots)| {
             (spots.iter().enumerate())
-                .filter(|&(_, &at)| by_line(flat(at)))
+                .filter(|&(_, &at)| by_line(flat(at), None))
                 .map(move |(seat, _)| (cluster, seat))
         })
         .collect();
     placed.crowded.extend(crowded);
+    placed.on_lines = (board.at.iter())
+        .filter(|&(&tile, &at)| tile < SPARE_KEYS && by_line(at, Some(tile)))
+        .map(|(&tile, _)| tile)
+        .collect();
     placed.left = board.left;
     placed
 }
