@@ -17,11 +17,10 @@ use crate::sizes::Dot;
 /// How a journey is framed, roughly: the half of the free area's height its ring of
 /// spheres spans, in points. What sizes a name against the spheres.
 const FRAMED: f32 = 380.0;
-/// A name as the label placer draws it, in points: its height, its width for each
-/// character and round them (its number's badge and its pill), how far from its dot
-/// it starts, and the room kept round dots and names.
+/// A name as the label placer draws it, in points: its height, its width round its
+/// text (its number's badge and its pill), how far from its dot it starts, and the
+/// room kept round dots and names.
 const NAME_HIGH: f32 = 18.0;
-const NAME_CHAR: f32 = 6.5;
 const NAME_PADDED: f32 = 34.0;
 const NAME_GAP: f32 = 4.0;
 const CLEAR: f32 = 3.0;
@@ -158,8 +157,8 @@ impl Board<'_> {
             .filter(|&c| c > 0)
             .unwrap_or(SOME_NAME)
             + note;
-        #[expect(clippy::cast_precision_loss, reason = "a name's length")]
-        let wide = (chars as f32 * NAME_CHAR + NAME_PADDED) * self.per_point;
+        let wide =
+            (crate::text::name_width(chars, crate::text::BODY) + NAME_PADDED) * self.per_point;
         let start = self.dot + self.gap;
         let (x0, x1) = if left {
             (at.x - start - wide, at.x - start)

@@ -61,8 +61,9 @@ pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(140, 148, 165);
 /// How a journey's call can end: it returns, or it fails.
 pub(crate) const OK: egui::Color32 = egui::Color32::from_rgb(120, 210, 140);
 pub(crate) const ERROR: egui::Color32 = egui::Color32::from_rgb(240, 110, 100);
-/// The dark pill a name on the graph sits on, so it reads over the arrows.
-pub(crate) const PILL: egui::Color32 = egui::Color32::from_rgba_premultiplied(9, 11, 16, 205);
+/// The dark pill a name on the graph sits on, so it reads over the arrows: opaque,
+/// so no dot or line shows through its letters.
+pub(crate) const PILL: egui::Color32 = egui::Color32::from_rgb(11, 13, 19);
 /// A plain function's name: quieter than a lit one's.
 pub(crate) const PLAIN_TEXT: egui::Color32 = egui::Color32::from_rgb(178, 184, 196);
 /// The name of a function faded beside what is selected: quieter still.

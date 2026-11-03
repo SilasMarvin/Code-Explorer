@@ -1,0 +1,35 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus Index::walk --depth 6
+# Where calls leave the free area: one label per far function, past six one per
+# module, none over a name or another label (ux10-look-4/08); browsing expanded too
+# (ux10-cons-1/26); a narrow window whose panel grows on `.` keeps every label
+# (ux10-look-4/02-03).
+key x
+snap index expanded
+expect check exits-named pass
+expect check labels-clear pass
+key x
+key esc
+key esc
+key /
+type Explorer::spotlit
+key enter
+expect selection Explorer::spotlit
+key x
+snap browse expanded
+expect check exits-named pass
+key x
+key esc
+window 900 700
+key /
+type Explorer::spotlit
+key enter
+key enter
+key .
+key .
+key x
+snap narrow expanded d3
+expect check exits-named pass
+key .
+snap narrow expanded d4
+expect check exits-named pass
+expect check labels-clear pass

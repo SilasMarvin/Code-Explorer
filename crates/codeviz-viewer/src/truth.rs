@@ -167,7 +167,7 @@ pub(crate) fn scene(view: &View) -> Value {
                 "name": node_name(explorer, d.tile),
                 "unit": explorer.tile_unit(d.tile).map(ToString::to_string),
                 "module": module_of(explorer, d.tile),
-                "roles": roles(explorer, d.tile),
+                "roles": named_roles(explorer, d.tile, label.is_some()),
                 "numbers": numbers(explorer, d.tile),
                 "at": point(d.at),
                 "radius": round(d.radius),
@@ -177,7 +177,6 @@ pub(crate) fn scene(view: &View) -> Value {
                 "label": label.map(|i| labels[i].text.clone()),
                 "label_rect": label.map(|i| rect(labels[i].rect)),
                 "name_size": name_size(screen, Named::Node(d.tile)),
-                "name_spot": screen.name_spots.get(&Named::Node(d.tile)).map(|r| rect(*r)),
                 "kept_off": kept.get(&d.tile).map(|&r| round(r)),
                 "crowded_by": crowding(explorer, &drawn, d),
                 "color": d.color.map(hex),
@@ -500,6 +499,16 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     roles
 }
 
+/// [`roles`], but a speck the view names is a plain function, not a faint one.
+fn named_roles(explorer: &Explorer, tile: usize, named: bool) -> Vec<String> {
+    let roles = roles(explorer, tile);
+    if named && roles == ["speck"] {
+        vec!["plain".to_owned()]
+    } else {
+        roles
+    }
+}
+
 /// A function's numbers in the open journey.
 fn numbers(explorer: &Explorer, tile: usize) -> Vec<String> {
     explorer
@@ -541,8 +550,35 @@ fn shape(view: &View, shape: &ArrowShape) -> Value {
         "head_width": round(shape.head_width),
         "tip": point(shape.tip),
         "path": shape.path.iter().map(|&p| point(p)).collect::<Vec<_>>(),
-        "on_screen": view.on_screen(shape.tip),
+        "on_screen": crosses_free(view.screen.names, &shape.path),
     })
+}
+
+/// Whether any piece of the line through `path` runs over `free`, the graph less a
+/// docked panel: a line can cross the view with both its ends off it.
+fn crosses_free(free: egui::Rect, path: &[Vec2]) -> bool {
+    let at = |p: Vec2| egui::pos2(p.x, p.y);
+    path.iter().any(|&p| free.contains(at(p)))
+        || path.windows(2).any(|pair| {
+            let (a, b) = (at(pair[0]), at(pair[1]));
+            // Where it runs inside each pair of the area's sides, as shares of it.
+            let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
+            for (start, delta, low, high) in [
+                (a.x, b.x - a.x, free.min.x, free.max.x),
+                (a.y, b.y - a.y, free.min.y, free.max.y),
+            ] {
+                if delta.abs() < f32::EPSILON {
+                    if start < low || start > high {
+                        return false;
+                    }
+                    continue;
+                }
+                let (u0, u1) = ((low - start) / delta, (high - start) / delta);
+                t0 = t0.max(u0.min(u1));
+                t1 = t1.min(u0.max(u1));
+            }
+            t0 < t1
+        })
 }
 
 /// Every call drawn as an arrow, function to function, as drawn: its color, how wide
