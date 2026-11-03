@@ -745,7 +745,7 @@ struct Far {
 
 /// The number the panel shows a function by, on the cursor's path where it runs
 /// there, else its first; none for the start, which goes by its name.
-fn path_number(explorer: &Explorer, tile: usize) -> Option<String> {
+pub(crate) fn path_number(explorer: &Explorer, tile: usize) -> Option<String> {
     if explorer.start() == Some(tile) {
         return None;
     }

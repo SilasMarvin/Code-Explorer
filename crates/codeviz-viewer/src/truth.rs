@@ -4,7 +4,7 @@
 //! only sometimes runs. A scripted session's snapshots say more: what is
 //! drawn where on screen, by name, and what can be clicked ([`scene`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use bevy::{
     color::Color,
@@ -158,7 +158,6 @@ pub(crate) fn scene(view: &View) -> Value {
     let named = match_labels(explorer, &labels, &screen.labels, &balls);
     let label_of = |what: Labelled| named.iter().position(|&n| n == Some(what));
 
-    let kept: HashMap<usize, f32> = screen.kept_off.iter().map(|k| (k.0, k.2)).collect();
     let nodes: Vec<Value> = drawn
         .iter()
         .map(|d| {
@@ -177,7 +176,8 @@ pub(crate) fn scene(view: &View) -> Value {
                 "label": label.map(|i| labels[i].text.clone()),
                 "label_rect": label.map(|i| rect(labels[i].rect)),
                 "name_size": name_size(screen, Named::Node(d.tile)),
-                "kept_off": kept.get(&d.tile).map(|&r| round(r)),
+                "kept_off": screen.kept_off.iter().find(|k| k.0 == d.tile).map(|k| round(k.2)),
+                "arrivals": arrivals(screen, d.tile),
                 "crowded_by": crowding(explorer, &drawn, d),
                 "color": d.color.map(hex),
                 "rings": rings(view, d),
@@ -243,6 +243,15 @@ pub(crate) fn scene(view: &View) -> Value {
         "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect), "size": t.size })).collect::<Vec<_>>(),
         "content": of(explorer),
     })
+}
+
+/// The last stretch of each call coming into a function's dot that its name keeps
+/// off, from the dot back.
+fn arrivals(screen: &Screen, tile: usize) -> Vec<Vec<[f64; 2]>> {
+    (screen.arrivals.iter())
+        .filter(|(t, _)| *t == tile)
+        .map(|(_, tail)| tail.iter().map(|p| [round(p.x), round(p.y)]).collect())
+        .collect()
 }
 
 /// Where the journey's calls a deeper level shows would be, which names keep off:
@@ -453,7 +462,8 @@ fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
 }
 
 /// What a drawn function is to the view: the journey's start or the selection, the
-/// journey's cursor, the function set aside, a caller, a call of the journey so many
+/// journey's cursor, the function set aside, one on the cursor's path down from the
+/// start (`path`), a caller, a call of the journey so many
 /// levels down, a caller from off the journey that I brings in (`outside`), one that
 /// calls back besides, one of the functions of a module
 /// expanded while browsing, hovered; else a speck.
@@ -470,6 +480,9 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
         if is(of) {
             roles.push(role.to_owned());
         }
+    }
+    if crate::labels::cursor_path(explorer).contains_key(&tile) {
+        roles.push("path".to_owned());
     }
     match n.level(tile) {
         Some(-1) if n.folded(tile) => {

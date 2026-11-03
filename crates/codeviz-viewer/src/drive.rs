@@ -720,6 +720,9 @@ pub(crate) struct Screen {
     pub(crate) name_sizes: Arc<HashMap<crate::labels::Named, egui::Vec2>>,
     /// Every dot names keep off, and how far: the function, where, how far.
     pub(crate) kept_off: Arc<Vec<(usize, egui::Pos2, f32)>>,
+    /// Where names keep off the calls coming into each dot: the function, the line's
+    /// last stretch from the dot back.
+    pub(crate) arrivals: Arc<Vec<(usize, Vec<egui::Pos2>)>>,
     pub(crate) texts: Vec<Painted>,
     pub(crate) widgets: Vec<Widget>,
     pub(crate) bars: Option<DrawnBars>,
@@ -740,6 +743,7 @@ impl Default for Screen {
             names: egui::Rect::NOTHING,
             name_sizes: Arc::default(),
             kept_off: Arc::default(),
+            arrivals: Arc::default(),
             texts: Vec::new(),
             widgets: Vec::new(),
             bars: None,
@@ -972,6 +976,7 @@ fn record(
         names: crate::labels::names_area(&ctx).unwrap_or(graph),
         name_sizes: crate::labels::name_sizes(&ctx),
         kept_off: crate::labels::kept_off(&ctx),
+        arrivals: crate::labels::arrivals(&ctx),
         texts,
         widgets: clickable,
         bars,
