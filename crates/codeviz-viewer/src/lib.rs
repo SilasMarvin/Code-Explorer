@@ -198,7 +198,10 @@ impl Viewer {
         }
         // A scripted session opens hidden, without a frame, and without taking the
         // keyboard or bringing the app to the front; it then tucks the window away.
-        let scripted = self.screenshot.is_some() && self.script.is_some();
+        // So does an interactive one with CODEVIZ_TUCKED set, as `tools/drive idle`
+        // measures it, left alone.
+        let scripted = self.screenshot.is_some() && self.script.is_some()
+            || std::env::var_os("CODEVIZ_TUCKED").is_some();
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -222,6 +225,9 @@ impl Viewer {
         .init_resource::<JourneyPanel>()
         .init_resource::<drive::Marks>()
         .init_resource::<idle::Awake>();
+        if scripted {
+            app.add_systems(First, drive::tuck_away);
+        }
         if let (Some(dir), Some(lines)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.
             app.add_plugins(drive::DrivePlugin {

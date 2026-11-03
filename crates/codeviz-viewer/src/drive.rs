@@ -30,8 +30,8 @@ use bevy::{
         view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk},
     },
     window::{
-        CursorMoved, CursorOptions, Monitor, PrimaryMonitor, PrimaryWindow, WindowEvent,
-        WindowLevel, WindowOccluded, WindowPosition,
+        CursorMoved, CursorOptions, Monitor, PrimaryMonitor, PrimaryWindow, RequestRedraw,
+        WindowEvent, WindowLevel, WindowOccluded, WindowPosition,
     },
     winit::WinitSettings,
 };
@@ -224,7 +224,6 @@ impl Plugin for DrivePlugin {
         .init_resource::<Screen>()
         // The window is never focused; it draws every frame all the same.
         .insert_resource(WinitSettings::continuous())
-        .add_systems(First, tuck_away)
         // Input goes in with the window's own, so the frame's systems see it.
         .add_systems(PreUpdate, act.before(InputSystems))
         .add_systems(
@@ -244,10 +243,12 @@ const PEEK: f32 = 4.0;
 /// Shows the window, which opened hidden, over the others but all off screen except
 /// a corner `PEEK` points square: macOS stops drawing a window that is covered or
 /// wholly off screen, and snapshots come out black. The corner is on one screen and
-/// the rest on none; it takes no clicks. Waits for winit to report the screens.
-fn tuck_away(
+/// the rest on none; it takes no clicks. Waits for winit to report the screens,
+/// asking for frames meanwhile, as an idle window would not draw them.
+pub(crate) fn tuck_away(
     mut window: Single<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     monitors: Query<(&Monitor, Has<PrimaryMonitor>)>,
+    mut redraw: MessageWriter<RequestRedraw>,
 ) {
     let (window, cursor) = &mut *window;
     if window.visible {
@@ -292,6 +293,7 @@ fn tuck_away(
         .find(|&&at| shown(at) <= PEEK * PEEK + 1.0)
         .or(corners.first())
     else {
+        redraw.write(RequestRedraw);
         return;
     };
     let at = (at * window.scale_factor()).round().as_ivec2();

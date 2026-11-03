@@ -20,9 +20,10 @@
       An interactive window under the memory guard and the render lock, closed after
       SECONDS (default 1800).
   tools/drive idle [--wt DIR] [--seconds N] -- VIEW ARGS
-      Opens the viewer as a person would (no script), lets it settle, and prints how
-      much of a core it uses over N seconds (default 10) while nothing happens. Keep
-      the mouse off the window while it runs.
+      Opens the viewer as a person would (no script), but tucked away as a session's
+      window is (CODEVIZ_TUCKED: unfocused, all but a corner off screen, click-through),
+      lets it settle, and prints how much of a core it uses over N seconds (default 10)
+      while nothing happens.
   tools/drive WORKTREE NAME SCRIPT -- VIEW ARGS
       The older form of `run`.
 
@@ -502,8 +503,9 @@ def idle(wt, view_args, seconds):
     argv = [str(binary(wt)), *view_args]
 
     def measure():
+        env = dict(os.environ, CODEVIZ_TUCKED="1")
         p = subprocess.Popen(argv, cwd=Path(wt).resolve(), stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+                             stderr=subprocess.DEVNULL, start_new_session=True, env=env)
         try:
             deadline = time.monotonic() + IDLE_SETTLE
             while time.monotonic() < deadline:

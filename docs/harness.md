@@ -43,7 +43,7 @@ screen's bottom right (or bottom left), and click-through. `live` opens as usual
 | `tools/drive read NAME` | the summary of a session already run |
 | `tools/drive shot NAME -- VIEW ARGS [--keys "x ."] [--hover UNIT]` | one picture: `$CODEVIZ_SHOTS/NAME.png`, `NAME.json` (the snap), `NAME.truth.json` (its `content`) |
 | `tools/drive live [DIR] [--limit S] -- VIEW ARGS` | an interactive window under the memory guard and the render lock, closed after S seconds (1800) |
-| `tools/drive idle [--wt DIR] [--seconds N] -- VIEW ARGS` | opens the viewer as a person would (no script), lets it settle 10 s, and prints the share of a core it uses over N seconds (10) left alone; keep the mouse off the window |
+| `tools/drive idle [--wt DIR] [--seconds N] -- VIEW ARGS` | opens the viewer as a person would (no script, drawing only when something changes), but tucked away as a session's window is (`CODEVIZ_TUCKED`), lets it settle 10 s, and prints the share of a core it uses over N seconds (10) left alone |
 
 `VIEW ARGS` are `view DATA [FLAGS]`, as for `codeviz view`; a script's `#: view ...` line
 gives them when none follow `--`, with `$CODEVIZ_DATA` filled in. Relative paths are from
