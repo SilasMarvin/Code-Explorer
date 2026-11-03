@@ -652,6 +652,10 @@ pub(crate) struct Screen {
     pub(crate) names: egui::Rect,
     /// How big each name on the graph was laid out, room found for it or not.
     pub(crate) name_sizes: Arc<HashMap<crate::labels::Named, egui::Vec2>>,
+    /// Where each function's name was tried, the one place it may go.
+    pub(crate) name_spots: Arc<HashMap<crate::labels::Named, egui::Rect>>,
+    /// Every dot names keep off, and how far: the function, where, how far.
+    pub(crate) kept_off: Arc<Vec<(usize, egui::Pos2, f32)>>,
     pub(crate) texts: Vec<Painted>,
     pub(crate) widgets: Vec<Widget>,
     pub(crate) bars: Option<DrawnBars>,
@@ -671,6 +675,8 @@ impl Default for Screen {
             graph: egui::Rect::NOTHING,
             names: egui::Rect::NOTHING,
             name_sizes: Arc::default(),
+            name_spots: Arc::default(),
+            kept_off: Arc::default(),
             texts: Vec::new(),
             widgets: Vec::new(),
             bars: None,
@@ -863,8 +869,13 @@ fn record(
             .iter()
             .filter(|(id, _)| visible.iter().any(|l| l.id == egui::Id::new(*id)))
             .filter_map(|&(id, name)| Some((name.to_owned(), m.area_rect(egui::Id::new(id))?)))
-            .collect()
+            .collect::<Vec<_>>()
     });
+    // The notice, a moment in the bar along the top: never over a name.
+    let overlays = overlays
+        .into_iter()
+        .chain(crate::notice::drawn(&ctx, pass).map(|r| ("notice".to_owned(), r)))
+        .collect();
     let graph = cameras
         .single()
         .ok()
@@ -877,6 +888,8 @@ fn record(
         graph,
         names: crate::labels::names_area(&ctx).unwrap_or(graph),
         name_sizes: crate::labels::name_sizes(&ctx),
+        name_spots: crate::labels::name_spots(&ctx),
+        kept_off: crate::labels::kept_off(&ctx),
         texts,
         widgets: clickable,
         bars,

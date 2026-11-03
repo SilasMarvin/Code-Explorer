@@ -175,9 +175,15 @@ scene's units.
   for a function of the module expanded that nothing else lights, `hovered`, `speck` for a
   faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
   screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `name_size`
-  (how big the placer laid its name's text out, room found for it or not), `crowded_by`,
+  (how big the placer laid its name's text out, room found for it or not), `name_spot`
+  (the one place its name was tried as the view is: the side it holds from the neutral
+  view, or its home; a name stays there or goes, never moves), `kept_off` (how far from
+  its middle names keep: a dot drawn bigger than a speck as far as the cursor's),
+  `crowded_by`,
   `color` (its fill, `#rrggbbaa`), `rings` (each ring drawn round it: `radius` on
   screen, `color`).
+- `held`: where the journey's calls a deeper level shows would be (`name`, `unit`,
+  `at`, `radius`): names keep off them as off the dots drawn.
 - `modules`: each sphere: `name`, `body` (`nucleus`, `open`, `closed`, `faint`), `shown`,
   `functions`, `named`, `at`, `radius`, `world`, `world_radius`, `on_screen`, `label`,
   `label_rect`, `name_size`.
@@ -200,7 +206,8 @@ scene's units.
   no `number`, `aside` (the one set aside), `color`.
   `search_rows` (while the search box shows): `text`, `unit`, `rect`, `shown`,
   `highlighted` (what Enter takes). `buttons`: `text`, `rect`, `enabled`, `cut_off`.
-  `overlays`: `name`, `rect`, `clipped`. `text`: every other text drawn, with `rect`
+  `overlays`: `name`, `rect`, `clipped` (the journey panel, the key help, the search
+  box, and a notice while one shows, in the bar along the top). `text`: every other text drawn, with `rect`
   and `size`.
 - `content`: what the view means to show: the `start` or the `selection`, its
   callers, its calls (in a journey the disclosed ones, with numbers and modules;
@@ -226,8 +233,8 @@ constant at the top of that file.
 | `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius | always |
 | `spheres-apart` | no two spheres intersect, in the world | two spheres or more |
 | `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion (the expanded one aside) | always |
-| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other lit dot is nearer it (by over 2 points); every module's name within 40 points of its sphere's rim | always |
-| `labels-clear` | no name overlaps another, and a function's name covers no other lit dot | always |
+| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other lit dot is nearer it (by over 2 points), a plain one (`opened`) only for a plain name; every module's name within 40 points of its sphere's rim | always |
+| `labels-clear` | no name overlaps another or lies under a notice, and a function's name covers no other lit dot (a lit name may lie over a plain one, `opened`) | always |
 | `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel; not the search box, which opens over the graph for a moment) | unless the key help is open |
 | `text-sizes` | function names are 11 to 18 points; at most 4 font sizes show at once | always |
 | `panel-agrees` | each numbered bar's function carries that number on the graph, no other function does; each bar reads the name the graph gives its function (what its label leads with after its numbers); with a cursor on the graph, exactly one cursor bar shows, for that function | journey bars drawn |
@@ -235,14 +242,14 @@ constant at the top of that file.
 | `framed` | after R: every sphere inside the free area, camera at the usual view the map opens at (yaw and pitch within 0.05 of it); after F: every lit dot (or the expanded module) inside it with a 4-point margin | when F or R is the last step since the snap before that moves the view |
 | `zoom-to-pointer` | the sphere nearest the pointer (else any sphere, else any dot, drawn in both snaps) moved as a zoom about the pointer moves it (within 4 points plus 5% of its distance) | one wheel turn, nothing else that moves, since the snap before; not one that panned to hold the map, or the sphere it zooms to, in the free area (`state.camera.held`) |
 | `zoom-bounds` | some of the map is on screen, and zoomed out it still spans 40% of the free area; zoomed in, the sphere under the pointer spans at most 92% of the free area's smaller side, and from 88% lies inside it | after a wheel turn |
-| `nothing-moved` | no dot, sphere or name moved, nor the camera, since the snap before (names matched by function, not by what they say), and no name went while its dot or sphere still shows (unless a click selected another function); after `,` `.` or a badge the camera may only draw back, and only when something that came in would have been off the free area from where it was, or a sphere that came in (any, when the panel grew) cut by it or without room for its name; the world may not move | every step since is one that must move nothing |
+| `nothing-moved` | no dot, sphere or name moved, nor the camera, since the snap before (names matched by function, not by what they say), and no name went while its dot or sphere still shows (unless a click selected another function, or a depth change drew the camera back); after `,` `.` or a badge the camera may only draw back, and only when something that came in would have been off the free area from where it was, or a sphere that came in (any, when the panel grew) cut by it or without room for its name; the world may not move | every step since is one that must move nothing |
 | `focus-on-screen` | the selection, the start and the cursor, where drawn (expanded, those in the module expanded), lie inside the free area; a function picked browsing since (a click, a search, Back) is drawn and lies inside it, in whatever module | unless an expand since framed a module, or the camera is where the user's hands put it; then still the cursor, when it moved expanded in a journey |
 | `camera-outside` | the camera is inside no sphere | always |
 | `map-on-screen` | when the whole map would fit in the free area, 90% of it (by sphere area) is there, all of it after a pan; when it would not, after a pan, it lies over the free area's middle; zoomed out as far as the wheel goes (`farthest`), it covers the free area's middle | after a wheel turn out, a pan, or R |
 | `spheres-unclipped` | no sphere is cut by an edge of the graph's part of the window that lies in open window (not the window's edge, not where a panel starts), however big it shows; one the camera is inside aside; nor, unless faint (but the sphere holding the function set aside), by the top of the journey panel, unless the camera is where the user's hands put it, a module is expanded or one has just shrunk back | always |
 | `arrow-sizes` | every arrow on screen is at most 2.5 points wide, a module arrow however many calls it carries, with a head 5 to 12 points long (or half as wide, seen end on; the whole map's faint module links need no head, but none over 12); a module arrow has no head of its own where a call drawn along it goes on to its dot | an arrow on screen |
 | `module-names` | a module's name is centred over its sphere (within 3 points) just above its top edge (2 below to 8 above), over no other sphere and none of its own dots | a module named |
-| `named-when-room` | a lit function with no name would have no room for its pill on any side of its dot, clear of the free area's edge, overlays, other lit dots (and nearer none of them than its own) and the names placed as early in the naming order or earlier (start or selection, cursor, set aside, modules, the start's calls, callers, deeper calls, the rest lit, plain); a shown module with no name, none above its sphere. Each name is as big as the placer laid it out (`name_size`) | always |
+| `named-when-room` | a lit function with no name would have no room for its pill where the placer tried it (`name_spot`; without one, on any side of its dot), clear of the free area's edge, overlays, the calls a deeper level shows (`held`), other lit dots as far as names keep from them (`kept_off`; a plain one, `opened`, only for a plain name; and nearer none of them than its own) and the names placed as early in the naming order or earlier (start or selection, cursor, set aside, modules, the start's calls, callers, deeper calls, the rest lit, plain): a plain name or dot never excuses a lit one; a shown module with no name, none above its sphere. Each name is as big as the placer laid it out (`name_size`) | always |
 | `journey-fills` | the journey's spheres (but faint ones, other than the one holding the function set aside), lit dots (start, calls, callers) and their names span at least 70% of the free area across or down, whichever they come nearer filling, and the dots and spheres lie inside it | in a journey, not expanded, after it opens (a `--focus` session as it opens too), a depth change, R, F or Fit, unless the camera is where the user's hands put it; not on a `frames` snap, taken as the transition plays |
 | `colours` | the function hovered has no white fill and no ring the selection's color (or white); each function's fill and each call's color is its role's hue: white the start or selection, pink the cursor, violet callers, blue the first level, amber deeper, grey the rest (pink allowed on a call into the cursor); a function that `calls back` into the start has a violet ring; each bar's `color` is its node's hue, but the cursor's function's and a call only `guessed`; a call among the expanded module's functions off the journey is faint (alpha at most 0.5) unless into the function hovered | always |
 
@@ -285,6 +292,7 @@ such a camera alone.
 | `axum-callers` | the way up a journey: ↑ from the start into the row of its callers, ← → along it, ↓ back, Enter and Shift-click open a caller's journey, a caller's bar sets it aside; `i` with nothing calling in from outside stays off; `inside` on the top bar; search ranks a function's own name before its module's |
 | `axum-search` | search: ↓ and Enter take the row highlighted; a route found by its path and its function's name, listed once; reopened, the last query is selected and typing replaces it; Esc from a journey selects its start |
 | `ord-follow` | a big module expanding to the band; browsing expanded, a pick in another module taking the expansion there and Back bringing it back; Back across journeys putting back the expansion the place had; a search off the journey showing its sphere whole; X with a function set aside expanding its module |
+| `ord-names` | names stay or go, never move: the cursor stepping onto a call beside a name; expanded in a journey, the journey's calls named before any plain function |
 | `ord-panel` | the panel on a crowded journey: bars keep their numbers, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk) |
 
 `tools/drive suite` checks every script's names, then runs them one window at a time and
@@ -318,6 +326,8 @@ tools/test_drive.py` tests the runner's own logic.
   and badges (`drive::note_bars`) and the search box its rows
   (`drive::note_search_rows`). A new way of drawing these must note them too, or the
   JSON loses them. Idle CPU is not checked.
-- `named-when-room` tries four spots round a dot, the placer eight and slides along
-  them; and it takes a dot's spot from its own size, where the placer keeps names as
-  far off as the cursor's dot: it may call room the placer could not take.
+- `named-when-room` judges a name the placer tried by the one spot it tried
+  (`name_spot`), which a name holds so it never moves: it trusts the placer's choice
+  of spot, and judges only whether that spot was free. Without a `name_spot` it tries
+  four spots round a dot, the placer eight and slides along them, from the dot's own
+  size: it may call room the placer could not take.

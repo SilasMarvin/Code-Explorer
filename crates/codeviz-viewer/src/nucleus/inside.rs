@@ -20,6 +20,8 @@ impl Nucleus {
         let members: Vec<usize> = (0..graph.positions.len())
             .filter(|&t| graph.cluster(t) == Some(cluster))
             .collect();
+        // Spread over the whole of it, its dots are drawn their full size.
+        now.dots.remove(&cluster);
         if let Some(ball) = now.balls.get(cluster).copied() {
             let at: Vec<(usize, Vec3)> = members.iter().map(|&t| (t, self.offsets[t])).collect();
             for (tile, offset) in spread(&at, None, atlas::disc(ball.radius)) {
