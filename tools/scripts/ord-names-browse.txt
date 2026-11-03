@@ -1,0 +1,37 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json
+# Names browsing: on a wide whole map, module names before any plain function's;
+# a lit name whose side is taken tries the others before it goes; a click inside an
+# expanded module moves no plain name, and no name sits nearer another dot than its
+# own.
+window 1800 1100
+key r
+expect check module-names pass
+expect check named-when-room pass
+snap wide whole map
+
+window 1600 1000
+key /
+type Track.reroot
+search-pick Track.reroot
+expect selection Track::reroot
+scroll 6 at Track::reroot
+expect named Track::rebuild
+expect check named-when-room pass
+expect check labels-near pass
+snap reroot zoomed in
+
+key /
+type spotlit
+search-pick spotlit
+expect selection Explorer::spotlit
+key x
+expect expanded explorer
+expect check labels-near pass
+snap expanded
+
+click Explorer::graph_focus
+expect selection Explorer::graph_focus
+expect nothing-moved
+expect check labels-near pass
+expect check named-when-room pass
+snap click inside expanded

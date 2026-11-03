@@ -1,0 +1,12 @@
+#: view demo/out/axum-server.json
+# Names in a small expanded module: a click moves no plain name to its dot's other
+# side.
+doubleclick-module store
+expect expanded store
+snap store expanded
+
+click Store::insert_order
+expect selection Store::insert_order
+expect nothing-moved
+expect check labels-near pass
+snap store pick

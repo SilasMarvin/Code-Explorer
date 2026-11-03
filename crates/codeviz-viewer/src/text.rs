@@ -13,6 +13,18 @@ pub(crate) const BODY: f32 = 12.0;
 /// A module's name, and headings.
 pub(crate) const TITLE: f32 = 13.0;
 
+/// A character's width against its font size, at about the widest a name runs: the
+/// one guess at how wide a name shows before it is laid out, wherever that is guessed.
+pub(crate) const CHAR_WIDTH: f32 = 0.55;
+
+/// How wide a name of `chars` characters shows at font `size`, its text alone, in
+/// points, guessed before it is laid out.
+pub(crate) fn name_width(chars: usize, size: f32) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "a name's length")]
+    let chars = chars as f32;
+    chars * size * CHAR_WIDTH
+}
+
 /// egui's own text styles at these sizes, so what egui lays out keeps to them too.
 pub(crate) fn styles(style: &mut egui::Style) {
     style.text_styles = [

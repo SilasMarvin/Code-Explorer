@@ -167,7 +167,7 @@ pub(crate) fn scene(view: &View) -> Value {
                 "name": node_name(explorer, d.tile),
                 "unit": explorer.tile_unit(d.tile).map(ToString::to_string),
                 "module": module_of(explorer, d.tile),
-                "roles": roles(explorer, d.tile),
+                "roles": named_roles(explorer, d.tile, label.is_some()),
                 "numbers": numbers(explorer, d.tile),
                 "at": point(d.at),
                 "radius": round(d.radius),
@@ -177,7 +177,6 @@ pub(crate) fn scene(view: &View) -> Value {
                 "label": label.map(|i| labels[i].text.clone()),
                 "label_rect": label.map(|i| rect(labels[i].rect)),
                 "name_size": name_size(screen, Named::Node(d.tile)),
-                "name_spot": screen.name_spots.get(&Named::Node(d.tile)).map(|r| rect(*r)),
                 "kept_off": kept.get(&d.tile).map(|&r| round(r)),
                 "crowded_by": crowding(explorer, &drawn, d),
                 "color": d.color.map(hex),
@@ -494,6 +493,16 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
         roles.push("speck".to_owned());
     }
     roles
+}
+
+/// [`roles`], but a speck the view names is a plain function, not a faint one.
+fn named_roles(explorer: &Explorer, tile: usize, named: bool) -> Vec<String> {
+    let roles = roles(explorer, tile);
+    if named && roles == ["speck"] {
+        vec!["plain".to_owned()]
+    } else {
+        roles
+    }
 }
 
 /// A function's numbers in the open journey.

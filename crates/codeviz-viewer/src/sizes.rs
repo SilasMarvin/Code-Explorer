@@ -50,8 +50,6 @@ impl Dot {
 /// (`chars` long), its pill, the gap to its dot and the dot beside it.
 const ROW_HEIGHT: f32 = 22.0;
 const NAME_EXTRA: f32 = 26.0;
-/// A character's width as a share of the name's font size.
-const CHAR_WIDTH: f32 = 0.55;
 
 /// The share of an expanded module's functions whose names must sit comfortably: a
 /// few long names crowding are named only under the pointer, rather than the module
@@ -64,11 +62,7 @@ const COMFORTABLE: f32 = 0.8;
 /// for [`COMFORTABLE`] of them. Below 1 they have room to spare; 0 with fewer than
 /// two.
 pub(crate) fn comfort(dots: &[(bevy::math::Vec2, usize)]) -> f32 {
-    let across = |chars: usize| {
-        #[expect(clippy::cast_precision_loss, reason = "a name's length")]
-        let chars = chars as f32;
-        chars * crate::text::BODY * CHAR_WIDTH + NAME_EXTRA
-    };
+    let across = |chars: usize| crate::text::name_width(chars, crate::text::BODY) + NAME_EXTRA;
     let mut needs: Vec<f32> = dots
         .iter()
         .enumerate()
