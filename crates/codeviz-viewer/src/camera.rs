@@ -4,13 +4,16 @@
 //! orbits and right- or shift-drag pans. Zoom goes towards the pointer, so you can
 //! zoom into any part of the graph, as near as a module filling most of the view and
 //! as far as the whole scene with room round it. The camera never goes inside a
-//! sphere: the wheel stops once the one under the pointer fills nine tenths of the
-//! free part of the view, drawn into it whole as it comes to, or with none under it,
-//! while the one nearest it still shows; zoomed out, the map is drawn into the free
-//! part of the view as it comes to fit there, and held inside once it does. A pan
-//! keeps the map in the free part of the view too. Moves to a new point, distance or
-//! angle take one short, eased [`TRANSITION_SECONDS`]; a hand on the wheel or a drag
-//! stops them where they are.
+//! sphere: the wheel stops once the one under the pointer (with a module expanded,
+//! that one) fills nine tenths of the free part of the view, drawn into it whole as it
+//! comes to, or with none under it, while the one nearest it still shows. One clamp
+//! keeps the map in the free part of the view after every move by hand
+//! ([`OrbitCamera::keep_map`]): a pan follows the hand up to the map's edge; zoomed
+//! out or turned, the map is drawn in as it comes to fit, held inside once it does,
+//! and in the middle as far out as the wheel goes. Expanded, the map is the module
+//! expanded, kept over the middle. Moves to a new point, distance or angle take one
+//! short, eased [`TRANSITION_SECONDS`]; a hand on the wheel or a drag stops them where
+//! they are.
 
 use bevy::{
     camera::{CameraOutputMode, visibility::RenderLayers},
@@ -96,6 +99,9 @@ pub(crate) struct OrbitCamera {
     /// other, or an orbit or pan, drew the map, or the sphere it zoomed to, into the
     /// free area or held it there, beside zooming about the pointer.
     held: Option<bool>,
+    /// Whether the view framed itself where the camera is going, rather than the
+    /// hands moving it there or it going back to a pose it had.
+    framed: bool,
 }
 
 /// Where the camera stands, for a move from one stand to another.
@@ -121,12 +127,12 @@ pub(crate) struct Reach {
     pub(crate) near: f32,
     /// The furthest.
     pub(crate) far: f32,
-    /// The middle of everything shown, and half how far it reaches across and up
-    /// the view: the map the wheel out holds in the free area.
-    pub(crate) home: Vec3,
-    pub(crate) extent: Vec2,
-    /// Every sphere shown, by middle and radius: the camera stays outside each.
+    /// Every sphere shown, by middle and radius: the camera stays outside each, and
+    /// they are the map kept in view.
     pub(crate) spheres: Vec<(Vec3, f32)>,
+    /// The module expanded, by index into `spheres`: the map kept in view instead,
+    /// over the free area's middle, and the sphere the wheel zooms to.
+    pub(crate) expanded: Option<usize>,
     /// The view the camera sees through.
     pub(crate) lens: Lens,
 }
@@ -185,8 +191,8 @@ impl Lens {
     }
 }
 
-/// Zooming out, how many times the free area the map is when the wheel starts to
-/// draw it in ([`OrbitCamera::hold_map`]).
+/// Zooming out or turning, how many times the free area the map is when it starts to
+/// be drawn in ([`OrbitCamera::keep_map`]).
 const DRAWN_FROM: f32 = 1.5;
 
 /// How far outside a sphere's surface, as a share of its radius, the camera keeps.
@@ -208,6 +214,10 @@ const NAME_ROOM: f32 = 0.05;
 /// The share of a pan the map's edge must hold back for the pan to count as stopped
 /// there, and say so.
 const HELD_BACK: f32 = 0.25;
+
+/// The least change of distance a wheel turn makes, as a share, not to count as held
+/// at a bound, and say so.
+const BOUND_SLACK: f32 = 1e-3;
 
 /// Angles held near `middle`: yaw and pitch each at most `reach` off it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -244,6 +254,7 @@ impl Default for OrbitCamera {
             bounds: None,
             reach: None,
             held: None,
+            framed: false,
         }
     }
 }
@@ -274,6 +285,7 @@ impl OrbitCamera {
 
     /// Stops wherever it is on its way: a hand on the wheel or a drag takes over.
     fn halt(&mut self) {
+        self.framed = false;
         self.target = self.looking_at;
         self.goal_distance = None;
         self.goal_angles = None;
@@ -319,6 +331,13 @@ impl OrbitCamera {
     pub(crate) fn glide_to(&mut self, target: Vec3, distance: f32) {
         self.target = target;
         self.goal_distance = Some(distance);
+        self.framed = true;
+    }
+
+    /// Whether the view framed itself where the camera is going: no hand has moved it
+    /// since, and it is not going back to a pose it had.
+    pub(crate) fn framed(&self) -> bool {
+        self.framed
     }
 
     /// Moves the point orbited by `offset` at once.
@@ -335,16 +354,16 @@ impl OrbitCamera {
     fn pan_by_hand(&mut self, offset: Vec3) -> Option<&'static str> {
         self.held = None;
         let reach = self.reach.clone()?;
-        let was = self.map_shown(&reach);
+        let was = self.map_shown(&reach).map(|(was, _)| was);
         self.pan(offset);
         let asked = self.target;
-        if let Some((was, _)) = was {
+        if was.is_some() {
             self.keep_map(&reach, was);
         }
         self.back_out();
         let held = asked.distance(self.target) >= offset.length() * HELD_BACK;
         held.then(|| {
-            if self.towards_far(&reach) <= 0.0 {
+            if self.farthest() {
                 "Zoomed all the way out, the map stays in the middle"
             } else {
                 "The edge of the map: it pans no further that way"
@@ -354,66 +373,99 @@ impl OrbitCamera {
 
     /// Zoomed out, how far from the far end the camera is: 1 where the map just fits
     /// the free area, or nearer, 0 at the far end.
-    fn towards_far(&self, reach: &Reach) -> f32 {
-        self.map_seen(reach).map_or(1.0, |(_, _, fits)| {
-            ((reach.far - self.distance) / (reach.far - fits).max(1e-3)).clamp(0.0, 1.0)
-        })
+    fn towards_far(&self, reach: &Reach, size: Vec2) -> f32 {
+        let fits = self.distance * (size / reach.lens.half).max_element();
+        ((reach.far - self.distance) / (reach.far - fits).max(1e-3)).clamp(0.0, 1.0)
     }
 
     /// Where the map shows: how far its middle is off the free area's and half its
-    /// size, across and up, in the view's units, from every sphere's disc; and how
-    /// deep its middle is.
-    fn map_shown(&self, reach: &Reach) -> Option<((Vec2, Vec2), f32)> {
+    /// size, across and up, in the view's units, from its spheres' discs: every one
+    /// shown, or the module expanded.
+    fn map_shown(&self, reach: &Reach) -> Option<(Vec2, Vec2)> {
         let (rotation, eye) = (self.rotation(), self.eye());
-        let (low, high) = reach
-            .spheres
+        let map = match reach.expanded {
+            Some(index) => reach.spheres.get(index..=index)?,
+            None => &reach.spheres[..],
+        };
+        let (low, high) = map
             .iter()
             .filter_map(|&sphere| disc(&reach.lens, rotation, eye, sphere))
             .map(|(at, _, size)| (at - size, at + size))
             .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))?;
-        let (_, depth) = reach.lens.project(rotation, eye, reach.home)?;
-        Some((
-            ((low + high) / 2.0 - reach.lens.centre, (high - low) / 2.0),
-            depth,
-        ))
+        Some(((low + high) / 2.0 - reach.lens.centre, (high - low) / 2.0))
     }
 
-    /// After a pan, with the map's middle `was` off the free area's before it, pans
-    /// back as far as needed for the map to stay inside the free area across or up
-    /// where it fits there, and where it does not, for the free area to stay on the
-    /// map, its edge coming in no further than the free area's middle (by twice
-    /// what it is bigger than the free area, up to that). A map already further off
-    /// than that may come back, but goes no further. Zoomed out, as the wheel out
-    /// holds the map ([`Self::hold_map`]), a map that fits may stray the less from
-    /// the middle the nearer the far end, where it stays in the middle.
-    fn keep_map(&mut self, reach: &Reach, (was, _): (Vec2, Vec2)) {
-        let lens = reach.lens;
-        let towards_far = self.towards_far(reach);
+    /// The one clamp that keeps the map in view, after any move by hand. How far the
+    /// map's middle may be off the free area's, across and up: where it fits, so far
+    /// that it is inside, less the nearer the far end, where it is in the middle;
+    /// where it does not, so far that its edge comes in no further than the free
+    /// area's middle (by twice what it is bigger, up to that); expanded, so far that
+    /// the module covers the middle. Further off than that, after a pan (`was`, where
+    /// it was before the pan) it may come back but goes no further; zoomed or turned,
+    /// it is drawn in as it comes to fit, from [`DRAWN_FROM`] times the free area,
+    /// wholly once it fits. Returns whether it panned.
+    fn keep_map(&mut self, reach: &Reach, was: Option<Vec2>) -> bool {
+        let half = reach.lens.half;
+        let mut panned = false;
         // Nearer spheres move further on screen than the map's middle, so twice.
         for _ in 0..2 {
-            let Some(((off, size), depth)) = self.map_shown(reach) else {
-                return;
+            let Some((off, size)) = self.map_shown(reach) else {
+                break;
             };
-            let room = |size: f32, half: f32, was: f32| {
-                if size <= half {
-                    (pan_room(size, half).max(was.abs())) * towards_far
+            let towards_far = self.towards_far(reach, size);
+            let fits = |size: f32, half: f32| {
+                if reach.expanded.is_some() {
+                    size.max(pan_room(size, half))
+                } else if size <= half {
+                    (half - size) * towards_far
                 } else {
-                    pan_room(size, half).max(was.abs())
+                    pan_room(size, half)
                 }
             };
-            let room = Vec2::new(
-                room(size.x, lens.half.x, was.x),
-                room(size.y, lens.half.y, was.y),
-            );
-            let by = off.clamp(-room, room) - off;
-            if by.length() < 1e-5 {
-                return;
+            let room = Vec2::new(fits(size.x, half.x), fits(size.y, half.y));
+            // A map that fits may stray the less from the middle the nearer the far
+            // end, however far off it was.
+            let fit = |was: f32, size: f32, half: f32| {
+                if reach.expanded.is_none() && size <= half {
+                    was * towards_far
+                } else {
+                    was
+                }
+            };
+            let was = was.map(|w| Vec2::new(fit(w.x, size.x, half.x), fit(w.y, size.y, half.y)));
+            let over = (size / half).max_element();
+            let held = if was.is_some() {
+                0.0
+            } else {
+                ((DRAWN_FROM - over) / (DRAWN_FROM - 1.0)).clamp(0.0, 1.0)
+            };
+            if !self.clamp_to_free(reach.lens, (off, room), was.unwrap_or(off), held) {
+                break;
             }
-            let tan = lens.tan;
-            self.pan(
-                self.rotation() * Vec3::new(-by.x * depth * tan.x, -by.y * depth * tan.y, 0.0),
-            );
+            panned = true;
         }
+        panned
+    }
+
+    /// Pans what shows `off` the free area's middle (in the view's units, at the
+    /// depth of what the camera looks at) to within `room` of it, or where it `was`
+    /// is further off, `held` of the way from there: never further off than it was.
+    /// Returns whether it panned.
+    fn clamp_to_free(
+        &mut self,
+        lens: Lens,
+        (off, room): (Vec2, Vec2),
+        was: Vec2,
+        held: f32,
+    ) -> bool {
+        let room = room + (was.abs() - room).max(Vec2::ZERO) * (1.0 - held);
+        let by = off.clamp(-room, room) - off;
+        if by.length() < 1e-5 {
+            return false;
+        }
+        let (depth, tan) = (self.distance, lens.tan);
+        self.pan(self.rotation() * Vec3::new(-by.x * depth * tan.x, -by.y * depth * tan.y, 0.0));
+        true
     }
 
     /// Which way the camera faces now.
@@ -458,13 +510,13 @@ impl OrbitCamera {
     /// the pointer over none, while the sphere nearest it still shows; out, it goes no
     /// further than the reach's far end, draws the map in as it comes to fit the free
     /// area and holds it inside once it does. It never jumps to a bound from outside
-    /// it.
-    fn zoom(&mut self, factor: f32, toward: Option<Vec3>) {
+    /// it. Returns what stopped it, when a bound held it where it was.
+    fn zoom(&mut self, factor: f32, toward: Option<Vec3>) -> Option<&'static str> {
         self.halt();
         let point = toward.unwrap_or(self.looking_at);
         let Some(reach) = self.reach.clone() else {
             self.scale_about(point, factor);
-            return;
+            return None;
         };
         if factor < 1.0 {
             let aimed = self.aimed(&reach, point);
@@ -474,72 +526,17 @@ impl OrbitCamera {
             if self.keep_aimed(&reach, aimed) {
                 self.held = Some(false);
             }
-            return;
+            return (scale > 1.0 - BOUND_SLACK).then_some("Zoomed in as far as it goes");
         }
         let before = self.distance;
         let distance = (before * factor).min(reach.far.max(before));
-        let was = self.map_seen(&reach);
         self.scale_about(point, distance / before);
-        if let Some(was) = was {
-            self.held = self.held.filter(|&out| out);
-            if self.hold_map(&reach, was, before) {
-                self.held = Some(true);
-            }
+        self.held = self.held.filter(|&out| out);
+        if self.keep_map(&reach, None) {
+            self.held = Some(true);
         }
-    }
-
-    /// Where the map's middle shows, off the free area's middle, in the view's
-    /// units, how deep, and how far from what it looks at the camera would just fit
-    /// the map in the free area.
-    fn map_seen(&self, reach: &Reach) -> Option<(Vec2, f32, f32)> {
-        let lens = reach.lens;
-        let (at, depth) = lens.project(self.rotation(), self.eye(), reach.home)?;
-        let share = reach.extent / (depth * lens.tan) / lens.half;
-        Some((at - lens.centre, depth, self.distance * share.max_element()))
-    }
-
-    /// Zoomed out from `before` to where it is, with the map seen as `was` says
-    /// then, pans just enough that the map's middle is no further off the free
-    /// area's than this: once the map fits the free area, across or up, so far that
-    /// it is inside, and less the nearer the far end, where it is in the middle; as
-    /// it comes to fit, from where it is [`DRAWN_FROM`] times the
-    /// free area, half the free area at first, nothing by the time it fits, but never
-    /// less than as much of how far off it was as the wheel left of the way, so it
-    /// never jumps. Returns whether it panned.
-    fn hold_map(
-        &mut self,
-        reach: &Reach,
-        (off_before, _, fits): (Vec2, f32, f32),
-        before: f32,
-    ) -> bool {
-        let Some((off, depth, _)) = self.map_seen(reach) else {
-            return false;
-        };
-        let lens = reach.lens;
-        let tan = lens.tan;
-        let size = reach.extent / (depth * tan);
-        // Across or up, where it fits, as far as keeps it inside, and less the
-        // nearer the far end, where it is in the middle.
-        let towards_far = self.towards_far(reach);
-        let mut room = (lens.half - size).map(|room| {
-            if room >= 0.0 {
-                room * towards_far
-            } else {
-                f32::INFINITY
-            }
-        });
-        let left = |d: f32| ((fits - d) / (fits - fits / DRAWN_FROM)).clamp(0.0, 1.0);
-        let (was, now) = (left(before), left(self.distance));
-        if now > 0.0 && now < 1.0 {
-            let kept = if was > 0.0 { now / was } else { 0.0 };
-            room = room.min((lens.half * now).max(off_before.abs() * kept));
-        }
-        let by = off.clamp(-room, room) - off;
-        if by == Vec2::ZERO {
-            return false;
-        }
-        self.pan(self.rotation() * Vec3::new(-by.x * depth * tan.x, -by.y * depth * tan.y, 0.0));
-        true
+        (distance < before * (1.0 + BOUND_SLACK))
+            .then_some("Zoomed all the way out: the whole map shows")
     }
 
     /// Scales the whole view by `scale` about `point`.
@@ -548,8 +545,12 @@ impl OrbitCamera {
         self.distance *= scale;
     }
 
-    /// The sphere the wheel zooms towards with the pointer at `point`.
+    /// The sphere the wheel zooms towards with the pointer at `point`: with a module
+    /// expanded, that one.
     fn aimed(&self, reach: &Reach, point: Vec3) -> Option<Aim> {
+        if let Some(index) = reach.expanded {
+            return Some(Aim::Under(index));
+        }
         let (rotation, eye) = (self.rotation(), self.eye());
         let (at, _) = reach.lens.project(rotation, eye, point)?;
         aimed_sphere(reach, rotation, eye, at)
@@ -573,24 +574,19 @@ impl OrbitCamera {
             return false;
         };
         let fill = size.y / smaller_side(&lens);
-        let kept = ((NEAREST_FILL - fill) / (NEAREST_FILL - KEPT_FROM)).clamp(0.0, 1.0);
-        let (low, high) = lens.free(1.0);
-        let (low, high) = (
-            low + size,
-            high - size - Vec2::new(0.0, NAME_ROOM * lens.half.y),
-        );
-        let inside = Vec2::new(
-            at.x.clamp(low.x, high.x.max(low.x)),
-            at.y.clamp(low.y, high.y.max(low.y)),
-        );
-        let by = (inside - at) * (1.0 - kept);
-        if by.length() < 1e-5 {
-            return false;
-        }
-        let tan = lens.tan;
-        self.pan(self.rotation() * Vec3::new(-by.x * depth * tan.x, -by.y * depth * tan.y, 0.0));
+        let held = ((fill - KEPT_FROM) / (NEAREST_FILL - KEPT_FROM)).clamp(0.0, 1.0);
+        // The sphere and the room above it for its name.
+        let name = Vec2::new(0.0, NAME_ROOM * lens.half.y / 2.0);
+        let (off, size) = (at - lens.centre + name, size + name);
+        let room = (lens.half - size).max(Vec2::ZERO);
+        // Its depth, not the middle's, sets how far a pan moves it.
+        let lens = Lens {
+            tan: lens.tan * depth / self.distance,
+            ..lens
+        };
+        let panned = self.clamp_to_free(lens, (off, room), off, held);
         self.back_out();
-        true
+        panned
     }
 
     /// The nearest scale towards `wanted` (below 1) that zooming about `point` may
@@ -628,7 +624,8 @@ impl OrbitCamera {
         self.reach = Some(reach);
     }
 
-    /// Turns by a drag of `delta` pixels, no further than the bounds allow.
+    /// Turns by a drag of `delta` pixels, no further than the bounds allow, keeping
+    /// the map in view.
     fn orbit(&mut self, delta: Vec2) {
         self.halt();
         self.held = None;
@@ -637,6 +634,9 @@ impl OrbitCamera {
         (self.yaw, self.pitch) = self
             .bounds
             .map_or((yaw, pitch), |bounds| bounds.hold((yaw, pitch), self.yaw));
+        if let Some(reach) = self.reach.clone() {
+            self.keep_map(&reach, None);
+        }
         self.back_out();
     }
 
@@ -718,6 +718,7 @@ impl OrbitCamera {
 
     /// Eases back to a pose it had.
     pub(crate) fn return_to(&mut self, pose: Pose) {
+        self.framed = false;
         self.target = pose.target;
         self.goal_distance = Some(pose.distance);
         self.turn_to(pose.angles);
@@ -910,11 +911,12 @@ fn camera_input(
     }
     let mut panned = |camera: &mut OrbitCamera, offset: Vec3| {
         let held = camera.pan_by_hand(offset);
-        if let Some(why) = held.filter(|_| !*stopped) {
-            explorer.say(why);
-        }
+        let new = held.filter(|_| !*stopped);
         *stopped = held.is_some();
+        new
     };
+    // What a bound the hand met says.
+    let mut said = None;
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let ctrl = keys.any_pressed([
         KeyCode::ControlLeft,
@@ -925,21 +927,24 @@ fn camera_input(
     // A trackpad pinch zooms: spread to zoom in.
     let pinch: f32 = pinches.read().map(|p| p.0).sum();
     for (mut camera, transform, view, global) in &mut cameras {
-        // What a pixel of drag moves the view by, at the depth of the point orbited.
-        let pan_scale = camera.distance * 0.0015;
-        let pan =
-            |delta: Vec2| (transform.right() * -delta.x + transform.up() * delta.y) * pan_scale;
-        // Where the pointer is, at the depth of the point orbited.
-        // The window's cursor as it is: the conversion allows for where the viewport
-        // sits in the window itself.
-        let pointer = window.cursor_position().and_then(|cursor| {
-            let ray = view.viewport_to_world(global, cursor).ok()?;
+        // Where a point of the window shows, at the depth of the point orbited: the
+        // conversion allows for where the viewport sits in the window itself.
+        let orbited = camera.looking_at;
+        let at_depth = |at: Vec2| {
+            let ray = view.viewport_to_world(global, at).ok()?;
             let ahead = transform.forward();
             let along = ray.direction.dot(*ahead);
-            (along.abs() > 1e-4).then(|| {
-                ray.origin + *ray.direction * ((camera.looking_at - ray.origin).dot(*ahead) / along)
-            })
-        });
+            (along.abs() > 1e-4)
+                .then(|| ray.origin + *ray.direction * ((orbited - ray.origin).dot(*ahead) / along))
+        };
+        let pointer = window.cursor_position().and_then(at_depth);
+        // A pan follows the hand: what lay under the pointer, at the depth of the
+        // point orbited, stays under it.
+        let middle = view.logical_viewport_rect().map(|r| r.center());
+        let pan = |delta: Vec2| {
+            let at = window.cursor_position().or(middle)?;
+            Some(at_depth(at - delta)? - at_depth(at)?)
+        };
         let mut zoom = 1.0 - pinch * 1.5;
         match scroll.unit {
             // A mouse wheel zooms.
@@ -949,8 +954,9 @@ fn camera_input(
                 if ctrl {
                     zoom *= 1.0 - scroll.delta.y * 0.0025;
                 } else if shift {
-                    let offset = pan(scroll.delta);
-                    panned(&mut camera, offset);
+                    if let Some(offset) = pan(scroll.delta) {
+                        said = said.or(panned(&mut camera, offset));
+                    }
                 } else {
                     camera.orbit(scroll.delta);
                 }
@@ -958,7 +964,7 @@ fn camera_input(
             MouseScrollUnit::Pixel => {}
         }
         if (zoom - 1.0).abs() > f32::EPSILON {
-            camera.zoom(zoom.clamp(0.5, 2.0), pointer);
+            said = said.or(camera.zoom(zoom.clamp(0.5, 2.0), pointer));
         }
         if motion.delta == Vec2::ZERO {
             continue;
@@ -967,11 +973,15 @@ fn camera_input(
         let panning = buttons.pressed(MouseButton::Right)
             || shift && buttons.any_pressed([MouseButton::Left, MouseButton::Middle]);
         if panning {
-            let offset = pan(motion.delta);
-            panned(&mut camera, offset);
+            if let Some(offset) = pan(motion.delta) {
+                said = said.or(panned(&mut camera, offset));
+            }
         } else if orbiting {
             camera.orbit(motion.delta);
         }
+    }
+    if let Some(why) = said {
+        explorer.say(why);
     }
 }
 
@@ -1031,9 +1041,8 @@ mod tests {
         Reach {
             near,
             far,
-            home: Vec3::ZERO,
-            extent: Vec2::new(8.0, 5.0),
             spheres,
+            expanded: None,
             lens: Lens::whole(std::f32::consts::FRAC_PI_4, 1.6),
         }
     }
@@ -1104,14 +1113,14 @@ mod tests {
             .into();
         let seen = |camera: &OrbitCamera| {
             let reach = camera.reach.as_ref().unwrap();
-            camera.map_shown(reach).unwrap().0
+            camera.map_shown(reach).unwrap()
         };
         // From 60 away it fits the view: dragged as far as its edge meets the view's,
         // less the nearer the far end.
         let mut camera = head_on(Vec3::ZERO, 60.0, reach(0.1, 100.0, spheres.clone()));
         let stopped = camera.pan_by_hand(Vec3::new(500.0, 300.0, 0.0));
         assert!(stopped.is_some(), "the edge stops it, and says so");
-        let towards_far = camera.towards_far(camera.reach.as_ref().unwrap());
+        let towards_far = camera.towards_far(camera.reach.as_ref().unwrap(), seen(&camera).1);
         assert!((0.1..0.9).contains(&towards_far), "{towards_far}");
         let (at, size) = seen(&camera);
         assert!(
@@ -1167,7 +1176,11 @@ mod tests {
 
     #[test]
     fn zoomed_out_the_map_comes_into_the_free_area_and_stays() {
-        let mut camera = head_on(Vec3::new(2.0, 1.0, 0.0), 5.0, reach(1.0, 100.0, Vec::new()));
+        // The map: four spheres, 16 by 10 about the middle.
+        let spheres: Vec<(Vec3, f32)> = [(-6.5, -3.5), (6.5, -3.5), (-6.5, 3.5), (6.5, 3.5)]
+            .map(|(x, y)| (Vec3::new(x, y, 0.0), 1.5))
+            .into();
+        let mut camera = head_on(Vec3::new(2.0, 1.0, 0.0), 5.0, reach(1.0, 100.0, spheres));
         let pointer = Vec3::new(3.0, 1.5, 0.0);
         camera.zoom(1.1, Some(pointer));
         assert!(
@@ -1175,13 +1188,9 @@ mod tests {
             "close in, out about the pointer: {}",
             camera.looking_at
         );
-        let lens = camera.reach.as_ref().unwrap().lens;
         for _ in 0..60 {
             camera.zoom(1.1, Some(pointer));
-            let (at, depth) = lens
-                .project(camera.rotation(), camera.eye(), Vec3::ZERO)
-                .unwrap();
-            let size = Vec2::new(8.0, 5.0) / (depth * lens.tan);
+            let (at, size) = camera.map_shown(camera.reach.as_ref().unwrap()).unwrap();
             if size.x < 1.0 && size.y < 1.0 {
                 assert!(
                     (at.abs() + size).max_element() <= 1.0 + 1e-4,
@@ -1190,6 +1199,15 @@ mod tests {
             }
         }
         assert!((camera.distance - 100.0).abs() < 1e-3);
+        let (at, _) = camera.map_shown(camera.reach.as_ref().unwrap()).unwrap();
+        assert!(
+            at.length() < 1e-3,
+            "as far out as it goes, in the middle: {at}"
+        );
+        // Turned there, it stays in the middle.
+        camera.orbit(Vec2::new(40.0, 20.0));
+        let (at, _) = camera.map_shown(camera.reach.as_ref().unwrap()).unwrap();
+        assert!(at.length() < 1e-3, "turned, still in the middle: {at}");
     }
 
     #[test]

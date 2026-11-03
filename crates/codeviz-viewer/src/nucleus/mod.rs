@@ -531,6 +531,11 @@ impl Nucleus {
         self.cursor
     }
 
+    /// The function set aside in a journey.
+    pub(crate) fn aside(&self) -> Option<usize> {
+        self.aside
+    }
+
     fn is_cursor(&self, tile: usize) -> bool {
         self.cursor == Some(tile)
     }
@@ -800,7 +805,8 @@ impl Nucleus {
             .collect()
     }
 
-    fn balls_of<'a>(&'a self, modules: &'a [usize]) -> impl Iterator<Item = &'a Ball> {
+    /// `modules`' spheres, as they will be once a re-centering ends.
+    pub(crate) fn balls_of<'a>(&'a self, modules: &'a [usize]) -> impl Iterator<Item = &'a Ball> {
         modules.iter().filter_map(|&c| self.now.balls.get(c))
     }
 
