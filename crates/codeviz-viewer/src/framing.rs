@@ -12,7 +12,7 @@ use crate::{
     disclosure::Disclose,
     explorer::{Explorer, Return},
     nucleus::{BROWSE_REACH, Nucleus, VIEW, view_rotation},
-    ui,
+    sizes, ui,
 };
 
 /// The graph's view in the window, in points: the camera's viewport, from under the
@@ -30,6 +30,22 @@ struct Views {
     named: Vec2,
     /// The share that leaves [`DOT_ROOM`] round its edges, for a dot to show whole.
     dots: Vec2,
+    /// The free area's width and height, in points.
+    size: Vec2,
+}
+
+impl Views {
+    /// The free area `free`, as the camera sees it through `lens`.
+    fn of(lens: Lens, free: egui::Rect) -> Self {
+        let size = Vec2::new(free.width(), free.height());
+        let short_of = |room: Vec2| (Vec2::ONE - room * 2.0 / size).max(Vec2::splat(0.5));
+        Self {
+            free: lens,
+            named: short_of(Vec2::new(NAME_ROOM.x, NAME_ROOM.y)),
+            dots: short_of(Vec2::splat(DOT_ROOM)),
+            size,
+        }
+    }
 }
 
 /// What the nucleus was last framed for: whether it was browsed; in a journey, where
@@ -52,9 +68,9 @@ pub(crate) struct Framed {
     aside: Option<usize>,
 }
 
-/// How much of the free area the expanded module's diameter fills, of its smaller
-/// side.
-const FILL: f32 = 0.75;
+/// A journey is never framed nearer than its start's module filling this much of the
+/// free area's smaller side.
+const START_FILL: f32 = 0.75;
 
 /// Zoomed all the way out, how much further back the camera is than where R puts
 /// it: everything shown then takes a little over half the free area.
@@ -126,18 +142,21 @@ pub(crate) fn frame(
     if whole && explorer.nucleus().expanded() {
         explorer.collapse();
     }
+    if focus {
+        explorer.frame_focus();
+    }
     let returning = explorer.bypass_change_detection().take_return_pose();
     let explorer = &*explorer;
     let free = ui::areas(view, explorer).0;
     let Some(lens) = lens(projection, view, free) else {
         return;
     };
-    let size = Vec2::new(free.width(), free.height());
-    let short_of = |room: Vec2| (Vec2::ONE - room * 2.0 / size).max(Vec2::splat(0.5));
-    let views = Views {
-        free: lens,
-        named: short_of(Vec2::new(NAME_ROOM.x, NAME_ROOM.y)),
-        dots: short_of(Vec2::splat(DOT_ROOM)),
+    let views = Views::of(lens, free);
+    // How long each function's name is, which sets how big a module expands.
+    let chars = |tile: usize| {
+        explorer
+            .tile_unit(tile)
+            .map_or(0, |unit| explorer.function_name(unit).chars().count())
     };
     let nucleus = explorer.nucleus();
     let browsing = nucleus.browsing();
@@ -187,7 +206,7 @@ pub(crate) fn frame(
     if focus {
         let rotation = camera.aim_rotation();
         if nucleus.expanded() {
-            fill(nucleus, cursor, &mut camera, rotation, lens);
+            fill(nucleus, cursor, &mut camera, rotation, (views, &chars));
         } else {
             let current = explorer.current().and_then(resting);
             fit(nucleus, current, &mut camera, rotation, views);
@@ -212,7 +231,7 @@ pub(crate) fn frame(
             (cursor, aside),
             &came,
             &mut camera,
-            views,
+            (views, &chars),
         );
     }
 
@@ -265,7 +284,7 @@ fn follow_view(
     (cursor, aside): (Option<Vec3>, Option<Vec3>),
     came: &[usize],
     camera: &mut OrbitCamera,
-    views: Views,
+    (views, chars): (Views, &dyn Fn(usize) -> usize),
 ) {
     let lens = views.free;
     // Entering or leaving a journey, expanding or shrinking back, turns to the usual
@@ -286,7 +305,8 @@ fn follow_view(
         if now.expanded.is_some() {
             // Expanding blows the module up to fill the view; shrinking back returns
             // to where the camera stood before (the explorer's pose).
-            fill(nucleus, cursor.filter(|_| !opening), camera, rotation, lens);
+            let cursor = cursor.filter(|_| !opening);
+            fill(nucleus, cursor, camera, rotation, (views, chars));
         } else {
             fit(nucleus, cursor, camera, rotation, views);
         }
@@ -350,7 +370,8 @@ fn reveal(
 
 /// Glides to frame, turned to `rotation`, `also` (the journey's cursor, or what the
 /// view is on) and in a journey every function it lights, with room for their names,
-/// so they fill the free area, but never nearer than the start's module filling it;
+/// so they fill the free area, but never nearer than the start's module filling
+/// [`START_FILL`] of it;
 /// browsing, the selection and every module it touches, or with none, the whole
 /// codebase.
 fn fit(
@@ -376,8 +397,8 @@ fn fit(
 /// In a journey, every function it lights, `also` and the spheres they lie in,
 /// whole, each with the share of the free area it may use, leaving room for names
 /// by the functions and above the spheres; and with them, when they lie so close
-/// that framing them alone would come nearer, the start's module filling [`FILL`]
-/// of it.
+/// that framing them alone would come nearer, the start's module filling
+/// [`START_FILL`] of it.
 fn journey_points(
     nucleus: &Nucleus,
     also: &[Option<Vec3>],
@@ -392,7 +413,7 @@ fn journey_points(
     let mut points: Vec<(Vec3, Vec2)> = lit.into_iter().map(|p| (p, views.named)).collect();
     let rims = nucleus.rims(rotation, &modules);
     points.extend(rims.into_iter().map(|p| (p, views.dots)));
-    let module = within(&nucleus.nucleus_points(rotation), FILL);
+    let module = within(&nucleus.nucleus_points(rotation), START_FILL);
     let least = place(&module, rotation, views.free).map_or(0.0, |(_, d)| d);
     if place(&points, rotation, views.free).is_none_or(|(_, d)| d < least) {
         points.extend(module);
@@ -400,22 +421,58 @@ fn journey_points(
     points
 }
 
-/// Expanded, glides to the expanded module from just far enough back that its
-/// diameter fills [`FILL`] of the free area, turned to `rotation`, and `also` (the
-/// cursor) shows with it.
+/// Expanded, glides to the expanded module, turned to `rotation`, from just far
+/// enough back that its diameter takes the share of the free area's smaller side
+/// its functions need to sit comfortably, their names `chars` long
+/// ([`sizes::expanded_share`]), and `also` (the cursor) shows with it. A small module
+/// in a journey comes no nearer than keeps the journey's modules beside it, those it
+/// calls or is called from, on screen with their names.
 fn fill(
     nucleus: &Nucleus,
     also: Option<Vec3>,
     camera: &mut OrbitCamera,
     rotation: Quat,
-    lens: Lens,
+    (views, chars): (Views, &dyn Fn(usize) -> usize),
 ) {
-    let mut points = nucleus.nucleus_points(rotation);
-    if points.is_empty() {
+    let (Some(module), Some((radius, dots))) =
+        (nucleus.expanded_module(), nucleus.expanded_layout())
+    else {
         return;
+    };
+    // Where its functions would show, in points, at the least share, and so the
+    // share they need.
+    let side = views.size.min_element();
+    let least = sizes::EXPANDED_SHARE.0;
+    let scale = least * side / (2.0 * radius).max(f32::EPSILON);
+    let shown: Vec<(Vec2, usize)> = dots.iter().map(|&(t, at)| (at * scale, chars(t))).collect();
+    let share = sizes::expanded_share(least, sizes::comfort(&shown));
+    let share = Vec2::splat(share * side) / views.size;
+    let alone: Vec<(Vec3, Vec2)> = nucleus
+        .nucleus_points(rotation)
+        .into_iter()
+        .chain(also)
+        .map(|p| (p, share))
+        .collect();
+    let Some((mut middle, mut distance)) = place(&alone, rotation, views.free) else {
+        return;
+    };
+    // Small in a journey: no nearer than that, and far enough back to show the
+    // modules beside it, whole and named, all about their middle.
+    if !nucleus.browsing() && nucleus.count(module) <= sizes::SMALL_MODULE {
+        let mut modules = nucleus.neighbours(module);
+        modules.push(module);
+        let rims = nucleus.rims(rotation, &modules).into_iter();
+        let tops = nucleus.tops(rotation, &modules).into_iter();
+        let together: Vec<(Vec3, Vec2)> = rims
+            .map(|p| (p, views.dots))
+            .chain(tops.map(|p| (p, views.named)))
+            .chain(also.map(|p| (p, views.named)))
+            .collect();
+        if let Some((around, needed)) = place(&together, rotation, views.free) {
+            (middle, distance) = (around, distance.max(needed));
+        }
     }
-    points.extend(also);
-    glide(&within(&points, FILL), camera, rotation, lens);
+    camera.glide_to(middle - views.free.shift(rotation) * distance, distance);
 }
 
 /// Glides to take in everything shown from where the camera turns to.

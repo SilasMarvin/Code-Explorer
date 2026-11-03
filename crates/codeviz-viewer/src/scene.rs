@@ -153,10 +153,8 @@ fn keyboard(
         explorer.toggle_outside();
     }
     // Enter opens a journey at what the view is on.
-    if keys.just_pressed(KeyCode::Enter)
-        && let Some(tile) = explorer.current()
-    {
-        explorer.open_at(tile);
+    if keys.just_pressed(KeyCode::Enter) {
+        explorer.open_current();
     }
     if keys.just_pressed(KeyCode::KeyH) {
         help.0 = !help.0;

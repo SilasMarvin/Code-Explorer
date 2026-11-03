@@ -350,6 +350,11 @@ struct Drive {
     moved_at: Option<Duration>,
     /// Frames of a transition saved so far, by the `frames` step under way.
     filmed: u32,
+    /// How many steps that may move the view have run since the session opened.
+    moves: usize,
+    /// For a pan under way, the point the camera looked at as it began, in the
+    /// world, and where it showed then: how far the view moves.
+    pan_from: Option<(Vec3, Vec2)>,
 }
 
 /// The messages a window sends for a mouse and a keyboard.
@@ -1082,6 +1087,10 @@ impl View<'_, '_> {
         self.cameras.iter().any(|(_, _, orbit)| orbit.held_map())
     }
 
+    pub(crate) fn orbit_farthest(&self) -> bool {
+        self.cameras.iter().any(|(_, _, orbit)| orbit.farthest())
+    }
+
     fn camera_easing(&self) -> bool {
         self.cameras.iter().any(|(_, _, orbit)| orbit.easing())
     }
@@ -1348,6 +1357,15 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
         entry["settled_ms"] = json!(settled.as_millis());
         entry["waited_ms"] = json!(waited.as_millis());
     }
+    // A pan says how far the view moved, against how far the drag went.
+    if let (Some((world, was)), Step::Pan(asked)) =
+        (drive.pan_from.take(), &drive.lines[index].step)
+    {
+        let by = view.to_screen(world).map_or(Vec2::ZERO, |now| now - was);
+        entry["view_moved"] = json!(by.length() >= 1.0);
+        entry["moved_by"] = json!([by.x.round(), by.y.round()]);
+        entry["dragged_by"] = json!([asked.x.round(), asked.y.round()]);
+    }
     // Shrinking back returns the camera to where it stood before the first expand,
     // where the hands may have put it; R and F frame it anew.
     let expanded = view.explorer.nucleus().expanded();
@@ -1388,6 +1406,7 @@ fn since(drive: &Drive) -> Since {
         kinds: drive.kinds.clone(),
         by_hand: drive.by_hand,
         playing: false,
+        opening: drive.moves == 0,
     }
 }
 
@@ -1412,6 +1431,14 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
             return;
         }
         drive.kinds.push(step.kind());
+        drive.moves += usize::from(step.kind() != Kind::Still);
+        drive.pan_from = match step {
+            Step::Pan(_) => view.orbit_pose().and_then(|pose| {
+                let looked_at = pose.parts().0;
+                Some((looked_at, view.to_screen(looked_at)?))
+            }),
+            _ => None,
+        };
         drive.began = (view.explorer.nucleus().expanded(), drive.by_hand);
         if let Some(hand) = by_hand(step.kind()) {
             drive.by_hand = hand;
@@ -1788,6 +1815,21 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
             }
         }
         Expect::Drawn(unit) => view.find(drive.names.unit(unit)?).map(|_| ()),
+        Expect::Notice(words) => {
+            let words = words.to_lowercase();
+            let scene = scene_now(drive, view);
+            let texts: Vec<&str> = scene["text"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t["text"].as_str())
+                .collect();
+            if texts.iter().any(|t| t.to_lowercase().contains(&words)) {
+                Ok(())
+            } else {
+                Err(format!("no notice says `{words}`"))
+            }
+        }
         Expect::CameraSameAs(label) => {
             let Some((_, then)) = drive.cameras.iter().rev().find(|(l, _)| l == label) else {
                 return Err(format!("no snapshot `{label}` was taken"));
@@ -1818,7 +1860,7 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
             let still = Since {
                 kinds,
                 by_hand: drive.by_hand,
-                playing: false,
+                ..Since::default()
             };
             let result = checks::run(&scene_now(drive, view), Some(before), &still);
             verdict_of("nothing-moved", &result["nothing-moved"], true)

@@ -674,10 +674,18 @@ impl Nucleus {
             .collect()
     }
 
-    /// The modules a journey runs through, by cluster, once a re-centering ends.
+    /// The modules a journey runs through, by cluster, once a re-centering ends, and
+    /// the one holding the function set aside, wherever it is drawn: what framing it
+    /// shows whole.
     pub(crate) fn open_modules(&self) -> Vec<usize> {
+        let aside = self
+            .aside
+            .filter(|_| !self.browse)
+            .and_then(|tile| self.module_of(tile));
         (0..self.now.balls.len())
-            .filter(|&c| matches!(self.now.balls[c].body, Body::Nucleus | Body::Open))
+            .filter(|&c| {
+                matches!(self.now.balls[c].body, Body::Nucleus | Body::Open) || Some(c) == aside
+            })
             .collect()
     }
 
