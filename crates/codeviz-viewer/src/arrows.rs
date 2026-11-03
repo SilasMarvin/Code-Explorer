@@ -51,6 +51,14 @@ const NAME_CLEAR: f32 = 1.0;
 const TURN_CLEAR: f32 = 8.0;
 /// The most turns a line takes round what is in its way.
 const TURNS: usize = 3;
+/// A line threaded across the screen: the grid's step and how far round its ends it
+/// reaches, in points; and what crossing a lit dot, a lit name, or a plain one costs,
+/// against going a step further.
+const CELL: f32 = 6.0;
+const GRID_ROOM: f32 = 120.0;
+const DOT_TOLL: f32 = 400.0;
+const NAME_TOLL: f32 = 40.0;
+const PLAIN_TOLL: f32 = 3.0;
 /// How far each of the two lines between the same two ends moves to its right when
 /// calls go both ways, in points: far enough that their heads, side by side, do not
 /// touch, so neither hides the other.
@@ -111,6 +119,8 @@ struct Screen<'a> {
     dots: Vec<(usize, egui::Pos2, f32)>,
     /// The plain functions of the module expanded, which nothing lights.
     plain: std::collections::HashSet<usize>,
+    /// Where names go: the graph less a docked panel.
+    area: egui::Rect,
     /// The names of the dots drawn full size: each pill, by tile, and whether it
     /// names a plain function of the module expanded, which nothing lights.
     names: Vec<(egui::Rect, usize, bool)>,
@@ -130,6 +140,7 @@ impl<'a> Screen<'a> {
             spheres: Vec::new(),
             dots: Vec::new(),
             plain: std::collections::HashSet::new(),
+            area: names.area,
             names: Vec::new(),
         };
         let nucleus = explorer.nucleus();
@@ -281,7 +292,11 @@ impl<'a> Screen<'a> {
         // Where no bow clears a dot or a lit name, a line turns round each in its
         // way in turn, smoothly.
         if best.0 >= 10.0 {
-            for path in detours((a, ra), (b, rb), &obstacles) {
+            let threaded = threaded((a, ra), (b, rb), &obstacles, self.area);
+            for path in detours((a, ra), (b, rb), &obstacles)
+                .into_iter()
+                .chain(threaded)
+            {
                 let hits = blocked(&path);
                 tries += 1;
                 if cost(hits, tries) < best.0 {
@@ -508,6 +523,202 @@ fn detours(from: End, to: End, obstacles: &Obstacles) -> Vec<Vec<egui::Pos2>> {
                 .filter_map(|rounds| through_turns(from, turns, to, rounds))
         })
         .collect()
+}
+
+/// The screen near a call cut into [`CELL`]-point squares, each with what crossing
+/// it costs beyond the step: a lit dot most, a lit name less, a plain dot or name
+/// little.
+struct Toll {
+    region: egui::Rect,
+    cols: usize,
+    rows: usize,
+    costs: Vec<f32>,
+}
+
+impl Toll {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a grid's size on screen"
+    )]
+    fn new(region: egui::Rect, obstacles: &Obstacles) -> Self {
+        let cols = (region.width() / CELL).ceil().max(1.0) as usize;
+        let rows = (region.height() / CELL).ceil().max(1.0) as usize;
+        let mut grid = Self {
+            region,
+            cols,
+            rows,
+            costs: vec![0.0; cols * rows],
+        };
+        for i in 0..cols * rows {
+            let at = grid.middle(i);
+            let dots = obstacles
+                .dots
+                .iter()
+                .filter(|&&(dot, radius, _)| at.distance(dot) < radius + CELL / 2.0)
+                .map(|&(.., plain)| if plain { PLAIN_TOLL } else { DOT_TOLL });
+            let names = obstacles
+                .names
+                .iter()
+                .filter(|&&(pill, _)| pill.expand(CELL / 2.0).contains(at))
+                .map(|&(_, plain)| if plain { PLAIN_TOLL } else { NAME_TOLL });
+            grid.costs[i] = dots.chain(names).sum();
+        }
+        grid
+    }
+
+    #[expect(clippy::cast_precision_loss, reason = "a grid index")]
+    fn middle(&self, i: usize) -> egui::Pos2 {
+        self.region.min
+            + egui::vec2((i % self.cols) as f32 + 0.5, (i / self.cols) as f32 + 0.5) * CELL
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a point on the grid"
+    )]
+    fn cell(&self, at: egui::Pos2) -> usize {
+        let local = (at - self.region.min) / CELL;
+        (local.y.max(0.0) as usize).min(self.rows - 1) * self.cols
+            + (local.x.max(0.0) as usize).min(self.cols - 1)
+    }
+
+    /// The cheapest way from `start` to `end`, cell by cell, the start first.
+    fn cheapest(&self, start: usize, end: usize) -> Option<Vec<usize>> {
+        let goal = self.middle(end);
+        let mut spent = vec![f32::INFINITY; self.costs.len()];
+        let mut came = vec![usize::MAX; self.costs.len()];
+        let mut queue = std::collections::BinaryHeap::new();
+        spent[start] = 0.0;
+        // By what is spent so far and the straight way left, in tenths of a point.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a cost of a few thousand points, never below nothing"
+        )]
+        let key = |cost: f32| std::cmp::Reverse((cost.max(0.0) * 10.0) as u64);
+        queue.push((key(0.0), start));
+        while let Some((_, at)) = queue.pop() {
+            if at == end {
+                break;
+            }
+            let (x, y) = (at % self.cols, at / self.cols);
+            for (dx, dy) in [
+                (-1, 0),
+                (1, 0),
+                (0, -1),
+                (0, 1),
+                (-1, -1),
+                (1, -1),
+                (-1, 1),
+                (1, 1),
+            ] {
+                let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy))
+                else {
+                    continue;
+                };
+                if nx >= self.cols || ny >= self.rows {
+                    continue;
+                }
+                let next = ny * self.cols + nx;
+                let diagonal = dx != 0 && dy != 0;
+                let step = if diagonal {
+                    std::f32::consts::SQRT_2
+                } else {
+                    1.0
+                } * CELL;
+                let cost =
+                    spent[at] + step * (1.0 + f32::midpoint(self.costs[at], self.costs[next]));
+                if cost < spent[next] {
+                    spent[next] = cost;
+                    came[next] = at;
+                    queue.push((key(cost + self.middle(next).distance(goal)), next));
+                }
+            }
+        }
+        if came[end] == usize::MAX && end != start {
+            return None;
+        }
+        let mut cells = vec![end];
+        while let Some(&last) = cells.last() {
+            if last == start || came[last] == usize::MAX {
+                break;
+            }
+            cells.push(came[last]);
+        }
+        cells.reverse();
+        Some(cells)
+    }
+}
+
+/// A line from one dot to another found on a grid over the screen near them: the
+/// cheapest way across [`Toll`]'s squares, cut back to its turns and those rounded,
+/// each way rounded less or not at all. Where the far dot is off the grid, it heads
+/// for where the straight line leaves it.
+fn threaded(from: End, to: End, obstacles: &Obstacles, area: egui::Rect) -> Vec<Vec<egui::Pos2>> {
+    let region = egui::Rect::from_two_pos(from.0, to.0)
+        .expand(GRID_ROOM)
+        .intersect(area.expand(GRID_ROOM));
+    if !region.contains(from.0) {
+        return Vec::new();
+    }
+    let goal = if region.contains(to.0) {
+        to.0
+    } else {
+        leaves(region, &[from.0, to.0]).map_or(to.0, |(edge, ..)| edge)
+    };
+    let grid = Toll::new(region, obstacles);
+    let Some(cells) = grid.cheapest(grid.cell(from.0), grid.cell(goal)) else {
+        return Vec::new();
+    };
+    let mut points: Vec<egui::Pos2> = cells.iter().map(|&i| grid.middle(i)).collect();
+    points[0] = from.0;
+    let last = points.len() - 1;
+    points[last] = goal;
+    let mut turns = simplify(&points, CELL / 2.0);
+    turns.remove(0);
+    if goal == to.0 {
+        turns.pop();
+    }
+    if turns.is_empty() {
+        return Vec::new();
+    }
+    (0..=2)
+        .rev()
+        .filter_map(|rounds| through_turns(from, &turns, to, rounds))
+        .collect()
+}
+
+/// `points` cut back to the corners that stray more than `slack` from a straight
+/// line between those kept: the first and last kept.
+fn simplify(points: &[egui::Pos2], slack: f32) -> Vec<egui::Pos2> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    let (first, last) = (points[0], points[points.len() - 1]);
+    let along = last - first;
+    let (far, at) = points
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(points.len() - 2)
+        .map(|(i, p)| {
+            let t = ((*p - first).dot(along) / along.length_sq().max(f32::EPSILON)).clamp(0.0, 1.0);
+            ((first + along * t).distance(*p), i)
+        })
+        .fold(
+            (0.0, 0),
+            |best, next| if next.0 > best.0 { next } else { best },
+        );
+    if far <= slack {
+        return vec![first, last];
+    }
+    let mut left = simplify(&points[..=at], slack);
+    let right = simplify(&points[at..], slack);
+    left.pop();
+    left.extend(right);
+    left
 }
 
 /// Whether the line from `a` to `b` runs through `rect`.
@@ -845,7 +1056,7 @@ fn exit_label(
     let along = egui::vec2(-inward.y, inward.x);
     let into = f32::midpoint(size.x * inward.x.abs(), size.y * inward.y.abs()) + EXIT_IN;
     let taken = |rect: egui::Rect| {
-        names.pills().any(|(pill, _)| pill.intersects(rect))
+        names.every_pill().any(|pill| pill.intersects(rect))
             || marks.exits.iter().any(|e| e.rect.intersects(rect))
             || screen
                 .dots

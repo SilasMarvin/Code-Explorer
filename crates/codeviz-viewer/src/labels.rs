@@ -52,6 +52,8 @@ const PLAIN_SPHERE: f32 = 40.0;
 const PLAIN_APART: f32 = 12.0;
 /// How far the note on names left out sits above the hint at the keys, in points.
 const NOTE_ABOVE: f32 = 20.0;
+/// What a name says of a call that can fail.
+const FAILS: &str = "can fail";
 /// A character's width against its font size, to see whether a plain name could fit
 /// before laying it out.
 const CHAR_WIDTH: f32 = 0.5;
@@ -955,7 +957,7 @@ impl<'a> Naming<'a> {
         });
         let marks: Vec<String> = when
             .into_iter()
-            .chain(disclosed.tile_fails(tile).then(|| "can fail".to_owned()))
+            .chain(disclosed.tile_fails(tile).then(|| FAILS.to_owned()))
             .collect();
         let said = [again, (!marks.is_empty()).then(|| marks.join(" · "))]
             .into_iter()
@@ -1152,19 +1154,18 @@ impl<'a> Naming<'a> {
             // less leaves it where it is.
             let (galley, size) = self.pill(painter, Named::Node(tile), job.clone());
             let bare = bare();
-            let numbered = self
-                .nucleus
-                .journey_level(tile)
-                .filter(|_| number.is_none())
-                .map(|level| {
-                    let digits = vec!["0"; level as usize].join(".");
-                    let lead = (format!(" {digits} "), ON_FILL, Some(PILL));
-                    pill_of(
-                        painter,
-                        label_job(Some(lead), &name, None, PLAIN_TEXT, text::BODY),
-                    )
-                    .1
-                });
+            let numbered = self.nucleus.journey_level(tile).map(|level| {
+                let digits = vec!["0"; level as usize].join(".");
+                let lead = (format!(" {digits} "), ON_FILL, Some(PILL));
+                // And room for saying it can fail, which one depth says and another
+                // not, so the side a name takes holds at every depth.
+                let fails = Some(FAILS.to_owned());
+                pill_of(
+                    painter,
+                    label_job(Some(lead), &name, fails, PLAIN_TEXT, text::BODY),
+                )
+                .1
+            });
             let found = numbered
                 .map(|room| room.max(size))
                 .and_then(|room| placer.find_by_dots(tile, node, reach, (room, bare), keep))
@@ -1314,6 +1315,11 @@ impl GraphNames {
             Named::Node(tile) => Some((l.pill, tile)),
             Named::Group(_) => None,
         })
+    }
+
+    /// Every name's pill, a module's too.
+    pub(crate) fn every_pill(&self) -> impl Iterator<Item = egui::Rect> + '_ {
+        self.labels.iter().map(|l| l.pill)
     }
 
     /// Paints the names, the last on top, and the note on those left out.

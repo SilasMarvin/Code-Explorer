@@ -2370,8 +2370,8 @@ fn call_colours(s: &Snap, cursor: Option<&str>, offenders: &mut Vec<(f32, Value)
     }
 }
 
-/// No call's line runs through a lit dot or a lit function's name but its own ends':
-/// it goes round them. The faint calls among an expanded module's functions are left
+/// No call's line runs through a lit dot, or a lit function's name in a sphere it
+/// leaves or enters, but its own ends': it goes round them. The faint calls among an expanded module's functions are left
 /// out, and faint unnamed dots; and an expanded module's plain functions, dots and
 /// names, which in a crowded one no line could keep off (it breaks round a dot); and
 /// browsing, names, which sit where the map's dots leave room.
@@ -2413,7 +2413,13 @@ fn arrows_clear(s: &Snap) -> Value {
                 offenders.push((n.radius - near, offender));
             }
         }
-        for l in names.iter().filter(|l| !own(&l.unit)) {
+        // Names in the spheres it leaves and enters: where its ends' neighbours are
+        // laid out round it.
+        let module =
+            |unit: &Option<String>| unit.as_deref().and_then(|u| s.node(u)?.module.clone());
+        let ends = [module(&a.from_unit), module(&a.to_unit)];
+        let near = |l: &&&Label| ends.contains(&module(&l.unit));
+        for l in names.iter().filter(|l| !own(&l.unit)).filter(near) {
             let pill = rect(l.rect).shrink(ARROW_SLACK);
             if pieces.iter().any(|&(p, q)| crosses_rect(p, q, pill)) {
                 let offender = json!({ "arrow": [a.from, a.to], "through": "name", "label": l.text, "rect": rect_json(l.rect) });

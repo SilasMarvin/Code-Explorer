@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use codeviz_layout::atlas;
 
-use super::{inside::lattice, view_rotation};
+use super::{inside::spaced, view_rotation};
 use crate::sizes::Dot;
 
 /// How a journey is framed, roughly: the half of the free area's height its ring of
@@ -25,8 +25,12 @@ const NAME_CHAR: f32 = 6.5;
 const NAME_PADDED: f32 = 34.0;
 const NAME_GAP: f32 = 4.0;
 const CLEAR: f32 = 3.0;
-/// Characters in a name the journey has none for.
+/// Characters in a name the journey has none for; and kept for what a name says
+/// after it (that it can fail, when it runs), and the start's, that it is the start
+/// and where the journey runs it again.
 const SOME_NAME: usize = 12;
+const NOTE: usize = 8;
+const START_NOTE: usize = 22;
 /// How many places a sphere offers for each function it lays out, at least; and how
 /// much further apart along a row than between rows, as names run along.
 const PLACES_EACH: usize = 4;
@@ -37,7 +41,8 @@ const ROW_WIDE: f32 = 2.0;
 /// sphere's middle.
 const THROUGH_DOT: f32 = 10.0;
 const THROUGH_NAME: f32 = 3.0;
-const OVER: f32 = 4.0;
+const OVER: f32 = 30.0;
+const UNDER_START: f32 = 1000.0;
 const LEFT: f32 = 0.1;
 const FAR: f32 = 0.05;
 /// How much a place costs for each function already in its sphere near it, at most,
@@ -127,6 +132,8 @@ struct Board<'a> {
     per_point: f32,
     chars: &'a dyn Fn(usize) -> usize,
     calls: &'a [(usize, usize)],
+    /// The journey's start, whose name says more.
+    start: Option<usize>,
     at: HashMap<usize, Vec2>,
     names: Vec<(usize, Box2)>,
     left: HashSet<usize>,
@@ -137,10 +144,16 @@ struct Board<'a> {
 impl Board<'_> {
     /// The box of `tile`'s name with its dot at `at`, on its right or its left.
     fn name(&self, tile: Option<usize>, at: Vec2, left: bool) -> Box2 {
+        let note = if tile.is_some() && tile == self.start {
+            START_NOTE
+        } else {
+            NOTE
+        };
         let chars = tile
             .map(|t| (self.chars)(t))
             .filter(|&c| c > 0)
-            .unwrap_or(SOME_NAME);
+            .unwrap_or(SOME_NAME)
+            + note;
         #[expect(clippy::cast_precision_loss, reason = "a name's length")]
         let wide = (chars as f32 * NAME_CHAR + NAME_PADDED) * self.per_point;
         let start = self.dot + self.gap;
@@ -198,8 +211,12 @@ impl Board<'_> {
                 cost += OVER;
             }
         }
-        for &(_, name) in &self.names {
-            if name.near(at, self.dot) {
+        for &(named, name) in &self.names {
+            // The start is named come what may: nothing goes under its name, nor so
+            // near that its name would have to move over it.
+            if Some(named) == self.start && name.near(at, self.dot + self.high) {
+                cost += UNDER_START;
+            } else if name.near(at, self.dot) {
                 cost += OVER;
             }
         }
@@ -292,6 +309,7 @@ pub(super) fn place(
         per_point,
         chars,
         calls,
+        start: rooms.iter().find_map(|r| r.middle),
         at: HashMap::new(),
         names: Vec::new(),
         left: HashSet::new(),
@@ -312,11 +330,16 @@ pub(super) fn place(
         let middle = flat(room.center);
         let wanted = room.tiles.len() + room.spare + usize::from(room.middle.is_some());
         let reach = atlas::disc(room.radius);
-        let mut spots: Vec<Option<Vec2>> =
-            lattice((wanted * PLACES_EACH).max(LEAST_PLACES), reach, ROW_WIDE)
-                .into_iter()
-                .map(|at| Some(middle + at))
-                .collect();
+        // Rows no nearer than a name is high, where the sphere has room enough.
+        let mut spots: Vec<Option<Vec2>> = spaced(
+            (wanted, (wanted * PLACES_EACH).max(LEAST_PLACES)),
+            reach,
+            ROW_WIDE,
+            board.high + board.dot,
+        )
+        .into_iter()
+        .map(|at| Some(middle + at))
+        .collect();
         if let Some(tile) = room.middle {
             // The first place is the middle one.
             let at = spots.first().copied().flatten().unwrap_or(middle);

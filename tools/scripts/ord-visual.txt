@@ -1,0 +1,44 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json
+# How the graph is drawn on this repo: the whole map's links one width, module
+# names above or inside their spheres; two functions alike told apart in the
+# search; a function both calling and called by the selection shows both calls
+# browsing; journeys with no call through a lit dot or name, guessed calls faint,
+# expanded too.
+snap open
+expect check arrow-sizes pass
+expect check module-names pass
+expect check named-when-room pass
+key /
+type reroot
+snap search reroot
+expect check names-distinct pass
+key esc
+key /
+type walk
+search-pick Finder::walk
+expect selection Finder::walk
+expect check calls-drawn pass
+snap walk selected
+key enter
+expect check arrows-clear pass
+key .
+snap walk depth 2
+expect check arrows-clear pass
+key /
+type details
+search-pick details
+key enter
+snap details
+expect check arrows-clear pass
+key /
+type run
+search-pick journey::run
+key enter
+key .
+snap run depth 2
+expect check colours pass
+expect check arrows-clear pass
+key x
+expect nucleus expanded
+expect check arrows-clear pass
+snap run expanded

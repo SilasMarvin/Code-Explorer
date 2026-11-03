@@ -1,0 +1,39 @@
+#: view demo/out/axum-server.json --focus orders::place
+# How a journey is drawn: its functions spread over their spheres with no call
+# through another's dot or name; hovering lights no call; the function set aside
+# keeps its own color with a white ring, its calls in role colors. (A call leaving
+# the screen expanded, labelled where it leaves: ord-camera and ord-visual.)
+key .
+key .
+snap depth 3
+expect check arrows-clear pass
+expect check colours pass
+hover pricing::quote
+expect nothing-moved
+expect check colours pass
+snap hover a call
+key down
+key i
+expect cursor users::find_user
+click GET /users/{id}
+expect aside GET /users/{id}
+expect check colours pass
+expect check arrows-clear pass
+snap aside from outside
+click-empty
+key i
+key up
+expect check colours pass
+snap aside a caller
+key down
+key /
+type register
+search-pick register
+expect aside users::register
+expect check colours pass
+snap aside off the journey
+key esc
+key x
+expect nucleus expanded
+expect check arrows-clear pass
+snap expanded users

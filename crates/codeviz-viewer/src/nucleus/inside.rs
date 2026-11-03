@@ -154,6 +154,14 @@ pub(super) fn spread(
 /// holds them all, `wide` times further apart along a row, as names run along, each
 /// row half a place along from the next; the middle one first, then the nearest it.
 pub(super) fn lattice(count: usize, reach: f32, wide: f32) -> Vec<Vec2> {
+    spaced((count, count), reach, wide, 0.0)
+}
+
+/// As [`lattice`], up to `want` places but rows no nearer than `least` while that
+/// leaves `need` places or more: fewer places, further apart, rather than more
+/// crowded.
+pub(super) fn spaced((need, want): (usize, usize), reach: f32, wide: f32, least: f32) -> Vec<Vec2> {
+    let count = want.max(need);
     if count == 0 {
         return Vec::new();
     }
@@ -181,7 +189,9 @@ pub(super) fn lattice(count: usize, reach: f32, wide: f32) -> Vec<Vec2> {
     };
     let mut gap = reach;
     let mut places = rows(gap);
-    while places.len() < count && gap > reach * 1e-3 {
+    while gap > reach * 1e-3
+        && (places.len() < need || (places.len() < count && gap * 0.97 >= least))
+    {
         gap *= 0.97;
         places = rows(gap);
     }
