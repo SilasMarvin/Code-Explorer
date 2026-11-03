@@ -127,7 +127,6 @@ pub(crate) fn place_bodies(
                 MeshMaterial3d(looks.faint[0][module_shade(cluster)].clone()),
                 Transform::default(),
                 Visibility::Hidden,
-                Pickable::IGNORE,
             ));
         }
     }

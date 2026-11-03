@@ -21,8 +21,32 @@ codeviz-viewer = { path = "crates/codeviz-viewer" }
 anyhow = "1.0.104"
 axum = "0.8.9"
 blake3 = "1.8.7"
-bevy = "0.20.0"
-bevy_egui = "0.43.1"
+# Only what the viewer uses: meshes, lights and gizmo rings in 3D, egui over them, the
+# window, and PNG snapshots. No gamepad, audio, scenes, glTF, Bevy UI or text, or
+# picking (each a thread or a build the viewer does not need).
+bevy = { version = "0.20.0", default-features = false, features = [
+    "std",
+    "multi_threaded",
+    "async_executor",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_window",
+    "bevy_winit",
+    "x11",
+    "wayland",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_gizmos_render",
+    "tonemapping_luts",
+    "zstd_rust",
+    "png",
+] }
+bevy_egui = { version = "0.43.1", default-features = false, features = [
+    "render",
+    "default_fonts",
+    "manage_clipboard",
+] }
 clap = { version = "4.6.7", features = ["derive"] }
 glam = "0.33.12"
 prost = "0.14.4"
