@@ -1,6 +1,8 @@
 //! A module expanded: every one of its functions drawn, in rows across the view
 //! wider apart along a row than between rows, so each name has room beside its own
-//! dot, with the calls among them. It opens where it is, browsing or in a journey.
+//! dot, with the calls among them. It opens where it is, browsing or in a journey; in
+//! a journey, the journey's functions keep the places it gave them, and the rest fill
+//! in round them.
 
 use std::collections::HashSet;
 
@@ -23,8 +25,25 @@ impl Nucleus {
         // Spread over the whole of it, its dots are drawn their full size.
         now.dots.remove(&cluster);
         if let Some(ball) = now.balls.get(cluster).copied() {
-            let at: Vec<(usize, Vec3)> = members.iter().map(|&t| (t, self.offsets[t])).collect();
-            for (tile, offset) in spread(&at, None, atlas::disc(ball.radius)) {
+            // In a journey, what it lays out in the sphere keeps its place, at any
+            // depth; the rest fill in round it.
+            let journey = self.spread.as_ref().filter(|_| !self.browse);
+            let kept: Vec<(usize, Vec3)> = journey
+                .into_iter()
+                .flat_map(|(_, placed)| &placed.points)
+                .filter(|&(&t, _)| graph.cluster(t) == Some(cluster))
+                .map(|(&t, &at)| (t, at - ball.center))
+                .collect();
+            let rest: Vec<(usize, Vec3)> = members
+                .iter()
+                .filter(|t| !kept.iter().any(|(k, _)| k == *t))
+                .map(|&t| (t, self.offsets[t]))
+                .collect();
+            for (tile, offset) in
+                kept.iter()
+                    .copied()
+                    .chain(spread(&rest, &kept, atlas::disc(ball.radius)))
+            {
                 now.points[tile] = ball.center + offset;
                 now.shown[tile] = true;
             }
@@ -98,26 +117,37 @@ impl Nucleus {
 
 /// Where `members`, each a tile and where it sits about its module's middle, go when
 /// the module opens: on [`lattice`]'s places over a disc of radius `reach` square to
-/// the usual view, each as near where it sat, against the others, as is free; `first`
-/// in the middle, then outwards from it.
+/// the usual view, those near a dot `kept` where it is aside, each as near where it
+/// sat, against the others, as is free, the nearest the middle first.
 pub(super) fn spread(
     members: &[(usize, Vec3)],
-    first: Option<usize>,
+    kept: &[(usize, Vec3)],
     reach: f32,
 ) -> Vec<(usize, Vec3)> {
     let rotation = view_rotation();
     let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
-    let places = lattice(members.len(), reach, ROW_WIDE);
-    let flat: Vec<Vec2> = members
-        .iter()
-        .map(|&(tile, at)| {
-            if Some(tile) == first {
-                Vec2::ZERO
-            } else {
-                Vec2::new(at.dot(right), at.dot(up))
-            }
-        })
-        .collect();
+    let flat = |at: Vec3| Vec2::new(at.dot(right), at.dot(up));
+    let kept: Vec<Vec2> = kept.iter().map(|&(_, at)| flat(at)).collect();
+    // More places, closer, until enough are clear of the dots kept: no nearer one
+    // than half the way to the next place.
+    let mut count = members.len();
+    let places = loop {
+        let places = lattice(count, reach, ROW_WIDE);
+        let apart = places
+            .iter()
+            .enumerate()
+            .flat_map(|(i, a)| places[i + 1..].iter().map(move |b| a.distance(*b)))
+            .fold(reach, f32::min);
+        let clear: Vec<Vec2> = places
+            .into_iter()
+            .filter(|p| kept.iter().all(|k| k.distance(*p) >= apart / 2.0))
+            .collect();
+        if clear.len() >= members.len() || count > 4 * (members.len() + kept.len()) {
+            break clear;
+        }
+        count += kept.len().max(1);
+    };
+    let flat: Vec<Vec2> = members.iter().map(|&(_, at)| flat(at)).collect();
     let far = flat
         .iter()
         .map(|p| p.length())
@@ -125,9 +155,9 @@ pub(super) fn spread(
         .max(1e-3);
     let mut order: Vec<usize> = (0..members.len()).collect();
     order.sort_by(|&a, &b| {
-        (Some(members[a].0) != first)
-            .cmp(&(Some(members[b].0) != first))
-            .then(flat[a].length().total_cmp(&flat[b].length()))
+        flat[a]
+            .length()
+            .total_cmp(&flat[b].length())
             .then(members[a].0.cmp(&members[b].0))
     });
     let mut free = vec![true; places.len()];

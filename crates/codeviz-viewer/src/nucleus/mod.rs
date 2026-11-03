@@ -519,7 +519,11 @@ impl Nucleus {
             return false;
         }
         self.aside = tile;
-        let placing = tile.is_some_and(|t| !self.placed(t)) || self.now.aside.is_some();
+        // Outside the journey, the start's module's functions sit where the map has
+        // them, undrawn: set aside, one takes a place kept free.
+        let placing = tile
+            .is_some_and(|t| !self.placed(t) || self.module_of(t) == Some(self.now.middle))
+            || self.now.aside.is_some();
         if placing && !self.browse {
             self.recenter(graph, self.now.start);
         }

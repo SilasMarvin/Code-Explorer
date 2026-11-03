@@ -5,8 +5,9 @@
 //! level more or less only shows or hides. The callers
 //! from off the journey of the function the cursor is on (I) take places kept free
 //! for them, or their own module beyond the ring, moving nothing else: every caller
-//! from off the journey into any function it runs has its place worked out once, so
-//! a step of the cursor only shows some and hides others.
+//! from off the journey into any function it runs has its place worked out once, no
+//! two calling one function in the same place, so a step of the cursor only shows
+//! some and hides others, and drops none.
 
 use std::{
     cmp::Reverse,
@@ -33,9 +34,6 @@ const MARGIN: f32 = 6.0;
 /// Between the ring round the nucleus and a module beyond it holding only calls in
 /// from outside the journey.
 const OUTER_GAP: f32 = 12.0;
-/// How many places an open module keeps free below its names for callers from off
-/// the journey (I), so they come and go moving nothing.
-pub(super) const OUTSIDE_SHOWN: usize = 3;
 /// In a journey, how many of the start's callers are named; the rest fold into a
 /// count on their module's name, so the journey stays what reads.
 const CALLERS_NAMED: usize = 5;
@@ -61,6 +59,10 @@ impl Nucleus {
         let folded = start.map_or_else(HashSet::new, |f| self.fold_callers(graph, f, &cluster_of));
         let laid = self.reserve(&every, start, clusters, middle, &cluster_of);
         let columns = open_up(&links, start, clusters, middle, &cluster_of);
+        let seats = Seats::new(
+            &start.map_or_else(Vec::new, |f| self.every_outside_call(graph, f)),
+            &cluster_of,
+        );
 
         // What the journey does not run through stays where the map has it, unseen,
         // so leaving the journey moves none of it.
@@ -90,7 +92,13 @@ impl Nucleus {
         // the start, and each module round it what it could ever name, spread over the
         // sphere clear of each other's calls; the rest of the start's module stays
         // where the map has it, faint.
-        let placed = self.spread_out(&balls, (start, middle), &laid, &every, &cluster_of);
+        let placed = self.spread_out(
+            &balls,
+            (start, middle),
+            (&laid, &seats),
+            &every,
+            &cluster_of,
+        );
         let mut spaced: HashMap<usize, Vec<Vec3>> = placed.free.clone();
         for (&tile, &point) in &placed.points {
             points[tile] = point;
@@ -114,7 +122,7 @@ impl Nucleus {
         let outside = self.show_outside(
             graph,
             (&mut balls, &mut points, &mut shown),
-            (&calls_in, &laid, &placed),
+            (&calls_in, &laid, &placed, &seats),
             (start, middle),
             &cluster_of,
         );
@@ -122,7 +130,7 @@ impl Nucleus {
         let aside = self.place_aside(
             &mut balls,
             (&mut points, &mut shown),
-            (&laid, &placed, &outside),
+            (&placed, &seats, &outside),
             middle,
             &cluster_of,
         );
@@ -147,12 +155,12 @@ impl Nucleus {
     /// Where the journey's functions go in their spheres, worked out once for this
     /// start and journey: the start's module's `laid` round the start, then each
     /// module round it, as [`places::place`] spreads them; and the places each of those
-    /// keeps free for callers from off the journey.
+    /// keeps free for callers from off the journey and the function set aside (`seats`).
     fn spread_out(
         &mut self,
         balls: &[Ball],
         (start, middle): (Option<usize>, usize),
-        laid: &[Vec<usize>],
+        (laid, seats): (&[Vec<usize>], &Seats),
         every: &[Link],
         cluster_of: &impl Fn(usize) -> usize,
     ) -> std::sync::Arc<Placed> {
@@ -187,7 +195,7 @@ impl Nucleus {
                 radius: balls[middle].radius,
                 tiles,
                 middle: Some(start),
-                spare: 0,
+                spare: seats.kept(middle),
             });
         }
         for &cluster in &self.ring_order(every, middle, cluster_of) {
@@ -198,7 +206,7 @@ impl Nucleus {
                     radius: balls[cluster].radius,
                     tiles: laid[cluster].clone(),
                     middle: None,
-                    spare: OUTSIDE_SHOWN,
+                    spare: seats.kept(cluster),
                 });
             }
         }
@@ -374,7 +382,7 @@ impl Nucleus {
         &self,
         graph: &ForceGraph,
         (balls, points, shown): (&mut [Ball], &mut [Vec3], &mut [bool]),
-        (calls, reserved, placed): (&[Link], &[Vec<usize>], &Placed),
+        (calls, reserved, placed, seats): (&[Link], &[Vec<usize>], &Placed, &Seats),
         (start, middle): (Option<usize>, usize),
         cluster_of: &impl Fn(usize) -> usize,
     ) -> HashSet<usize> {
@@ -391,7 +399,7 @@ impl Nucleus {
         let taken = self.place_outside(
             &mut all_balls,
             (&mut all_points, &mut all_shown),
-            (&every, reserved, placed),
+            (&every, reserved, placed, seats),
             middle,
             cluster_of,
         );
@@ -434,16 +442,16 @@ impl Nucleus {
     }
 
     /// Puts the outside callers `calls` brings in where they show without moving
-    /// anything already placed: inside the nucleus where they sit; in a module with a
-    /// place on the ring, in the places it keeps free among the names `reserved` lays
-    /// out in it (`placed`), as many as there are; else in their own module, beyond
-    /// every sphere the journey could show, towards what they call, clear of the
+    /// anything already placed: in the nucleus or a module on the ring, in their seats
+    /// among the places it keeps free (`seats`), clear of the journey's dots and names;
+    /// one the journey could name deeper, in its own place; else in their own module,
+    /// beyond every sphere the journey could show, towards what they call, clear of the
     /// others put there. Returns them.
-    pub(super) fn place_outside(
+    fn place_outside(
         &self,
         balls: &mut [Ball],
         (points, shown): (&mut [Vec3], &mut [bool]),
-        (calls, reserved, placed): (&[Link], &[Vec<usize>], &Placed),
+        (calls, reserved, placed, seats): (&[Link], &[Vec<usize>], &Placed, &Seats),
         middle: usize,
         cluster_of: &impl Fn(usize) -> usize,
     ) -> HashSet<usize> {
@@ -470,26 +478,14 @@ impl Nucleus {
         let mut beyond: Vec<(Vec3, f32)> = Vec::new();
         let mut put = HashSet::new();
         for (cluster, tiles) in &by_module {
-            if *cluster == middle {
-                for &tile in tiles {
-                    shown[tile] = true;
-                    put.insert(tile);
-                }
-                continue;
-            }
             let ball = balls[*cluster];
-            let names = &reserved[*cluster];
-            if !names.is_empty() {
-                // One the journey could name deeper has its place; the rest take the
-                // places kept free among the names, while there are any.
-                let mut free = placed.free.get(cluster).into_iter().flatten().copied();
+            if let Some(free) = placed.free.get(cluster) {
                 for &tile in tiles {
-                    let at = if names.contains(&tile) {
-                        Some(points[tile])
-                    } else {
-                        free.next()
-                    };
-                    if let Some(at) = at {
+                    let at = placed
+                        .points
+                        .get(&tile)
+                        .or_else(|| free.get(seats.of(tile, self.aside)?));
+                    if let Some(&at) = at {
                         points[tile] = at;
                         shown[tile] = true;
                         put.insert(tile);
@@ -525,40 +521,34 @@ impl Nucleus {
     }
 
     /// Draws the function set aside (`self.aside`) where it shows without moving
-    /// anything else, when the journey draws it nowhere already: in a module round
-    /// the nucleus, in the first place it keeps free that no outside caller has
-    /// taken; in a module beyond the ring already, where it sits in it; else in its
-    /// own module beyond every sphere shown, towards where the map has it. Returns it
-    /// when placed so.
-    pub(super) fn place_aside(
+    /// anything else, when the journey draws it nowhere already: where the journey lays
+    /// it out at any depth; in the nucleus or a module round it, in its seat among the
+    /// places kept free, or the one kept for the function set aside; in a module beyond
+    /// the ring already, where it sits in it; else in its own module beyond every
+    /// sphere shown, towards where the map has it. Returns it when placed so.
+    fn place_aside(
         &self,
         balls: &mut [Ball],
         (points, shown): (&mut [Vec3], &mut [bool]),
-        (reserved, placed, outside): (&[Vec<usize>], &Placed, &HashSet<usize>),
+        (placed, seats, outside): (&Placed, &Seats, &HashSet<usize>),
         middle: usize,
         cluster_of: &impl Fn(usize) -> usize,
     ) -> Option<usize> {
-        let tile = self.aside.filter(|&t| !shown[t])?;
+        let tile = self.aside.filter(|t| !outside.contains(t))?;
         let cluster = cluster_of(tile);
         let ball = balls[cluster];
-        let names = &reserved[cluster];
-        if !names.is_empty() {
-            let taken: Vec<Vec3> = outside
-                .iter()
-                .filter(|&&t| cluster_of(t) == cluster)
-                .map(|&t| points[t])
-                .collect();
-            let at = placed
-                .free
-                .get(&cluster)
-                .into_iter()
-                .flatten()
-                .copied()
-                .find(|at| taken.iter().all(|t| t.distance(*at) > 1e-3))?;
+        if let Some(&at) = placed.points.get(&tile) {
+            if shown[tile] {
+                return None;
+            }
             points[tile] = at;
+        } else if let Some(free) = placed.free.get(&cluster) {
+            points[tile] = *free.get(seats.aside(tile, cluster))?;
             if ball.body == Body::Closed {
                 balls[cluster].body = Body::Open;
             }
+        } else if shown[tile] {
+            return None;
         } else if ball.body == Body::Faint {
             points[tile] = ball.center + self.offsets[tile];
         } else {
@@ -607,6 +597,75 @@ impl Nucleus {
             shown[tile] = true;
         }
         (points, shown)
+    }
+}
+
+/// Where the callers from off the journey sit, each among the places its module keeps
+/// free (the nucleus and the modules round it): no two that call one function in the
+/// same seat, so whatever the cursor is on, each of its callers has a place of its
+/// own, and keeps it wherever the cursor goes. After the seats, each module keeps one
+/// more place for the function set aside.
+#[derive(Debug, Default)]
+struct Seats {
+    /// By tile: its module and its seat.
+    seat: HashMap<usize, (usize, usize)>,
+    /// By cluster: how many seats.
+    count: HashMap<usize, usize>,
+}
+
+impl Seats {
+    /// Seats every caller in `every` call from off the journey, in tile order, each in
+    /// the first seat of its module that no caller of a function it calls holds.
+    fn new(every: &[Link], cluster_of: &impl Fn(usize) -> usize) -> Self {
+        let mut callers: Vec<usize> = every.iter().map(|l| l.from).collect();
+        callers.sort_unstable();
+        callers.dedup();
+        let mut seats = Self::default();
+        for caller in callers {
+            let cluster = cluster_of(caller);
+            let calls: HashSet<usize> = every
+                .iter()
+                .filter(|l| l.from == caller)
+                .map(|l| l.to)
+                .collect();
+            let taken: HashSet<usize> = every
+                .iter()
+                .filter(|l| calls.contains(&l.to))
+                .filter_map(|l| seats.seat.get(&l.from))
+                .filter(|&&(module, _)| module == cluster)
+                .map(|&(_, seat)| seat)
+                .collect();
+            let seat = (0..=taken.len())
+                .find(|s| !taken.contains(s))
+                .unwrap_or_default();
+            seats.seat.insert(caller, (cluster, seat));
+            let count = seats.count.entry(cluster).or_default();
+            *count = (*count).max(seat + 1);
+        }
+        seats
+    }
+
+    /// How many places `cluster` keeps free: its seats, and one for the function set
+    /// aside.
+    fn kept(&self, cluster: usize) -> usize {
+        self.count.get(&cluster).copied().unwrap_or_default() + 1
+    }
+
+    /// Which of its module's places `tile`, a caller from off the journey, takes: its
+    /// seat, but the place kept for the function set aside where `aside`, in its own
+    /// seat, holds that one.
+    fn of(&self, tile: usize, aside: Option<usize>) -> Option<usize> {
+        let at = *self.seat.get(&tile)?;
+        let held = aside.is_some_and(|a| a != tile && self.seat.get(&a) == Some(&at));
+        Some(if held { self.kept(at.0) - 1 } else { at.1 })
+    }
+
+    /// Which of `cluster`'s places the function set aside, `tile`, takes: its seat,
+    /// else the one kept for it.
+    fn aside(&self, tile: usize, cluster: usize) -> usize {
+        self.seat
+            .get(&tile)
+            .map_or_else(|| self.kept(cluster) - 1, |&(_, seat)| seat)
     }
 }
 

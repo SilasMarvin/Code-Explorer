@@ -8,7 +8,6 @@ use codeviz_layout::{
 
 use super::{
     inside::{ROW_WIDE, lattice, spread},
-    journey::OUTSIDE_SHOWN,
     places::{Room, place},
     *,
 };
@@ -358,6 +357,42 @@ fn expanding_the_start_s_module_opens_it_where_it_stands() {
 }
 
 #[test]
+fn expanding_in_a_journey_keeps_its_functions_where_they_were() {
+    let (graph, map) = codebase();
+    let mut nucleus = around(&graph, &map, "core::run", 2);
+    for id in ["core::run", "db::put"] {
+        let cluster = module(&graph, &map, id);
+        let laid: Vec<(usize, Vec3)> = (0..map.tiles.len())
+            .filter(|&t| graph.cluster(t) == Some(cluster) && nucleus.lit(t))
+            .filter_map(|t| Some((t, nucleus.point(t)?)))
+            .collect();
+        assert_ne!(laid.len(), 0);
+        nucleus.expand(&graph, Some(cluster));
+        while nucleus.advance(0.1) {}
+        for &(t, was) in &laid {
+            assert!(
+                nucleus.point(t).unwrap().distance(was) < 1e-4,
+                "{id}: a journey function keeps its place"
+            );
+        }
+        let members: Vec<Vec3> = (0..map.tiles.len())
+            .filter(|&t| graph.cluster(t) == Some(cluster))
+            .map(|t| {
+                assert!(nucleus.drawn(t), "{id}: every function drawn");
+                nucleus.point(t).unwrap()
+            })
+            .collect();
+        for (i, a) in members.iter().enumerate() {
+            for b in &members[i + 1..] {
+                assert!(a.distance(*b) > Dot::Focus.radius(), "{id}: apart");
+            }
+        }
+        nucleus.expand(&graph, None);
+        while nucleus.advance(0.1) {}
+    }
+}
+
+#[test]
 fn expanded_the_start_calls_in_and_out_of_its_module() {
     let (graph, map) = codebase();
     let mut nucleus = around(&graph, &map, "core::run", 1);
@@ -399,10 +434,13 @@ fn an_opened_module_spreads_in_rows_wider_along_than_between() {
         }
     }
     let members: Vec<(usize, Vec3)> = (0..12).map(|t| (t, fibonacci(t, 12) * 3.0)).collect();
-    let spread = spread(&members, Some(5), 4.0);
+    let kept = [(12, Vec3::ZERO)];
+    let spread = spread(&members, &kept, 4.0);
     assert_eq!(spread.len(), 12, "every one placed");
-    let first = spread.iter().find(|(t, _)| *t == 5).expect("the first");
-    assert!(first.1.length() < 1e-4, "the first in the middle");
+    assert!(
+        spread.iter().all(|(_, at)| at.length() > 0.5),
+        "clear of the dot kept in the middle"
+    );
 }
 
 #[test]
@@ -598,6 +636,131 @@ fn with_i_on_a_step_of_the_cursor_moves_nothing() {
                 assert!(at.distance(*other) < 1e-4, "a dot stays put");
             }
         }
+    }
+}
+
+/// `core::run` calls `db::put` and `db::get`; from off its journey, `db::c0` to
+/// `db::c4` call `db::put`, `db::c0` and `db::c1` call `db::get` too, and `core::c5`
+/// and `core::c6`, in the start's own module, call `db::put`.
+fn fanned_in() -> (ForceGraph, CodebaseMap) {
+    let function = |id: &str, calls: &[&str]| {
+        let (parent, name) = id.split_once("::").expect("module::name");
+        let calls: Vec<String> = calls
+            .iter()
+            .map(|to| {
+                format!(
+                    r#"{{ "key": "{to}#0", "text": "{to}", "targets": [{{ "unit": "f:{to}", "certainty": "exact" }}] }}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{ "id": "f:{id}", "name": "{name}", "kind": "fn", "role": "invocable", "parent": "m:{parent}", "calls": [{}] }}"#,
+            calls.join(",")
+        )
+    };
+    let mut units: Vec<String> = ["core", "db"]
+        .map(|m| {
+            format!(r#"{{ "id": "m:{m}", "name": "{m}", "kind": "module", "role": "group" }}"#)
+        })
+        .to_vec();
+    units.push(function("core::run", &["db::put", "db::get"]));
+    units.push(function("db::put", &[]));
+    units.push(function("db::get", &[]));
+    for caller in ["db::c0", "db::c1"] {
+        units.push(function(caller, &["db::put", "db::get"]));
+    }
+    for caller in ["db::c2", "db::c3", "db::c4", "core::c5", "core::c6"] {
+        units.push(function(caller, &["db::put"]));
+    }
+    let json = format!(
+        r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+        units.join(",")
+    );
+    let system = System::new([Document::from_json(&json).expect("a valid document")]);
+    let map = map(&system);
+    let mut graph = ForceGraph::new(&system, &map, ForceConfig::default());
+    for _ in 0..50 {
+        graph.step();
+    }
+    (graph, map)
+}
+
+#[test]
+fn every_outside_caller_of_the_cursor_has_a_place_of_its_own() {
+    let (graph, map) = fanned_in();
+    let mut nucleus = around(&graph, &map, "core::run", 1);
+    nucleus.set_outside(&graph, true);
+    let drawn = |nucleus: &Nucleus| -> HashMap<usize, Vec3> {
+        (0..map.tiles.len())
+            .filter(|&t| nucleus.drawn(t))
+            .filter_map(|t| Some((t, nucleus.point(t)?)))
+            .collect()
+    };
+    let mut seen = Vec::new();
+    for (at, callers) in [
+        (
+            "db::put",
+            &[
+                "db::c0", "db::c1", "db::c2", "db::c3", "db::c4", "core::c5", "core::c6",
+            ][..],
+        ),
+        ("db::get", &["db::c0", "db::c1"][..]),
+    ] {
+        nucleus.set_cursor(&graph, Some(tile(&map, at)));
+        while nucleus.advance(0.1) {}
+        let dots = drawn(&nucleus);
+        for id in callers {
+            let caller = tile(&map, id);
+            assert!(nucleus.outside(caller), "{at}: {id} brought in");
+            let ball = nucleus.ball(graph.cluster(caller).unwrap()).unwrap();
+            assert!(
+                dots[&caller].distance(ball.center) < ball.radius,
+                "{at}: {id} in its sphere"
+            );
+        }
+        for (a, at_a) in &dots {
+            for (b, at_b) in &dots {
+                assert!(
+                    a == b || at_a.distance(*at_b) > Dot::Focus.radius(),
+                    "{at}: {a} and {b} apart"
+                );
+            }
+        }
+        seen.push(dots);
+    }
+    for (tile, at) in &seen[1] {
+        if let Some(was) = seen[0].get(tile) {
+            assert!(at.distance(*was) < 1e-4, "{tile} keeps its place");
+        }
+    }
+}
+
+#[test]
+fn a_function_set_aside_keeps_its_place_as_the_cursor_brings_callers_in() {
+    let (graph, map) = fanned_in();
+    let mut nucleus = around(&graph, &map, "core::run", 1);
+    nucleus.set_outside(&graph, true);
+    // Set aside while it calls neither function the cursor goes to: any seat it
+    // might share is someone else's.
+    for id in ["db::c2", "core::c6"] {
+        let aside = tile(&map, id);
+        nucleus.set_cursor(&graph, Some(tile(&map, "db::get")));
+        nucleus.set_aside(&graph, Some(aside));
+        while nucleus.advance(0.1) {}
+        let was = nucleus.point(aside).unwrap();
+        nucleus.set_cursor(&graph, Some(tile(&map, "db::put")));
+        while nucleus.advance(0.1) {}
+        assert!(
+            nucleus.point(aside).unwrap().distance(was) < 1e-4,
+            "{id} stays"
+        );
+        for other in (0..map.tiles.len()).filter(|&t| t != aside && nucleus.drawn(t)) {
+            assert!(
+                nucleus.point(other).unwrap().distance(was) > Dot::Focus.radius(),
+                "{id}: nothing on it"
+            );
+        }
+        nucleus.set_aside(&graph, None);
     }
 }
 
@@ -885,7 +1048,7 @@ fn a_journey_spreads_its_functions_over_their_spheres_clear_of_each_others_calls
             radius: 6.0,
             tiles: vec![1, 2, 3, 4],
             middle: None,
-            spare: OUTSIDE_SHOWN,
+            spare: 3,
         },
     ];
     let calls = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3)];
@@ -920,11 +1083,7 @@ fn a_journey_spreads_its_functions_over_their_spheres_clear_of_each_others_calls
             );
         }
     }
-    assert_eq!(
-        placed.free[&1].len(),
-        OUTSIDE_SHOWN,
-        "room kept for outside callers"
-    );
+    assert_eq!(placed.free[&1].len(), 3, "room kept for outside callers");
 }
 
 #[test]
