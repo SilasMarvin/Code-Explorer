@@ -174,11 +174,10 @@ scene's units.
   call that calls the start (or the selection) back, `opened`
   for a function of the module expanded that nothing else lights, `hovered`, `guessed`
   for a call every shown run of which is only guessed or handed off, drawn faint,
-  `speck` for a faint unnamed dot), `numbers` (in the journey), `at`, `radius` (on
-  screen), `world`, `world_radius`, `on_screen`, `label`, `label_rect`, `name_size`
-  (how big the placer laid its name's text out, room found for it or not), `name_spot`
-  (the one place its name was tried as the view is: the side it holds from the neutral
-  view, or its home; a name stays there or goes, never moves), `kept_off` (how far from
+  `speck` for a faint unnamed dot, `plain` for one drawn as a speck but named),
+  `numbers` (in the journey), `at`, `radius` (on screen), `world`, `world_radius`,
+  `on_screen`, `label`, `label_rect`, `name_size` (how big the placer laid its name's
+  text out, room found for it or not), `kept_off` (how far from
   its middle names keep: a dot drawn bigger than a speck as far as the cursor's),
   `crowded_by`,
   `color` (its fill, `#rrggbbaa`), `rings` (each ring drawn round it: `radius` on
@@ -239,7 +238,7 @@ constant at the top of that file.
 | `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius | always |
 | `spheres-apart` | no two spheres intersect, in the world | two spheres or more |
 | `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion (the expanded one aside) | always |
-| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other lit dot is nearer it (by over 2 points), a plain one (`opened`) only for a plain name; every module's name within 40 points of its sphere's rim | always |
+| `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other dot drawn, lit, plain or a speck, is nearer it (by over 2 points), but one nothing lights that a lit name's opaque pill hides wholly; every module's name within 40 points of its sphere's rim | always |
 | `labels-clear` | no name overlaps another or lies under a notice, and a function's name covers no other lit dot (a lit name may lie over a plain one, `opened`) | always |
 | `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel; not the search box, which opens over the graph for a moment) | unless the key help is open |
 | `text-sizes` | function names are 11 to 18 points; at most 4 font sizes show at once | always |
@@ -254,8 +253,8 @@ constant at the top of that file.
 | `map-on-screen` | when the whole map would fit in the free area, 90% of it (by sphere area) is there, all of it after a pan; when it would not, after a pan, it lies over the free area's middle; zoomed out as far as the wheel goes (`farthest`), it covers the free area's middle | after a wheel turn out, a pan, or R |
 | `spheres-unclipped` | no sphere is cut by an edge of the graph's part of the window that lies in open window (not the window's edge, not where a panel starts), however big it shows; one the camera is inside aside; nor, unless faint (but the sphere holding the function set aside), by the top of the journey panel, unless the camera is where the user's hands put it, a module is expanded or one has just shrunk back | always |
 | `arrow-sizes` | every arrow on screen is at most 2.5 points wide, a module arrow however many calls it carries, with a head 5 to 12 points long (or half as wide, seen end on; the whole map's faint module links need no head, but none over 12); the whole map's links all one width; a module arrow has no head of its own where a call drawn along it goes on to its dot | an arrow on screen |
-| `module-names` | a module's name is centred over its sphere (within 3 points) just above its top edge (2 below to 8 above), or browsing, smaller (11 points) just inside its top (0 to 8 below it); over no other sphere and none of its own dots (inside, none lit) | a module named |
-| `named-when-room` | a lit function with no name would have no room for its pill where the placer tried it (`name_spot`; without one, on any side of its dot), clear of the free area's edge, overlays, the calls a deeper level shows (`held`), other lit dots as far as names keep from them (`kept_off`; a plain one, `opened`, only for a plain name; and nearer none of them than its own) and the names placed as early in the naming order or earlier (start or selection, cursor, set aside, modules, the start's calls, callers, deeper calls, the rest lit, plain): a plain name or dot never excuses a lit one; a shown module with no name, none above its sphere, nor browsing, smaller inside its top clear of its lit dots and every name. Each name is as big as the placer laid it out (`name_size`) | always |
+| `module-names` | a module's name is centred over its sphere (within 3 points) just above its top edge (2 below to 8 above), or smaller (11 points) inside its top, its corners within the rim and above the sphere's middle; over no other sphere and none of its own dots, but inside, those nothing lights that its opaque pill hides wholly | a module named |
+| `named-when-room` | a lit function with no name would have no room for its pill at any place round its dot the placer tries (every side of it, level, nudged or slid along; a corner only for a pill at most 100 points wide), clear of the free area's edge, overlays, the calls a deeper level shows (`held`), every other dot drawn as far as names keep from it (`kept_off`), but one nothing lights that the pill would hide wholly, and nearer none of them than its own, and the names placed as early in the naming order or earlier (start or selection, cursor, set aside, modules lit, the start's calls, callers, deeper calls, the rest lit, modules nothing lit lives in, plain): a plain name never excuses a lit one; a shown module with no name, none above its sphere, nor smaller inside its top where it fits the sphere's width, clear of its dots but those it would hide wholly. Each name is as big as the placer laid it out (`name_size`) | always |
 | `journey-fills` | the journey's spheres (but faint ones, other than the one holding the function set aside), lit dots (start, calls, callers) and their names span at least 70% of the free area across or down, whichever they come nearer filling, and the dots and spheres lie inside it | in a journey, not expanded, after it opens (a `--focus` session as it opens too), a depth change, R, F or Fit, unless the camera is where the user's hands put it; not on a `frames` snap, taken as the transition plays |
 | `colours` | the function hovered has no white fill and no ring the selection's color (or white); each function's fill and each call's color is its role's hue: white the start or selection, pink the cursor, violet callers, blue the first level, amber deeper, grey the rest (pink allowed on the journey's call into the cursor); the function set aside keeps its role's fill (grey off the journey), never white, with a white ring; a function that `calls back` into the start has a violet ring; a dot only `guessed` darker than its role's color; each bar's `color` is its node's hue (a `guessed` one its role's, at alpha at most 0.5), but the cursor's function's; no call reads white over the ground; only the journey's call into the cursor and the calls out of the function set aside are drawn stronger or wider than the rest, so hovering lights none; a call among the expanded module's functions off the journey, from the function set aside too, and a call only guessed are faint (alpha at most 0.5) | always |
 | `arrows-clear` | no call's line (its `path`) runs through a lit dot, or the name of a lit function in a sphere it leaves or enters (in a journey), but its own ends'; an expanded module's plain functions, the faint calls among them and the calls only guessed aside | a call drawn |
@@ -303,6 +302,7 @@ such a camera alone.
 | `axum-search` | search: ↓ and Enter take the row highlighted; a route found by its path and its function's name, listed once; reopened, the last query is selected and typing replaces it; Esc from a journey selects its start |
 | `ord-follow` | a big module expanding to the band; browsing expanded, a pick in another module taking the expansion there and Back bringing it back; Back across journeys putting back the expansion the place had; a search off the journey showing its sphere whole; X with a function set aside expanding its module |
 | `ord-names` | names stay or go, never move: the cursor stepping onto a call beside a name; expanded in a journey, the journey's calls named before any plain function |
+| `ord-names-browse`, `axum-names` | names browsing: module names before plain ones on a wide whole map; a lit call whose side is taken named on another; a click inside an expanded module moving no plain name; no name nearer another dot than its own |
 | `axum-visual`, `ord-visual` | how a journey is drawn: no call through a lit dot or name, hovering lighting no call, the function set aside in its own color with a white ring, a guessed call faint; the whole map's links one width, module names above or inside their spheres; two functions alike told apart in the search; both calls of a function that calls the selection and is called by it, browsing |
 | `ord-panel` | the panel on a crowded journey: bars keep their numbers, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk) |
 
@@ -337,8 +337,3 @@ tools/test_drive.py` tests the runner's own logic.
   and badges (`drive::note_bars`) and the search box its rows
   (`drive::note_search_rows`). A new way of drawing these must note them too, or the
   JSON loses them. Idle CPU is not checked.
-- `named-when-room` judges a name the placer tried by the one spot it tried
-  (`name_spot`), which a name holds so it never moves: it trusts the placer's choice
-  of spot, and judges only whether that spot was free. Without a `name_spot` it tries
-  four spots round a dot, the placer eight and slides along them, from the dot's own
-  size: it may call room the placer could not take.

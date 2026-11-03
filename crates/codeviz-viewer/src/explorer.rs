@@ -279,20 +279,7 @@ impl Explorer {
                 break;
             }
         }
-        let mut nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
-        // As long as a name can be drawn: its route, or its name with its type.
-        nucleus.name_chars(
-            map.tiles
-                .iter()
-                .map(|tile| {
-                    let entry = system.entries().iter().find(|e| e.unit == tile.unit);
-                    entry.map_or_else(
-                        || display_name(&system, &tile.unit).chars().count(),
-                        |e| e.label.chars().count(),
-                    )
-                })
-                .collect(),
-        );
+        let nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
         let module_names = {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
                 .map(|cluster| {
@@ -316,7 +303,7 @@ impl Explorer {
                 module_homonyms[cluster].insert(unit.name.clone());
             }
         }
-        Self {
+        let mut explorer = Self {
             system,
             track: Track::default(),
             map,
@@ -347,7 +334,16 @@ impl Explorer {
             return_pose: Some(Return::Whole),
             frame_asked: false,
             deselected: None,
-        }
+        };
+        // As long as each name is drawn.
+        let chars = (0..explorer.map.tiles.len())
+            .map(|tile| {
+                let unit = &explorer.map.tiles[tile].unit;
+                explorer.function_name(unit).chars().count()
+            })
+            .collect();
+        explorer.nucleus.name_chars(chars);
+        explorer
     }
 
     pub(crate) fn system(&self) -> &System {

@@ -203,16 +203,31 @@ pub(crate) fn style_nodes(
         }
         let look = node_look(&explorer, tile.0);
         // Brought in from outside the journey, a caller of the start folded into its
-        // module's count, or a call only guessed: there, but quieter than the journey.
-        let outside =
-            (nucleus.outside(tile.0) || nucleus.folded(tile.0) || guessed(&explorer, tile.0))
-                && explorer.aside() != Some(tile.0);
+        // module's count, a call only guessed, or an expanded module's function nothing
+        // lights: there, but quieter than the journey.
+        let outside = (nucleus.outside(tile.0)
+            || nucleus.folded(tile.0)
+            || guessed(&explorer, tile.0)
+            || plain_beside(&explorer, tile.0))
+            && explorer.aside() != Some(tile.0);
         if let Some(wanted) = materials.0.get(&(look, outside))
             && &material.0 != wanted
         {
             material.0 = wanted.clone();
         }
     }
+}
+
+/// Whether a function is one of the expanded module's that nothing lights, while a
+/// journey or a selection lights others: drawn and named quieter than those.
+pub(crate) fn plain_beside(explorer: &Explorer, tile: usize) -> bool {
+    let nucleus = explorer.nucleus();
+    nucleus.start().is_some()
+        && nucleus.opened_up(tile)
+        && nucleus.level(tile).is_none()
+        && !nucleus.outside(tile)
+        && nucleus.start() != Some(tile)
+        && explorer.cursor() != Some(tile)
 }
 
 /// Whether every call to a function the journey shows is only guessed, or handed

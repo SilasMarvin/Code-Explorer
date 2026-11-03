@@ -652,8 +652,6 @@ pub(crate) struct Screen {
     pub(crate) names: egui::Rect,
     /// How big each name on the graph was laid out, room found for it or not.
     pub(crate) name_sizes: Arc<HashMap<crate::labels::Named, egui::Vec2>>,
-    /// Where each function's name was tried, the one place it may go.
-    pub(crate) name_spots: Arc<HashMap<crate::labels::Named, egui::Rect>>,
     /// Every dot names keep off, and how far: the function, where, how far.
     pub(crate) kept_off: Arc<Vec<(usize, egui::Pos2, f32)>>,
     pub(crate) texts: Vec<Painted>,
@@ -675,7 +673,6 @@ impl Default for Screen {
             graph: egui::Rect::NOTHING,
             names: egui::Rect::NOTHING,
             name_sizes: Arc::default(),
-            name_spots: Arc::default(),
             kept_off: Arc::default(),
             texts: Vec::new(),
             widgets: Vec::new(),
@@ -904,7 +901,6 @@ fn record(
         graph,
         names: crate::labels::names_area(&ctx).unwrap_or(graph),
         name_sizes: crate::labels::name_sizes(&ctx),
-        name_spots: crate::labels::name_spots(&ctx),
         kept_off: crate::labels::kept_off(&ctx),
         texts,
         widgets: clickable,
