@@ -173,7 +173,7 @@ pub(crate) fn frame(
         middle: VIEW,
         reach: BROWSE_REACH,
     }));
-    if let Some(reach) = reach(nucleus, &camera, lens) {
+    if let Some(reach) = reach(nucleus, lens) {
         camera.limit(reach);
     }
     let expanded = nucleus.expanded_module();
@@ -580,16 +580,17 @@ fn glide(points: &[(Vec3, Vec2)], camera: &mut OrbitCamera, rotation: Quat, lens
     }
 }
 
-/// How near and far the wheel may take the camera turned as it is, and what it keeps
-/// out of and in view: out, until everything shown takes a little over half the free
-/// area, held in it on the way.
-fn reach(nucleus: &Nucleus, camera: &OrbitCamera, lens: Lens) -> Option<Reach> {
+/// How near and far the wheel may take the camera, and what it keeps out of and in
+/// view: out, until everything shown takes a little over half the free area from
+/// the usual view, where the flattened map shows widest, so turning leaves the far
+/// end where it is; held in it on the way.
+fn reach(nucleus: &Nucleus, lens: Lens) -> Option<Reach> {
     let shown: Vec<(usize, Ball)> = nucleus
         .balls()
         .filter(|(_, ball)| nucleus.shows_body(ball.body))
         .collect();
     let near = shown.iter().map(|(_, ball)| ball.radius).reduce(f32::min)?;
-    let rotation = camera.aim_rotation();
+    let rotation = view_rotation();
     let (_, fits) = place(
         &within(&nucleus.atlas_points(rotation), ROOM),
         rotation,

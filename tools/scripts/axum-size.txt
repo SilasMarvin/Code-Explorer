@@ -50,3 +50,11 @@ key x
 expect expanded users
 expect check expanded-fill
 snap users expanded
+key esc
+key r
+scroll -40
+drag 250 120
+pan -300 100
+expect notice all the way out
+expect check map-on-screen
+snap out max turned and panned
