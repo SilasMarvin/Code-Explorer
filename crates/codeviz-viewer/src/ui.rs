@@ -620,11 +620,16 @@ fn aside_chip(ui: &mut egui::Ui, explorer: &mut Explorer) {
             CALLER_TEXT,
         )
     } else {
-        (
-            "not on this journey · Enter starts one here".to_owned(),
-            CHIP,
-            egui_color(SELECTED),
-        )
+        // One the journey runs, but at a level it does not show.
+        let deeper = explorer
+            .aside()
+            .is_some_and(|tile| explorer.nucleus().journey_level(tile).is_some());
+        let said = if deeper {
+            "deeper on this journey · Enter starts one here"
+        } else {
+            "not on this journey · Enter starts one here"
+        };
+        (said.to_owned(), CHIP, egui_color(SELECTED))
     };
     let chip = egui::Button::new(egui::RichText::new(said).size(text::BODY).color(TEXT))
         .fill(fill)
