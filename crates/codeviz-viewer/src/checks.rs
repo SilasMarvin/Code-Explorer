@@ -2397,7 +2397,7 @@ fn arrows_clear(s: &Snap) -> Value {
     for a in s
         .arrows
         .iter()
-        .filter(|a| a.flow != "inner" && a.path.len() >= 2)
+        .filter(|a| a.flow != "inner" && !a.guessed && a.path.len() >= 2)
     {
         judged += 1;
         let own =

@@ -701,7 +701,8 @@ impl Nucleus {
         self.now
             .links
             .iter()
-            .filter(|l| l.flow != Flow::Inner)
+            // Not what I brings in, nor the expanded module's own: those come and go.
+            .filter(|l| matches!(l.flow, Flow::Into | Flow::Journey(_)))
             .map(|l| (l.from, l.to))
             .chain(reach)
             .collect()
