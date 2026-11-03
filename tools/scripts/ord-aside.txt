@@ -62,3 +62,39 @@ expect mode browse
 expect expanded scenario
 expect camera-same-as browse expanded
 snap esc back to browse expanded
+
+# Expanded in a journey, X back with a function set aside off the journey's view
+# brings it into view, as a pick collapsed does.
+key /
+type spotlit
+search-pick Explorer::spotlit
+key enter
+key x
+key /
+type walk
+search-pick Finder::walk
+expect aside Finder::walk
+expect expanded scenario
+snap expansion follows the search
+key x
+expect expanded none
+expect check focus-on-screen
+snap x back shows the aside
+
+# With I on, a level more growing the panel over a caller I brought in draws the
+# camera back.
+key esc
+key ,
+key ,
+key ,
+key ,
+key .
+bar 2.2
+key i
+key down
+snap i on
+key .
+key .
+expect check spheres-unclipped
+expect check nothing-moved
+snap i on two levels more

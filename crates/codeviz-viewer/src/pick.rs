@@ -204,40 +204,40 @@ pub(crate) fn click(
 const DOUBLE_CLICK: f32 = 0.4;
 
 /// A double click on a module expands it: anywhere on its sphere, or on one of its
-/// functions, which the first click has already picked as any click does; on another
-/// module than the one expanded, expands that one instead. On the module expanded,
-/// off every function, it shrinks it back. A press that drags to orbit is no click.
+/// functions; on another module than the one expanded, expands that one instead. On
+/// the module expanded, off every function, it shrinks it back. Browsing, it picks
+/// nothing: the selection its first click changed, as any click does, is put back. A
+/// press that drags to orbit is no click.
 pub(crate) fn double_click(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut explorer: ResMut<Explorer>,
-    mut pressed: Local<Option<Vec2>>,
-    mut last: Local<Option<(f32, Vec2)>>,
+    mut pressed: Local<Option<(Vec2, Option<usize>)>>,
+    mut last: Local<Option<(f32, Vec2, Option<usize>)>>,
 ) {
     let cursor = window.cursor_position();
     if buttons.just_pressed(MouseButton::Left) {
-        *pressed = cursor;
+        *pressed = cursor.map(|at| (at, explorer.selection()));
     }
     if !buttons.just_released(MouseButton::Left) {
         return;
     }
-    let at = match (pressed.take(), cursor) {
-        (Some(a), Some(b)) if a.distance(b) < CLICK_TRAVEL => b,
+    let (at, selected) = match (pressed.take(), cursor) {
+        (Some((a, selected)), Some(b)) if a.distance(b) < CLICK_TRAVEL => (b, selected),
         _ => {
             *last = None;
             return;
         }
     };
     let now = time.elapsed_secs();
-    let again = last.is_some_and(|(then, was)| {
+    let Some((.., selected)) = last.take().filter(|&(then, was, _)| {
         now - then <= DOUBLE_CLICK && was.distance(at) < 2.0 * CLICK_TRAVEL
-    });
-    if !again {
-        *last = Some((now, at));
+    }) else {
+        *last = Some((now, at, selected));
         return;
-    }
-    *last = None;
+    };
+    explorer.keep_selection(selected);
     let expanded = explorer.nucleus().expanded_module();
     match explorer.module_pointed() {
         // Another module than the one expanded, or the first: expanded instead.

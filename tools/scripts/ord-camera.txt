@@ -87,3 +87,26 @@ doubleclick-module scenario
 expect expanded scenario
 expect selection Explorer::spotlit
 snap double click keeps the selection
+
+# A double click on a dense module lands on a dot and still picks nothing.
+key x
+key r
+drag 140 70
+doubleclick-module lower
+expect expanded lower
+expect selection Explorer::spotlit
+expect check focus-on-screen
+snap double click on a dense module keeps the selection
+key x
+
+# A window sized anew leaves a camera the hands put where it was.
+key f
+scroll 4 at Explorer::spotlit
+pan 200 -100
+snap hand moved
+window 1100 720
+expect camera-same-as hand moved
+expect check framed
+snap resized after the hands
+window 1600 1000
+expect camera-same-as hand moved

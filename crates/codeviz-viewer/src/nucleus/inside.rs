@@ -71,22 +71,24 @@ impl Nucleus {
         }
     }
 
-    /// The module expanded, once a re-centering ends: its sphere's radius, and each
-    /// of its functions with where it sits across and up the usual view from the
-    /// sphere's middle, in the world.
+    /// The module expanded, laid out as it opens browsing, whatever the view lights:
+    /// its sphere's radius, and each of its functions with where it sits across and
+    /// up the usual view from the sphere's middle, in the world. What it holds alone
+    /// sets how big it expands, so it expands alike wherever it is.
     pub(crate) fn expanded_layout(&self) -> Option<(f32, Vec<(usize, Vec2)>)> {
         let cluster = self.expanded?;
-        let ball = self.now.balls.get(cluster)?;
+        let radius = atlas::module_radius(*self.counts.get(cluster)?);
+        let members: Vec<(usize, Vec3)> = (0..self.offsets.len())
+            .filter(|&t| self.module_of(t) == Some(cluster))
+            .map(|t| (t, self.offsets[t]))
+            .collect();
         let rotation = view_rotation();
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
-        let dots = (0..self.now.points.len())
-            .filter(|&t| self.opened_up(t) && self.placed(t))
-            .map(|t| {
-                let at = self.now.points[t] - ball.center;
-                (t, Vec2::new(at.dot(right), at.dot(up)))
-            })
+        let dots = spread(&members, &[], atlas::disc(radius))
+            .into_iter()
+            .map(|(t, at)| (t, Vec2::new(at.dot(right), at.dot(up))))
             .collect();
-        Some((ball.radius, dots))
+        Some((radius, dots))
     }
 
     /// The module a function lives in.

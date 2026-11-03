@@ -154,6 +154,9 @@ const LISTED: usize = 12;
 /// Why a check of where the view puts things leaves the view alone.
 const BY_HAND: &str = "the camera is where the user's hands put it";
 
+/// Why it leaves Back and Forward alone.
+const BACK: &str = "Back or Forward put back the camera the place had, wherever that shows things";
+
 /// A check: the snapshot, the one before it, and what happened between them.
 type Check = fn(&Snap, Option<&Snap>, &Since) -> Value;
 
@@ -171,7 +174,7 @@ const CHECKS: [(&str, Check); 30] = [
     ("panel-agrees", |s, _, _| panel_agrees(s)),
     ("expanded-fill", expanded_fill),
     ("expanded-drawn", |s, _, _| expanded_drawn(s)),
-    ("framed", |s, _, since| framed(s, since)),
+    ("framed", framed),
     ("zoom-to-pointer", zoom_to_pointer),
     ("zoom-bounds", |s, _, since| zoom_bounds(s, since)),
     ("nothing-moved", nothing_moved),
@@ -319,6 +322,10 @@ struct State {
     aside: Option<String>,
     /// The module expanded, by name.
     expanded: Option<String>,
+    /// In a journey, the levels it shows, and how many below the start its deepest
+    /// call is.
+    depth: u32,
+    deepest: Option<u32>,
     help: bool,
     pointer: Option<[f32; 2]>,
     camera: Option<Camera>,
@@ -980,6 +987,14 @@ fn panel_agrees(s: &Snap) -> Value {
         return skip("no journey bars drawn");
     }
     let mut offenders = Vec::new();
+    // The depth the panel reads is one the journey has: from 1 to its deepest call.
+    if let Some(deepest) = s.state.deepest
+        && !(1..=deepest.max(1)).contains(&s.state.depth)
+    {
+        let why = "the depth shown is not one of the journey's levels";
+        let offender = json!({ "depth": s.state.depth, "deepest": deepest, "why": why });
+        offenders.push((3.0, offender));
+    }
     for bar in &s.bars {
         let drawn = bar.unit.as_deref().and_then(|u| s.node(u));
         // Each numbered bar has its call on the graph: a call only guessed among
@@ -1180,7 +1195,11 @@ fn expanded_drawn(s: &Snap) -> Value {
     with(verdict(Vec::new()), "dots_in_view", json!(dots))
 }
 
-fn framed(s: &Snap, since: &Since) -> Value {
+fn framed(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
+    // A window sized anew with the camera where the hands put it leaves it there.
+    if since.by_hand && since.has(Kind::Resize) && since.last_move().is_none() {
+        return verdict(before.map_or_else(Vec::new, |b| hands_kept(b, s)));
+    }
     let free = s.free();
     let mut offenders = Vec::new();
     match since.last_move() {
@@ -1218,6 +1237,21 @@ fn framed(s: &Snap, since: &Since) -> Value {
         }
     }
     verdict(offenders)
+}
+
+/// The camera moved off what it looked at, or nearer or further, since `before`.
+fn hands_kept(before: &Snap, now: &Snap) -> Found {
+    let (Some(a), Some(b)) = (before.state.camera, now.state.camera) else {
+        return Vec::new();
+    };
+    let by = Vec3::from_array(a.target).distance(Vec3::from_array(b.target));
+    let further = b.distance - a.distance;
+    if by <= MOVED_WORLD && further.abs() <= MOVED_WORLD {
+        return Vec::new();
+    }
+    let why = "a window sized anew moved a camera the hands had put";
+    let offender = json!({ "target_by": r3(by), "distance_by": r3(further), "why": why });
+    vec![(by + further.abs(), offender)]
 }
 
 fn zoom_to_pointer(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
@@ -1332,14 +1366,28 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
 }
 
 fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
+    // An expand or a shrink back picks nothing: browsing, the selection stays.
+    let only_expands = (since.kinds.iter()).all(|k| matches!(k, Kind::Still | Kind::Expand));
+    if since.has(Kind::Expand)
+        && only_expands
+        && let Some(b) = before.filter(|b| b.state.mode == "browse" && s.state.mode == "browse")
+        && b.state.selection != s.state.selection
+    {
+        let why = "an expand or shrink back changed the selection";
+        let offender = json!({ "why": why, "was": b.state.selection, "now": s.state.selection });
+        return verdict(vec![(1.0, offender)]);
+    }
     // Wherever the hands put the camera, a cursor that moves expanded in a journey is
     // kept in view.
     let cursor_only = since.by_hand && s.cursor_moved_expanded(before);
     if since.by_hand && !cursor_only {
         return skip(BY_HAND);
     }
-    if since.has(Kind::Expand) {
+    if since.has(Kind::Expand) && s.expanded() {
         return skip("an expand frames the module, wherever the focus is");
+    }
+    if since.has(Kind::Back) {
+        return skip(BACK);
     }
     // A function picked browsing since (a click, a search, Back), or set aside in a
     // journey, is in view wherever it is: the expansion follows it.
@@ -1511,6 +1559,9 @@ fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if since.playing {
         return skip("a frame of a transition still playing");
     }
+    if since.has(Kind::Back) {
+        return skip(BACK);
+    }
     let opened = since.opening
         || before.is_none_or(|b| b.state.mode != "journey" || b.state.start != s.state.start);
     let framed = matches!(
@@ -1576,7 +1627,7 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     }
     let expanded_journey = journey && s.expanded();
     if expanded_journey && before.state.expanded != s.state.expanded {
-        return skip("the cursor took the expansion to another module");
+        return skip("the cursor or the function set aside took the expansion to another module");
     }
     // A depth change may draw the camera back to show what it brought in, when that
     // would be off the free area, and no more. Expanded in a journey, a click may
@@ -4051,6 +4102,81 @@ mod tests {
             run(&s, None, &by_hand)["focus-on-screen"]["pass"],
             Value::Null
         );
+    }
+
+    #[test]
+    fn a_shrink_back_or_back_is_judged_as_such() {
+        let mut s = journey();
+        s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 800.0, 1600.0, 1000.0] }]);
+        s["free_area"] = json!([0.0, 24.0, 1600.0, 800.0]);
+        s["nodes"][2]["at"] = json!([1000.0, 820.0]);
+        // X shrinking back must leave what is in focus in view; expanding need not.
+        let result = after(&s, &s, &[Kind::Expand], "focus-on-screen");
+        assert_eq!(result["offenders"][0]["function"], "h", "{result}");
+        s["state"]["nucleus"] = json!("expanded");
+        s["state"]["expanded"] = json!("b");
+        let result = after(&s, &s, &[Kind::Expand], "focus-on-screen");
+        assert_eq!(result["pass"], Value::Null, "{result}");
+        // Back puts back the camera a place had, wherever that shows things.
+        s["state"]["nucleus"] = json!("modules");
+        for name in ["focus-on-screen", "journey-fills"] {
+            let result = after(&s, &s, &[Kind::Back], name);
+            assert_eq!(result["pass"], Value::Null, "{name}: {result}");
+        }
+    }
+
+    #[test]
+    fn an_expand_keeps_the_selection() {
+        let mut before = scene();
+        before["state"]["selection"] = json!("f");
+        let mut now = before.clone();
+        assert_ne!(
+            after(&before, &now, &[Kind::Expand], "focus-on-screen")["pass"],
+            json!(false)
+        );
+        now["state"]["selection"] = json!("h");
+        now["nodes"][2]["roles"] = json!(["selection"]);
+        let result = after(&before, &now, &[Kind::Expand], "focus-on-screen");
+        assert!(!passes(&result), "{result}");
+        assert_ne!(
+            after(
+                &before,
+                &now,
+                &[Kind::Click, Kind::Expand],
+                "focus-on-screen"
+            )["pass"],
+            json!(false),
+            "a click picks"
+        );
+    }
+
+    #[test]
+    fn a_window_sized_anew_leaves_the_hands_camera_be() {
+        let before = scene();
+        let mut now = before.clone();
+        let resized = Since {
+            kinds: vec![Kind::Resize],
+            by_hand: true,
+            ..Since::default()
+        };
+        assert!(passes(&run(&now, Some(&before), &resized)["framed"]));
+        now["state"]["camera"]["distance"] = json!(140.0);
+        let result = run(&now, Some(&before), &resized)["framed"].clone();
+        assert!(!passes(&result), "{result}");
+    }
+
+    #[test]
+    fn the_depth_shown_is_one_the_journey_has() {
+        let mut s = journey();
+        s["state"]["deepest"] = json!(3);
+        s["state"]["depth"] = json!(3);
+        assert_ne!(
+            check(&s, "panel-agrees")["offenders"][0]["why"],
+            json!("the depth shown is not one of the journey's levels")
+        );
+        s["state"]["depth"] = json!(5);
+        let result = check(&s, "panel-agrees");
+        assert_eq!(result["offenders"][0]["deepest"], 3, "{result}");
     }
 
     #[test]

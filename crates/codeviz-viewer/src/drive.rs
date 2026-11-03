@@ -1448,9 +1448,7 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
         // The expansion taken to another module: flown there and framed, but by Back
         // or Forward, put back where the camera stood then, perhaps by hand.
         (true, true) if module != drive.began.0 => {
-            let step = &drive.lines[index].step;
-            drive.by_hand =
-                matches!(step, Step::Key(press) if press.code().0 == KeyCode::Backspace);
+            drive.by_hand = drive.lines[index].step.kind() == Kind::Back;
         }
         (true, false) => {
             let saved = drive.expanded_by_hand.take();
