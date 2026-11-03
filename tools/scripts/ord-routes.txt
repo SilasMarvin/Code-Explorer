@@ -22,10 +22,10 @@ key x
 snap expanded
 expect check arrows-clear pass
 expect check exits-named pass
-hover Explorer::refresh_reach
+hover Explorer::can_go_back
 expect nothing-moved
 snap hover plain
-hover Explorer::reroot
+hover Explorer::any_unit
 expect nothing-moved
 snap hover another
 key ,

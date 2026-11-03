@@ -498,6 +498,16 @@ impl Node {
         }
     }
 
+    /// How deep in the journey it first runs: 0 the start or a caller.
+    fn depth(&self) -> Option<u32> {
+        if self.is("start") || self.is("caller") {
+            return Some(0);
+        }
+        self.roles
+            .iter()
+            .find_map(|r| r.strip_prefix("journey level ")?.parse().ok())
+    }
+
     /// Lit in a journey: the start, a call or a caller of it (not one folded into
     /// its module's count).
     fn in_journey(&self) -> bool {
@@ -1506,8 +1516,10 @@ fn gone_labels(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
             let Some(of) = of else {
                 return false;
             };
+            // A name shown only under the pointer goes with it.
             if kind == "function" {
-                now.node(of).is_some_and(|n| n.on_screen)
+                !before.node(of).is_some_and(|n| n.is("hovered"))
+                    && now.node(of).is_some_and(|n| n.on_screen)
             } else {
                 now.spheres().any(|m| &m.name == of && m.on_screen)
             }
@@ -2513,8 +2525,9 @@ fn through_dots(a: &Arrow, pieces: &[(Vec2, Vec2)], dots: &[&Node]) -> Vec<(f32,
     offenders
 }
 
-/// The lit names a call's line runs through: any but its own ends'; those only for a
-/// bent line, away from where it leaves its dot.
+/// The lit names a call's line runs through: in a journey, those no deeper than its
+/// ends (a deeper one comes with a level more, which bends no line), browsing any;
+/// its own ends' only for a bent line, away from where it leaves its dot.
 fn through_names(
     s: &Snap,
     a: &Arrow,
@@ -2522,10 +2535,18 @@ fn through_names(
     names: &[&Label],
 ) -> Vec<(f32, Value)> {
     let bent = a.path.len() > 2;
+    let level = |unit: Option<&str>| unit.and_then(|u| s.node(u)).and_then(Node::depth);
+    let deepest = level(a.from_unit.as_deref())
+        .unwrap_or(0)
+        .max(level(a.to_unit.as_deref()).unwrap_or(0));
+    let journey = s.state.mode == "journey";
     let mut offenders = Vec::new();
     for l in names {
         let mine = own_end(a, l.unit.as_deref());
         if mine && !bent {
+            continue;
+        }
+        if journey && !mine && level(l.unit.as_deref()).is_none_or(|d| d > deepest) {
             continue;
         }
         let dot = l.unit.as_deref().and_then(|u| s.node(u));
@@ -3082,8 +3103,10 @@ mod tests {
     fn a_bent_call_through_a_third_dot_or_any_through_a_name_is_named() {
         let mut s = scene();
         s["state"]["mode"] = json!("journey");
-        s["nodes"][1]["roles"] = json!(["callee"]);
+        s["nodes"][0]["roles"] = json!(["start"]);
+        s["nodes"][1]["roles"] = json!(["journey level 1"]);
         s["nodes"][1]["radius"] = json!(4.0);
+        s["nodes"][2]["roles"] = json!(["journey level 1"]);
         // Straight from f to h through g: drawn broken round its dot, so it passes.
         s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
             "flow": "journey", "level": 1, "path": [[386.0, 500.0], [994.0, 500.0]] }]);
@@ -3101,6 +3124,15 @@ mod tests {
         let result = check(&s, "arrows-clear");
         assert_eq!(result["count"], 1, "{result}");
         assert_eq!(result["offenders"][0]["through"], "name");
+        // A name deeper in the journey than the call's ends comes with a level more,
+        // which bends no line: it may lie over it.
+        s["nodes"][1]["roles"] = json!(["journey level 2"]);
+        assert!(
+            passes(&check(&s, "arrows-clear")),
+            "{}",
+            check(&s, "arrows-clear")
+        );
+        s["nodes"][1]["roles"] = json!(["journey level 1"]);
         s["state"]["mode"] = json!("browse");
         assert_eq!(check(&s, "arrows-clear")["count"], 1);
         // Bent, but through g's dot.
@@ -3232,6 +3264,19 @@ mod tests {
                 .is_none_or(|o| o.iter().all(|o| o["arrow"].is_null())),
             "{result}"
         );
+    }
+
+    #[test]
+    fn a_name_shown_only_under_the_pointer_goes_with_it() {
+        let mut before = scene();
+        before["nodes"][2]["roles"] = json!(["callee", "hovered"]);
+        let mut now = scene();
+        now["labels"].as_array_mut().expect("labels").remove(2);
+        let result = after(&before, &now, &[Kind::Still], "nothing-moved");
+        assert!(passes(&result), "{result}");
+        before["nodes"][2]["roles"] = json!(["callee"]);
+        let result = after(&before, &now, &[Kind::Still], "nothing-moved");
+        assert_eq!(result["offenders"][0]["gone"], true, "{result}");
     }
 
     #[test]
