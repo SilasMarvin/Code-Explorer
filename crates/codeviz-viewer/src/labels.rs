@@ -782,9 +782,7 @@ impl<'a> Naming<'a> {
                     steady,
                     least,
                     lit: dot != Dot::Speck && !plain,
-                    // One in a place kept free is kept off by every name, shown or
-                    // not, so I moves no name.
-                    outside: nucleus.outside(tile) && !nucleus.seated(tile),
+                    outside: nucleus.outside(tile),
                     may_light: dot != Dot::Speck
                         || nucleus.browsing()
                         || nucleus.journey_level(tile).is_some(),

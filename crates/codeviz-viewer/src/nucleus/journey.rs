@@ -663,9 +663,9 @@ impl Seats {
         Some(if held { self.kept(at.0) - 1 } else { at.1 })
     }
 
-    /// Every caller with a seat in a module that keeps places free, each that is not
-    /// drawn (`drawn`) put at its place, undrawn: names keep off where I may bring
-    /// one in, as off a deeper level's calls, whether it shows or not.
+    /// Puts each caller with a seat that the journey neither lays out nor draws
+    /// (`drawn`) at its place, undrawn, and returns them: names keep off where I may
+    /// bring one in, as off a deeper level's calls.
     fn wait(
         &self,
         points: &mut [Vec3],
@@ -673,18 +673,17 @@ impl Seats {
         drawn: impl Fn(usize) -> bool,
         aside: Option<usize>,
         cluster_of: &impl Fn(usize) -> usize,
-    ) -> HashSet<usize> {
-        let mut seated = HashSet::new();
-        for &tile in self.seat.keys() {
+    ) -> Vec<usize> {
+        let mut waiting: Vec<usize> = self.seat.keys().copied().collect();
+        waiting.retain(|&t| !drawn(t) && !placed.points.contains_key(&t));
+        waiting.sort_unstable();
+        for &tile in &waiting {
             let free = placed.free.get(&cluster_of(tile));
             if let Some(&at) = free.and_then(|free| free.get(self.of(tile, aside)?)) {
-                if !drawn(tile) {
-                    points[tile] = at;
-                }
-                seated.insert(tile);
+                points[tile] = at;
             }
         }
-        seated
+        waiting
     }
 
     /// Which of `cluster`'s places the function set aside, `tile`, takes: its seat,
