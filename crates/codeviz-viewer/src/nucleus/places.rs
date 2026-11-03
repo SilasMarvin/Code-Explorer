@@ -76,7 +76,8 @@ pub(super) struct Placed {
     pub(super) points: HashMap<usize, Vec3>,
     pub(super) free: HashMap<usize, Vec<Vec3>>,
     /// Of those, by cluster and place, the ones with no room clear of the names round
-    /// them: whoever would take one is left for the module expanded to show.
+    /// them, or on a call's line: whoever would take one is left for the module
+    /// expanded to show.
     pub(super) crowded: HashSet<(usize, usize)>,
     /// The functions whose names go on their left.
     pub(super) left: HashSet<usize>,
@@ -209,10 +210,12 @@ impl Board<'_> {
                 cost += SPREAD * (1.0 - there.distance(at) / apart).max(0.0);
             }
         }
-        // Its dot: on no line drawn, near no dot, under no name.
+        // Its dot: on no line drawn, near no dot, under no name. A place kept free on
+        // a line costs as much as one crowded: whoever took it would read as that call's.
+        let on_line = if tile.is_none() { OVER } else { THROUGH_DOT };
         for (from, to, a, b) in self.lines(middle) {
             if Some(from) != tile && Some(to) != tile && reach(a, b, at) < keep {
-                cost += THROUGH_DOT;
+                cost += on_line;
             }
         }
         for (&other, &there) in &self.at {
@@ -365,6 +368,33 @@ fn closer(
         .collect()
 }
 
+/// `placed` with the names `board` put on their left; and of the places kept free,
+/// those a call's line runs by, now every function is put, crowded: a line laid out
+/// after a place was kept may still run by it, and whoever took it would read as that
+/// call's.
+fn finish(board: Board, mut placed: Placed) -> Placed {
+    let rotation = view_rotation();
+    let flat = |at: Vec3| Vec2::new(at.dot(rotation * Vec3::X), at.dot(rotation * Vec3::Y));
+    let by_line = |at: Vec2| {
+        board.calls.iter().any(|&(from, to)| {
+            let (Some(&a), Some(&b)) = (board.at.get(&from), board.at.get(&to)) else {
+                return false;
+            };
+            from != to && reach(a, b, at) < board.dot * 2.0
+        })
+    };
+    let crowded: Vec<(usize, usize)> = (placed.free.iter())
+        .flat_map(|(&cluster, spots)| {
+            (spots.iter().enumerate())
+                .filter(|&(_, &at)| by_line(flat(at)))
+                .map(move |(seat, _)| (cluster, seat))
+        })
+        .collect();
+    placed.crowded.extend(crowded);
+    placed.left = board.left;
+    placed
+}
+
 /// Where each of `rooms`' functions goes, the rooms in turn and each one's in order,
 /// clear of the lines of `calls` (caller, callee) and of each other, names `chars`
 /// characters long; and the places each room leaves free.
@@ -482,6 +512,52 @@ pub(super) fn place(
         let more = room.spare.saturating_sub(kept);
         keep_free(&mut board, room, &mut spots, more);
     }
-    placed.left = board.left;
-    placed
+    finish(board, placed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_one_takes_a_place_on_a_call() {
+        let rotation = view_rotation();
+        let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+        let flat = |at: Vec3| Vec2::new(at.dot(right), at.dot(up));
+        // The start in the middle, a caller far off to its right and a call far off to
+        // its left: their lines run across the middle sphere, where places are kept.
+        let room = |cluster, center, tiles: Vec<usize>, middle| Room {
+            cluster,
+            center,
+            radius: 8.0,
+            tiles,
+            middle,
+            spare: 8,
+        };
+        let rooms = [
+            room(0, Vec3::ZERO, vec![1, 2], Some(0)),
+            room(1, right * 40.0 + up * 3.0, vec![3], None),
+            room(2, -right * 40.0 - up * 2.0, vec![4], None),
+        ];
+        let calls = [(3, 0), (0, 1), (1, 2), (2, 4), (0, 4)];
+        let placed = place(&rooms, &calls, &|_| 8);
+        let mut open = 0;
+        for (&cluster, spots) in &placed.free {
+            for (seat, &at) in spots.iter().enumerate() {
+                if placed.crowded.contains(&(cluster, seat)) {
+                    continue;
+                }
+                open += 1;
+                for &(from, to) in &calls {
+                    let (a, b) = (placed.points[&from], placed.points[&to]);
+                    let by = reach(flat(a), flat(b), flat(at));
+                    assert!(
+                        by >= Dot::Focus.radius() * 2.0,
+                        "place {seat} of {cluster} is {by} from {from} → {to}"
+                    );
+                }
+            }
+        }
+        assert!(open > 0, "some places stay open");
+    }
 }
