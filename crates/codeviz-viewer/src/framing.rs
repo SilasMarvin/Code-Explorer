@@ -201,7 +201,7 @@ pub(crate) fn frame(
     let cursor = cursor.and_then(resting);
     let current = explorer.current().and_then(resting);
     let taken = if focus {
-        Some(Shot::Focus)
+        Some(Shot::Pointed { opening: false })
     } else if whole {
         Some(Shot::Whole)
     } else if before != Some(now) {
@@ -226,16 +226,10 @@ pub(crate) fn frame(
         _ => taken.or_else(|| (*shot).filter(|_| resized && camera.framed())),
     };
     if let Some(taken) = taken {
-        take(
-            taken,
-            nucleus,
-            (cursor, current),
-            &mut camera,
-            (views, &chars),
-        );
+        take(taken, nucleus, current, &mut camera, (views, &chars));
         *shot = Some(match taken {
             Shot::Pointed { .. } => Shot::Pointed { opening: false },
-            other => other,
+            Shot::Whole => Shot::Whole,
         });
     }
     if let Some(Return::To(pose)) = returning {
@@ -260,35 +254,26 @@ fn came(nucleus: &Nucleus, opened: &mut Vec<usize>, resized: bool) -> Vec<usize>
     came
 }
 
-/// How the view was framed: as F frames it, as R does, or pointed somewhere new
-/// (`opening` when it turns to the usual view on the way, as entering or leaving a
+/// How the view was framed: as R does, or as F does and the view pointed somewhere
+/// new (`opening` when it turns to the usual view on the way, as entering or leaving a
 /// journey and expanding or shrinking back do).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Shot {
-    Focus,
     Whole,
     Pointed { opening: bool },
 }
 
-/// Frames the view as `shot` says, with the journey's cursor and what the view is
-/// on (`current`) where they rest.
+/// Frames the view as `shot` says, with what the view is on (`current`) where it
+/// rests.
 fn take(
     shot: Shot,
     nucleus: &Nucleus,
-    (cursor, current): (Option<Vec3>, Option<Vec3>),
+    current: Option<Vec3>,
     camera: &mut OrbitCamera,
     (views, chars): (Views, &dyn Fn(usize) -> usize),
 ) {
     let lens = views.free;
     match shot {
-        Shot::Focus => {
-            let rotation = camera.aim_rotation();
-            if nucleus.expanded() {
-                fill(nucleus, cursor, camera, rotation, (views, chars));
-            } else {
-                fit(nucleus, current, camera, rotation, views);
-            }
-        }
         // Everything shown, as it was first seen: from the front; in a journey,
         // everything it lights.
         Shot::Whole => {
@@ -296,7 +281,7 @@ fn take(
             if nucleus.browsing() {
                 fit_all(nucleus, camera, view_rotation(), lens);
             } else {
-                let mut points = journey_points(nucleus, &[cursor], view_rotation(), views);
+                let mut points = journey_points(nucleus, &[current], view_rotation(), views);
                 let spheres = nucleus.atlas_points(view_rotation());
                 points.extend(spheres.into_iter().map(|p| (p, Vec2::ONE)));
                 glide(&points, camera, view_rotation(), lens);
@@ -314,10 +299,10 @@ fn take(
             if nucleus.expanded() {
                 // Expanding blows the module up as its functions need; shrinking back
                 // returns to where the camera stood before (the explorer's pose).
-                let cursor = cursor.filter(|_| !opening);
-                fill(nucleus, cursor, camera, rotation, (views, chars));
+                let current = current.filter(|_| !opening);
+                fill(nucleus, current, camera, rotation, (views, chars));
             } else {
-                fit(nucleus, cursor, camera, rotation, views);
+                fit(nucleus, current, camera, rotation, views);
             }
         }
     }
