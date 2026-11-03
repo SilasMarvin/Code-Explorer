@@ -53,11 +53,9 @@ const SHORT_GAP: f32 = 1.0;
 const CROSSING: f32 = 0.3;
 /// Kept clear round a dot a line passes without ending there, in points.
 const DOT_CLEAR: f32 = 2.0;
-/// What running over a lit dot costs a line, and over a lit function's name, against
-/// a plain dot's 1: a line keeps off every lit dot, then as many names and plain dots
-/// as it can.
+/// What running over a lit dot costs a line, against a plain one's 1: a line keeps
+/// off every lit dot, and off as many plain ones as it can.
 const LIT_COST: usize = 100;
-const NAME_COST: usize = 10;
 /// How far each of the two lines between the same two ends moves to its right when
 /// calls go both ways, in points: far enough that their heads, side by side, do not
 /// touch, so neither hides the other.
@@ -288,9 +286,6 @@ struct Route {
     straight: Vec<egui::Pos2>,
     /// Whether names keep off it.
     kept: bool,
-    /// Where it runs between, and how far to its right.
-    ends: [End; 2],
-    side: f32,
 }
 
 /// Where every call the view could draw runs, by caller and callee, for where the
@@ -352,7 +347,7 @@ pub(crate) fn route(explorer: &Explorer, (camera, view): (&Camera, &GlobalTransf
                 .filter(|&&(tile, (at, ..))| avoid && near(tile) && reach.contains(at))
                 .map(|&(_, o)| o)
                 .collect();
-            let mut route = route_one(ends, side, (&obstacles, &[]))?;
+            let mut route = route_one(ends, side, &obstacles)?;
             route.kept = kept;
             Some(((from, to), route))
         })
@@ -361,11 +356,11 @@ pub(crate) fn route(explorer: &Explorer, (camera, view): (&Camera, &GlobalTransf
 }
 
 /// The line of a call between `ends`, moved `side` points to its right: straight
-/// where it passes no dot of `obstacles` nor any of the `names`; else bowed round
-/// them by the gentlest bend, no more than [`DETOUR`] times as long, that clears
-/// every lit dot and the most names and plain dots; else straight. `None` where its
-/// ends are too near for a head.
-fn route_one(ends: [End; 2], side: f32, obstacles: (&[Obstacle], &[egui::Rect])) -> Option<Route> {
+/// where it passes no dot of `obstacles`; else bowed round them by the gentlest bend,
+/// no more than [`DETOUR`] times as long, that clears every lit dot and the most
+/// plain ones; else straight, broken round the dot. It may pass under a name, whose
+/// pill hides it there. `None` where its ends are too near for a head.
+fn route_one(ends: [End; 2], side: f32, obstacles: &[Obstacle]) -> Option<Route> {
     let [(a, ra), (b, rb)] = ends;
     let along = (b - a).normalized();
     let right = egui::vec2(-along.y, along.x);
@@ -384,8 +379,6 @@ fn route_one(ends: [End; 2], side: f32, obstacles: (&[Obstacle], &[egui::Rect]))
         path,
         straight: straight.clone(),
         kept: true,
-        ends,
-        side,
     };
     let first = cost(&straight, obstacles, usize::MAX);
     if first == 0 {
@@ -424,19 +417,10 @@ fn route_one(ends: [End; 2], side: f32, obstacles: (&[Obstacle], &[egui::Rect]))
 }
 
 /// What the line through `path` running over `obstacles` costs: [`LIT_COST`] a lit
-/// dot, [`NAME_COST`] a name, 1 a plain dot; counted no further than `enough`.
-fn cost(
-    path: &[egui::Pos2],
-    (obstacles, names): (&[Obstacle], &[egui::Rect]),
-    enough: usize,
-) -> usize {
+/// dot, 1 a plain one; counted no further than `enough`.
+fn cost(path: &[egui::Pos2], obstacles: &[Obstacle], enough: usize) -> usize {
     let bounds = egui::Rect::from_points(path);
     let mut total = 0;
-    for name in names.iter().filter(|name| name.intersects(bounds)) {
-        if path.windows(2).any(|p| through(p[0], p[1], *name)) {
-            total += NAME_COST;
-        }
-    }
     for &(at, radius, plain) in obstacles {
         if bounds.distance_to_pos(at) >= radius {
             continue;
@@ -569,59 +553,6 @@ struct Ink {
     hidden_in_spheres: bool,
 }
 
-/// A call's line bowed afresh round the names of lit functions it runs over, where
-/// one runs over any: those no deeper in the journey than its own ends, which show
-/// at every depth it does, so a level more or less bends it no further. `None`
-/// where it runs over none.
-fn around_names(
-    explorer: &Explorer,
-    link: &Link,
-    route: &Route,
-    (dots, names): (&[(usize, Obstacle)], &GraphNames),
-) -> Option<Route> {
-    if link.flow == Flow::Inner {
-        return None;
-    }
-    let nucleus = explorer.nucleus();
-    let level = |tile: usize| {
-        if nucleus.start() == Some(tile) || nucleus.level(tile) == Some(-1) {
-            Some(0)
-        } else {
-            nucleus.journey_level(tile)
-        }
-    };
-    let deepest = level(link.from)
-        .unwrap_or(0)
-        .max(level(link.to).unwrap_or(0));
-    let keeps_off = |tile: usize| {
-        tile != link.from
-            && tile != link.to
-            && if nucleus.browsing() {
-                nucleus.level(tile).is_some() || nucleus.start() == Some(tile)
-            } else {
-                !nucleus.outside(tile) && level(tile).is_some_and(|l| l <= deepest)
-            }
-    };
-    let [(a, _), (b, _)] = route.ends;
-    let reach = egui::Rect::from_two_pos(a, b).expand(BENDS[BENDS.len() - 1]);
-    let pills: Vec<egui::Rect> = names
-        .pills()
-        .filter(|&(pill, tile)| keeps_off(tile) && reach.intersects(pill))
-        .map(|(pill, _)| pill)
-        .collect();
-    if cost(&route.path, (&[], &pills), usize::MAX) == 0 {
-        return None;
-    }
-    let dots: Vec<Obstacle> = dots
-        .iter()
-        .filter(|&&(tile, (at, ..))| tile != link.from && tile != link.to && reach.contains(at))
-        .map(|&(_, o)| o)
-        .collect();
-    let mut around = route_one(route.ends, route.side, (&dots, &pills))?;
-    around.kept = route.kept;
-    Some(around)
-}
-
 /// An arrow along `path`, with a filled head at its end, its line strong where it
 /// crosses nothing, faint (or hidden) across a sphere, broken round a dot, as
 /// `crossings` has each of its pieces, into `shapes`. Returns how it shows.
@@ -717,13 +648,10 @@ pub(crate) fn draw(
         .collect();
     order.sort_by_key(|&(bright, link)| (bright, link.flow != Flow::Inner));
     let mut drawn = Vec::new();
-    let dots = screen.obstacles();
     for (bright, link) in order {
         let Some(route) = routes.lines.get(&(link.from, link.to)) else {
             continue;
         };
-        let around = around_names(explorer, link, route, (&dots, names));
-        let route = around.as_ref().unwrap_or(route);
         // A line bowed through its own end's name goes straight instead.
         let own_name = names.pills().any(|(pill, tile)| {
             (tile == link.from || tile == link.to)
@@ -1173,22 +1101,13 @@ mod tests {
     fn a_bent_line_clears_a_dot_in_the_way_and_ends_short_of_its_dots() {
         let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(200.0, 0.0));
         let obstacles = [(egui::pos2(100.0, 0.0), 6.0, false)];
-        assert_eq!(cost(&[a, b], (&obstacles, &[]), usize::MAX), LIT_COST);
-        let route = route_one([(a, 8.0), (b, 8.0)], 0.0, (&obstacles, &[])).expect("long enough");
+        assert_eq!(cost(&[a, b], &obstacles, usize::MAX), LIT_COST);
+        let route = route_one([(a, 8.0), (b, 8.0)], 0.0, &obstacles).expect("long enough");
         assert!(route.path.len() > 2, "bent");
-        assert_eq!(cost(&route.path, (&obstacles, &[]), usize::MAX), 0);
+        assert_eq!(cost(&route.path, &obstacles, usize::MAX), 0);
         assert!(length(&route.path) <= length(&route.straight) * DETOUR);
         assert!((route.path[0].distance(a) - 8.0).abs() < 0.5);
         assert!((route.path[route.path.len() - 1].distance(b) - 8.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn a_line_bows_round_a_name_where_it_keeps_off_the_dots() {
-        let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(200.0, 0.0));
-        let name = egui::Rect::from_min_max(egui::pos2(90.0, -6.0), egui::pos2(140.0, 6.0));
-        let route = route_one([(a, 8.0), (b, 8.0)], 0.0, (&[], &[name])).expect("long enough");
-        assert!(route.path.len() > 2, "bent");
-        assert_eq!(cost(&route.path, (&[], &[name]), usize::MAX), 0);
     }
 
     #[test]
@@ -1198,7 +1117,7 @@ mod tests {
         let obstacles: Vec<Obstacle> = (-12..=12_i16)
             .map(|y| (egui::pos2(100.0, f32::from(y) * 10.0), 6.0, false))
             .collect();
-        let route = route_one([(a, 8.0), (b, 8.0)], 0.0, (&obstacles, &[])).expect("long enough");
+        let route = route_one([(a, 8.0), (b, 8.0)], 0.0, &obstacles).expect("long enough");
         assert_eq!(route.path, route.straight);
     }
 
@@ -1218,9 +1137,9 @@ mod tests {
             })
             .collect();
         obstacles.push((egui::pos2(100.0, 0.0), 4.0, false));
-        let route = route_one([(a, 8.0), (b, 8.0)], 0.0, (&obstacles, &[])).expect("long enough");
+        let route = route_one([(a, 8.0), (b, 8.0)], 0.0, &obstacles).expect("long enough");
         assert!(
-            cost(&route.path, (&obstacles, &[]), usize::MAX) < LIT_COST,
+            cost(&route.path, &obstacles, usize::MAX) < LIT_COST,
             "keeps off the lit dot"
         );
     }
