@@ -143,12 +143,23 @@ def locked(fn):
         shutil.rmtree(LOCK, ignore_errors=True)
 
 
-def guarded(argv, cwd, log, limit=None):
-    """Runs argv under the memory guard (and a time limit, if given); returns its exit
-    code. Raises Trouble when it had to be killed."""
+def keep_awake(pid):
+    """Wakes the display and keeps it from dimming or sleeping while pid runs: macOS
+    draws nothing into a window on a sleeping display, and snaps come out black."""
+    if shutil.which("caffeinate"):
+        subprocess.Popen(["caffeinate", "-d", "-i", "-u", "-w", str(pid)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def guarded(argv, cwd, log, limit=None, window=True):
+    """Runs argv under the memory guard (and a time limit, if given), the display kept
+    awake while it has a window; returns its exit code. Raises Trouble when it had
+    to be killed."""
     with open(log, "w") as sink:
         p = subprocess.Popen(argv, cwd=cwd, stdout=sink, stderr=subprocess.STDOUT,
                              start_new_session=True)
+        if window:
+            keep_awake(p.pid)
         start = time.monotonic()
         try:
             while p.poll() is None:
@@ -261,7 +272,7 @@ def check_script(script, wt=REPO, view_args=None):
     with tempfile.TemporaryDirectory() as tmp:
         log = Path(tmp) / "check.log"
         argv = [str(exe), *view_args, "--check-script", str(script)]
-        if guarded(argv, Path(wt).resolve(), log, 300) != 0:
+        if guarded(argv, Path(wt).resolve(), log, 300, window=False) != 0:
             raise Trouble(f"{script.name}:\n{viewer_errors(log)}")
 
 
@@ -313,13 +324,27 @@ def failing_checks(summary):
     return out
 
 
+def verdict(summary):
+    """PASS, FAIL (the view: a step, an expect or a check), or NOT DRAWN: the view
+    passed, but macOS drew nothing into the window for some snaps, so they have no
+    PNG to look at."""
+    if not summary.get("ok"):
+        return "FAIL"
+    return "NOT DRAWN" if summary.get("window_not_drawn") else "PASS"
+
+
 def report(summary):
     """The summary as an agent reads it: verdict, failed steps, expects, checks."""
     snaps = summary.get("snaps", {})
     steps = summary.get("failed_steps", [])
     expects = summary.get("expects", [])
     lines = [f"{summary.get('dir', '')}: {len(snaps)} snaps, {len(expects)} expects — "
-             + ("PASS" if summary.get("ok") else "FAIL")]
+             + verdict(summary)]
+    blank = summary.get("window_not_drawn", [])
+    if blank:
+        lines.append(f"  window not drawn: {len(blank)} snaps have no PNG ({', '.join(blank)}); "
+                     "macOS drew nothing into the window (display asleep or locked, or something "
+                     "over its corner). Their JSON and checks hold; run again for the pictures.")
     for s in steps:
         if str(s.get("do", "")).startswith("expect "):
             continue
@@ -372,11 +397,12 @@ def suite(wt, only, prefix):
         except Trouble as error:
             summary = {"name": name, "ok": False, "error": str(error), "dir": str(SESSIONS / name)}
         rows.append((script.stem, summary))
-        print(f"  {script.stem}: {'pass' if summary.get('ok') else 'FAIL'}", file=sys.stderr)
+        print(f"  {script.stem}: {verdict(summary) if 'error' not in summary else 'ERROR'}",
+              file=sys.stderr)
     print(table(rows))
     (SESSIONS / f"{prefix}suite.json").write_text(json.dumps(
         {stem: {k: v for k, v in s.items() if k != "snaps"} for stem, s in rows}, indent=2) + "\n")
-    return all(s.get("ok") for _, s in rows)
+    return all(verdict(s) == "PASS" for _, s in rows)
 
 
 def table(rows):
@@ -392,15 +418,17 @@ def table(rows):
         bad = [e for e in expects if not e.get("ok")]
         checks = [n for n, _, _ in failing_checks(s)]
         body.append((stem, f"{len(steps)} failed", f"{len(expects) - len(bad)}/{len(expects)} ok",
-                     ", ".join(checks) or "none", "pass" if s.get("ok") else "FAIL"))
+                     ", ".join(checks) or "none", verdict(s).lower() if s.get("ok") else "FAIL"))
     widths = [max(len(str(r[i])) for r in [head] + body) for i in range(len(head) - 1)]
     fmt = lambda r: "  ".join(str(c).ljust(w) for c, w in zip(r, widths)) + "  " + r[-1]
     out = [fmt(head), fmt(tuple("-" * w for w in widths) + ("-------",))]
     out += [fmt(r) for r in body]
     passed = sum(1 for _, s in rows if s.get("ok"))
-    out.append(f"\n{passed}/{len(rows)} scripts pass")
+    blank = sum(1 for _, s in rows if "error" not in s and verdict(s) == "NOT DRAWN")
+    out.append(f"\n{passed}/{len(rows)} scripts pass"
+               + (f"; {blank} of them with the window not drawn for some snaps (no PNG)" if blank else ""))
     for stem, s in rows:
-        if s.get("ok"):
+        if verdict(s) == "PASS" and "error" not in s:
             continue
         out.append("")
         out.append(s["error"] if "error" in s else report(s))
@@ -444,7 +472,7 @@ def main(argv):
             raise Trouble("usage: tools/drive run NAME SCRIPT [--wt DIR] [-- VIEW ARGS]")
         summary = run_session(mine[0], mine[1], wt, view_args)
         print(report(summary))
-        return 0 if summary.get("ok") else 1
+        return {"PASS": 0, "FAIL": 1}.get(verdict(summary), 2)
     if command == "suite":
         only = option(mine, "--only", many=True)
         prefix = option(mine, "--prefix", "suite-")
@@ -461,7 +489,7 @@ def main(argv):
             raise Trouble("usage: tools/drive read NAME")
         summary = read(mine[0])
         print(report(summary))
-        return 0 if summary.get("ok") else 1
+        return {"PASS": 0, "FAIL": 1}.get(verdict(summary), 2)
     if command == "shot":
         if len(mine) != 1:
             raise Trouble("usage: tools/drive shot NAME [--wt DIR] -- VIEW ARGS [--keys K] [--hover UNIT]")
@@ -506,6 +534,7 @@ def idle(wt, view_args, seconds):
         env = dict(os.environ, CODEVIZ_TUCKED="1")
         p = subprocess.Popen(argv, cwd=Path(wt).resolve(), stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+        keep_awake(p.pid)
         try:
             deadline = time.monotonic() + IDLE_SETTLE
             while time.monotonic() < deadline:
@@ -535,6 +564,9 @@ def shot(name, wt, view_args):
         out = Path(summary["dir"])
         png = next(out.glob("[0-9][0-9]-*.png"), None)
         meta = next(out.glob("[0-9][0-9]-*.json"), None)
+        if png is None and summary.get("window_not_drawn"):
+            raise Trouble("window not drawn: macOS drew nothing into it (display asleep or "
+                          "locked, or something over its corner); run again")
         if png is None or meta is None:
             raise Trouble(f"the snap was not taken:\n{viewer_errors(out / 'viewer.log')}")
         shutil.copy(png, SHOTS / f"{name}.png")

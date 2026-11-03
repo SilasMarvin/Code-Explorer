@@ -37,7 +37,7 @@ screen's bottom right (or bottom left), and click-through. `live` opens as usual
 
 | command | does |
 |---|---|
-| `tools/drive run NAME SCRIPT [--wt DIR] [-- VIEW ARGS]` | one session into `$CODEVIZ_SESSIONS/NAME/`; exit 0 when clean, 1 when anything failed, 2 when it could not run |
+| `tools/drive run NAME SCRIPT [--wt DIR] [-- VIEW ARGS]` | one session into `$CODEVIZ_SESSIONS/NAME/`; exit 0 when clean, 1 when anything failed, 2 when it could not run or the window was not drawn |
 | `tools/drive suite [--only TEXT]... [--prefix P]` | every `tools/scripts/*.txt` (or those whose name holds TEXT), names checked first, then one window at a time; prints the table, writes `$CODEVIZ_SESSIONS/<P>suite.json` |
 | `tools/drive check SCRIPT...` | reads each script and looks up what it names, without a window |
 | `tools/drive read NAME` | the summary of a session already run |
@@ -148,7 +148,7 @@ Snap before the step you want to judge, then `expect` after it: `nothing-moved`,
 - `checks.json`: start here. `ok`; `checks` (each check: `pass`, `passed`, `failed`,
   `not_applied`, `failed_in` snaps); `expects` (each line, `ok`, `why`); `failed_steps`
   (`step`, `line`, `do`, `trouble`); `notes` (`step`, `line`, `do`, `note`); `snaps`
-  (each snap's checks in full).
+  (each snap's checks in full); `window_not_drawn` (snaps with no PNG, see "Limits").
 - `NN-label.png`: the window at that snap, in window points, the same as the JSON's.
 - `NN-label.json`: what that snap shows (below).
 - `session.json`: every step with `ok`, `trouble`, `note`, `pointer` (where the pointer
@@ -341,10 +341,15 @@ tools/test_drive.py` tests the runner's own logic.
 
 ## Limits
 
-- Black PNGs: macOS stops drawing a window it counts as covered or wholly off screen;
-  the harness keeps a corner of the window on screen and on top. A snap of a covered
-  window is retried offscreen, which also comes out black today, saying so in
-  `trouble`. The JSON is right regardless.
+- Black PNGs: macOS stops drawing a window when the display dims, sleeps or locks, or
+  when it counts the window covered or wholly off screen. The runner keeps the display
+  awake while a window is open (`caffeinate -d -i -u -w`, which also wakes a dimmed
+  one), and the window keeps a corner on screen and on top. A snap that still comes out
+  black is taken again with the window tucked into another screen corner, up to three
+  times; still black, it has no PNG and is listed in `checks.json`'s
+  `window_not_drawn`. That is not a failure of the view: its JSON and checks hold, the
+  verdict reads `NOT DRAWN` (exit 2) when nothing else failed, and running again,
+  display awake and unlocked, gives the pictures.
 - Not faked: trackpad gestures (pinch, two-finger orbit), Shift-drag pan, hovering a
   journey bar, holding a key. `scroll` is a mouse wheel; `drag` a left-button orbit;
   `pan` a right-button drag.

@@ -16,7 +16,6 @@ use std::{
 };
 
 use bevy::{
-    camera::{ImageRenderTarget, RenderTarget},
     ecs::system::SystemParam,
     input::{
         ButtonState, InputSystems,
@@ -25,10 +24,7 @@ use bevy::{
         touch::TouchPhase,
     },
     prelude::*,
-    render::{
-        render_resource::TextureFormat,
-        view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk},
-    },
+    render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk},
     window::{
         CursorMoved, CursorOptions, Monitor, PrimaryMonitor, PrimaryWindow, RequestRedraw,
         WindowEvent, WindowLevel, WindowOccluded, WindowPosition,
@@ -62,8 +58,11 @@ const SETTLE_FRAMES: u32 = 90;
 const SETTLE_TIME: Duration = Duration::from_secs(2);
 /// Frames to wait after the last snapshot so its file write completes.
 const DRAIN_FRAMES: u32 = 30;
-/// Times a snapshot that comes out black is taken again.
+/// Times a snapshot that comes out black is taken again, the window tucked into
+/// another corner first; and frames and time given it to draw there.
 const RETAKES: u32 = 3;
+const RETUCK_FRAMES: u32 = 10;
+const RETUCK_TIME: Duration = Duration::from_millis(500);
 /// Frames in a row with nothing moving before a step counts as settled.
 const CALM_FRAMES: u32 = 6;
 /// Least time a step is given to show, so labels finish fading and sliding.
@@ -244,11 +243,13 @@ const PEEK: f32 = 4.0;
 /// a corner `PEEK` points square: macOS stops drawing a window that is covered or
 /// wholly off screen, and snapshots come out black. The corner is on one screen and
 /// the rest on none; it takes no clicks. Waits for winit to report the screens,
-/// asking for frames meanwhile, as an idle window would not draw them.
+/// asking for frames meanwhile, as an idle window would not draw them. Hidden again
+/// (a snapshot came out black), it goes to the next such corner.
 pub(crate) fn tuck_away(
     mut window: Single<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     monitors: Query<(&Monitor, Has<PrimaryMonitor>)>,
     mut redraw: MessageWriter<RequestRedraw>,
+    mut tucks: Local<usize>,
 ) {
     let (window, cursor) = &mut *window;
     if window.visible {
@@ -288,14 +289,16 @@ pub(crate) fn tuck_away(
             .map(|seen| seen.width() * seen.height())
             .sum()
     };
-    let Some(&at) = corners
+    let fits: Vec<Vec2> = corners
         .iter()
-        .find(|&&at| shown(at) <= PEEK * PEEK + 1.0)
-        .or(corners.first())
-    else {
+        .copied()
+        .filter(|&at| shown(at) <= PEEK * PEEK + 1.0)
+        .collect();
+    let Some(&at) = fits.get(*tucks % fits.len().max(1)).or(corners.first()) else {
         redraw.write(RequestRedraw);
         return;
     };
+    *tucks += 1;
     let at = (at * window.scale_factor()).round().as_ivec2();
     window.position = WindowPosition::At(at);
     window.window_level = WindowLevel::AlwaysOnTop;
@@ -343,13 +346,9 @@ enum Phase {
     Filming(u32),
     /// Waiting for a snapshot of the window to be taken, asked for on this frame.
     Capturing(u32),
-    /// About to draw into an image instead of the window.
-    Offscreen,
-    /// Drawing into an image instead of the window, since this frame, for a snapshot
-    /// the window could not give: macOS stops drawing a window it counts as covered.
-    Retargeted(u32),
-    /// Waiting for that snapshot, asked for on this frame.
-    CapturingOffscreen(u32),
+    /// The snapshot came out black: the window was tucked into another corner on this
+    /// frame, at this time, to be taken again once it draws there.
+    Retucked(u32, Duration),
     /// Waiting for the last snapshot to reach the disk, since this frame.
     Closing(u32),
     Done,
@@ -378,15 +377,14 @@ struct Drive {
     calm: u32,
     /// What the view showed last frame, to tell whether anything changed.
     last_seen: String,
-    /// Whether the snapshot just taken came out black, and how often it has.
-    black: bool,
+    /// Snapshots that came out black, by name, not yet taken again; how often the one
+    /// under way has been; and those still black after every retake, which have no
+    /// PNG: the window was not drawn.
+    black: Vec<String>,
     retakes: u32,
+    not_drawn: Vec<String>,
     /// Whether macOS counts the window as covered, so it draws nothing into it.
     covered: bool,
-    /// The image snapshots are drawn into when the window will not show them, and
-    /// where each camera drew before.
-    offscreen: Option<Handle<Image>>,
-    targets: Vec<(Entity, RenderTarget)>,
     /// What the last snap showed, to say what moved since, and what each step since
     /// may move.
     last_scene: Option<Value>,
@@ -1214,59 +1212,6 @@ impl View<'_, '_> {
     }
 }
 
-/// Where the cameras draw: the window, or for a snapshot the window will not give, an
-/// image the window's size.
-#[derive(SystemParam)]
-struct Canvas<'w, 's> {
-    cameras: Query<'w, 's, (Entity, &'static mut RenderTarget), With<Camera>>,
-    images: ResMut<'w, Assets<Image>>,
-    window: Single<'w, 's, &'static Window, With<PrimaryWindow>>,
-}
-
-impl Canvas<'_, '_> {
-    /// Points every camera at an image the window's size, at its scale, so the
-    /// graph and egui lay out as on the window.
-    fn draw_offscreen(&mut self, drive: &mut Drive) {
-        let (width, height) = (self.window.physical_width(), self.window.physical_height());
-        let fits = drive
-            .offscreen
-            .as_ref()
-            .and_then(|handle| self.images.get(handle))
-            .is_some_and(|image| image.width() == width && image.height() == height);
-        if !fits {
-            let image =
-                Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
-            drive.offscreen = Some(self.images.add(image));
-        }
-        let Some(handle) = drive.offscreen.clone() else {
-            return;
-        };
-        let target = RenderTarget::Image(ImageRenderTarget {
-            handle,
-            scale_factor: self.window.scale_factor(),
-        });
-        if drive.targets.is_empty() {
-            drive.targets = self
-                .cameras
-                .iter()
-                .map(|(entity, target)| (entity, target.clone()))
-                .collect();
-        }
-        for (_, mut camera) in &mut self.cameras {
-            *camera = target.clone();
-        }
-    }
-
-    /// Points every camera back where it drew before.
-    fn draw_on_window(&mut self, drive: &mut Drive) {
-        for (entity, target) in drive.targets.drain(..) {
-            if let Ok((_, mut camera)) = self.cameras.get_mut(entity) {
-                *camera = target;
-            }
-        }
-    }
-}
-
 /// Runs the script: lets each step's input play out, waits for the view to rest,
 /// takes snapshots, and exits once the last is on disk.
 #[expect(clippy::too_many_arguments, reason = "a Bevy system")]
@@ -1279,7 +1224,7 @@ fn advance(
     time: Res<Time<Real>>,
     mut exit: MessageWriter<AppExit>,
     mut covered: MessageReader<WindowOccluded>,
-    mut canvas: Canvas,
+    mut window: Single<&mut Window, With<PrimaryWindow>>,
 ) {
     drive.frame += 1;
     if let Some(message) = covered.read().last() {
@@ -1354,11 +1299,14 @@ fn advance(
                 begin_next(&mut commands, &mut drive, &view, now);
             }
         }
-        Phase::Capturing(_)
-        | Phase::Offscreen
-        | Phase::Retargeted(_)
-        | Phase::CapturingOffscreen(_) => {
-            if photograph(&mut commands, &mut drive, &mut canvas, shots.is_empty()) {
+        Phase::Capturing(_) | Phase::Retucked(..) => {
+            if photograph(
+                &mut commands,
+                &mut drive,
+                &mut window,
+                shots.is_empty(),
+                now,
+            ) {
                 finish(&mut drive, &view, None);
                 begin_next(&mut commands, &mut drive, &view, now);
             }
@@ -1376,51 +1324,49 @@ fn advance(
     }
 }
 
-/// Moves a snapshot along: from the window, else, when the window is covered or
-/// comes out black, drawn into an image, taken again while that comes out black.
-/// Returns whether it is done.
+/// Moves a snapshot along. One that comes out black (macOS stopped drawing the
+/// window: the display dimmed or slept, or something lies over its corner) is taken
+/// again with the window tucked into another corner; still black after `RETAKES`, it
+/// is left without a PNG and the session says the window was not drawn, apart from
+/// how the view fared. Returns whether it is done.
 fn photograph(
     commands: &mut Commands,
     drive: &mut Drive,
-    canvas: &mut Canvas,
+    window: &mut Window,
     taken: bool,
+    now: Duration,
 ) -> bool {
+    let Some(name) = drive.snaps.last().cloned() else {
+        return true;
+    };
     match drive.phase {
         Phase::Capturing(at) if taken && drive.frame >= at + 2 => {
-            if !std::mem::take(&mut drive.black) {
+            let Some(i) = drive.black.iter().position(|b| *b == name) else {
+                drive.retakes = 0;
                 return true;
+            };
+            drive.black.remove(i);
+            if drive.retakes < RETAKES {
+                drive.retakes += 1;
+                info!(
+                    "session: {name} came out black (window covered: {}); retake {} of {RETAKES} from another corner",
+                    drive.covered, drive.retakes
+                );
+                // Hidden, the window is tucked away again, into the next corner.
+                window.visible = false;
+                drive.phase = Phase::Retucked(drive.frame, now);
+                return false;
             }
-            let trouble = "the window came out black (macOS stopped drawing it); \
-                           drew the snapshot offscreen";
-            drive.trouble.push(trouble.to_owned());
-            canvas.draw_offscreen(drive);
-            drive.phase = Phase::Retargeted(drive.frame);
-        }
-        Phase::Offscreen => {
-            canvas.draw_offscreen(drive);
-            drive.phase = Phase::Retargeted(drive.frame);
-        }
-        // A few frames for the cameras and egui to take the image's size.
-        Phase::Retargeted(at) if drive.frame >= at + 3 => {
-            if let (Some(image), Some(name)) = (drive.offscreen.clone(), drive.snaps.last()) {
-                let name = name.clone();
-                shoot(commands, Screenshot::image(image), &drive.dir, &name);
-                drive.phase = Phase::CapturingOffscreen(drive.frame);
-            }
-        }
-        Phase::CapturingOffscreen(at) if taken && drive.frame >= at + 2 => {
-            if std::mem::take(&mut drive.black) {
-                if drive.retakes < RETAKES {
-                    drive.retakes += 1;
-                    drive.phase = Phase::Retargeted(drive.frame);
-                    return false;
-                }
-                let trouble = format!("still black after {RETAKES} offscreen retakes");
-                drive.trouble.push(trouble);
-            }
+            warn!("session: {name}: the window was not drawn; no PNG");
+            drive.not_drawn.push(name);
             drive.retakes = 0;
-            canvas.draw_on_window(drive);
             return true;
+        }
+        Phase::Retucked(at, since)
+            if drive.frame >= at + RETUCK_FRAMES && now.saturating_sub(since) >= RETUCK_TIME =>
+        {
+            shoot(commands, &drive.dir, &name);
+            drive.phase = Phase::Capturing(drive.frame);
         }
         _ => {}
     }
@@ -1626,13 +1572,7 @@ fn snap(commands: &mut Commands, drive: &mut Drive, view: &View, label: Option<&
     drive.last_scene = Some(scene);
     written["log"] = json!(drive.log);
     write(&drive.dir.join(format!("{name}.json")), &written);
-    if drive.covered {
-        // The window draws nothing while covered; the next frames draw offscreen.
-        drive.snaps.push(name);
-        drive.phase = Phase::Offscreen;
-        return;
-    }
-    shoot(commands, Screenshot::primary_window(), &drive.dir, &name);
+    shoot(commands, &drive.dir, &name);
     drive.snaps.push(name);
     drive.phase = Phase::Capturing(drive.frame);
 }
@@ -1653,24 +1593,19 @@ fn film(commands: &mut Commands, drive: &mut Drive, view: &View) {
     };
     scene["checks"] = checks::run(&scene, None, &playing);
     write(&drive.dir.join(format!("{name}.json")), &scene);
-    if drive.covered {
-        drive.trouble.push(format!(
-            "{name}: the window is covered, so the frame is not drawn"
-        ));
-    } else {
-        shoot(commands, Screenshot::primary_window(), &drive.dir, &name);
-    }
+    shoot(commands, &drive.dir, &name);
     drive.snaps.push(name);
 }
 
-/// Takes the window, or the image, as it shows next, saving it unless it comes out
-/// black, which a window macOS has stopped drawing does.
-fn shoot(commands: &mut Commands, shot: Screenshot, dir: &std::path::Path, name: &str) {
+/// Takes the window as it shows next, saving it as `name` unless it comes out black,
+/// which a window macOS has stopped drawing does.
+fn shoot(commands: &mut Commands, dir: &std::path::Path, name: &str) {
     let mut save = save_to_disk(dir.join(format!("{name}.png")));
-    commands.spawn(shot).observe(
+    let name = name.to_owned();
+    commands.spawn(Screenshot::primary_window()).observe(
         move |captured: On<ScreenshotCaptured>, mut drive: ResMut<Drive>| {
             if is_black(&captured.image) {
-                drive.black = true;
+                drive.black.push(name.clone());
             } else {
                 save(captured);
             }
@@ -2081,6 +2016,9 @@ fn summary(drive: &Drive) -> Value {
             "step": s["step"], "line": s["line"], "do": s["do"], "note": s["note"],
         })).collect::<Vec<_>>(),
         "snaps": snaps,
+        // Snapshots with no PNG: macOS drew nothing into the window. Their JSON and
+        // checks hold all the same; the session's verdict leaves them out.
+        "window_not_drawn": drive.not_drawn.iter().chain(&drive.black).collect::<Vec<_>>(),
     })
 }
 
