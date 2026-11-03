@@ -1,0 +1,60 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json
+# Browsing expanded, a pick in another module takes the expansion there, and Back
+# brings it back; Back across journeys puts back the expansion the place had; a
+# search off the journey shows its sphere whole; X with a function set aside expands
+# its module. A big module expands to the band, a small one less.
+key /
+type spotlit
+search-pick Explorer::spotlit
+key x
+expect expanded explorer
+expect check expanded-fill
+snap explorer expanded
+key /
+type walk
+search-pick Finder::walk
+expect selection Finder::walk
+expect expanded scenario
+expect check expanded-fill
+expect check focus-on-screen
+snap a pick elsewhere follows
+key backspace
+expect selection Explorer::spotlit
+expect expanded explorer
+snap back follows
+key f
+expect expanded explorer
+key x
+key enter
+expect start Explorer::spotlit
+key x
+expect expanded explorer
+snap journey expanded
+key up
+key right
+key enter
+expect expanded none
+snap caller journey
+key backspace
+expect start Explorer::spotlit
+expect expanded explorer
+snap back keeps the expansion
+key x
+key esc
+key esc
+key /
+type walk
+search-pick Finder::walk
+key enter
+expect start Finder::walk
+snap walk journey
+key /
+type spotlit
+search-pick Explorer::spotlit
+expect aside Explorer::spotlit
+expect check spheres-unclipped
+snap aside off the journey
+key x
+expect expanded explorer
+expect check expanded-fill
+snap x with an aside

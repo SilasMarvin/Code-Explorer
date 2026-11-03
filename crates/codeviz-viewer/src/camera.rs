@@ -903,7 +903,11 @@ fn camera_input(
     mut explorer: ResMut<Explorer>,
     mut stopped: Local<bool>,
 ) {
-    // A pan the map's edge stops says so once, until a pan moves freely again.
+    // A pan the map's edge stops says so once, until a pan moves freely again or
+    // the hand lets go.
+    if buttons.get_pressed().next().is_none() && scroll.delta == Vec2::ZERO {
+        *stopped = false;
+    }
     let mut panned = |camera: &mut OrbitCamera, offset: Vec3| {
         let held = camera.pan_by_hand(offset);
         if let Some(why) = held.filter(|_| !*stopped) {

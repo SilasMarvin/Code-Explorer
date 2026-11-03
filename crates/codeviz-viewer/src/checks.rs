@@ -1701,8 +1701,16 @@ fn spheres_unclipped(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     let left = graph.min.x > window.min.x + HIDDEN_EDGE;
     let right = graph.max.x < window.max.x - HIDDEN_EDGE;
     let eye = s.camera.map(|e| Vec3::from_array(e.at));
+    // A faint sphere is left alone at the panel, but the one holding the function
+    // set aside, which the view brings in whole.
+    let aside = s
+        .nodes
+        .iter()
+        .find(|n| n.is("aside"))
+        .and_then(|n| n.module.as_ref());
     let mut offenders = Vec::new();
     for m in s.spheres().filter(|m| m.radius > 0.0) {
+        let faint = m.body == "faint" && aside != Some(&m.name);
         // Zoomed past it, the camera inside, it shows as no disc to cut.
         if eye.is_some_and(|eye| eye.distance(Vec3::from_array(m.world)) < m.world_radius) {
             continue;
@@ -1716,7 +1724,7 @@ fn spheres_unclipped(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
                 "bottom",
             ),
             (
-                panel.is_some_and(|y| m.body != "faint" && across && (c.y - y).abs() < m.radius),
+                panel.is_some_and(|y| !faint && across && (c.y - y).abs() < m.radius),
                 "panel",
             ),
             (left && down && (c.x - graph.min.x).abs() < m.radius, "left"),
@@ -2985,6 +2993,19 @@ mod tests {
         let result = check(&s, "spheres-unclipped");
         assert_eq!(result["count"], 2, "{result}");
         assert_eq!(result["offenders"][0]["cut_by"], "the top of the panel");
+        let mut faint = s.clone();
+        faint["modules"][0]["body"] = json!("faint");
+        faint["modules"][1]["body"] = json!("faint");
+        assert!(
+            passes(&check(&faint, "spheres-unclipped")),
+            "faint, left alone"
+        );
+        faint["nodes"][2]["roles"] = json!(["aside"]);
+        let result = check(&faint, "spheres-unclipped");
+        assert_eq!(
+            result["offenders"][0]["module"], "b",
+            "but the aside's: {result}"
+        );
         let by_hand = Since {
             kinds: vec![Kind::Zoom { out: false }],
             by_hand: true,
