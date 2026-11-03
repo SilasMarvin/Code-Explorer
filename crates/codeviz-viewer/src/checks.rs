@@ -1690,7 +1690,10 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
             let by = l.unit.as_deref().unwrap_or(l.text.as_str());
             (rect(l.rect).expand2(NAME_PILL), Some(by))
         })
-        .chain((now.nodes.iter().filter(came)).map(|n| (disc(n.at, n.radius), None)))
+        .chain(
+            (now.nodes.iter().filter(came))
+                .map(|n| (disc(n.at, n.kept_off.unwrap_or(n.radius)), None)),
+        )
         .collect();
     let ahead = |n: &Node| n.is("cursor") || n.is("path");
     let fell = |unit: &str| {
@@ -1702,7 +1705,8 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
         let (Some(old), false) = (old, o["label"].is_null()) else {
             return true;
         };
-        let old = rect(old).expand2(NAME_PILL);
+        // As far as names keep from names and dots, leaning to more given way.
+        let old = rect(old).expand2(NAME_PILL).expand(NAME_CLEAR + ROUNDING);
         let of = o["unit"].as_str().or_else(|| o["label"].as_str());
         let taken = (took.iter()).any(|&(t, by)| t.intersects(old) && (by.is_none() || by != of));
         !(taken || o["unit"].as_str().is_some_and(fell))
@@ -2318,7 +2322,12 @@ impl<'a> Room<'a> {
         }
         if let Some(own) = own {
             if let Some(n) = (self.drawn.iter())
-                .find(|n| n.unit != own.unit && !own.overlooks(n, r) && near(n, kept(n)))
+                // Covered judged leaning to less room.
+                .find(|n| {
+                    n.unit != own.unit
+                        && !own.overlooks(n, r.shrink(NAME_CLEAR + ROUNDING))
+                        && near(n, kept(n))
+                })
             {
                 return Some(format!("the dot of {}", n.name));
             }
