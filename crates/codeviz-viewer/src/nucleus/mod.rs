@@ -226,9 +226,9 @@ struct Arrangement {
     /// In a journey, the function set aside, when it is drawn only for that: picked
     /// by a search where the journey draws nothing of it.
     aside: Option<usize>,
-    /// In a journey, the callers from off it that I could bring in, undrawn, each
-    /// where it would show.
-    seated: Vec<usize>,
+    /// In a journey, the callers from off it that I could bring in to a place kept
+    /// free for them, each there, drawn or not.
+    seated: HashSet<usize>,
     /// In a journey, the start's callers beyond the few nearest it: drawn quietly and
     /// named only under the pointer, counted on their module's name instead.
     folded: HashSet<usize>,
@@ -492,6 +492,12 @@ impl Nucleus {
     /// The outside callers into the journey shown (I).
     pub(crate) fn outside_callers(&self) -> impl Iterator<Item = usize> + '_ {
         self.now.outside.iter().copied()
+    }
+
+    /// Whether a function is a caller from off the journey with a place kept free
+    /// for it, shown or not: names keep off it either way.
+    pub(crate) fn seated(&self, tile: usize) -> bool {
+        self.now.seated.contains(&tile)
     }
 
     /// Whether a function is one of the start's callers folded into its module's
