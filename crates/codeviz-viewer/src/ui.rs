@@ -310,7 +310,8 @@ fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
 }
 
 /// Where the view is, always in the same place: `Browsing`, or `Journey ·` and where
-/// it starts; then, with a module expanded, `· inside` it.
+/// it starts; then, with a module expanded, `· inside` it; and beside it, the module
+/// the pointer is on and how many functions it holds.
 fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
     let (mut text, mut hint) = match explorer.start_unit() {
         Some(_) => (
@@ -339,6 +340,19 @@ fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
                 .on_hover_text(hint);
         });
     ui.separator();
+    // The sphere under the pointer, off its functions: how many it holds.
+    if let Some(module) = explorer
+        .module_pointed()
+        .filter(|_| explorer.under_pointer.is_none())
+    {
+        let count = explorer.nucleus().count(module);
+        let name = explorer.cluster_name(module).to_uppercase();
+        let said = match count {
+            1 => format!("{name}: 1 function"),
+            _ => format!("{name}: {count} functions"),
+        };
+        ui.label(egui::RichText::new(said).size(text::SMALL).color(MUTED));
+    }
 }
 
 /// A box to find a function by name, over the top of the graph: ↑ and ↓ move along

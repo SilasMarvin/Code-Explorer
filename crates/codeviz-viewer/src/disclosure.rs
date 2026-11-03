@@ -70,6 +70,8 @@ impl Disclosed {
             return disclosed;
         };
         let tile = |span: SpanId| track.tile(span, map);
+        // A call only guessed among several functions runs to each of them.
+        let ends = |span: SpanId| track.ends(span, map);
         let root = journey.root();
         // Every call, numbered from the root, and the closures each runs.
         let mut inside: HashMap<SpanId, Vec<SpanId>> = HashMap::new();
@@ -119,10 +121,10 @@ impl Disclosed {
                     .find(|s| disclosed.levels.contains_key(s))
             })
             .collect();
-        disclosed.mark_tiles(journey, &tile, root);
+        disclosed.mark_tiles(journey, &ends, root);
         let mut tiles: HashMap<usize, Vec<String>> = HashMap::new();
         for (span, number) in disclosed.numbered() {
-            if let Some(tile) = tile(span) {
+            for tile in ends(span) {
                 let list = tiles.entry(tile).or_default();
                 if !number.is_empty() {
                     list.push(number.to_owned());
@@ -133,8 +135,11 @@ impl Disclosed {
             numbers.sort_by_key(|n| number_order(n));
         }
         disclosed.tiles = tiles;
-        disclosed.trail =
-            disclosed.trace(&tile, &|span| journey.span(span).is_some_and(guessed), root);
+        disclosed.trail = disclosed.trace(
+            (&tile, &ends),
+            &|span| journey.span(span).is_some_and(guessed),
+            root,
+        );
         disclosed
     }
 
@@ -143,15 +148,16 @@ impl Disclosed {
     fn mark_tiles(
         &mut self,
         journey: &Journey,
-        tile: &impl Fn(SpanId) -> Option<usize>,
+        ends: &impl Fn(SpanId) -> Vec<usize>,
         root: SpanId,
     ) {
         let mut always = HashSet::new();
         let mut sure = HashSet::new();
-        for &span in self.levels.keys() {
-            let Some(tile) = tile(span) else {
-                continue;
-            };
+        for (&span, tile) in self
+            .levels
+            .keys()
+            .flat_map(|span| ends(*span).into_iter().map(move |tile| (span, tile)))
+        {
             if span != root {
                 match journey.span(span).filter(|s| guessed(s)) {
                     Some(_) => self.guessed_tiles.insert(tile),
@@ -181,10 +187,14 @@ impl Disclosed {
     }
 
     /// The journey from `start` as the nucleus draws it: each call shown, and every
-    /// function below the start at any depth, by node.
+    /// function below the start at any depth, by node, from the node a call runs in
+    /// (`tile`) to each it may run (`ends`).
     fn trace(
         &self,
-        tile: &impl Fn(SpanId) -> Option<usize>,
+        (tile, ends): (
+            &impl Fn(SpanId) -> Option<usize>,
+            &impl Fn(SpanId) -> Vec<usize>,
+        ),
         guessed: &impl Fn(SpanId) -> bool,
         start: SpanId,
     ) -> Trail {
@@ -198,7 +208,7 @@ impl Disclosed {
             for span in wave {
                 for &child in self.children(span) {
                     if seen.insert(child) {
-                        if let Some(to) = tile(child) {
+                        for to in ends(child) {
                             trail.whole.entry(to).or_insert(level);
                         }
                         next.push(child);
@@ -214,19 +224,19 @@ impl Disclosed {
         // every call it makes, at any depth.
         let mut stack = vec![start];
         while let Some(span) = stack.pop() {
-            if span != start
-                && let Some(to) = tile(span)
-                && !trail.order.contains(&to)
-            {
-                trail.order.push(to);
+            if span != start {
+                for to in ends(span) {
+                    if !trail.order.contains(&to) {
+                        trail.order.push(to);
+                    }
+                }
             }
             if let Some(from) = tile(span) {
                 for &child in self.children(span) {
-                    if let Some(to) = tile(child)
-                        && from != to
-                        && !trail.reach.contains(&(from, to))
-                    {
-                        trail.reach.push((from, to));
+                    for to in ends(child) {
+                        if from != to && !trail.reach.contains(&(from, to)) {
+                            trail.reach.push((from, to));
+                        }
                     }
                 }
             }
@@ -246,7 +256,7 @@ impl Disclosed {
                 .filter(|&child| self.shows(child))
                 .collect();
             for &child in &open {
-                if let Some(to) = tile(child) {
+                for to in ends(child) {
                     trail.add(from, to, level, guessed(child));
                 }
             }

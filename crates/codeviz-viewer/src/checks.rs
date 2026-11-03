@@ -148,7 +148,7 @@ const ARROW_SLACK: f32 = 1.0;
 const LISTED: usize = 12;
 
 /// Every check, in the order a snapshot lists them.
-pub(crate) const NAMES: [&str; 28] = [
+pub(crate) const NAMES: [&str; 29] = [
     "dots-in-spheres",
     "dots-apart",
     "dot-sizes",
@@ -177,6 +177,7 @@ pub(crate) const NAMES: [&str; 28] = [
     "names-distinct",
     "exits-named",
     "calls-drawn",
+    "bars-in-view",
 ];
 
 /// What happened since the snapshot before: what each step may move, and whether the
@@ -229,6 +230,8 @@ struct Snap {
     content: Content,
     labels: Vec<Label>,
     bars: Vec<Bar>,
+    /// How much of the journey the panel shows, while it shows.
+    panel: Option<Panel>,
     /// While the search box shows.
     search_rows: Option<Vec<SearchRow>>,
     overlays: Vec<Overlay>,
@@ -409,9 +412,20 @@ struct Bar {
     number: Option<String>,
     name: String,
     unit: Option<String>,
+    /// In the row of the start's callers.
+    caller: bool,
     cursor: bool,
     color: Option<String>,
     guessed: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Panel {
+    /// Bars below what the panel shows, cut off or out of view.
+    below: usize,
+    /// Whether a track down its side shows which rows are in view.
+    rows_track: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -621,6 +635,7 @@ pub(crate) fn run(now: &Value, before: Option<&Value>, since: &Since) -> Value {
         names_distinct(&now),
         exits_named(&now),
         calls_drawn(&now),
+        bars_in_view(&now),
     ];
     NAMES
         .iter()
@@ -989,6 +1004,23 @@ fn panel_agrees(s: &Snap) -> Value {
         return skip("no journey bars drawn");
     }
     let mut offenders = Vec::new();
+    // Each numbered bar has its call on the graph: a call only guessed among several
+    // functions, with no one function of its own, on each of them.
+    for bar in s
+        .bars
+        .iter()
+        .filter(|b| b.number.as_ref().is_some_and(|n| !n.is_empty()))
+    {
+        let number = bar.number.as_deref().unwrap_or_default();
+        if !s
+            .nodes
+            .iter()
+            .any(|n| n.numbers.iter().any(|m| m == number))
+        {
+            let offender = json!({ "bar": number, "name": bar.name, "why": "numbered in the panel, but no function on the graph carries the number" });
+            offenders.push((2.0, offender));
+        }
+    }
     for bar in &s.bars {
         let Some(unit) = &bar.unit else {
             continue;
@@ -1043,6 +1075,23 @@ fn panel_agrees(s: &Snap) -> Value {
             });
             offenders.push((2.0, offender));
         }
+    }
+    verdict(offenders)
+}
+
+/// Bars the panel cannot show for its height, below what it shows, are said to be
+/// there: a track down its side shows which rows are in view.
+fn bars_in_view(s: &Snap) -> Value {
+    let Some(panel) = &s.panel else {
+        return skip("no journey panel");
+    };
+    if panel.below == 0 {
+        return skip("every bar the panel shows is in view down to its foot");
+    }
+    let mut offenders = Vec::new();
+    if !panel.rows_track {
+        let offender = json!({ "below": panel.below, "why": "bars lie below the panel's foot, and nothing says so" });
+        offenders.push((1.0, offender));
     }
     verdict(offenders)
 }
@@ -2286,7 +2335,8 @@ fn colours(s: &Snap) -> Value {
     }
     // A bar is painted as its node is: the cursor's other runs as it would be were
     // the cursor elsewhere; a call only guessed in the same hue, faint.
-    for bar in s.bars.iter().filter(|b| !b.cursor) {
+    caller_bar_colours(s, &mut offenders);
+    for bar in s.bars.iter().filter(|b| !b.cursor && !b.caller) {
         let (Some(unit), Some(got)) = (&bar.unit, bar.color.as_deref().and_then(rgb)) else {
             continue;
         };
@@ -2312,6 +2362,26 @@ fn colours(s: &Snap) -> Value {
     }
     call_colours(s, cursor.as_deref(), &mut offenders);
     verdict(offenders)
+}
+
+/// A bar in the row of the start's callers is violet, whatever else its function is;
+/// faint, as its dot is, one folded into its module's count.
+fn caller_bar_colours(s: &Snap, offenders: &mut Vec<(f32, Value)>) {
+    for bar in s.bars.iter().filter(|b| b.caller) {
+        let Some(got) = bar.color.as_deref().and_then(rgb) else {
+            continue;
+        };
+        let strength = bar.color.as_deref().and_then(alpha).unwrap_or(1.0);
+        let folded = bar
+            .unit
+            .as_deref()
+            .and_then(|u| s.node(u))
+            .is_some_and(|n| n.roles.iter().any(|r| r.contains("folded")));
+        if !like(got, srgb(CALLER)) || folded != (strength <= FAINT) {
+            let offender = json!({ "caller_bar": bar.name, "bar_color": bar.color, "folded": folded, "why": "a caller's bar is violet, faint only when folded into its module's count" });
+            offenders.push((1.0, offender));
+        }
+    }
 }
 
 /// Each call's color is its role's: none reads white; only the journey's call into
@@ -3184,7 +3254,7 @@ mod tests {
             { "number": "2", "name": "g", "unit": "x:a::g", "cursor": true },
         ]);
         let result = check(&s, "panel-agrees");
-        assert_eq!(result["count"], 2, "{result}");
+        assert_eq!(result["count"], 3, "{result}");
         s["bars"][1]["cursor"] = json!(false);
         s["bars"][0]["cursor"] = json!(true);
         s["nodes"][1]["numbers"] = json!(["2"]);
@@ -3522,6 +3592,28 @@ mod tests {
         let result = check(&s, "panel-agrees");
         assert_eq!(result["offenders"][0]["bar_says"], "Thing.h", "{result}");
         assert_eq!(result["offenders"][0]["graph_says"], " 1  h");
+        // A call guessed among several functions: on the graph, or the panel says
+        // what the graph does not.
+        let mut s = journey();
+        s["bars"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "number": "2", "name": "g → one of 2", "cursor": false }));
+        let result = check(&s, "panel-agrees");
+        assert_eq!(result["offenders"][0]["bar"], "2", "{result}");
+        s["nodes"][1]["numbers"] = json!(["2"]);
+        assert!(passes(&check(&s, "panel-agrees")));
+    }
+
+    #[test]
+    fn bars_below_the_panel_s_foot_are_said_to_be_there() {
+        let mut s = journey();
+        assert_eq!(check(&s, "bars-in-view")["pass"], Value::Null);
+        s["panel"] = json!({ "below": 3, "rows_track": false });
+        let result = check(&s, "bars-in-view");
+        assert_eq!(result["offenders"][0]["below"], 3, "{result}");
+        s["panel"]["rows_track"] = json!(true);
+        assert!(passes(&check(&s, "bars-in-view")));
     }
 
     #[test]
@@ -3983,13 +4075,12 @@ mod tests {
             { "number": "", "name": "f", "unit": "x:a::f", "cursor": false, "color": "#ffffff" },
             { "number": null, "name": "g", "unit": "x:a::g", "caller": true, "color": "#4db8ff" },
         ]);
-        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
-        // Its caller's bar painted violet while its dot is blue.
-        s["bars"][1]["color"] = json!("#bd85ff");
+        // Its caller's bar painted blue as its dot is, not violet.
         let result = check(&s, "colours");
-        assert_eq!(result["offenders"][0]["name"], "g", "{result}");
+        assert_eq!(result["offenders"][0]["caller_bar"], "g", "{result}");
+        s["bars"][1]["color"] = json!("#bd85ff");
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
         // A call back with no violet ring.
-        s["bars"][1]["color"] = json!("#4db8ff");
         s["nodes"][1]["rings"] = json!([]);
         let result = check(&s, "colours");
         assert_eq!(result["offenders"][0]["function"], "g", "{result}");

@@ -188,15 +188,14 @@ pub(crate) fn scene(view: &View) -> Value {
     let modules: Vec<Value> = balls
         .iter()
         .filter_map(|&(cluster, at, radius)| {
-            let n = nucleus;
-            let ball = n.ball(cluster)?;
+            let ball = nucleus.ball(cluster)?;
             let label = label_of(Labelled::Module(cluster));
             Some(json!({
                 "name": explorer.cluster_name(cluster),
                 "body": format!("{:?}", ball.body).to_lowercase(),
-                "functions": n.count(cluster),
-                "named": n.opened(cluster),
-                "shown": n.shows_body(ball.body),
+                "functions": nucleus.count(cluster),
+                "named": nucleus.opened(cluster),
+                "shown": nucleus.shows_body(ball.body),
                 "at": point(at),
                 "world": fine3(ball.center),
                 "radius": round(radius),
@@ -234,6 +233,7 @@ pub(crate) fn scene(view: &View) -> Value {
         "exits": exits(view),
         "labels": label_list,
         "bars": bars(view),
+        "panel": panel(view),
         "search_rows": search_rows(view),
         "buttons": screen.widgets.iter().map(|w| json!({
             "text": w.text, "rect": rect(w.rect), "enabled": w.enabled, "cut_off": w.cut_off(),
@@ -454,7 +454,8 @@ fn module_of(explorer: &Explorer, tile: usize) -> Option<String> {
 
 /// What a drawn function is to the view: the journey's start or the selection, the
 /// journey's cursor, the function set aside, a caller, a call of the journey so many
-/// levels down (and one that calls back besides), one of the functions of a module
+/// levels down, a caller from off the journey that I brings in (`outside`), one that
+/// calls back besides, one of the functions of a module
 /// expanded while browsing, hovered; else a speck.
 fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     let mut roles = Vec::new();
@@ -477,6 +478,9 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
         Some(-1) => roles.push("caller".to_owned()),
         Some(level) if level > 0 => roles.push(format!("journey level {level}")),
         _ => {}
+    }
+    if n.outside(tile) {
+        roles.push("outside".to_owned());
     }
     if n.calls_back(tile) {
         roles.push("calls back".to_owned());
@@ -664,6 +668,20 @@ fn merge(into: &mut Value, more: Value) {
     if let (Some(into), Value::Object(more)) = (into.as_object_mut(), more) {
         into.extend(more);
     }
+}
+
+/// How much of the journey the panel shows: how many of its bars lie below what it
+/// shows, cut off or out of view, and whether a track down its side says so.
+fn panel(view: &View) -> Value {
+    let Some(drawn) = &view.screen.bars else {
+        return Value::Null;
+    };
+    let below = drawn
+        .bars
+        .iter()
+        .filter(|(_, r)| r.max.y > drawn.content.max.y + 0.5)
+        .count();
+    json!({ "below": below, "rows_track": drawn.rows_track.is_some() })
 }
 
 /// The journey's bars drawn in its panel, by number, then the bars of its start's

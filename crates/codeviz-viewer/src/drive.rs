@@ -711,6 +711,8 @@ pub(crate) struct DrawnBars {
     pub(crate) chips: Vec<(SpanId, egui::Rect)>,
     /// The bars of the start's callers, in the row above its bar, by function.
     pub(crate) callers: Vec<(usize, egui::Rect)>,
+    /// The track down the panel's side, drawn when rows lie below what it shows.
+    pub(crate) rows_track: Option<egui::Rect>,
 }
 
 fn bars_id() -> egui::Id {
@@ -725,6 +727,7 @@ pub(crate) fn note_bars(
     bars: Vec<(SpanId, egui::Rect)>,
     chips: Vec<(SpanId, egui::Rect)>,
     callers: Vec<(usize, egui::Rect)>,
+    rows_track: Option<egui::Rect>,
 ) {
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| {
@@ -736,6 +739,7 @@ pub(crate) fn note_bars(
                 bars,
                 chips,
                 callers,
+                rows_track,
             },
         );
     });

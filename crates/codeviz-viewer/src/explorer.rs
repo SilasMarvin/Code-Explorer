@@ -97,6 +97,16 @@ impl Track {
         self.unit_id(id).and_then(|unit| map.tile_of(unit))
     }
 
+    /// The nodes of `map` a span may run: the one function it resolved to, or each of
+    /// the functions a call only guessed among several may be.
+    pub(crate) fn ends(&self, id: SpanId, map: &CodebaseMap) -> Vec<usize> {
+        self.span(id)
+            .map_or(&[][..], |span| targets(&span.target))
+            .iter()
+            .filter_map(|unit| map.tile_of(unit))
+            .collect()
+    }
+
     /// Unrolls the journey from its start on the happy path, with the cursor on the
     /// start and nothing opened by hand.
     fn reroot(&mut self, system: &System) {
@@ -116,10 +126,7 @@ impl Track {
             .journey
             .iter()
             .flat_map(Journey::spans)
-            .filter_map(|(_, span)| match &span.target {
-                SpanTarget::Unit(unit) => Some(unit.clone()),
-                _ => None,
-            })
+            .flat_map(|(_, span)| targets(&span.target).iter().cloned())
             .collect();
         // A rebuilt journey numbers its spans afresh.
         self.expanded.clear();
@@ -1031,15 +1038,19 @@ impl Explorer {
     /// Goes to a function as a click does, remembering where the view was. Browsing,
     /// it is selected. In a journey that runs it, the cursor goes to its call, the one
     /// numbered `number` (the number on the name clicked) or else the one nearest the
-    /// cursor, opening what folds it; off the journey, it is set aside, selected in
-    /// place, and the journey stays as it was. Nothing moves, but expanded, where the
+    /// cursor, opening what folds it; off the journey, or drawn plain in the module
+    /// expanded as a call folded away, it is set aside, selected in place, and the
+    /// journey stays as it was. Nothing moves, but expanded, where the
     /// view keeps the cursor in sight, flying to its module when it moves to another.
     /// A search picks a function this way too.
     pub(crate) fn click(&mut self, tile: usize, number: Option<&str>) {
         self.navigate(|explorer| {
             if explorer.browsing() {
                 explorer.selection = Some(tile);
-            } else if let Some(span) = explorer.span_at(tile, number) {
+            } else if let Some(span) = explorer
+                .span_at(tile, number)
+                .filter(|&span| explorer.disclosed.shows(span) || !explorer.nucleus.opened_up(tile))
+            {
                 explorer.move_cursor(Some(span));
             } else {
                 explorer.set_aside(tile);
@@ -1494,6 +1505,15 @@ pub(crate) enum Step {
 }
 
 /// Whether a span runs only sometimes on this path: under a condition, or in a loop.
+/// The functions a call may run: the one it resolved to, or its candidates.
+fn targets(target: &SpanTarget) -> &[UnitId] {
+    match target {
+        SpanTarget::Unit(unit) => std::slice::from_ref(unit),
+        SpanTarget::Ambiguous(units) => units,
+        SpanTarget::Unresolved(_) => &[],
+    }
+}
+
 pub(crate) fn is_conditional(span: &Span) -> bool {
     !span.conditions.is_empty() || span.repeats
 }
@@ -2011,6 +2031,21 @@ pub(crate) mod tests {
             explorer.current(),
             "following the function set aside re-centers on it"
         );
+    }
+
+    #[test]
+    fn expanded_a_click_on_a_call_folded_away_opens_nothing() {
+        let mut explorer = explorer();
+        let c = tile(&explorer, "c");
+        explorer.gather();
+        explorer.toggle_expand(None);
+        explorer.ease_nucleus(1.0);
+        assert!(explorer.nucleus().opened_up(c), "c drawn plain");
+        let shown = explorer.disclosure().tiles().len();
+        explorer.click(c, None);
+        assert_eq!(explorer.aside(), Some(c), "set aside, as off the journey");
+        assert_eq!(at(&explorer), "main", "the cursor stays");
+        assert_eq!(explorer.disclosure().tiles().len(), shown, "no bar unfolds");
     }
 
     #[test]

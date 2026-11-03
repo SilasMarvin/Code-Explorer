@@ -53,7 +53,7 @@ const PLAIN_APART: f32 = 12.0;
 /// How far the note on names left out sits above the hint at the keys, in points.
 const NOTE_ABOVE: f32 = 20.0;
 /// What a name says of a call that can fail.
-const FAILS: &str = "can fail";
+pub(crate) const FAILS: &str = "can fail";
 /// A character's width against its font size, to see whether a plain name could fit
 /// before laying it out.
 const CHAR_WIDTH: f32 = 0.5;

@@ -88,7 +88,7 @@ impl When {
 
 /// Every key, what it does, and in which view; H lists those that apply to the view
 /// open.
-const KEYS: [(&str, &str, When); 25] = [
+const KEYS: [(&str, &str, When); 26] = [
     ("click", "select a function; nothing moves", When::Browse),
     (
         "click",
@@ -96,7 +96,12 @@ const KEYS: [(&str, &str, When); 25] = [
          select it",
         When::Journey,
     ),
-    ("click empty space", "clear the selection", When::Always),
+    ("click empty space", "clear the selection", When::Browse),
+    (
+        "click empty space",
+        "let go of the function selected off the journey",
+        When::Journey,
+    ),
     (
         "Enter",
         "open the selected function's journey",
@@ -196,7 +201,14 @@ fn reading(browsing: bool) -> &'static [&'static str] {
     const BOTH: &str = "A blue or amber dot ringed in violet is both: it is called, and \
         calls back in.";
     if browsing {
-        return &[MAP, BOTH];
+        return &[
+            MAP,
+            BOTH,
+            "Faint, a sphere and its dots: a module the function selected neither calls \
+             nor is called from. Faint, a dot and its line: a call only guessed at (a \
+             trait or callback the code may not take) or handed off to run later. Point \
+             at a sphere for how many functions it holds.",
+        ];
     }
     &[
         MAP,
@@ -211,9 +223,19 @@ fn reading(browsing: bool) -> &'static [&'static str] {
          show them. A green end returns, a red one can fail. ↺ calls itself: it calls \
          itself straight back; ↺ calls back: it calls the start again.",
         "Faint, a dot, its line and its bar: a call only guessed at (a trait or callback \
-         the code may not take) or handed off to run later. Ringed in white: a function \
-         picked off the journey, in its own color.",
+         the code may not take) or handed off to run later; or a caller counted on its \
+         module's name rather than named; or, grey, a caller from off the journey that I \
+         shows. Ringed in white: a function picked off the journey, in its own color.",
     ]
+}
+
+/// One color and what it means, as one piece that wraps whole to the next line.
+fn legend(color: egui::Color32, what: &str) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let font = egui::FontId::proportional(text::SMALL);
+    job.append("● ", 0.0, egui::TextFormat::simple(font.clone(), color));
+    job.append(what, 0.0, egui::TextFormat::simple(font, MUTED));
+    job
 }
 
 /// Width of the keys' column in the help.
@@ -272,11 +294,9 @@ pub(crate) fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, b
                             );
                         }
                         ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.spacing_mut().item_spacing.x = 12.0;
                             for (color, what) in color_key(browsing) {
-                                ui.label(egui::RichText::new("●").color(color));
-                                ui.label(egui::RichText::new(what).size(text::SMALL).color(MUTED));
-                                ui.add_space(8.0);
+                                ui.add(egui::Label::new(legend(color, what)).extend());
                             }
                         });
                         ui.add_space(4.0);

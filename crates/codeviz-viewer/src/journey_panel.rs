@@ -54,13 +54,12 @@ const BADGE: f32 = 30.0;
 /// How big a bar's name is drawn, and how small it shrinks to fit.
 const BAR_TEXT: f32 = text::BODY;
 const BAR_TEXT_SMALL: f32 = text::SMALL;
-/// Rows a docked journey grows to before it scrolls: the start and four levels.
-const DOCKED_ROWS: usize = 5;
 
 /// The rows of bars the panel makes room for: the journey's, a row a level with the
-/// start's, up to a few, past which they scroll; and above them the start's callers.
+/// start's, as many as [`split`] gives room, past which they scroll; and above them
+/// the start's callers.
 pub(crate) fn rows(explorer: &Explorer) -> usize {
-    explorer.disclosure().rows().clamp(2, DOCKED_ROWS) + usize::from(explorer.start_called())
+    explorer.disclosure().rows().max(2) + usize::from(explorer.start_called())
 }
 
 /// The graph's free area within `area`, and the strip along its foot the panel takes,
@@ -527,6 +526,23 @@ fn canvas(
         painter.rect_filled(track, 1.5, TRACK);
         painter.rect_filled(thumb, 1.5, THUMB);
     }
+    // Deeper than the panel shows, a track down its right side shows which rows are
+    // in view.
+    let rows = disclosed.rows() as f32;
+    let down = (rows > visible_rows).then(|| {
+        let track = egui::Rect::from_min_max(
+            egui::pos2(content.max.x - 3.0, content.min.y),
+            egui::pos2(content.max.x, content.max.y),
+        );
+        let share = |row: f32| track.min.y + track.height() * (row / rows).min(1.0);
+        let thumb = egui::Rect::from_min_max(
+            egui::pos2(track.min.x, share(panel.top_row)),
+            egui::pos2(track.max.x, share(panel.top_row + visible_rows)),
+        );
+        painter.rect_filled(track, 1.5, TRACK);
+        painter.rect_filled(thumb, 1.5, THUMB);
+        track
+    });
 
     if let Some((tile, _)) = caller_hovered {
         let start = explorer
@@ -574,6 +590,7 @@ fn canvas(
             .collect(),
         chips,
         caller_bars,
+        down,
     );
     let hovered_rect = hovered
         .and_then(rect_of)
@@ -619,9 +636,9 @@ fn canvas(
 /// A bar in the row of the start's callers: its function, and where it is.
 type CallerBar = (usize, egui::Rect);
 
-/// The row above the start's bar: the functions that call the start, each painted as
-/// its node is (violet, or as the call when the journey runs it too), the one set
-/// aside outlined white, as many across as fit at the narrowest a bar is drawn, from the
+/// The row above the start's bar: the functions that call the start, violet (faint
+/// those folded into their module's count, as their dots are), the one set aside
+/// outlined white, as many across as fit at the narrowest a bar is drawn, from the
 /// first, or as far along as keeps the one set aside in view. Returns the caller under
 /// the pointer, and where each caller's bar is.
 #[expect(
@@ -656,9 +673,6 @@ fn callers_row(
         );
         let aside = explorer.aside() == Some(tile);
         painter.rect_filled(rect, 3.0, caller_fill(explorer, tile));
-        if explorer.nucleus().calls_back(tile) {
-            outline(&painter, rect, egui_color(CALLER), 1.5);
-        }
         if aside {
             outline(&painter, rect, egui_color(SELECTED), 2.0);
         } else if graph_hover == Some(tile) || mouse.is_some_and(|p| rect.contains(p)) {
@@ -682,7 +696,11 @@ fn callers_row(
                 egui::Align2::LEFT_CENTER,
                 text,
                 egui::FontId::proportional(size),
-                ON_FILL,
+                if explorer.nucleus().folded(tile) {
+                    MUTED
+                } else {
+                    ON_FILL
+                },
             );
         }
         if mouse.is_some_and(|p| rect.contains(p)) {
@@ -730,10 +748,15 @@ pub(crate) fn guessed(explorer: &Explorer, span: SpanId) -> bool {
     explorer.span(span).is_some_and(crate::disclosure::guessed)
 }
 
-/// A bar in the row of the start's callers: painted as its node is, so one the
-/// journey runs too reads as the call it is, the one set aside too.
+/// A bar in the row of the start's callers: violet, as what calls the start is, even
+/// one the journey runs too; faint, as its dot is, one folded into its module's count.
 pub(crate) fn caller_fill(explorer: &Explorer, tile: usize) -> egui::Color32 {
-    egui_color(look_color(role_look(explorer, tile)))
+    let violet = egui_color(CALLER);
+    if explorer.nucleus().folded(tile) {
+        violet.gamma_multiply(GUESSED)
+    } else {
+        violet
+    }
 }
 
 /// A line round a bar, just outside it.
@@ -747,11 +770,11 @@ fn outline(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, widt
 }
 
 /// What a bar says, in `room` points, and at what size: its number, then its
-/// function's name as the graph has it, with why the journey stops there and when it
-/// runs; then smaller; then without when it runs; then cut short with an ellipsis,
-/// keeping the number and a few letters; then the name alone, cut short as far as a
-/// few letters, as a deep call's bar is narrow; then the number alone. `None` where
-/// not even the number fits.
+/// function's name as the graph has it, with why the journey stops there, when it
+/// runs and that it can fail; then smaller; then without when it runs; then cut short with an ellipsis,
+/// keeping the number and a couple of letters; then the number alone, as a deep
+/// call's bar is narrow, so it still says which call it is; then, a bar with no
+/// number, its name cut short. `None` where not even that fits.
 fn bar_text(
     painter: &egui::Painter,
     explorer: &Explorer,
@@ -785,7 +808,13 @@ fn bar_text(
         .span(span)
         .and_then(crate::disclosure::when)
         .map_or_else(String::new, |w| format!("  {w}"));
-    let whole = format!("{named}{when}");
+    // That it can fail, in the graph's words.
+    let fails = if disclosed.fails(span) {
+        format!("  {}", crate::labels::FAILS)
+    } else {
+        String::new()
+    };
+    let whole = format!("{named}{when}{fails}");
     let tries = [
         (whole.as_str(), BAR_TEXT),
         (whole.as_str(), BAR_TEXT_SMALL),
@@ -798,15 +827,15 @@ fn bar_text(
         return Some((text.to_owned(), size));
     }
     fit_text(painter, &named, BAR_TEXT_SMALL, room)
-        .filter(|cut| cut.chars().count() > number.chars().count() + 5)
-        .or_else(|| {
-            fit_text(painter, &name, BAR_TEXT_SMALL, room)
-                .filter(|cut| *cut == name || cut.chars().count() > 3)
-        })
+        .filter(|cut| cut.chars().count() > number.chars().count() + 4)
         .or_else(|| {
             (text_width(painter, number, BAR_TEXT_SMALL) <= room).then(|| number.to_owned())
         })
         .filter(|text| !text.is_empty())
+        .or_else(|| {
+            fit_text(painter, &name, BAR_TEXT_SMALL, room)
+                .filter(|cut| number.is_empty() && (*cut == name || cut.chars().count() > 3))
+        })
         .map(|text| (text, BAR_TEXT_SMALL))
 }
 
@@ -942,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_bar_keeps_its_name() {
+    fn a_narrow_bar_keeps_its_number() {
         // main -> (a -> c), b
         let mut explorer = crate::explorer::tests::explorer();
         explorer.set_disclose(Disclose(2));
@@ -954,16 +983,15 @@ mod tests {
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.painter();
             let number = text_width(painter, "1.1", BAR_TEXT_SMALL);
-            let name = text_width(painter, "c", BAR_TEXT_SMALL);
-            said = [400.0, number + 1.0, name - 1.0]
+            said = [400.0, number + 1.0, number - 1.0]
                 .map(|room| bar_text(painter, &explorer, c, room).map(|(text, _)| text))
                 .to_vec();
         });
         output.textures_delta.clear();
         assert_eq!(
             said,
-            [Some("1.1  c".to_owned()), Some("c".to_owned()), None],
-            "whole, then the name alone, then nothing where not even that fits"
+            [Some("1.1  c".to_owned()), Some("1.1".to_owned()), None],
+            "whole, then the number alone, then nothing where not even that fits"
         );
     }
 }
