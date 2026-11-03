@@ -2,8 +2,9 @@
 # I and expanding in a journey: every caller from off the journey of the call the
 # cursor is on is drawn in a place of its own, clear of the journey's dots, the
 # start's module's too, and none moves as the cursor steps; X keeps the journey's
-# dots where they were, and a click on a plain function there opens no bar. Then a
-# deep journey in a small window: the panel says rows lie below it.
+# dots where they were, and a click on a plain function there opens no bar; none sits
+# on a call's line, and one unnamed is counted. Then a deep journey in a small
+# window: the panel says rows lie below it.
 snap open
 bar 2.2
 expect cursor CodebaseMap::tile_of
@@ -19,7 +20,15 @@ snap i on root_tile
 bar Explorer::spotlit
 expect nothing-moved
 snap i on start
+key .
+bar 2.2
+expect outside_callers true
+expect check outside-callers pass
+snap i on tile_of d3
+key ,
+bar Explorer::spotlit
 key i
+snap i off at start
 key x
 expect nothing-moved
 snap expanded

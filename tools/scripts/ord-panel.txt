@@ -1,6 +1,7 @@
 #: view $CODEVIZ_DATA/ord-ws-2.json --focus Explorer::spotlit --depth 4
-# The panel on a crowded journey: every bar keeps its number, the cursor's bar keeps
-# to its slot, one bar only is the cursor's; a level less takes the cursor up to the
+# The panel on a crowded journey: every bar keeps its number and some of its name, the
+# cursor's bar keeps to its slot, one bar only is the cursor's; at 1200 wide and five
+# levels deep the whole journey fits across; a level less takes the cursor up to the
 # call still drawn; Esc selects the start. A function that calls itself says so.
 snap open d4
 key down
@@ -21,6 +22,17 @@ key ]
 snap depth 3 walked
 window 1200 800
 snap small window
+key .
+key .
+expect depth 5
+expect check bars-in-view pass
+expect check panel-agrees pass
+snap small depth 5
+bar 1.1.3
+key i
+expect check outside-callers pass
+snap small depth 5 i
+key i
 key esc
 expect mode browse
 expect selection Explorer::spotlit
