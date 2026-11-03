@@ -64,32 +64,6 @@ impl Nucleus {
         Some((ball.radius, dots))
     }
 
-    /// The modules shown that hold a function calling, or called from, one of
-    /// `cluster`'s along a call the view names (the journey's, or its callers'):
-    /// what a small module expanded in a journey keeps on screen beside it.
-    pub(crate) fn neighbours(&self, cluster: usize) -> Vec<usize> {
-        let mut near: Vec<usize> = self
-            .now
-            .links
-            .iter()
-            .filter(|l| matches!(l.flow, Flow::Into | Flow::Journey(_)))
-            .filter_map(|l| match (self.module_of(l.from), self.module_of(l.to)) {
-                (Some(a), Some(b)) if a == cluster && b != cluster => Some(b),
-                (Some(a), Some(b)) if b == cluster && a != cluster => Some(a),
-                _ => None,
-            })
-            .filter(|&m| {
-                self.now
-                    .balls
-                    .get(m)
-                    .is_some_and(|b| self.shows_body(b.body))
-            })
-            .collect();
-        near.sort_unstable();
-        near.dedup();
-        near
-    }
-
     /// The module a function lives in.
     pub(crate) fn module_of(&self, tile: usize) -> Option<usize> {
         self.module_of.get(tile).copied().flatten()

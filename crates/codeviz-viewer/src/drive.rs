@@ -336,11 +336,11 @@ struct Drive {
     /// the view last framed itself; and what the view was on when it last did.
     by_hand: bool,
     framed_on: (bool, Option<usize>),
-    /// Whether a module was expanded, and the camera where the hands put it, as the
-    /// step under way began; and while a module is expanded, whether the camera was
-    /// where the hands put it before the first expand, which shrinking back returns
-    /// it to.
-    began: (bool, bool),
+    /// The module expanded, and whether the camera stood where the hands put it, as
+    /// the step under way began; and while a module is expanded, whether the camera
+    /// was where the hands put it before the first expand, which shrinking back
+    /// returns it to.
+    began: (Option<usize>, bool),
     expanded_by_hand: Option<bool>,
     /// What is worth knowing of the step under way that is no failure.
     notes: Vec<String>,
@@ -1397,9 +1397,17 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
     }
     // Shrinking back returns the camera to where it stood before the first expand,
     // where the hands may have put it; R and F frame it anew.
-    let expanded = view.explorer.nucleus().expanded();
-    match (drive.began.0, expanded) {
+    let module = view.explorer.nucleus().expanded_module();
+    let expanded = module.is_some();
+    match (drive.began.0.is_some(), expanded) {
         (false, true) => drive.expanded_by_hand = Some(drive.began.1),
+        // The expansion taken to another module: flown there and framed, but by Back
+        // or Forward, put back where the camera stood then, perhaps by hand.
+        (true, true) if module != drive.began.0 => {
+            let step = &drive.lines[index].step;
+            drive.by_hand =
+                matches!(step, Step::Key(press) if press.code().0 == KeyCode::Backspace);
+        }
         (true, false) => {
             let saved = drive.expanded_by_hand.take();
             let kind = drive.lines[index].step.kind();
@@ -1468,7 +1476,7 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
             }),
             _ => None,
         };
-        drive.began = (view.explorer.nucleus().expanded(), drive.by_hand);
+        drive.began = (view.explorer.nucleus().expanded_module(), drive.by_hand);
         if let Some(hand) = by_hand(step.kind()) {
             drive.by_hand = hand;
         }

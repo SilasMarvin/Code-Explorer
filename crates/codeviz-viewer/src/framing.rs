@@ -11,7 +11,7 @@ use crate::{
     camera::{Bounds, Lens, OrbitCamera, Reach},
     disclosure::Disclose,
     explorer::{Explorer, Return},
-    nucleus::{BROWSE_REACH, Nucleus, VIEW, view_rotation},
+    nucleus::{BROWSE_REACH, Ball, Nucleus, VIEW, view_rotation},
     sizes, ui,
 };
 
@@ -425,9 +425,10 @@ fn journey_points(
 /// Expanded, glides to the expanded module, turned to `rotation`, from just far
 /// enough back that its diameter takes the share of the free area's smaller side
 /// its functions need to sit comfortably, their names `chars` long
-/// ([`sizes::expanded_share`]), and `also` (the cursor) shows with it. A small module
-/// in a journey comes no nearer than keeps the journey's modules beside it, those it
-/// calls or is called from, on screen with their names.
+/// ([`sizes::expanded_share`]), and `also` (the cursor) shows with it: in a journey
+/// and browsing alike, its neighbours left where they fall, carried by the labels
+/// where calls leave the screen. Of the shares near that, it takes the nearest that
+/// leaves no sphere the journey shows half under the panel.
 fn fill(
     nucleus: &Nucleus,
     also: Option<Vec3>,
@@ -443,37 +444,81 @@ fn fill(
     // Where its functions would show, in points, at the least share, and so the
     // share they need.
     let side = views.size.min_element();
-    let least = sizes::EXPANDED_SHARE.0;
+    let (least, most) = sizes::EXPANDED_SHARE;
     let scale = least * side / (2.0 * radius).max(f32::EPSILON);
     let shown: Vec<(Vec2, usize)> = dots.iter().map(|&(t, at)| (at * scale, chars(t))).collect();
-    let share = sizes::expanded_share(least, sizes::comfort(&shown));
-    let share = Vec2::splat(share * side) / views.size;
-    let alone: Vec<(Vec3, Vec2)> = nucleus
-        .nucleus_points(rotation)
-        .into_iter()
-        .chain(also)
-        .map(|p| (p, share))
-        .collect();
-    let Some((mut middle, mut distance)) = place(&alone, rotation, views.free) else {
-        return;
-    };
-    // Small in a journey: no nearer than that, and far enough back to show the
-    // modules beside it, whole and named, all about their middle.
-    if !nucleus.browsing() && nucleus.count(module) <= sizes::SMALL_MODULE {
-        let mut modules = nucleus.neighbours(module);
-        modules.push(module);
-        let rims = nucleus.rims(rotation, &modules).into_iter();
-        let tops = nucleus.tops(rotation, &modules).into_iter();
-        let together: Vec<(Vec3, Vec2)> = rims
-            .map(|p| (p, views.dots))
-            .chain(tops.map(|p| (p, views.named)))
-            .chain(also.map(|p| (p, views.named)))
+    let wanted = sizes::expanded_share(least, sizes::comfort(&shown));
+    let framed = |share: f32| {
+        let share = Vec2::splat(share * side) / views.size;
+        let alone: Vec<(Vec3, Vec2)> = nucleus
+            .nucleus_points(rotation)
+            .into_iter()
+            .chain(also)
+            .map(|p| (p, share))
             .collect();
-        if let Some((around, needed)) = place(&together, rotation, views.free) {
-            (middle, distance) = (around, distance.max(needed));
-        }
+        place(&alone, rotation, views.free)
+    };
+    let others: Vec<usize> = if nucleus.browsing() {
+        Vec::new()
+    } else {
+        let mut open = nucleus.open_modules();
+        open.retain(|&m| m != module);
+        open
+    };
+    let cut = |(middle, distance): (Vec3, f32)| {
+        let target = middle - views.free.shift(rotation) * distance;
+        under_panel(
+            nucleus.balls_of(&others),
+            target,
+            distance,
+            rotation,
+            views.free,
+        )
+    };
+    // The share wanted, else the nearest to it a step at a time either way.
+    let shares = (0..=PANEL_STEPS).flat_map(|i| {
+        #[expect(clippy::cast_precision_loss, reason = "a step count")]
+        let by = i as f32 * (most - least) / PANEL_STEPS as f32;
+        [wanted - by, wanted + by]
+    });
+    let chosen = shares
+        .filter(|share| (least..=most).contains(share))
+        .filter_map(framed)
+        .find(|&framing| !cut(framing))
+        .or_else(|| framed(wanted));
+    if let Some((middle, distance)) = chosen {
+        camera.glide_to(middle - views.free.shift(rotation) * distance, distance);
     }
-    camera.glide_to(middle - views.free.shift(rotation) * distance, distance);
+}
+
+/// How many steps between the least and most share an expanded module may take
+/// [`fill`] tries, either way from the one it wants, for one that leaves no sphere
+/// half under the panel.
+const PANEL_STEPS: usize = 16;
+
+/// Whether any of `balls` shows cut by the foot of the free area, where a panel
+/// docks, seen turned to `rotation` looking at `target` from `distance`; never with
+/// no panel.
+fn under_panel<'a>(
+    balls: impl Iterator<Item = &'a Ball>,
+    target: Vec3,
+    distance: f32,
+    rotation: Quat,
+    lens: Lens,
+) -> bool {
+    let foot = lens.centre.y - lens.half.y;
+    if foot <= -1.0 + 1e-3 {
+        return false;
+    }
+    let eye = target + rotation * Vec3::Z * distance;
+    let mut balls = balls;
+    balls.any(|ball| {
+        lens.project(rotation, eye, ball.center)
+            .is_some_and(|(at, depth)| {
+                let size = Vec2::new(ball.radius, ball.radius) / (depth * lens.tan);
+                at.x.abs() < 1.0 + size.x && (at.y - foot).abs() < size.y
+            })
+    })
 }
 
 /// Glides to take in everything shown from where the camera turns to.

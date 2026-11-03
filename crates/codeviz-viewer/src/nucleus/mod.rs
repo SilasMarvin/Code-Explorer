@@ -805,7 +805,8 @@ impl Nucleus {
             .collect()
     }
 
-    fn balls_of<'a>(&'a self, modules: &'a [usize]) -> impl Iterator<Item = &'a Ball> {
+    /// `modules`' spheres, as they will be once a re-centering ends.
+    pub(crate) fn balls_of<'a>(&'a self, modules: &'a [usize]) -> impl Iterator<Item = &'a Ball> {
         modules.iter().filter_map(|&c| self.now.balls.get(c))
     }
 

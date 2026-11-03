@@ -27,7 +27,6 @@ use crate::{
     colors::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, GROUND},
     nucleus::VIEW,
     script::Kind,
-    sizes,
 };
 
 // What the checks allow, each in one place. Points are window points, as in the PNG;
@@ -57,11 +56,15 @@ const NAME_SIZES: (f32, f32) = (11.0, 18.0);
 /// Most distinct font sizes on screen at once: module name, function name, panel,
 /// and small print.
 const MOST_TEXT_SIZES: usize = 4;
-/// Most share of the free area's smaller side the expanded module's diameter fills;
-/// and how far, as a share of it, the share it fills may be from the one its
-/// functions need ([`sizes::expanded_share`]).
-const EXPANDED_MOST: f32 = 0.9;
-const EXPANDED_SLACK: f32 = 0.12;
+/// The least and most share of the free area's smaller side the expanded module's
+/// diameter fills, and how far past either it may show (a sphere's disc seen in
+/// perspective is a little bigger than its rim points framed).
+const EXPANDED_BAND: (f32, f32) = (0.45, 0.85);
+const EXPANDED_SLACK: f32 = 0.04;
+/// Expanded below the band's top, how near, in points, two of its dots may show
+/// for a name to fit between them, and the share of its dots that may be nearer.
+const CROWDED_GAP: f32 = 18.0;
+const CROWDED_SHARE: f32 = 0.25;
 /// How far a framed sphere or dot may stick past the free area, in points.
 const EDGE: f32 = 2.0;
 /// Margin F leaves round the dots it frames, in points.
@@ -77,8 +80,9 @@ const ZOOM_DRIFT: (f32, f32) = (4.0, 0.05);
 const ZOOM_OUT_LEAST: f32 = 0.4;
 /// Zoomed in, the most share of the free area's smaller side the diameter of the
 /// sphere under the pointer spans; and the share past which it lies inside the free
-/// area, as it does at the near bound.
-const ZOOM_IN_MOST: f32 = 0.92;
+/// area, as it does at the near bound. The wheel stops at nine tenths framed by the
+/// sphere's rim; its disc seen in perspective shows a little bigger.
+const ZOOM_IN_MOST: f32 = 0.95;
 const ZOOM_IN_KEPT: f32 = 0.88;
 /// Least a function or sphere moves in the world, or a dot or name on screen in
 /// points, or the camera turns in radians, to count as moved.
@@ -148,7 +152,7 @@ const ARROW_SLACK: f32 = 1.0;
 const LISTED: usize = 12;
 
 /// Every check, in the order a snapshot lists them.
-pub(crate) const NAMES: [&str; 28] = [
+pub(crate) const NAMES: [&str; 29] = [
     "dots-in-spheres",
     "dots-apart",
     "dot-sizes",
@@ -160,6 +164,7 @@ pub(crate) const NAMES: [&str; 28] = [
     "text-sizes",
     "panel-agrees",
     "expanded-fill",
+    "expanded-drawn",
     "framed",
     "zoom-to-pointer",
     "zoom-bounds",
@@ -279,6 +284,8 @@ struct State {
     nucleus: String,
     selection: Option<String>,
     start: Option<String>,
+    /// In a journey, the function set aside.
+    aside: Option<String>,
     /// The module expanded, by name.
     expanded: Option<String>,
     help: bool,
@@ -604,6 +611,7 @@ pub(crate) fn run(now: &Value, before: Option<&Value>, since: &Since) -> Value {
         text_sizes(&now),
         panel_agrees(&now),
         expanded_fill(&now, before, since),
+        expanded_drawn(&now),
         framed(&now, since),
         zoom_to_pointer(&now, before, since),
         zoom_bounds(&now, since),
@@ -1063,8 +1071,8 @@ fn same_name(bar: &str, n: &Node) -> bool {
 }
 
 fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
-    // Expanded in a journey, the cursor takes the expansion to its module; browsing,
-    // a pick takes it to the selection's.
+    // Expanded in a journey, the cursor or the function set aside takes the expansion
+    // to its module; browsing, a pick takes it to the selection's.
     let followed = before.is_some_and(|b| b.expanded() && b.state.expanded != s.state.expanded);
     if !since.has(Kind::Expand) && !followed {
         return skip(
@@ -1073,6 +1081,9 @@ fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     }
     if !s.expanded() {
         return skip("collapsed");
+    }
+    if since.by_hand {
+        return skip("the camera is where the user's hands put it");
     }
     let Some(m) = s.expanded_sphere() else {
         return verdict(vec![(
@@ -1083,69 +1094,94 @@ fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     let free = s.free();
     let side = free.width().min(free.height());
     let fill = 2.0 * m.radius / side;
-    // Its functions where they show, and how long their names are: the share they
-    // need to sit comfortably.
-    let dots: Vec<(Vec2, usize)> = s
+    let (least, most) = EXPANDED_BAND;
+    let mut offenders = Vec::new();
+    let about = || {
+        json!({
+            "module": m.name, "fill": r2(fill), "band": [least, most], "functions": m.functions,
+            "diameter": r1(2.0 * m.radius), "free_area": [r1(free.width()), r1(free.height())],
+        })
+    };
+    if fill < least - EXPANDED_SLACK || fill > most + EXPANDED_SLACK {
+        let off = (fill - fill.clamp(least, most)).abs();
+        offenders.push((off, with(about(), "why", json!("outside the band"))));
+    }
+    // Below the band's top it has room to grow: its dots must have room for names.
+    let dots: Vec<Vec2> = s
         .nodes
         .iter()
         .filter(|n| n.module.as_ref() == Some(&m.name))
-        .map(|n| (v2(n.at), n.name.chars().count()))
+        .map(|n| v2(n.at))
         .collect();
-    let wanted = sizes::expanded_share(fill, sizes::comfort(&dots));
-    // Small in a journey, it may stay smaller, to keep the modules beside it on screen.
-    let small = s.state.mode == "journey" && m.functions <= sizes::SMALL_MODULE;
-    let mut offenders = Vec::new();
-    let off = fill / wanted.max(f32::EPSILON) - 1.0;
-    if fill > EXPANDED_MOST || off > EXPANDED_SLACK || (!small && off < -EXPANDED_SLACK) {
-        let offender = json!({
-            "module": m.name, "fill": r2(fill), "wanted": r2(wanted), "most": EXPANDED_MOST,
-            "functions": m.functions, "diameter": r1(2.0 * m.radius),
-            "free_area": [r1(free.width()), r1(free.height())],
-        });
-        offenders.push((off.abs(), offender));
+    let crowded = dots
+        .iter()
+        .enumerate()
+        .filter(|&(i, &at)| {
+            dots.iter()
+                .enumerate()
+                .any(|(j, &other)| i != j && at.distance(other) < CROWDED_GAP)
+        })
+        .count();
+    #[expect(clippy::cast_precision_loss, reason = "dot counts")]
+    let crowded_share = crowded as f32 / dots.len().max(1) as f32;
+    if fill < most - EXPANDED_SLACK && crowded_share > CROWDED_SHARE {
+        let why = format!(
+            "its dots crowd ({crowded} of {} nearer than {CROWDED_GAP} points) though it could grow",
+            dots.len()
+        );
+        offenders.push((crowded_share, with(about(), "why", json!(why))));
+    }
+    // An expand from the collapsed view zooms in.
+    if since.has(Kind::Expand)
+        && let Some(b) = before.filter(|b| !b.expanded())
+        && let Some(was) = b.spheres().find(|w| w.name == m.name)
+    {
+        let was_free = b.free();
+        let was_fill = 2.0 * was.radius / was_free.width().min(was_free.height());
+        if fill <= was_fill * 1.05 && was_fill < most - EXPANDED_SLACK {
+            let offender = json!({
+                "why": "the expand did not zoom in", "module": m.name,
+                "fill_before": r2(was_fill), "fill": r2(fill),
+            });
+            offenders.push((was_fill - fill + 1.0, offender));
+        }
     }
     let out = circle_out(free, v2(m.at), m.radius);
     if out > EDGE {
         let offender = json!({ "module": m.name, "sticks_out_by": r1(out), "at": pt(m.at), "radius": r1(m.radius) });
         offenders.push((out, offender));
     }
-    if small {
-        for near in neighbours(s, &m.name) {
-            let out = circle_out(free, v2(near.at), near.radius);
-            if out > EDGE {
-                let offender = json!({
-                    "why": "a small module expanded in a journey leaves a module it calls or is called from off the free area",
-                    "module": near.name, "out_by": r1(out),
-                });
-                offenders.push((out, offender));
-            }
-        }
-    }
     with(verdict(offenders), "fill", json!(r2(fill)))
 }
 
-/// The spheres shown that hold a function calling, or called from, one of `module`'s
-/// along a journey's call or a call into its start, drawn.
-fn neighbours<'a>(s: &'a Snap, module: &str) -> Vec<&'a Module> {
-    let module_of = |unit: &Option<String>| {
-        let unit = unit.as_deref()?;
-        s.node(unit).and_then(|n| n.module.as_deref())
+/// Expanded, the module expanded is drawn, and some of its functions show in the
+/// free area: an expansion never leaves a blank graph.
+fn expanded_drawn(s: &Snap) -> Value {
+    if !s.expanded() {
+        return skip("collapsed");
+    }
+    let Some(name) = &s.state.expanded else {
+        return fail("expanded, but the state names no module");
     };
-    let mut near: Vec<&str> = s
-        .arrows
+    let Some(m) = s.modules.iter().find(|m| &m.name == name) else {
+        return fail(&format!("expanded {name} is no module drawn"));
+    };
+    let free = s.free();
+    let dots = s
+        .nodes
         .iter()
-        .filter(|a| matches!(a.flow.as_str(), "into" | "journey"))
-        .filter_map(|a| match (module_of(&a.from_unit), module_of(&a.to_unit)) {
-            (Some(from), Some(to)) if from == module && to != module => Some(to),
-            (Some(from), Some(to)) if to == module && from != module => Some(from),
-            _ => None,
-        })
-        .collect();
-    near.sort_unstable();
-    near.dedup();
-    s.spheres()
-        .filter(|m| near.contains(&m.name.as_str()))
-        .collect()
+        .filter(|n| n.module.as_ref() == Some(name))
+        .filter(|n| n.on_screen && free.contains(pos(n.at)))
+        .count();
+    if !m.shown || matches!(m.body.as_str(), "closed" | "faint") || dots == 0 {
+        let offender = json!({
+            "why": "the module expanded is not drawn, or none of its functions shows",
+            "module": m.name, "body": m.body, "shown": m.shown, "dots_in_view": dots,
+            "at": pt(m.at), "radius": r1(m.radius),
+        });
+        return verdict(vec![(1.0, offender)]);
+    }
+    with(verdict(Vec::new()), "dots_in_view", json!(dots))
 }
 
 fn framed(s: &Snap, since: &Since) -> Value {
@@ -1637,15 +1673,18 @@ fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         return skip("an expand frames the module, wherever the focus is");
     }
     let free = s.free();
-    // A function picked browsing since (a click, a search, Back) is in view wherever
-    // it is: the expansion follows it.
-    let picked = s.state.mode == "browse"
-        && s.state.selection.is_some()
-        && before.is_some_and(|b| b.state.selection != s.state.selection);
+    // A function picked browsing since (a click, a search, Back), or set aside in a
+    // journey, is in view wherever it is: the expansion follows it.
+    let picked = before.is_some_and(|b| {
+        (s.state.mode == "browse"
+            && s.state.selection.is_some()
+            && b.state.selection != s.state.selection)
+            || (s.state.aside.is_some() && b.state.aside != s.state.aside)
+    });
     // Expanded, the view is on the module expanded: what is in focus in another may
     // lie off it.
     let in_view = |n: &&Node| {
-        (picked && n.is("selection"))
+        (picked && (n.is("selection") || n.is("aside")))
             || s.state
                 .expanded
                 .as_ref()
@@ -1664,7 +1703,7 @@ fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         })
         .filter(in_view)
         .collect();
-    if picked && !s.nodes.iter().any(|n| n.is("selection")) {
+    if picked && !s.nodes.iter().any(|n| n.is("selection") || n.is("aside")) {
         return fail("the function picked is selected but not drawn");
     }
     if focus.is_empty() {
@@ -1781,14 +1820,13 @@ fn spheres_unclipped(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if !graph.is_positive() {
         return skip("no graph area");
     }
-    // The top of a panel docked along the graph's foot, where the view framed itself:
-    // what it cuts shows half under the panel. Zoomed into a module, the modules round
-    // it lie where they fall, as at the window's edges; shrunk back, the camera stands
-    // where it stood before, whatever came in meanwhile.
+    // The top of a panel docked along the graph's foot, where the view framed itself,
+    // expanded too: what it cuts shows half under the panel. Shrunk back, the camera
+    // stands where it stood before, whatever came in meanwhile.
     let free = s.free();
     let collapsed = before.is_some_and(Snap::expanded) && !s.expanded();
-    let panel = (free.max.y < graph.max.y - EDGE && !since.by_hand && !s.expanded() && !collapsed)
-        .then_some(free.max.y);
+    let panel =
+        (free.max.y < graph.max.y - EDGE && !since.by_hand && !collapsed).then_some(free.max.y);
     // An edge of the graph past which the window shows nothing of the graph, but no
     // panel or window edge either: what it cuts shows cut off.
     let panel_below = |y: f32| {
@@ -3205,23 +3243,22 @@ mod tests {
     }
 
     #[test]
-    fn the_expanded_module_takes_what_its_functions_need_after_expanding() {
+    fn the_expanded_module_fills_the_band_after_expanding() {
         let fill = |s: &Value| after(s, s, &[Kind::Expand], "expanded-fill");
-        // Two short names: the least share is room enough.
-        let result = fill(&expanded(scene(), 400.0, "f"));
+        let result = fill(&expanded(scene(), 171.0, "f"));
         assert!(
             !passes(&result),
-            "far bigger than two short names need: {result}"
+            "a third of the view is too little: {result}"
         );
-        assert_eq!(result["offenders"][0]["wanted"], 0.35);
-        let result = fill(&expanded(scene(), 171.0, "f"));
+        assert_eq!(result["offenders"][0]["why"], "outside the band");
+        let result = fill(&expanded(scene(), 300.0, "f"));
         assert!(passes(&result), "{result}");
-        // A long name beside its neighbour needs the most.
-        let long = "a_function_name_long_enough_to_need_the_most_room_there_is";
-        let mut s = expanded(scene(), 400.0, long);
-        let result = fill(&s);
-        assert!(passes(&result), "{result}");
-        assert_eq!(result["fill"], 0.82);
+        assert_eq!(result["fill"], 0.61);
+        assert!(
+            !passes(&fill(&expanded(scene(), 460.0, "f"))),
+            "nor past it"
+        );
+        let mut s = expanded(scene(), 400.0, "f");
         s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 800.0, 1600.0, 1000.0] }]);
         let result = fill(&s);
         assert!(!passes(&result), "the panel takes the bottom: {result}");
@@ -3234,35 +3271,66 @@ mod tests {
     }
 
     #[test]
+    fn the_expanded_module_grows_while_its_dots_crowd() {
+        let fill = |s: &Value| after(s, s, &[Kind::Expand], "expanded-fill");
+        let mut s = expanded(scene(), 260.0, "f");
+        s["nodes"][1]["at"] = json!([s["nodes"][0]["at"][0].as_f64().unwrap() + 10.0, 512.0]);
+        let result = fill(&s);
+        assert!(!passes(&result), "two dots 10 points apart: {result}");
+        let mut s = expanded(scene(), 430.0, "f");
+        s["nodes"][1]["at"] = json!([s["nodes"][0]["at"][0].as_f64().unwrap() + 10.0, 512.0]);
+        assert!(passes(&fill(&s)), "at the band's top it can grow no more");
+    }
+
+    #[test]
+    fn an_expand_zooms_in() {
+        let mut before = scene();
+        before["modules"][0]["radius"] = json!(300.0);
+        let now = expanded(scene(), 280.0, "f");
+        let result = after(&before, &now, &[Kind::Expand], "expanded-fill");
+        assert_eq!(
+            result["offenders"][0]["why"], "the expand did not zoom in",
+            "{result}"
+        );
+        before["modules"][0]["radius"] = json!(100.0);
+        assert!(passes(&after(
+            &before,
+            &now,
+            &[Kind::Expand],
+            "expanded-fill"
+        )));
+    }
+
+    #[test]
+    fn an_expansion_never_leaves_a_blank_graph() {
+        let mut s = expanded(scene(), 300.0, "f");
+        s["state"]["expanded"] = json!("a");
+        assert!(passes(&check(&s, "expanded-drawn")));
+        s["modules"][0]["body"] = json!("closed");
+        s["nodes"][0]["at"] = json!([-358.0, 914.0]);
+        s["nodes"][1]["at"] = json!([-300.0, 914.0]);
+        let result = check(&s, "expanded-drawn");
+        assert_eq!(result["offenders"][0]["module"], "a", "{result}");
+        assert_eq!(
+            check(&scene(), "expanded-drawn")["pass"],
+            Value::Null,
+            "collapsed"
+        );
+    }
+
+    #[test]
     fn the_expanded_module_is_the_one_the_state_names() {
         let mut s = scene();
         s["state"]["nucleus"] = json!("expanded");
         s["state"]["expanded"] = json!("b");
         s["modules"][0]["body"] = json!("nucleus");
         s["modules"][1]["at"] = json!([800.0, 512.0]);
-        s["modules"][1]["radius"] = json!(171.0);
+        s["modules"][1]["radius"] = json!(300.0);
         let result = after(&s, &s, &[Kind::Expand], "expanded-fill");
         assert!(
             passes(&result),
             "b fills the view, not the nucleus a: {result}"
         );
-    }
-
-    #[test]
-    fn a_small_module_expanded_in_a_journey_keeps_its_neighbours_on_screen() {
-        let mut s = journey();
-        s["state"]["nucleus"] = json!("expanded");
-        s["state"]["expanded"] = json!("b");
-        s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
-                               "flow": "journey", "level": 1, "on_screen": true }]);
-        let fill = |s: &Value| after(s, s, &[Kind::Expand], "expanded-fill");
-        assert!(passes(&fill(&s)), "small, beside the module calling it");
-        s["modules"][0]["at"] = json!([-200.0, 500.0]);
-        let result = fill(&s);
-        assert_eq!(result["offenders"][0]["module"], "a", "{result}");
-        s["modules"][0]["at"] = json!([400.0, 500.0]);
-        s["modules"][1]["functions"] = json!(12);
-        assert!(!passes(&fill(&s)), "a bigger one takes its share");
     }
 
     #[test]
@@ -3638,9 +3706,22 @@ mod tests {
         assert!(passes(&run(&s, None, &by_hand)["spheres-unclipped"]));
         s["state"]["nucleus"] = json!("expanded");
         assert!(
-            passes(&check(&s, "spheres-unclipped")),
-            "zoomed into a module, those round it fall where they do"
+            !passes(&check(&s, "spheres-unclipped")),
+            "zoomed into a module, the framing keeps those round it off the panel's edge"
         );
+    }
+
+    #[test]
+    fn a_function_set_aside_since_shows_wherever_the_expansion_is() {
+        let mut s = journey();
+        s["state"]["nucleus"] = json!("expanded");
+        s["state"]["expanded"] = json!("a");
+        let before = s.clone();
+        s["state"]["aside"] = json!("h");
+        s["nodes"][2]["roles"] = json!(["aside"]);
+        s["nodes"][2]["at"] = json!([1772.0, -959.0]);
+        let result = after(&before, &s, &[Kind::Moves], "focus-on-screen");
+        assert_eq!(result["offenders"][0]["function"], "h", "{result}");
     }
 
     #[test]
