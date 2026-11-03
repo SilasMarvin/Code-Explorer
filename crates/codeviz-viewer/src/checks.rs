@@ -1368,9 +1368,13 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
 fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // An expand or a shrink back picks nothing: browsing, the selection stays.
     let only_expands = (since.kinds.iter()).all(|k| matches!(k, Kind::Still | Kind::Expand));
-    if since.has(Kind::Expand)
-        && only_expands
-        && let Some(b) = before.filter(|b| b.state.mode == "browse" && s.state.mode == "browse")
+    let browsed = before.filter(|b| {
+        since.has(Kind::Expand)
+            && only_expands
+            && b.state.mode == "browse"
+            && s.state.mode == "browse"
+    });
+    if let Some(b) = browsed
         && b.state.selection != s.state.selection
     {
         let why = "an expand or shrink back changed the selection";
@@ -1384,6 +1388,10 @@ fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         return skip(BY_HAND);
     }
     if since.has(Kind::Expand) && s.expanded() {
+        // What an expand must keep, the selection, it kept.
+        if browsed.is_some() {
+            return verdict(Vec::new());
+        }
         return skip("an expand frames the module, wherever the focus is");
     }
     if since.has(Kind::Back) {

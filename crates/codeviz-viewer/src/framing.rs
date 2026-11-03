@@ -122,7 +122,7 @@ const CURSOR_ROOM: f32 = 0.85;
 /// - When the explorer asks for the camera back (Back to a place, Esc to browsing,
 ///   shrinking back), it returns to where it stood then, or with no such place,
 ///   browsing, takes in the whole codebase. Shrinking back, what the view came to be
-///   on while expanded (a pick, the function set aside) is panned into view.
+///   on while expanded (a pick, the function set aside) is brought into view.
 /// - A window sized anew frames the view again as it was last framed ([`Shot`]),
 ///   unless the hands moved the camera since or it went back to where it stood;
 ///   then it keeps what it looks at and how far.
@@ -240,7 +240,7 @@ pub(crate) fn frame(
     let picked = (explorer.current() != *expanded_on)
         .then_some(current)
         .flatten();
-    go_back(returning, picked, &mut camera, views);
+    go_back(returning, picked, nucleus, &mut camera, views);
 }
 
 /// What [`frame`] remembers from one frame to the next: what the view was last framed
@@ -255,11 +255,12 @@ pub(crate) struct Memory {
 }
 
 /// Sends the camera back where the explorer asks: shrinking back, with what the view
-/// came to be on while expanded (`picked`: a pick, the function set aside) panned
-/// into the free area when it would show off it.
+/// came to be on while expanded (`picked`: a pick, the function set aside) brought
+/// into the free area when it would show off it, as a pick collapsed is ([`reveal`]).
 fn go_back(
     returning: Option<Return>,
     picked: Option<Vec3>,
+    nucleus: &Nucleus,
     camera: &mut OrbitCamera,
     views: Views,
 ) {
@@ -267,8 +268,8 @@ fn go_back(
         Some(Return::To(pose)) => camera.return_to(pose),
         Some(Return::Shrunk(pose)) => {
             camera.return_to(pose);
-            if let Some(at) = picked.filter(|&at| !shows(&[at], camera, views)) {
-                pan_into_view(at, camera, views.free);
+            if picked.is_some_and(|at| !shows(&[at], camera, views)) {
+                reveal(nucleus, &[picked], &[], camera, views);
             }
         }
         _ => {}

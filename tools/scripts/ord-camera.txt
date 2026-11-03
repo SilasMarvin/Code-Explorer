@@ -92,6 +92,7 @@ snap double click keeps the selection
 key x
 key r
 drag 140 70
+snap orbited
 doubleclick-module lower
 expect expanded lower
 expect selection Explorer::spotlit
