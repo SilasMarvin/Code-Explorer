@@ -451,6 +451,16 @@ impl Node {
         other.lit() && (self.plain() || !other.plain())
     }
 
+    /// A dot nothing lights drawn faded beside what is lit: no lit name keeps off it.
+    fn faded(&self) -> bool {
+        (!self.lit() || self.plain())
+            && self
+                .color
+                .as_deref()
+                .and_then(alpha)
+                .is_some_and(|a| a < FAINT)
+    }
+
     /// A faint dot with no name: nothing a reader tells apart.
     fn faint(&self) -> bool {
         !self.lit() && self.label.is_none()
@@ -818,11 +828,14 @@ fn labels_near(s: &Snap) -> Value {
             continue;
         };
         let mine = gap(rect(r), n);
-        // The dot nearest the name, any but its own and those its pill hides.
+        // The dot nearest the name, any but its own, and for a lit name those faded
+        // or that its pill hides.
+        let pill = rect(r).expand2(NAME_PILL);
         let nearest = drawn
             .iter()
             .filter(|other| {
-                other.unit != n.unit && !(n.lit() && !n.plain() && hidden(rect(r), other))
+                other.unit != n.unit
+                    && !(n.lit() && !n.plain() && (other.faded() || hidden(pill, other)))
             })
             .map(|other| (other, gap(rect(r), other)))
             .min_by(|a, b| a.1.total_cmp(&b.1));
@@ -1957,15 +1970,15 @@ fn module_names(s: &Snap) -> Value {
                 offenders.push((into + 100.0, offender));
             }
         }
-        // Over none of its dots: inside its sphere, but those nothing lights that its
-        // pill hides wholly.
+        // Over none of its dots: inside its sphere, none lit, its opaque pill hiding
+        // the others.
         for n in s
             .nodes
             .iter()
             .filter(|n| n.on_screen && n.module.as_ref() == Some(&m.name) && n.radius > 0.0)
         {
             let into = n.radius - r.shrink(1.0).distance_to_pos(pos(n.at));
-            if into > 0.0 && !(within && hidden(r, n)) {
+            if into > 0.0 && !(within && (!n.lit() || n.plain())) {
                 let offender = json!({ "module": m.name, "label": label, "over_its_dot": n.name, "by": r1(into) });
                 offenders.push((into + 100.0, offender));
             }
@@ -2021,7 +2034,7 @@ fn named_when_room(s: &Snap) -> Value {
             && own.is_none_or(|own| {
                 !drawn.iter().any(|n| {
                     n.unit != own.unit
-                        && !(own.lit() && !own.plain() && hidden(r, n))
+                        && !(own.lit() && !own.plain() && (n.faded() || hidden(r, n)))
                         && near(n.at, kept(n))
                 })
             })
@@ -2033,7 +2046,7 @@ fn named_when_room(s: &Snap) -> Value {
                     && !s.nodes.iter().any(|n| {
                         n.on_screen
                             && n.module.as_deref() == Some(module)
-                            && !(within && hidden(r, n))
+                            && !(within && (!n.lit() || n.plain()))
                             && near(n.at, n.radius)
                     })
             })

@@ -191,10 +191,8 @@ struct Disc {
     /// As small as it is drawn lit, or as a speck: how near its own name reads as
     /// its, whatever it comes to be, so no other dot ever reads as nearer.
     least: f32,
-    /// Lit, the start or the cursor: no name ever covers it. One nothing lights, an
-    /// expanded module's plain function or a speck, a lit name may hide wholly under
-    /// its pill.
-    lit: bool,
+    /// How it shows beside what is lit.
+    shade: Shade,
     /// A caller from off the journey (I): only names of what I brings in keep off it,
     /// so I moves no other name.
     outside: bool,
@@ -205,6 +203,18 @@ struct Disc {
     /// the journey laid its functions out so, clear of the calls drawn, else its
     /// right (0).
     first: usize,
+}
+
+/// How a dot shows beside what is lit, as names keep off it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shade {
+    /// Lit, the start or the cursor: no name ever covers it.
+    Lit,
+    /// Lit by nothing, an expanded module's plain function or a speck: a lit name may
+    /// hide it wholly under its pill.
+    Plain,
+    /// Drawn faded, barely there beside what is lit: no lit name keeps off it.
+    Faded,
 }
 
 /// Whether `pill`, opaque, hides `dot` wholly.
@@ -320,8 +330,8 @@ impl Placer {
     }
 
     /// The dots other than `own` that a function's name at `pill` would cover or lie
-    /// nearer than its own: every dot drawn, but for a `lit` name one nothing lights
-    /// that it hides wholly.
+    /// nearer than its own: every dot drawn, but for a `lit` name one faded, or one
+    /// nothing lights that it hides wholly.
     fn over_dots(&self, pill: egui::Rect, own: usize, lit: bool) -> usize {
         // Which dot a name reads as nearest is judged from its text, the pill's
         // border aside.
@@ -335,7 +345,12 @@ impl Placer {
             .near(pill.expand(mine.max(0.0) + CLEAR))
             .into_iter()
             .map(|i| self.dots[i])
-            .filter(|d| self.sees(d) && d.tile != own && !(lit && !d.lit && hides(pill, d)))
+            .filter(|d| {
+                self.sees(d)
+                    && d.tile != own
+                    && !(lit
+                        && (d.shade == Shade::Faded || d.shade == Shade::Plain && hides(pill, d)))
+            })
             .filter(|d| {
                 pill.distance_to_pos(d.at) - d.radius < CLEAR
                     || text.distance_to_pos(d.at) - d.radius < mine - NEARER
@@ -456,8 +471,8 @@ impl Placer {
     }
 
     /// Whether a module's name at `pill` fits: on the graph, over no name, over no
-    /// other sphere and none of its own dots, `own_dots`; `within` its sphere, none
-    /// lit and no other but those it hides wholly.
+    /// other sphere and none of its own dots, `own_dots`; `within` its sphere, none of
+    /// them lit, its opaque pill hiding the others it lies over.
     fn module_fits(
         &self,
         cluster: usize,
@@ -476,7 +491,7 @@ impl Placer {
                 self.sees(&d)
                     && own_dots.contains(&d.tile)
                     && pill.distance_to_pos(d.at) < d.radius + CLEAR
-                    && !(within && !d.lit && hides(pill, &d))
+                    && (!within || d.shade == Shade::Lit)
             })
     }
 }
@@ -744,7 +759,11 @@ impl<'a> Naming<'a> {
                     radius,
                     steady,
                     least,
-                    lit: dot != Dot::Speck && !plain && !unselected,
+                    shade: match graph_view::node_look(self.explorer, tile) {
+                        _ if dot != Dot::Speck && !plain && !unselected => Shade::Lit,
+                        graph_view::NodeLook::Faded if !unselected => Shade::Faded,
+                        _ => Shade::Plain,
+                    },
                     outside: nucleus.outside(tile),
                     may_light: dot != Dot::Speck
                         || nucleus.browsing()
@@ -774,7 +793,7 @@ impl<'a> Naming<'a> {
                     radius,
                     steady: radius,
                     least: self.shows(tile, world, at, Dot::Lit),
-                    lit: true,
+                    shade: Shade::Lit,
                     outside: false,
                     may_light: true,
                     first: usize::from(nucleus.name_left(tile)),
@@ -1071,8 +1090,8 @@ impl<'a> Naming<'a> {
     }
 
     /// A module's name, centred above its sphere, where it fits; else, shown, smaller
-    /// inside the top of its sphere where it fits the sphere's width there, on its
-    /// pill over none of its dots lit and hiding wholly those it lies over.
+    /// inside the top of its sphere where it fits the sphere's width there, its
+    /// opaque pill over none of its dots lit, hiding the others it lies over.
     fn module_name(
         &self,
         painter: &egui::Painter,
@@ -1533,7 +1552,7 @@ mod tests {
             radius: 4.0,
             steady: 4.0,
             least: 4.0,
-            lit,
+            shade: if lit { Shade::Lit } else { Shade::Plain },
             outside: false,
             may_light: lit,
             first: 0,
@@ -1681,7 +1700,7 @@ mod tests {
     }
 
     #[test]
-    fn a_module_name_inside_its_sphere_fits_its_width_and_hides_what_it_covers() {
+    fn a_module_name_inside_its_sphere_fits_its_width_and_hides_plain_dots() {
         let middle = egui::pos2(200.0, 200.0);
         let pill = inside(middle, 50.0, SIZE).expect("room inside");
         for corner in [pill.left_top(), pill.right_top()] {
@@ -1694,7 +1713,7 @@ mod tests {
         );
         let hidden = Placer::new(
             bounds(),
-            vec![disc(0, pill.center().x, pill.center().y, false)],
+            vec![disc(0, pill.center().x, pill.max.y, false)],
             vec![(0, middle, 50.0)],
         );
         assert!(hidden.module_fits(0, &[0], pill, true));
