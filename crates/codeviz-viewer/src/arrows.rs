@@ -36,35 +36,51 @@ const SHORT_HEAD: (f32, f32) = (5.0, 5.0);
 /// calls it carries, and a head smaller than a call's.
 const MAP_WIDTH: f32 = 1.0;
 const MAP_HEAD: (f32, f32) = (6.0, 5.0);
-/// Between a line's end and the dot or sphere it ends at, in points.
+/// Between a line's end and the dot or sphere it ends at, in points; and between two
+/// dots too near for that.
 const GAP: f32 = 2.5;
+const SHORT_GAP: f32 = 1.0;
 /// How much of its strength a line keeps where it crosses a sphere it does not touch.
 const CROSSING: f32 = 0.3;
 /// Kept clear round a dot a line passes without ending there, and round a name, in
 /// points.
 const DOT_CLEAR: f32 = 2.0;
 const NAME_CLEAR: f32 = 1.0;
+/// How far past a dot or a name a line turning round it passes, in points: rounding
+/// its corner takes some of it back.
+const TURN_CLEAR: f32 = 8.0;
+/// The most turns a line takes round what is in its way.
+const TURNS: usize = 3;
 /// How far each of the two lines between the same two ends moves to its right when
 /// calls go both ways, in points: far enough that their heads, side by side, do not
 /// touch, so neither hides the other.
 const BOTH_WAYS: f32 = 4.0;
 /// How far a line may bow out to clear a dot or a name, in points, tried in turn from
 /// the least; and against its length, at most.
-const BENDS: [f32; 8] = [8.0, 14.0, 22.0, 32.0, 46.0, 64.0, 90.0, 128.0];
+const BENDS: [f32; 9] = [5.0, 9.0, 14.0, 22.0, 32.0, 46.0, 64.0, 90.0, 128.0];
 const MOST_BEND: f32 = 0.6;
 /// Where along a bent line it bows out most: evenly, nearer its start, nearer its
-/// end, and close by either: where along it each of its two pulls stands, as a share
-/// of its length, and the share of the bend each takes.
-const BOWS: [Bow; 5] = [
+/// end, close by either, or one way then the other: where along it each of its two
+/// pulls stands, as a share of its length, and the share of the bend each takes.
+const BOWS: [Bow; 9] = [
     [(1.0 / 3.0, 1.0), (2.0 / 3.0, 1.0)],
     [(1.0 / 3.0, 1.6), (2.0 / 3.0, 0.2)],
     [(1.0 / 3.0, 0.2), (2.0 / 3.0, 1.6)],
     [(0.1, 1.4), (0.4, 0.6)],
     [(0.6, 0.6), (0.9, 1.4)],
+    [(1.0 / 3.0, 1.2), (2.0 / 3.0, -1.2)],
+    [(0.15, 1.2), (0.45, -0.6)],
+    [(0.55, 0.6), (0.85, -1.2)],
+    [(0.1, 0.8), (0.9, 0.8)],
 ];
 /// How far along the free area's edge a call's exit label may slide to find room,
 /// in points, tried in turn; and how far inside the edge it sits.
-const EXIT_SLIDES: [f32; 7] = [0.0, 24.0, -24.0, 48.0, -48.0, 72.0, -72.0];
+const EXIT_SLIDES: [f32; 11] = [
+    0.0, 24.0, -24.0, 48.0, -48.0, 72.0, -72.0, 110.0, -110.0, 160.0, -160.0,
+];
+/// How near another call's label for the same far function may be, along the
+/// same edge, for one label to name both, in points.
+const EXIT_SHARED: f32 = 80.0;
 const EXIT_IN: f32 = 3.0;
 /// Points a bent line is drawn through.
 const STEPS: usize = 24;
@@ -93,8 +109,11 @@ struct Screen<'a> {
     spheres: Vec<(usize, egui::Pos2, f32)>,
     /// Every dot drawn full size, by tile: its middle and radius on screen.
     dots: Vec<(usize, egui::Pos2, f32)>,
-    /// The names of the dots drawn full size: each pill, by tile.
-    names: Vec<(egui::Rect, usize)>,
+    /// The plain functions of the module expanded, which nothing lights.
+    plain: std::collections::HashSet<usize>,
+    /// The names of the dots drawn full size: each pill, by tile, and whether it
+    /// names a plain function of the module expanded, which nothing lights.
+    names: Vec<(egui::Rect, usize, bool)>,
 }
 
 impl<'a> Screen<'a> {
@@ -110,6 +129,7 @@ impl<'a> Screen<'a> {
             view,
             spheres: Vec::new(),
             dots: Vec::new(),
+            plain: std::collections::HashSet::new(),
             names: Vec::new(),
         };
         let nucleus = explorer.nucleus();
@@ -128,9 +148,23 @@ impl<'a> Screen<'a> {
                 Some((tile, at, radius))
             })
             .collect();
+        let focus = [nucleus.start(), explorer.cursor(), explorer.aside()];
+        let plain = |tile: usize| {
+            nucleus.opened_up(tile)
+                && nucleus.level(tile).is_none()
+                && !nucleus.outside(tile)
+                && !focus.contains(&Some(tile))
+        };
         screen.names = names
             .pills()
             .filter(|&(_, tile)| nucleus.drawn(tile) && !nucleus.speck(tile))
+            .map(|(pill, tile)| (pill, tile, plain(tile)))
+            .collect();
+        screen.plain = screen
+            .dots
+            .iter()
+            .map(|d| d.0)
+            .filter(|&tile| plain(tile))
             .collect();
         screen
     }
@@ -200,6 +234,13 @@ impl<'a> Screen<'a> {
         let [(a, ra), (b, rb)] = ends;
         let along = (b - a).normalized();
         let right = egui::vec2(-along.y, along.x);
+        // Two dots near each other keep a smaller gap, so the call still shows.
+        let short = a.distance(b) - ra - rb <= SHORT_HEAD.0 + 2.0;
+        let (ra, rb) = if short {
+            (ra - GAP + SHORT_GAP, rb - GAP + SHORT_GAP)
+        } else {
+            (ra, rb)
+        };
         let straight = vec![a + along * ra + right * side, b - along * rb + right * side];
         if (straight[1] - straight[0]).dot(along) <= SHORT_HEAD.0 {
             return None;
@@ -210,13 +251,14 @@ impl<'a> Screen<'a> {
         let obstacles = self.obstacles(a, b, tiles);
         let blocked = |path: &[egui::Pos2]| blocked(path, &obstacles);
         let first = blocked(&straight);
-        if first == (0, 0) {
+        if first == [0; 3] {
             return Some(straight);
         }
         let length = a.distance(b);
         // A line both ways bows only to its own right, away from the other.
         let signs: &[f32] = if side > 0.0 { &[1.0] } else { &[1.0, -1.0] };
-        let mut best = (first, straight);
+        let mut best = (cost(first, 0), straight);
+        let mut tries = 0;
         for &bend in BENDS.iter().filter(|&&bend| bend <= length * MOST_BEND) {
             for bow in &BOWS {
                 for &sign in signs {
@@ -226,12 +268,24 @@ impl<'a> Screen<'a> {
                         continue;
                     };
                     let hits = blocked(&path);
-                    if hits == (0, 0) {
+                    if hits == [0; 3] {
                         return Some(path);
                     }
-                    if hits < best.0 {
-                        best = (hits, path);
+                    tries += 1;
+                    if cost(hits, tries) < best.0 {
+                        best = (cost(hits, tries), path);
                     }
+                }
+            }
+        }
+        // Where no bow clears a dot or a lit name, a line turns round each in its
+        // way in turn, smoothly.
+        if best.0 >= 10.0 {
+            for path in detours((a, ra), (b, rb), &obstacles) {
+                let hits = blocked(&path);
+                tries += 1;
+                if cost(hits, tries) < best.0 {
+                    best = (cost(hits, tries), path);
                 }
             }
         }
@@ -249,13 +303,13 @@ impl<'a> Screen<'a> {
                 .dots
                 .iter()
                 .filter(|&&(tile, at, _)| !own(tile) && reach.contains(at))
-                .map(|&(_, at, radius)| (at, radius + DOT_CLEAR))
+                .map(|&(tile, at, radius)| (at, radius + DOT_CLEAR, self.plain.contains(&tile)))
                 .collect(),
             names: self
                 .names
                 .iter()
-                .filter(|&&(pill, tile)| !own(tile) && reach.intersects(pill))
-                .map(|&(pill, _)| pill.expand(NAME_CLEAR))
+                .filter(|&&(pill, tile, _)| !own(tile) && reach.intersects(pill))
+                .map(|&(pill, _, plain)| (pill.expand(NAME_CLEAR), plain))
                 .collect(),
         }
     }
@@ -288,26 +342,172 @@ impl<'a> Screen<'a> {
     }
 }
 
-/// What a call's line keeps off: dots, as circles, and names, as rectangles.
+/// What a call's line keeps off: dots, as circles, and names, as rectangles, each
+/// with whether it is a plain function's, which matters least: in a crowded module
+/// expanded no line could keep off them all, and a line breaks round a dot it passes.
 struct Obstacles {
-    dots: Vec<(egui::Pos2, f32)>,
-    names: Vec<egui::Rect>,
+    dots: Vec<(egui::Pos2, f32, bool)>,
+    names: Vec<(egui::Rect, bool)>,
 }
 
-/// How many dots and names in `obstacles` the line through `path` runs over.
-fn blocked(path: &[egui::Pos2], obstacles: &Obstacles) -> (usize, usize) {
+/// How many lit dots, names of lit functions, and plain dots and names in
+/// `obstacles` the line through `path` runs over.
+fn blocked(path: &[egui::Pos2], obstacles: &Obstacles) -> [usize; 3] {
     let pieces = || path.windows(2).map(|p| (p[0], p[1]));
-    let dots = obstacles
-        .dots
+    let dots = |plain: bool| {
+        obstacles
+            .dots
+            .iter()
+            .filter(|&&(at, radius, of_plain)| {
+                of_plain == plain && pieces().any(|(a, b)| across(a, b, at, radius).is_some())
+            })
+            .count()
+    };
+    let names = |plain: bool| {
+        obstacles
+            .names
+            .iter()
+            .filter(|&&(pill, of_plain)| {
+                of_plain == plain && pieces().any(|(a, b)| through(a, b, pill))
+            })
+            .count()
+    };
+    [dots(false), names(false), dots(true) + names(true)]
+}
+
+/// How much a line's hits cost, its bend the `tries`-th tried: a lit dot most, a lit
+/// name less, a plain dot or name least, and a bend the less the gentler, so a line
+/// bows far round only to clear what matters.
+#[expect(clippy::cast_precision_loss, reason = "small counts")]
+fn cost(hits: [usize; 3], tries: usize) -> f32 {
+    hits[0] as f32 * 100.0 + hits[1] as f32 * 10.0 + hits[2] as f32 + tries as f32 * 0.001
+}
+
+/// Where a line from one dot to another turning at `turns` runs: from the first
+/// dot's reach towards the first turn, through the turns, to the last dot's reach,
+/// its corners cut `rounds` times; `None` where too little of it is left for a head.
+fn through_turns(
+    (from, from_reach): End,
+    turns: &[egui::Pos2],
+    (to, to_reach): End,
+    rounds: usize,
+) -> Option<Vec<egui::Pos2>> {
+    let first = *turns.first()?;
+    let last = *turns.last()?;
+    if first.distance(from) <= from_reach || last.distance(to) <= to_reach {
+        return None;
+    }
+    let mut path = vec![from + (first - from).normalized() * from_reach];
+    path.extend_from_slice(turns);
+    path.push(to + (last - to).normalized() * to_reach);
+    // Each corner cut, the ends kept.
+    for _ in 0..rounds {
+        let mut rounded = vec![path[0]];
+        for pair in path.windows(2) {
+            let (p, q) = (pair[0], pair[1]);
+            rounded.push(p + (q - p) * 0.25);
+            rounded.push(p + (q - p) * 0.75);
+        }
+        rounded.push(path[path.len() - 1]);
+        rounded.remove(1);
+        let n = rounded.len();
+        rounded.remove(n - 2);
+        path = rounded;
+    }
+    (length(&path) > SHORT_HEAD.0).then_some(path)
+}
+
+/// The first lit dot or lit name the line through `path` runs over: the points to
+/// turn round it, on either side, as far out as it needs.
+fn first_in_way(path: &[egui::Pos2], obstacles: &Obstacles) -> Option<[egui::Pos2; 2]> {
+    for pair in path.windows(2) {
+        let (p, q) = (pair[0], pair[1]);
+        let along = (q - p).normalized();
+        let across_line = egui::vec2(-along.y, along.x);
+        // The nearest along this piece of what it runs over.
+        let mut hits: Vec<(f32, egui::Pos2, f32)> = obstacles
+            .dots
+            .iter()
+            .filter(|&&(at, radius, plain)| !plain && across(p, q, at, radius).is_some())
+            .map(|&(at, radius, _)| ((at - p).dot(along), at, radius + TURN_CLEAR))
+            .collect();
+        hits.extend(
+            obstacles
+                .names
+                .iter()
+                .filter(|&&(pill, plain)| !plain && through(p, q, pill))
+                .map(|&(pill, _)| {
+                    // As far out as its corners reach, across the line.
+                    let corners = [
+                        pill.left_top(),
+                        pill.right_top(),
+                        pill.left_bottom(),
+                        pill.right_bottom(),
+                    ];
+                    let reach = corners
+                        .iter()
+                        .map(|&c| (c - pill.center()).dot(across_line).abs())
+                        .fold(0.0, f32::max);
+                    (
+                        (pill.center() - p).dot(along),
+                        pill.center(),
+                        reach + TURN_CLEAR,
+                    )
+                }),
+        );
+        if let Some(&(_, at, out)) = hits.iter().min_by(|a, b| a.0.total_cmp(&b.0)) {
+            // Level with it on the line, then out either side.
+            let level = p + along * (at - p).dot(along);
+            let off = (at - level).dot(across_line);
+            let side = 1.0_f32.copysign(off);
+            return Some([
+                level + across_line * (off - side * out),
+                level + across_line * (off + side * out),
+            ]);
+        }
+    }
+    None
+}
+
+/// Lines from one dot to another turning round what is in their way: round the first
+/// thing on the straight line on either side, then round the first thing left on
+/// that, on either side again, up to [`TURNS`] turns; each with its corners rounded,
+/// less, or not at all, where rounding them brings it back over what it turns round.
+fn detours(from: End, to: End, obstacles: &Obstacles) -> Vec<Vec<egui::Pos2>> {
+    let along = to.0 - from.0;
+    let mut turnings: Vec<Vec<egui::Pos2>> = Vec::new();
+    let mut open: Vec<Vec<egui::Pos2>> = vec![Vec::new()];
+    for _ in 0..TURNS {
+        let mut next = Vec::new();
+        for turns in &open {
+            let corners: Vec<egui::Pos2> = [from.0]
+                .into_iter()
+                .chain(turns.iter().copied())
+                .chain([to.0])
+                .collect();
+            for turn in first_in_way(&corners, obstacles).into_iter().flatten() {
+                // In the order the line meets them.
+                let mut more = turns.clone();
+                more.push(turn);
+                more.sort_by(|a, b| {
+                    (*a - from.0)
+                        .dot(along)
+                        .total_cmp(&(*b - from.0).dot(along))
+                });
+                next.push(more);
+            }
+        }
+        turnings.extend(next.iter().cloned());
+        open = next;
+    }
+    turnings
         .iter()
-        .filter(|&&(at, radius)| pieces().any(|(a, b)| across(a, b, at, radius).is_some()))
-        .count();
-    let names = obstacles
-        .names
-        .iter()
-        .filter(|&&pill| pieces().any(|(a, b)| through(a, b, pill)))
-        .count();
-    (dots, names)
+        .flat_map(|turns| {
+            (0..=2)
+                .rev()
+                .filter_map(|rounds| through_turns(from, turns, to, rounds))
+        })
+        .collect()
 }
 
 /// Whether the line from `a` to `b` runs through `rect`.
@@ -626,6 +826,18 @@ fn exit_label(
         "{} {called} · {module}",
         if outward { "to" } else { "from" }
     );
+    // One label names every call to (or from) the same far function leaving near it.
+    if let Some(shared) = marks
+        .exits
+        .iter()
+        .find(|e| e.far == far && e.text == text && e.rect.distance_to_pos(at) < EXIT_SHARED)
+    {
+        return Some(ExitMark {
+            from: link.from,
+            to: link.to,
+            ..shared.clone()
+        });
+    }
     let shade = egui_color(link_color(explorer, link, true).with_alpha(1.0));
     let galley =
         painter.layout_no_wrap(text.clone(), egui::FontId::proportional(text::SMALL), shade);
@@ -640,15 +852,19 @@ fn exit_label(
                 .iter()
                 .any(|&(_, dot, radius)| rect.distance_to_pos(dot) < radius + 1.0)
     };
-    let rect = EXIT_SLIDES.iter().find_map(|&by| {
-        let middle = at + inward * into + along * by;
-        let rect = egui::Rect::from_center_size(middle, size);
-        let rect = rect.translate(egui::vec2(
-            (names.area.min.x - rect.min.x).max(0.0) - (rect.max.x - names.area.max.x).max(0.0),
-            (names.area.min.y - rect.min.y).max(0.0) - (rect.max.y - names.area.max.y).max(0.0),
-        ));
-        (!taken(rect)).then_some(rect)
-    })?;
+    let rows = [0.0, size.x.min(size.y) + 2.0];
+    let rect = rows
+        .iter()
+        .flat_map(|&row| EXIT_SLIDES.iter().map(move |&by| (row, by)))
+        .find_map(|(row, by)| {
+            let middle = at + inward * (into + row) + along * by;
+            let rect = egui::Rect::from_center_size(middle, size);
+            let rect = rect.translate(egui::vec2(
+                (names.area.min.x - rect.min.x).max(0.0) - (rect.max.x - names.area.max.x).max(0.0),
+                (names.area.min.y - rect.min.y).max(0.0) - (rect.max.y - names.area.max.y).max(0.0),
+            ));
+            (!taken(rect)).then_some(rect)
+        })?;
     painter.rect_filled(rect, 4.0, PILL);
     painter.rect_stroke(
         rect,
@@ -779,13 +995,13 @@ mod tests {
     fn a_bent_line_clears_a_dot_in_the_way_and_ends_short_of_its_dots() {
         let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(200.0, 0.0));
         let obstacles = Obstacles {
-            dots: vec![(egui::pos2(100.0, 0.0), 6.0)],
+            dots: vec![(egui::pos2(100.0, 0.0), 6.0, false)],
             names: Vec::new(),
         };
-        assert_eq!(blocked(&[a, b], &obstacles), (1, 0));
+        assert_eq!(blocked(&[a, b], &obstacles), [1, 0, 0]);
         let path =
             bowed((a, 8.0), (b, 8.0), [(1.0 / 3.0, 22.0), (2.0 / 3.0, 22.0)]).expect("long enough");
-        assert_eq!(blocked(&path, &obstacles), (0, 0));
+        assert_eq!(blocked(&path, &obstacles), [0; 3]);
         assert!((path[0].distance(a) - 8.0).abs() < 0.5);
         assert!((path[path.len() - 1].distance(b) - 8.0).abs() < 0.5);
     }

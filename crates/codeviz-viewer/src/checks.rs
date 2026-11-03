@@ -2370,12 +2370,23 @@ fn call_colours(s: &Snap, cursor: Option<&str>, offenders: &mut Vec<(f32, Value)
     }
 }
 
-/// No call's line runs through a dot or a function's name but its own ends': it goes
-/// round them. The faint calls among an expanded module's functions are left out, and
-/// faint unnamed dots.
+/// No call's line runs through a lit dot or a lit function's name but its own ends':
+/// it goes round them. The faint calls among an expanded module's functions are left
+/// out, and faint unnamed dots; and an expanded module's plain functions, dots and
+/// names, which in a crowded one no line could keep off (it breaks round a dot); and
+/// browsing, names, which sit where the map's dots leave room.
 fn arrows_clear(s: &Snap) -> Value {
-    let dots: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen && n.lit()).collect();
-    let lit = |unit: &Option<String>| dots.iter().any(|n| n.unit.is_some() && n.unit == *unit);
+    let dots: Vec<&Node> = s
+        .nodes
+        .iter()
+        .filter(|n| n.on_screen && n.lit() && !n.plain())
+        .collect();
+    // Browsing, every function stays where the map has it and its name where the
+    // placer finds room: a line round a crowd of calls is judged by the dots alone.
+    let browsing = s.state.mode == "browse";
+    let lit = |unit: &Option<String>| {
+        !browsing && dots.iter().any(|n| n.unit.is_some() && n.unit == *unit)
+    };
     let names: Vec<&Label> = s
         .labels
         .iter()
@@ -2416,15 +2427,23 @@ fn arrows_clear(s: &Snap) -> Value {
     verdict(offenders)
 }
 
-/// No two functions read the same name: on the graph, in the journey's bars, or
-/// among the search's rows, each list judged on its own. Two alike are told apart by
-/// their type or module.
+/// No two functions read the same name: on the graph within one module, in the
+/// journey's bars, or among the search's rows, each judged on its own. Two alike are
+/// told apart by their type or module.
 fn names_distinct(s: &Snap) -> Value {
+    let module = |unit: &str| {
+        s.node(unit)
+            .and_then(|n| n.module.clone())
+            .unwrap_or_default()
+    };
     let graph = s
         .labels
         .iter()
         .filter(|l| l.names == "function")
-        .filter_map(|l| Some((l.of.clone()?, l.unit.clone()?)));
+        .filter_map(|l| {
+            let unit = l.unit.clone()?;
+            Some((format!("{} in {}", l.of.clone()?, module(&unit)), unit))
+        });
     let bars = s
         .bars
         .iter()
@@ -2536,8 +2555,8 @@ fn calls_drawn(s: &Snap) -> Value {
         let (Some(a), Some(b)) = (node(from), node(to)) else {
             continue;
         };
-        // Two dots touching leave no room for a line.
-        if v2(a.at).distance(v2(b.at)) <= a.radius + b.radius + HEAD_SIZE.0 {
+        // Two dots touching leave no room for a line, its gaps and its head.
+        if v2(a.at).distance(v2(b.at)) <= a.radius + b.radius + HEAD_SIZE.0 + 2.0 {
             continue;
         }
         judged += 1;
@@ -2883,6 +2902,7 @@ mod tests {
     #[test]
     fn a_call_through_a_third_dot_or_name_is_named_and_one_bent_round_it_passes() {
         let mut s = scene();
+        s["state"]["mode"] = json!("journey");
         // From f straight to h, over f's own name, through g's spot made a lit dot.
         s["nodes"][1]["roles"] = json!(["callee"]);
         s["nodes"][1]["radius"] = json!(4.0);
@@ -2916,6 +2936,9 @@ mod tests {
     fn two_functions_reading_the_same_name_are_named() {
         let mut s = scene();
         s["labels"][2]["of"] = json!("f");
+        // Two in different modules read apart by their spheres.
+        assert!(passes(&check(&s, "names-distinct")));
+        s["nodes"][2]["module"] = json!("a");
         let result = check(&s, "names-distinct");
         assert_eq!(result["count"], 1, "{result}");
         assert_eq!(result["offenders"][0]["in"], "graph");

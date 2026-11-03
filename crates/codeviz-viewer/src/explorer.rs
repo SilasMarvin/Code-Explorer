@@ -190,9 +190,12 @@ pub(crate) struct Explorer {
     /// What each module sphere is called, by cluster: its name, told apart from
     /// another module's of the same name.
     module_names: Vec<String>,
-    /// By cluster, the names two or more of its functions share: expanded, each of
-    /// those is named with its type or module before it.
+    /// By cluster, the names two or more of its functions share: each of those is
+    /// named with its type or module before it, wherever it shows.
     module_homonyms: Vec<HashSet<String>>,
+    /// Functions whose name with its type or module reads the same as another's in
+    /// their module: what tells them apart, the impl each is in.
+    twins: HashMap<UnitId, String>,
     /// Bumped whenever nodes move.
     moved: u64,
     /// How much of the journey shows.
@@ -300,6 +303,7 @@ impl Explorer {
                 .collect();
             module_names::qualified(&modules)
         };
+        let twins = twins(&system, &map, &graph);
         let mut module_homonyms = vec![HashSet::new(); graph.cluster_count()];
         let mut seen: HashMap<(usize, &str), usize> = HashMap::new();
         for (tile, at) in map.tiles.iter().enumerate() {
@@ -319,6 +323,7 @@ impl Explorer {
             graph,
             module_names,
             module_homonyms,
+            twins,
             moved: 0,
             history: History::default(),
             aim: 0,
@@ -1224,20 +1229,18 @@ impl Explorer {
 
     /// A function's name, the same wherever it shows (the graph, the panel's bars,
     /// the top bar, the search): an entry point's route, else its own name; with two
-    /// functions of that name in view, or in the module expanded, its own, with its
-    /// type or module before it (`Track.root`, `Explorer.root`).
+    /// functions of that name in view, or in its own module, with its type or module
+    /// before it (`Track.root`, `Explorer.root`).
     pub(crate) fn function_name(&self, id: &UnitId) -> String {
         if let Some(entry) = self.system.entries().iter().find(|e| &e.unit == id) {
             return entry.label.clone();
         }
-        let expanded = self.nucleus.expanded_module().and_then(|module| {
-            let own = self.map.tile_of(id).and_then(|t| self.graph.cluster(t));
-            (own == Some(module)).then(|| &self.module_homonyms[module])
-        });
+        let module = self.map.tile_of(id).and_then(|t| self.graph.cluster(t));
+        let shared = module.and_then(|m| self.module_homonyms.get(m));
         match self.system.unit(id) {
             Some(unit)
                 if !self.track.homonyms.contains(&unit.name)
-                    && !expanded.is_some_and(|shared| shared.contains(&unit.name)) =>
+                    && !shared.is_some_and(|shared| shared.contains(&unit.name)) =>
             {
                 unit.name.clone()
             }
@@ -1264,8 +1267,14 @@ impl Explorer {
             .collect()
     }
 
+    /// A function's name with its type or module before it; where another in its
+    /// module reads the same so, with the impl it is in after it.
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
-        display_name(&self.system, id)
+        let name = display_name(&self.system, id);
+        match self.twins.get(id) {
+            Some(apart) => format!("{name} ({apart})"),
+            None => name,
+        }
     }
 
     /// The call stack at a span of the journey, outermost first.
@@ -1415,6 +1424,32 @@ impl Explorer {
     pub(crate) fn notice(&self) -> Option<(u64, &str)> {
         self.notice.as_ref().map(|(n, text)| (*n, text.as_str()))
     }
+}
+
+/// Functions whose name with its type or module reads the same as another's in
+/// their module (two impls of one trait for a type, as `From<&str>` and
+/// `From<String>`), each with the impl it is in, from its id.
+fn twins(system: &System, map: &CodebaseMap, graph: &ForceGraph) -> HashMap<UnitId, String> {
+    let mut by_name: HashMap<(usize, String), Vec<&UnitId>> = HashMap::new();
+    for (tile, at) in map.tiles.iter().enumerate() {
+        if let Some(cluster) = graph.cluster(tile) {
+            let name = display_name(system, &at.unit);
+            by_name.entry((cluster, name)).or_default().push(&at.unit);
+        }
+    }
+    by_name
+        .into_values()
+        .filter(|ids| ids.len() > 1)
+        .flatten()
+        .map(|id| {
+            let path = id.as_str();
+            let apart = path
+                .split("::")
+                .find_map(|part| part.strip_prefix("{impl#")?.strip_suffix('}'))
+                .map_or_else(|| path.to_owned(), str::to_owned);
+            (id.clone(), apart)
+        })
+        .collect()
 }
 
 /// What a journey key says browsing.
