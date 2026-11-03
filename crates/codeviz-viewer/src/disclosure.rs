@@ -40,6 +40,9 @@ pub(crate) struct Disclosed {
     levels: HashMap<SpanId, u32>,
     /// The nodes shown, each with the numbers of its spans.
     tiles: HashMap<usize, Vec<String>>,
+    /// The nodes the journey runs at any depth, each with the numbers of its spans,
+    /// shown or not.
+    every: HashMap<usize, Vec<String>>,
     /// Shown spans where another outcome splits off: where the failure happens, or the
     /// nearest shown call it happens under.
     fails: HashSet<SpanId>,
@@ -120,19 +123,24 @@ impl Disclosed {
             })
             .collect();
         disclosed.mark_tiles(journey, &tile, root);
-        let mut tiles: HashMap<usize, Vec<String>> = HashMap::new();
-        for (span, number) in disclosed.numbered() {
-            if let Some(tile) = tile(span) {
-                let list = tiles.entry(tile).or_default();
-                if !number.is_empty() {
-                    list.push(number.to_owned());
+        let by_tile = |spans: &mut dyn Iterator<Item = (SpanId, &str)>| {
+            let mut tiles: HashMap<usize, Vec<String>> = HashMap::new();
+            for (span, number) in spans {
+                if let Some(tile) = tile(span) {
+                    let list = tiles.entry(tile).or_default();
+                    if !number.is_empty() {
+                        list.push(number.to_owned());
+                    }
                 }
             }
-        }
-        for numbers in tiles.values_mut() {
-            numbers.sort_by_key(|n| number_order(n));
-        }
-        disclosed.tiles = tiles;
+            for numbers in tiles.values_mut() {
+                numbers.sort_by_key(|n| number_order(n));
+            }
+            tiles
+        };
+        let tiles = by_tile(&mut disclosed.numbered());
+        let every = by_tile(&mut disclosed.numbers.iter().map(|(&s, n)| (s, n.as_str())));
+        (disclosed.tiles, disclosed.every) = (tiles, every);
         disclosed.trail =
             disclosed.trace(&tile, &|span| journey.span(span).is_some_and(guessed), root);
         disclosed
@@ -341,6 +349,12 @@ impl Disclosed {
     /// The nodes shown, each with the numbers of the calls that run it.
     pub(crate) fn tiles(&self) -> &HashMap<usize, Vec<String>> {
         &self.tiles
+    }
+
+    /// The nodes the journey runs at any depth, each with the numbers of the calls
+    /// that run it, shown or not, in number order.
+    pub(crate) fn every_tile(&self) -> &HashMap<usize, Vec<String>> {
+        &self.every
     }
 
     /// Rows the shown spans take, one per level.
