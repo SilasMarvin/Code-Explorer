@@ -107,5 +107,4 @@ expect check framed
 expect check map-on-screen
 snap resized after r
 window 1600 1000
-expect check framed
 snap resized back

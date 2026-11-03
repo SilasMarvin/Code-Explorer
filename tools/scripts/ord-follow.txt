@@ -37,7 +37,9 @@ expect expanded none
 snap caller journey
 key backspace
 expect start Explorer::spotlit
-expect expanded explorer
+# Back to the place as it was left: the caller set aside, the expansion with it.
+expect expanded graph_view
+expect check expanded-drawn
 snap back keeps the expansion
 key x
 key esc
