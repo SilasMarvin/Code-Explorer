@@ -25,8 +25,10 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     colors::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, GROUND},
+    labels::{self, CLEAR as NAME_CLEAR, GAP as NAME_GAP, PILL_PAD as NAME_PILL},
     nucleus::VIEW,
     script::Kind,
+    text,
 };
 
 // What the checks allow, each in one place. Points are window points, as in the PNG;
@@ -89,9 +91,10 @@ const ZOOM_IN_KEPT: f32 = 0.88;
 const MOVED_WORLD: f32 = 0.01;
 const MOVED_SCREEN: f32 = 0.5;
 const MOVED_ANGLE: f32 = 0.002;
-/// How much nearer another lit dot may be to a function's name than its own, edge
-/// to edge, in points, before the name reads as the other's.
-const NEARER: f32 = 2.0;
+/// How much nearer another dot may be to a function's name than its own, edge to
+/// edge, in points, before the name reads as the other's: the placer's, and half a
+/// point for where the text lands once rounded to pixels.
+const NEARER: f32 = labels::NEARER + 2.0 * ROUNDING;
 /// Share of the map, by area on screen, that must lie inside the free area after
 /// zooming out or R, when the whole map would fit there.
 const MAP_SHOWN: f32 = 0.9;
@@ -110,17 +113,10 @@ const HEAD_SIZE: (f32, f32) = (5.0, 12.0);
 const NAME_CENTRED: f32 = 3.0;
 const NAME_ABOVE: f32 = 8.0;
 const INSIDE_NAME: f32 = 11.5;
-/// How far from its dot a name's pill would be put to see whether it fits, the pill
-/// round its text, and the room kept clear round a pill, in points: as the label
-/// placer has them.
-const NAME_GAP: f32 = 4.0;
-const NAME_PILL: egui::Vec2 = egui::vec2(5.0, 2.0);
-const NAME_CLEAR: f32 = 1.0;
 /// How far a dot's radius in the snapshot may be from the placer's, rounded.
 const ROUNDING: f32 = 0.25;
-/// A character's width as a share of its font size, when no name drawn says: a
-/// function's, and a module's in capitals, at their widest.
-const CHAR_WIDTH: f32 = 0.55;
+/// A character's width as a share of its font size, when no name drawn says, for a
+/// module's name in capitals; a function's is [`text::CHAR_WIDTH`].
 const CAPITAL_WIDTH: f32 = 0.75;
 /// Least share of the free area a framed journey's lit dots and their names span,
 /// along whichever of its width and height they come nearer filling.
@@ -368,7 +364,6 @@ struct Node {
     name_size: Option<[f32; 2]>,
     /// The one place its name was tried, as the view is: the side it holds, or its
     /// home.
-    name_spot: Option<[f32; 4]>,
     /// How far from its middle names keep, in points.
     kept_off: Option<f32>,
     color: Option<String>,
@@ -441,9 +436,9 @@ struct Text {
 }
 
 impl Node {
-    /// Whether the dot is lit: anything but a faint speck.
+    /// Whether the dot is lit: anything but a speck, faint or named.
     fn lit(&self) -> bool {
-        !self.roles.iter().all(|r| r == "speck")
+        !self.roles.iter().all(|r| r == "speck" || r == "plain")
     }
 
     fn is(&self, role: &str) -> bool {
@@ -457,16 +452,26 @@ impl Node {
             .any(|r| self.is(r))
     }
 
-    /// One of the expanded module's functions that nothing else lights: a lit name
-    /// may lie over it.
+    /// One of the expanded module's functions that nothing else lights, or a speck
+    /// named: a lit name may hide it.
     fn plain(&self) -> bool {
-        self.is("opened") && !self.focus()
+        (self.is("opened") || self.is("plain")) && !self.focus()
     }
 
     /// Whether `other`'s dot keeps this one's name off: any lit one, but a plain one
     /// only from a plain name.
     fn kept_off_by(&self, other: &Node) -> bool {
         other.lit() && (self.plain() || !other.plain())
+    }
+
+    /// A dot nothing lights drawn faded beside what is lit: no lit name keeps off it.
+    fn faded(&self) -> bool {
+        (!self.lit() || self.plain())
+            && self
+                .color
+                .as_deref()
+                .and_then(alpha)
+                .is_some_and(|a| a < FAINT)
     }
 
     /// A faint dot with no name: nothing a reader tells apart.
@@ -511,13 +516,10 @@ impl Node {
 }
 
 impl Module {
-    /// Where its name comes in the order names are placed (see [`Node::rank`]).
-    fn rank(&self, journey: bool) -> u8 {
-        if journey && self.body == "faint" {
-            8
-        } else {
-            3
-        }
+    /// Where its name comes in the order names are placed (see [`Node::rank`]): one
+    /// nothing lit lives in after every function lit.
+    fn rank(&self) -> u8 {
+        if self.body == "faint" { 8 } else { 3 }
     }
 }
 
@@ -834,16 +836,21 @@ fn sphere_sizes(s: &Snap) -> Value {
 fn labels_near(s: &Snap) -> Value {
     let mut offenders = Vec::new();
     let gap = |r: egui::Rect, n: &Node| (r.distance_to_pos(pos(n.at)) - n.radius).max(0.0);
-    let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen && n.lit()).collect();
+    let drawn: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen).collect();
     for n in &s.nodes {
         let (Some(label), Some(r)) = (&n.label, n.label_rect) else {
             continue;
         };
         let mine = gap(rect(r), n);
-        // The lit dot nearest the name, but its own (and for a lit name, a plain one).
-        let nearest = lit
+        // The dot nearest the name, any but its own, and for a lit name those faded
+        // or that its pill hides.
+        let pill = rect(r).expand2(NAME_PILL);
+        let nearest = drawn
             .iter()
-            .filter(|other| other.unit != n.unit && n.kept_off_by(other))
+            .filter(|other| {
+                other.unit != n.unit
+                    && !(n.lit() && !n.plain() && (other.faded() || hidden(pill, other)))
+            })
             .map(|other| (other, gap(rect(r), other)))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if !n.on_screen {
@@ -1398,6 +1405,19 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // would be off the free area, and no more.
     let depth = since.has(Kind::Depth);
     let (summary, mut offenders) = compare(before, s, depth);
+    // A click that selects another function lights others, named first: a lit
+    // function's name whose side they take tries its others rather than go, and a
+    // module's name its spot inside its sphere.
+    let selected = before.state.selection != s.state.selection;
+    if selected {
+        offenders.retain(|(_, o)| {
+            o["label"].is_null()
+                || o["unit"]
+                    .as_str()
+                    .and_then(|unit| s.node(unit))
+                    .is_some_and(|n| !n.lit() || n.plain())
+        });
+    }
     if depth {
         offenders.extend(depth_camera(before, s));
     }
@@ -1405,7 +1425,7 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // a depth change that drew the camera back shows everything smaller, and names
     // what fits now; any other step here only reads, and takes no name away.
     let drew_back = depth && summary["camera"]["moved"] == json!(true);
-    if before.state.selection == s.state.selection && !drew_back {
+    if !selected && !drew_back {
         offenders.extend(gone_labels(before, s));
     }
     verdict(offenders)
@@ -1659,7 +1679,8 @@ fn labels_moved(before: &Snap, now: &Snap) -> (usize, Vec<(f32, Value)>) {
         let by = label_shift(rect(then.rect), rect(label.rect));
         if by > MOVED_SCREEN {
             let offender = json!({
-                "label": label.text, "from": rect_json(then.rect), "to": rect_json(label.rect), "by": r1(by),
+                "label": label.text, "unit": label.unit, "from": rect_json(then.rect),
+                "to": rect_json(label.rect), "by": r1(by),
             });
             moved.push((by, offender));
         }
@@ -1972,19 +1993,27 @@ fn module_names(s: &Snap) -> Value {
         let off_middle = (r.center().x - m.at[0]).abs();
         let top = m.at[1] - m.radius;
         let above = top - r.max.y;
-        // Browsing, where the room above is taken, smaller just inside its top.
+        // Where the room above is taken, smaller inside the top of its sphere: its
+        // corners within the rim, over the sphere's middle.
         let size = s
             .labels
             .iter()
             .find(|l| l.names == "module" && l.of.as_ref() == Some(&m.name))
             .map_or(0.0, |l| l.size);
-        let within = s.state.mode == "browse"
-            && size <= INSIDE_NAME
-            && (0.0..=NAME_ABOVE).contains(&(r.min.y - top));
+        let corner = [
+            r.left_top(),
+            r.right_top(),
+            r.left_bottom(),
+            r.right_bottom(),
+        ]
+        .iter()
+        .map(|c| c.distance(pos(m.at)))
+        .fold(0.0, f32::max);
+        let within = size <= INSIDE_NAME && corner <= m.radius + EDGE && r.max.y <= m.at[1];
         if off_middle > NAME_CENTRED || !((-EDGE..=NAME_ABOVE).contains(&above) || within) {
             let offender = json!({
                 "module": m.name, "label": label,
-                "why": "not centred just above its sphere's top edge, nor smaller just inside it",
+                "why": "not centred just above its sphere's top edge, nor smaller inside its top",
                 "off_middle": r1(off_middle), "above_top_by": r1(above),
             });
             offenders.push((off_middle.max(above.abs()), offender));
@@ -1999,15 +2028,15 @@ fn module_names(s: &Snap) -> Value {
                 offenders.push((into + 100.0, offender));
             }
         }
-        let own = s.nodes.iter().filter(|n| {
-            n.on_screen
-                && n.module.as_ref() == Some(&m.name)
-                && n.radius > 0.0
-                && (!within || n.lit())
-        });
-        for n in own {
+        // Over none of its dots: inside its sphere, none lit, its opaque pill hiding
+        // the others.
+        for n in s
+            .nodes
+            .iter()
+            .filter(|n| n.on_screen && n.module.as_ref() == Some(&m.name) && n.radius > 0.0)
+        {
             let into = n.radius - r.shrink(1.0).distance_to_pos(pos(n.at));
-            if into > 0.0 {
+            if into > 0.0 && !(within && (!n.lit() || n.plain())) {
                 let offender = json!({ "module": m.name, "label": label, "over_its_dot": n.name, "by": r1(into) });
                 offenders.push((into + 100.0, offender));
             }
@@ -2019,22 +2048,34 @@ fn module_names(s: &Snap) -> Value {
     verdict(offenders)
 }
 
+/// Whether an opaque pill at `pill` hides the whole of `n`'s dot, one nothing
+/// lights.
+fn hidden(pill: egui::Rect, n: &Node) -> bool {
+    (!n.lit() || n.plain())
+        && pill
+            .shrink(NAME_CLEAR)
+            .contains_rect(egui::Rect::from_center_size(
+                pos(n.at),
+                egui::Vec2::splat(2.0 * (n.radius - ROUNDING)),
+            ))
+}
+
 fn named_when_room(s: &Snap) -> Value {
     let free = s.free();
     // How far the placer kept names from a dot, leaning to less room either way.
     let kept = |n: &Node| n.kept_off.unwrap_or(n.radius) + ROUNDING;
     // Its own as drawn: the placer takes it as small as it is drawn lit.
     let own_kept = |n: &Node| n.radius - ROUNDING;
-    let journey = s.state.mode == "journey";
-    let taken = names_by_rank(s, journey);
+    let taken = names_by_rank(s);
     let guess =
         |text: &str, kind: &str, size: f32, width: f32| guess_size(s, text, kind, (size, width));
-    let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen && n.lit()).collect();
+    let drawn: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen).collect();
     let spheres: Vec<&Module> = s.spheres().filter(|m| m.radius > 0.0).collect();
     // Whether a pill at `r` would fit: in the free area, under no overlay, over no
-    // name placed as early, off every other dot that keeps its name off (as far as
-    // the placer keeps names, the calls a deeper level shows among them) and nearer
-    // none of them than its own; a module's off every other sphere and its own dots.
+    // name placed as early; a function's off every other dot drawn (as far as the
+    // placer keeps names, the calls a deeper level shows among them) but those it
+    // would hide, and nearer none of them than its own; a module's off every other
+    // sphere and its own dots, but those it would hide inside its sphere.
     let clear = |r: egui::Rect, rank: u8, own: Option<&Node>, module: Option<(&str, bool)>| {
         // Over a dot judged by the pill, nearer one by the text, as labels-near does.
         let text = r.shrink2(NAME_PILL);
@@ -2043,14 +2084,17 @@ fn named_when_room(s: &Snap) -> Value {
         let near = |at: [f32; 2], radius: f32| {
             r.distance_to_pos(pos(at)) - radius < NAME_CLEAR || gap(at, radius) < mine - NEARER
         };
-        let keeps_off = |n: &Node| own.is_none_or(|o| o.kept_off_by(n));
         free.contains_rect(r)
             && !s.under_overlay(r)
             && !taken
                 .iter()
                 .any(|&(t, by)| by <= rank && t.intersects(r.expand(NAME_CLEAR)))
-            && !lit.iter().any(|n| {
-                n.unit != own.and_then(|o| o.unit.clone()) && keeps_off(n) && near(n.at, kept(n))
+            && own.is_none_or(|own| {
+                !drawn.iter().any(|n| {
+                    n.unit != own.unit
+                        && !(own.lit() && !own.plain() && (n.faded() || hidden(r, n)))
+                        && near(n.at, kept(n))
+                })
             })
             && !s.held.iter().any(|h| near(h.at, h.radius + ROUNDING))
             && module.is_none_or(|(module, within)| {
@@ -2060,13 +2104,13 @@ fn named_when_room(s: &Snap) -> Value {
                     && !s.nodes.iter().any(|n| {
                         n.on_screen
                             && n.module.as_deref() == Some(module)
-                            && (!within || n.lit())
-                            && near(n.at, n.radius)
+                            && !(within && (!n.lit() || n.plain()))
+                            && near(n.at, kept(n))
                     })
             })
     };
     let mut offenders = Vec::new();
-    for n in &lit {
+    for n in drawn.iter().filter(|n| n.lit() && !n.plain()) {
         if n.label.is_some() || n.unit.is_none() {
             continue;
         }
@@ -2076,27 +2120,22 @@ fn named_when_room(s: &Snap) -> Value {
                     Some(number) => format!("{number}  {}", n.name),
                     None => n.name.clone(),
                 };
-                guess(&text, "function", 12.5, CHAR_WIDTH)
+                guess(&text, "function", 12.5, text::CHAR_WIDTH)
             },
             |[w, h]| egui::vec2(w, h),
         );
         let size = size + 2.0 * NAME_PILL;
-        let at = pos(n.at);
-        let reach = n.radius + NAME_GAP;
-        let spots = [
-            egui::Rect::from_min_size(egui::pos2(at.x + reach, at.y - size.y / 2.0), size),
-            egui::Rect::from_min_size(egui::pos2(at.x - reach - size.x, at.y - size.y / 2.0), size),
-            egui::Rect::from_min_size(egui::pos2(at.x - size.x / 2.0, at.y - reach - size.y), size),
-            egui::Rect::from_min_size(egui::pos2(at.x - size.x / 2.0, at.y + reach), size),
-        ];
-        // Where the placer tried it, the one place a name may go that stays put.
-        let tried = n.name_spot.map(rect);
-        let spots = tried
-            .as_slice()
-            .iter()
-            .chain(spots.iter().filter(|_| tried.is_none()));
+        let reach = n.kept_off.unwrap_or(n.radius) + NAME_GAP;
+        // Every place round its dot the placer tries.
+        let places = (0..labels::SPOTS.len())
+            .filter(|&i| labels::spot_takes(i, size))
+            .flat_map(|i| {
+                labels::SLIDES
+                    .iter()
+                    .map(move |&by| labels::slid(i, pos(n.at), reach, size, by))
+            });
         let rank = n.rank();
-        if let Some(spot) = spots.into_iter().find(|r| clear(**r, rank, Some(n), None)) {
+        if let Some(spot) = places.into_iter().find(|r| clear(*r, rank, Some(n), None)) {
             let offender = json!({ "function": n.name, "roles": n.roles, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
             offenders.push((1.0 + f32::from(u8::from(n.focus())), offender));
         }
@@ -2109,12 +2148,12 @@ fn named_when_room(s: &Snap) -> Value {
             || guess(&m.name.to_uppercase(), "module", 13.5, CAPITAL_WIDTH),
             |[w, h]| egui::vec2(w, h),
         );
-        let [spot, inside] = module_spots(m, size);
-        let fits = if clear(spot, m.rank(journey), None, Some((&m.name, false))) {
-            Some(spot)
-        } else {
-            (!journey && clear(inside, u8::MAX, None, Some((&m.name, true)))).then_some(inside)
-        };
+        let [above, inside] = module_spots(m, size);
+        let fits = [(above, false), (inside, true)]
+            .into_iter()
+            .find_map(|(spot, within)| {
+                spot.filter(|&spot| clear(spot, m.rank(), None, Some((&m.name, within))))
+            });
         if let Some(spot) = fits {
             let offender = json!({ "module": m.name, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
             offenders.push((0.5, offender));
@@ -2124,21 +2163,22 @@ fn named_when_room(s: &Snap) -> Value {
 }
 
 /// Where a module's name of `size` (its text, at the size above its sphere) would go:
-/// just above its sphere, and browsing where that is taken, smaller just inside its
-/// top.
-fn module_spots(m: &Module, size: egui::Vec2) -> [egui::Rect; 2] {
+/// just above its sphere, and where that is taken, smaller inside its top, where it
+/// fits the sphere's width there.
+fn module_spots(m: &Module, size: egui::Vec2) -> [Option<egui::Rect>; 2] {
     let top = m.at[1] - m.radius;
     let pill = size + 2.0 * NAME_PILL;
-    let above =
-        egui::Rect::from_min_size(egui::pos2(m.at[0] - pill.x / 2.0, top - 2.0 - pill.y), pill);
-    let small = size * (INSIDE_NAME / 13.0) + 2.0 * NAME_PILL;
-    let inside = egui::Rect::from_min_size(egui::pos2(m.at[0] - small.x / 2.0, top + 3.0), small);
-    [above, inside]
+    let above = egui::Rect::from_min_size(
+        egui::pos2(m.at[0] - pill.x / 2.0, top - labels::ABOVE - pill.y),
+        pill,
+    );
+    let small = size * (text::SMALL / text::TITLE) + 2.0 * NAME_PILL;
+    [Some(above), labels::inside(pos(m.at), m.radius, small)]
 }
 
 /// Each name drawn, its pill round it, with the rank of what it names: only those
 /// placed before what is left out, or as early, could have taken its room.
-fn names_by_rank(s: &Snap, journey: bool) -> Vec<(egui::Rect, u8)> {
+fn names_by_rank(s: &Snap) -> Vec<(egui::Rect, u8)> {
     s.labels
         .iter()
         .map(|l| {
@@ -2152,7 +2192,7 @@ fn names_by_rank(s: &Snap, journey: bool) -> Vec<(egui::Rect, u8)> {
                     .modules
                     .iter()
                     .find(|m| Some(&m.name) == l.of.as_ref())
-                    .map_or(0, |m| m.rank(journey)),
+                    .map_or(0, Module::rank),
                 _ => 0,
             };
             (rect(l.rect).expand2(NAME_PILL), rank)
@@ -3900,10 +3940,7 @@ mod tests {
         s["nodes"][2]["label"] = Value::Null;
         s["nodes"][2]["label_rect"] = Value::Null;
         s["labels"].as_array_mut().unwrap().remove(2);
-        // Where the placer tried it, right of its dot: a plain dot and a plain name
-        // lie there.
-        let tried = [1009.0, 492.0, 1049.0, 508.0];
-        s["nodes"][2]["name_spot"] = json!(tried);
+        // Right of its dot, a plain dot it would hide, and a plain name.
         s["nodes"].as_array_mut().unwrap().push(json!({
             "name": "p", "unit": "x:b::p", "module": "b", "roles": ["opened"],
             "at": [1030.0, 500.0], "radius": 4.0, "world": [11.0, 0.0, 0.0],
@@ -3916,13 +3953,9 @@ mod tests {
         }));
         let result = check(&s, "named-when-room");
         assert_eq!(result["offenders"][0]["function"], "h", "{result}");
-        assert_eq!(result["offenders"][0]["would_fit_at"], json!(tried));
-        // A dot a deeper level shows there keeps it off.
-        s["held"] = json!([{ "at": [1030.0, 500.0], "radius": 4.0 }]);
-        assert!(passes(&check(&s, "named-when-room")));
-        // Lit, the dot keeps it off too.
-        s["held"] = json!([]);
-        s["nodes"][3]["roles"] = json!(["journey level 2"]);
+        // Dots a deeper level shows all round it keep it off every side.
+        let at = s["nodes"][2]["at"].clone();
+        s["held"] = json!([{ "at": at, "radius": 120.0 }]);
         assert!(passes(&check(&s, "named-when-room")));
     }
 
