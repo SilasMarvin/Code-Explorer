@@ -144,6 +144,14 @@ const NAME_ROOM: f32 = 24.0;
 /// How far into a dot, or a name's pill, a call's line may run before it counts as
 /// passing through, in points: rounding, not leeway.
 const ARROW_SLACK: f32 = 1.0;
+/// How much longer than straight a call's line may run, against the product's 1.3
+/// with rounding: a loop round a dot or a name is a detour, not a bend.
+const ARROW_DETOUR: f32 = 1.35;
+/// How far clear of a lit dot's ring a bent line passes, in points.
+const RING_MARGIN: f32 = 1.0;
+/// How far a call drawn in two snapshots may run elsewhere before it counts as moved,
+/// in points: a dot growing as the cursor lands on it shortens its line by less.
+const ARROW_MOVED: f32 = 3.0;
 /// Offenders listed per check; `count` says how many in all.
 const LISTED: usize = 12;
 
@@ -259,6 +267,7 @@ struct ContentCall {
 struct Exit {
     from_unit: Option<String>,
     to_unit: Option<String>,
+    far_unit: Option<String>,
     far: String,
     text: String,
     rect: [f32; 4],
@@ -890,6 +899,19 @@ fn labels_clear(s: &Snap) -> Value {
                 "overlap": [r1(both.width()), r1(both.height())],
             });
             offenders.push((both.area(), offender));
+        }
+    }
+    // The labels where calls leave the free area lie over no name either.
+    for e in &s.exits {
+        for label in s.labels.iter().filter(|l| naming(l)) {
+            let both = rect(e.rect).intersect(rect(label.rect));
+            if both.width() > 0.0 && both.height() > 0.0 {
+                let offender = json!({
+                    "exit": e.text, "over_label": label.text,
+                    "overlap": [r1(both.width()), r1(both.height())],
+                });
+                offenders.push((both.area(), offender));
+            }
         }
     }
     let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen && n.lit()).collect();
@@ -1564,6 +1586,13 @@ fn compare(before: &Snap, now: &Snap, camera_free: bool) -> (Value, Vec<(f32, Va
         );
     }
 
+    // A click that selects another function lights other calls, which keep off
+    // other dots.
+    let (arrows, moved_arrows) = arrows_moved(before, now);
+    if screen_counts && before.state.selection == now.state.selection {
+        offenders.extend(moved_arrows.iter().cloned());
+    }
+
     let units =
         |s: &Snap| -> Vec<String> { s.nodes.iter().filter_map(|n| n.unit.clone()).collect() };
     let (old, new) = (units(before), units(now));
@@ -1585,10 +1614,48 @@ fn compare(before: &Snap, now: &Snap, camera_free: bool) -> (Value, Vec<(f32, Va
             "moved": moved_labels.len(),
             "gone": gone_labels(before, now).len(),
         },
+        "arrows": { "compared": arrows, "moved": moved_arrows.len() },
         "appeared": new.iter().filter(|u| !old.contains(u)).count(),
         "gone": old.iter().filter(|u| !new.contains(u)).count(),
     });
     (summary, offenders)
+}
+
+/// How many calls are drawn in both snapshots, and those whose line runs elsewhere,
+/// with how far.
+fn arrows_moved(before: &Snap, now: &Snap) -> (usize, Vec<(f32, Value)>) {
+    let key = |a: &Arrow| (a.from_unit.clone(), a.to_unit.clone(), a.flow.clone());
+    let was: HashMap<_, &Arrow> = before
+        .arrows
+        .iter()
+        .filter(|a| a.path.len() >= 2)
+        .map(|a| (key(a), a))
+        .collect();
+    let mut compared = 0;
+    let mut moved = Vec::new();
+    for arrow in now.arrows.iter().filter(|a| a.path.len() >= 2) {
+        let Some(then) = was.get(&key(arrow)) else {
+            continue;
+        };
+        compared += 1;
+        let by = path_gap(&arrow.path, &then.path).max(path_gap(&then.path, &arrow.path));
+        if by > ARROW_MOVED {
+            let offender = json!({ "arrow": [arrow.from, arrow.to], "by": r1(by) });
+            moved.push((by, offender));
+        }
+    }
+    (compared, moved)
+}
+
+/// How far the point of `a` farthest from the line through `b` is from it.
+fn path_gap(a: &[[f32; 2]], b: &[[f32; 2]]) -> f32 {
+    a.iter()
+        .map(|&p| {
+            b.windows(2)
+                .map(|q| piece_distance(v2(q[0]), v2(q[1]), v2(p)))
+                .fold(f32::INFINITY, f32::min)
+        })
+        .fold(0.0, f32::max)
 }
 
 /// What a name on the graph names, to find it again: a function's by its unit, a
@@ -2382,12 +2449,7 @@ fn arrows_clear(s: &Snap) -> Value {
         .iter()
         .filter(|n| n.on_screen && n.lit() && !n.plain())
         .collect();
-    // Browsing, every function stays where the map has it and its name where the
-    // placer finds room: a line round a crowd of calls is judged by the dots alone.
-    let browsing = s.state.mode == "browse";
-    let lit = |unit: &Option<String>| {
-        !browsing && dots.iter().any(|n| n.unit.is_some() && n.unit == *unit)
-    };
+    let lit = |unit: &Option<String>| dots.iter().any(|n| n.unit.is_some() && n.unit == *unit);
     let names: Vec<&Label> = s
         .labels
         .iter()
@@ -2401,37 +2463,90 @@ fn arrows_clear(s: &Snap) -> Value {
         .filter(|a| a.flow != "inner" && !a.guessed && a.path.len() >= 2)
     {
         judged += 1;
-        let own =
-            |unit: &Option<String>| unit.is_some() && (*unit == a.from_unit || *unit == a.to_unit);
         let pieces: Vec<(Vec2, Vec2)> = a.path.windows(2).map(|p| (v2(p[0]), v2(p[1]))).collect();
-        for n in dots.iter().filter(|n| !own(&n.unit)) {
-            let near = pieces
-                .iter()
-                .map(|&(p, q)| piece_distance(p, q, v2(n.at)))
-                .fold(f32::INFINITY, f32::min);
-            if near < n.radius - ARROW_SLACK {
-                let offender = json!({ "arrow": [a.from, a.to], "through": "dot", "function": n.name, "at": pt(n.at), "off_by": r1(n.radius - near) });
-                offenders.push((n.radius - near, offender));
-            }
+        let run: f32 = pieces.iter().map(|(p, q)| p.distance(*q)).sum();
+        let chord = v2(a.path[0]).distance(v2(a.path[a.path.len() - 1]));
+        if run > chord * ARROW_DETOUR + ARROW_SLACK {
+            let offender = json!({ "arrow": [a.from, a.to], "detour": r2(run / chord.max(1.0)), "run": r1(run), "straight": r1(chord) });
+            offenders.push((run / chord.max(1.0), offender));
         }
-        // Names in the spheres it leaves and enters: where its ends' neighbours are
-        // laid out round it.
-        let module =
-            |unit: &Option<String>| unit.as_deref().and_then(|u| s.node(u)?.module.clone());
-        let ends = [module(&a.from_unit), module(&a.to_unit)];
-        let near = |l: &&&Label| ends.contains(&module(&l.unit));
-        for l in names.iter().filter(|l| !own(&l.unit)).filter(near) {
-            let pill = rect(l.rect).shrink(ARROW_SLACK);
-            if pieces.iter().any(|&(p, q)| crosses_rect(p, q, pill)) {
-                let offender = json!({ "arrow": [a.from, a.to], "through": "name", "label": l.text, "rect": rect_json(l.rect) });
-                offenders.push((1.0, offender));
-            }
-        }
+        offenders.extend(through_dots(a, &pieces, &dots));
+        offenders.extend(through_names(s, a, &pieces, &names));
     }
     if judged == 0 {
         return skip("no call drawn");
     }
     verdict(offenders)
+}
+
+/// Whether `unit` is one of the call's own ends.
+fn own_end(a: &Arrow, unit: Option<&str>) -> bool {
+    unit.is_some() && (unit == a.from_unit.as_deref() || unit == a.to_unit.as_deref())
+}
+
+/// The lit dots a bent call's line runs through, or the ring round one (but the
+/// pointer's): a straight line is drawn broken round a dot no gentle bend clears.
+fn through_dots(a: &Arrow, pieces: &[(Vec2, Vec2)], dots: &[&Node]) -> Vec<(f32, Value)> {
+    if a.path.len() <= 2 {
+        return Vec::new();
+    }
+    let mut offenders = Vec::new();
+    for n in dots.iter().filter(|n| !own_end(a, n.unit.as_deref())) {
+        let ring = if n.is("hovered") {
+            0.0
+        } else {
+            n.rings
+                .iter()
+                .map(|r| r.radius + RING_MARGIN)
+                .fold(0.0, f32::max)
+        };
+        let reach = n.radius.max(ring);
+        let near = pieces
+            .iter()
+            .map(|&(p, q)| piece_distance(p, q, v2(n.at)))
+            .fold(f32::INFINITY, f32::min);
+        if near < reach - ARROW_SLACK {
+            let offender = json!({ "arrow": [a.from, a.to], "through": "dot", "function": n.name, "at": pt(n.at), "off_by": r1(reach - near) });
+            offenders.push((reach - near, offender));
+        }
+    }
+    offenders
+}
+
+/// The lit names a call's line runs through: any but its own ends'; those only for a
+/// bent line, away from where it leaves its dot.
+fn through_names(
+    s: &Snap,
+    a: &Arrow,
+    pieces: &[(Vec2, Vec2)],
+    names: &[&Label],
+) -> Vec<(f32, Value)> {
+    let bent = a.path.len() > 2;
+    let mut offenders = Vec::new();
+    for l in names {
+        let mine = own_end(a, l.unit.as_deref());
+        if mine && !bent {
+            continue;
+        }
+        let dot = l.unit.as_deref().and_then(|u| s.node(u));
+        let off_dot = |p: Vec2, q: Vec2| {
+            !mine
+                || dot.is_none_or(|n| {
+                    let clear = n.radius + NAME_GAP + ARROW_SLACK;
+                    p.distance(v2(n.at)) > clear && q.distance(v2(n.at)) > clear
+                })
+        };
+        let pill = rect(l.rect).shrink(ARROW_SLACK);
+        if pieces
+            .iter()
+            .any(|&(p, q)| off_dot(p, q) && crosses_rect(p, q, pill))
+        {
+            let through = if mine { "its own name" } else { "name" };
+            let offender = json!({ "arrow": [a.from, a.to], "through": through, "label": l.text, "rect": rect_json(l.rect) });
+            offenders.push((1.0, offender));
+        }
+    }
+    offenders
 }
 
 /// No two functions read the same name: on the graph within one module, in the
@@ -2491,33 +2606,51 @@ fn names_distinct(s: &Snap) -> Value {
 /// off it is labelled where its line leaves, with the far function's name, on a pill
 /// inside the free area.
 fn exits_named(s: &Snap) -> Value {
-    if !(s.expanded() && s.state.mode == "journey") {
-        return skip("not expanded in a journey");
+    if !s.expanded() && s.state.mode != "journey" {
+        return skip("browsing with no module expanded");
     }
     let free = s.free();
     let inside = |at: [f32; 2]| free.contains(pos(at));
+    let module = |unit: &Option<String>| unit.as_deref().and_then(|u| s.node(u)?.module.clone());
+    let expanded = s.state.expanded.as_deref().filter(|_| s.expanded());
+    let in_expanded = |unit: &Option<String>| {
+        module(unit).is_some_and(|m| expanded.is_some_and(|e| m.eq_ignore_ascii_case(e)))
+    };
+    // With a module expanded, the calls with one end in it; else, in a journey, the
+    // calls in from outside.
+    let relevant = |from: &Option<String>, to: &Option<String>, flow: &str| match expanded {
+        Some(_) => in_expanded(from) != in_expanded(to),
+        None => flow == "outside",
+    };
     let mut offenders = Vec::new();
     let mut judged = 0;
     for a in s
         .arrows
         .iter()
         .filter(|a| a.flow != "inner" && a.path.len() >= 2)
+        .filter(|a| relevant(&a.from_unit, &a.to_unit, &a.flow))
     {
         let (first, last) = (a.path[0], a.path[a.path.len() - 1]);
         if inside(first) == inside(last) {
             continue;
         }
         judged += 1;
-        let far = if inside(first) { &a.to } else { &a.from };
+        let (far, far_unit) = if inside(first) {
+            (&a.to, &a.to_unit)
+        } else {
+            (&a.from, &a.from_unit)
+        };
         let exit = s
             .exits
             .iter()
             .find(|e| e.from_unit == a.from_unit && e.to_unit == a.to_unit);
+        // A label names its far function, or, past a few, that function's module.
+        let names_far = |e: &Exit| {
+            e.text.contains(far.as_str())
+                || module(far_unit).is_some_and(|m| e.text.contains(&m.to_uppercase()))
+        };
         match exit {
-            Some(e)
-                if e.far == *far
-                    && e.text.contains(far.as_str())
-                    && free.contains_rect(rect(e.rect)) => {}
+            Some(e) if names_far(e) && free.contains_rect(rect(e.rect)) => {}
             Some(e) => {
                 let offender = json!({ "arrow": [a.from, a.to], "why": "its exit label does not name the far function inside the free area", "label": e.text, "rect": rect_json(e.rect) });
                 offenders.push((1.0, offender));
@@ -2528,10 +2661,49 @@ fn exits_named(s: &Snap) -> Value {
             }
         }
     }
-    if judged == 0 {
+    let flow = |e: &Exit| {
+        s.arrows
+            .iter()
+            .find(|a| a.from_unit == e.from_unit && a.to_unit == e.to_unit)
+            .map_or("", |a| a.flow.as_str())
+    };
+    offenders.extend(exits_apart(s, &|e| {
+        relevant(&e.from_unit, &e.to_unit, flow(e))
+    }));
+    if judged == 0 && s.exits.is_empty() {
         return skip("no call leaves the free area");
     }
     verdict(offenders)
+}
+
+/// The exit labels for calls that should have none, two naming one far function,
+/// and two lying over each other.
+fn exits_apart(s: &Snap, relevant: &dyn Fn(&Exit) -> bool) -> Vec<(f32, Value)> {
+    let mut offenders = Vec::new();
+    let mut pills: Vec<(egui::Rect, &Exit)> = Vec::new();
+    for e in &s.exits {
+        if !relevant(e) {
+            let offender = json!({ "label": e.text, "why": "labels a call with both ends in the module expanded, or neither" });
+            offenders.push((1.0, offender));
+        }
+        let r = rect(e.rect);
+        // One label names every call leaving for its function or module.
+        if pills.iter().any(|(p, _)| *p == r) {
+            continue;
+        }
+        for (p, other) in &pills {
+            if other.far_unit.is_some() && other.far_unit == e.far_unit {
+                let offender = json!({ "label": e.text, "why": "names a far function another label names", "other": other.text });
+                offenders.push((1.0, offender));
+            } else if p.intersects(r) {
+                let both = p.intersect(r);
+                let offender = json!({ "label": e.text, "over_label": other.text, "overlap": [r1(both.width()), r1(both.height())] });
+                offenders.push((both.area().max(1.0), offender));
+            }
+        }
+        pills.push((r, e));
+    }
+    offenders
 }
 
 /// Every call into the selection (or the start) and each of its own, between two dots
@@ -2907,25 +3079,41 @@ mod tests {
     }
 
     #[test]
-    fn a_call_through_a_third_dot_or_name_is_named_and_one_bent_round_it_passes() {
+    fn a_bent_call_through_a_third_dot_or_any_through_a_name_is_named() {
         let mut s = scene();
         s["state"]["mode"] = json!("journey");
-        // From f straight to h, over f's own name, through g's spot made a lit dot.
         s["nodes"][1]["roles"] = json!(["callee"]);
         s["nodes"][1]["radius"] = json!(4.0);
+        // Straight from f to h through g: drawn broken round its dot, so it passes.
         s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
             "flow": "journey", "level": 1, "path": [[386.0, 500.0], [994.0, 500.0]] }]);
-        let result = check(&s, "arrows-clear");
-        assert_eq!(result["count"], 1, "{result}");
-        assert_eq!(result["offenders"][0]["function"], "g");
-        // A name in the way is named too.
+        assert!(
+            passes(&check(&s, "arrows-clear")),
+            "{}",
+            check(&s, "arrows-clear")
+        );
+        // A name in the way is named, browsing too.
         s["labels"]
             .as_array_mut()
             .expect("labels")
             .push(json!({ "text": "g", "rect": [700.0, 494.0, 720.0, 506.0],
                 "names": "function", "of": "g", "unit": "x:a::g" }));
-        assert_eq!(check(&s, "arrows-clear")["count"], 2);
-        // Bent round both, it passes.
+        let result = check(&s, "arrows-clear");
+        assert_eq!(result["count"], 1, "{result}");
+        assert_eq!(result["offenders"][0]["through"], "name");
+        s["state"]["mode"] = json!("browse");
+        assert_eq!(check(&s, "arrows-clear")["count"], 1);
+        // Bent, but through g's dot.
+        s["arrows"][0]["path"] = json!([
+            [386.0, 500.0],
+            [440.0, 500.0],
+            [700.0, 520.0],
+            [994.0, 500.0]
+        ]);
+        let result = check(&s, "arrows-clear");
+        assert_eq!(result["count"], 1, "{result}");
+        assert_eq!(result["offenders"][0]["function"], "g");
+        // Bent round both, it passes, over its own name only where it leaves its dot.
         s["arrows"][0]["path"] = json!([
             [386.0, 500.0],
             [440.0, 530.0],
@@ -2937,6 +3125,15 @@ mod tests {
             "{}",
             check(&s, "arrows-clear")
         );
+        // Too near a ring round g.
+        s["nodes"][1]["rings"] = json!([{ "radius": 40.0, "color": "#ffffffff" }]);
+        assert_eq!(check(&s, "arrows-clear")["offenders"][0]["function"], "g");
+        // A loop more than a third longer than straight is a detour.
+        s["nodes"][1]["rings"] = json!([]);
+        s["arrows"][0]["path"] = json!([[386.0, 500.0], [700.0, 800.0], [994.0, 500.0]]);
+        let result = check(&s, "arrows-clear");
+        assert_eq!(result["count"], 1, "{result}");
+        assert!(result["offenders"][0]["detour"].as_f64().expect("detour") > 1.35);
     }
 
     #[test]
@@ -2963,22 +3160,94 @@ mod tests {
     }
 
     #[test]
-    fn expanded_in_a_journey_a_call_off_the_free_area_is_labelled_where_it_leaves() {
+    fn expanded_a_call_off_the_free_area_is_labelled_where_it_leaves() {
         let mut s = scene();
         s["state"]["mode"] = json!("journey");
         s["state"]["nucleus"] = json!("expanded");
+        s["state"]["expanded"] = json!("a");
         s["arrows"] = json!([{ "from": "f", "to": "far", "from_unit": "x:a::f", "to_unit": "x:c::far",
             "flow": "journey", "level": 1, "path": [[386.0, 500.0], [386.0, 1200.0]] }]);
         assert_eq!(check(&s, "exits-named")["count"], 1);
-        s["exits"] = json!([{ "from_unit": "x:a::f", "to_unit": "x:c::far", "far": "far",
-            "text": "to far · C", "rect": [350.0, 975.0, 420.0, 995.0] }]);
+        s["exits"] = json!([{ "from_unit": "x:a::f", "to_unit": "x:c::far", "far_unit": "x:c::far",
+            "far": "far", "text": "to far · C", "rect": [350.0, 975.0, 420.0, 995.0] }]);
         assert!(
             passes(&check(&s, "exits-named")),
             "{}",
             check(&s, "exits-named")
         );
+        // Browsing expanded too.
+        s["state"]["mode"] = json!("browse");
+        assert!(passes(&check(&s, "exits-named")));
+        // Not over a name.
+        s["exits"][0]["rect"] = json!([385.0, 490.0, 455.0, 510.0]);
+        let result = check(&s, "labels-clear");
+        assert_eq!(result["offenders"][0]["exit"], "to far · C", "{result}");
+        s["exits"][0]["rect"] = json!([350.0, 975.0, 420.0, 995.0]);
+        // A second label for the same far function, over the first.
+        let mut exits = s["exits"].as_array().expect("exits").clone();
+        exits.push(
+            json!({ "from_unit": "x:a::g", "to_unit": "x:c::far", "far_unit": "x:c::far",
+            "far": "far", "text": "to far · C", "rect": [360.0, 980.0, 430.0, 1000.0] }),
+        );
+        // And one for a call inside the module expanded.
+        exits.push(
+            json!({ "from_unit": "x:a::f", "to_unit": "x:a::g", "far_unit": "x:a::g",
+            "far": "g", "text": "to g · A", "rect": [500.0, 975.0, 560.0, 995.0] }),
+        );
+        s["exits"] = json!(exits);
+        let whys: Vec<String> = check(&s, "exits-named")["offenders"]
+            .as_array()
+            .expect("offenders")
+            .iter()
+            .filter_map(|o| o["why"].as_str().map(str::to_owned))
+            .collect();
+        assert!(whys.iter().any(|w| w.contains("another label")), "{whys:?}");
+        assert!(whys.iter().any(|w| w.contains("both ends")), "{whys:?}");
+        // Collapsed and browsing, nothing to label.
         s["state"]["nucleus"] = json!("modules");
         assert_eq!(check(&s, "exits-named")["pass"], Value::Null);
+    }
+
+    #[test]
+    fn a_call_bent_anew_on_a_step_that_moves_nothing_has_moved() {
+        let mut before = scene();
+        before["state"]["mode"] = json!("journey");
+        before["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
+            "flow": "journey", "level": 1, "path": [[386.0, 500.0], [994.0, 500.0]] }]);
+        // The callee grown as the cursor lands on it: its line a little shorter.
+        let mut now = before.clone();
+        now["arrows"][0]["path"] = json!([[386.0, 500.0], [992.0, 500.0]]);
+        let result = after(&before, &now, &[Kind::Still], "nothing-moved");
+        assert!(passes(&result), "{result}");
+        now["arrows"][0]["path"] = json!([[386.0, 500.0], [690.0, 530.0], [994.0, 500.0]]);
+        let result = after(&before, &now, &[Kind::Still], "nothing-moved");
+        assert_eq!(result["count"], 1, "{result}");
+        assert_eq!(result["offenders"][0]["arrow"], json!(["f", "h"]));
+        // A depth change that drew the camera back moves every line with it.
+        now["state"]["camera"]["distance"] = json!(120.0);
+        let result = after(&before, &now, &[Kind::Depth], "nothing-moved");
+        assert!(
+            result["offenders"]
+                .as_array()
+                .is_none_or(|o| o.iter().all(|o| o["arrow"].is_null())),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn in_a_journey_a_call_in_from_outside_off_the_free_area_is_labelled() {
+        let mut s = scene();
+        s["state"]["mode"] = json!("journey");
+        s["arrows"] = json!([{ "from": "far", "to": "f", "from_unit": "x:c::far", "to_unit": "x:a::f",
+            "flow": "outside", "path": [[386.0, 1200.0], [386.0, 506.0]] }]);
+        assert_eq!(check(&s, "exits-named")["count"], 1);
+        s["exits"] = json!([{ "from_unit": "x:c::far", "to_unit": "x:a::f", "far_unit": "x:c::far",
+            "far": "far", "text": "from far · C", "rect": [350.0, 975.0, 430.0, 995.0] }]);
+        assert!(
+            passes(&check(&s, "exits-named")),
+            "{}",
+            check(&s, "exits-named")
+        );
     }
 
     #[test]
