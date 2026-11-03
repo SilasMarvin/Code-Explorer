@@ -2256,7 +2256,12 @@ fn named_when_room(s: &Snap) -> Value {
             })
     };
     let mut offenders = Vec::new();
-    for n in drawn.iter().filter(|n| n.lit() && !n.plain()) {
+    // A dot off the free area, under the panel or past its edge, is no one's to name
+    // beside it: an exit label carries it.
+    for n in drawn
+        .iter()
+        .filter(|n| n.lit() && !n.plain() && free.contains(pos(n.at)))
+    {
         if n.label.is_some() || n.unit.is_none() {
             continue;
         }
@@ -2630,7 +2635,8 @@ fn arrows_clear(s: &Snap) -> Value {
     let dots: Vec<&Node> = s
         .nodes
         .iter()
-        .filter(|n| n.on_screen && n.lit() && !n.plain())
+        // Lines are routed without the callers I brings in, so I bends none.
+        .filter(|n| n.on_screen && n.lit() && !n.plain() && (!n.is("outside") || n.focus()))
         .collect();
     let lit = |unit: &Option<String>| dots.iter().any(|n| n.unit.is_some() && n.unit == *unit);
     let names: Vec<&Label> = s
@@ -3330,6 +3336,11 @@ mod tests {
         ]);
         s["nodes"][1]["rings"] = json!([{ "radius": 40.0, "color": "#ffffffff" }]);
         assert_eq!(check(&s, "arrows-clear")["offenders"][0]["function"], "g");
+        // A caller I brings in: lines are routed without it.
+        let roles = s["nodes"][1]["roles"].clone();
+        s["nodes"][1]["roles"] = json!(["outside"]);
+        assert!(passes(&check(&s, "arrows-clear")));
+        s["nodes"][1]["roles"] = roles;
         // A loop more than a third longer than straight is a detour.
         s["nodes"][1]["rings"] = json!([]);
         s["arrows"][0]["path"] = json!([[386.0, 500.0], [700.0, 800.0], [994.0, 500.0]]);
@@ -4075,6 +4086,21 @@ mod tests {
         now["nodes"][2]["world"] = json!([12.0, 1.0, 0.0]);
         let result = after(&before, &now, &[Kind::Expand], "nothing-moved");
         assert_eq!(result["offenders"][0]["function"], "h", "{result}");
+    }
+
+    #[test]
+    fn a_dot_off_the_free_area_is_left_to_an_exit_label() {
+        let mut s = scene();
+        s["nodes"][2]["label"] = Value::Null;
+        s["nodes"][2]["label_rect"] = Value::Null;
+        let named = |s: &Value| {
+            check(s, "named-when-room")["offenders"]
+                .as_array()
+                .is_some_and(|o| o.iter().any(|o| o["function"] == "h"))
+        };
+        assert!(named(&s), "room beside it, and unnamed");
+        s["nodes"][2]["at"] = json!([1000.0, 1003.0]);
+        assert!(!named(&s), "just past the free area's foot");
     }
 
     #[test]

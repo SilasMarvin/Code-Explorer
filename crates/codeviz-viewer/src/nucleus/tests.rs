@@ -709,9 +709,20 @@ fn every_outside_caller_of_the_cursor_has_a_place_of_its_own() {
         nucleus.set_cursor(&graph, Some(tile(&map, at)));
         while nucleus.advance(0.1) {}
         let dots = drawn(&nucleus);
-        for id in callers {
+        // Each is drawn in its sphere, or waits for its module to be expanded, where
+        // no room is clear of the names round its place.
+        let shown: Vec<&&str> = callers
+            .iter()
+            .filter(|id| nucleus.outside(tile(&map, id)))
+            .collect();
+        assert_eq!(
+            shown.len() + nucleus.outside_waiting(),
+            callers.len(),
+            "{at}"
+        );
+        assert!(!shown.is_empty(), "{at}: some brought in");
+        for id in shown {
             let caller = tile(&map, id);
-            assert!(nucleus.outside(caller), "{at}: {id} brought in");
             let ball = nucleus.ball(graph.cluster(caller).unwrap()).unwrap();
             assert!(
                 dots[&caller].distance(ball.center) < ball.radius,
@@ -732,6 +743,13 @@ fn every_outside_caller_of_the_cursor_has_a_place_of_its_own() {
         if let Some(was) = seen[0].get(tile) {
             assert!(at.distance(*was) < 1e-4, "{tile} keeps its place");
         }
+    }
+    // Expanded, every caller in the module shows.
+    nucleus.set_cursor(&graph, Some(tile(&map, "db::put")));
+    nucleus.expand(&graph, Some(module(&graph, &map, "db::put")));
+    while nucleus.advance(0.1) {}
+    for id in ["db::c0", "db::c1", "db::c2", "db::c3", "db::c4"] {
+        assert!(nucleus.outside(tile(&map, id)), "expanded: {id} brought in");
     }
 }
 

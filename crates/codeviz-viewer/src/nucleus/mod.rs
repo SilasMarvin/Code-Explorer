@@ -226,6 +226,10 @@ struct Arrangement {
     /// In a journey, the function set aside, when it is drawn only for that: picked
     /// by a search where the journey draws nothing of it.
     aside: Option<usize>,
+    /// In a journey with I on, how many callers from off it of the function the
+    /// cursor is on have no room clear of the names round their place, undrawn until
+    /// their module is expanded.
+    waiting: usize,
     /// In a journey, the start's callers beyond the few nearest it: drawn quietly and
     /// named only under the pointer, counted on their module's name instead.
     folded: HashSet<usize>,
@@ -484,6 +488,12 @@ impl Nucleus {
     /// Whether a function is an outside caller into the journey, shown.
     pub(crate) fn outside(&self, tile: usize) -> bool {
         self.now.outside.contains(&tile)
+    }
+
+    /// How many callers from off the journey of the function the cursor is on wait,
+    /// undrawn, for their module to be expanded (I).
+    pub(crate) fn outside_waiting(&self) -> usize {
+        self.now.waiting
     }
 
     /// The outside callers into the journey shown (I).

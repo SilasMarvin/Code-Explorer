@@ -690,7 +690,13 @@ impl Explorer {
         }
         self.outside = !self.outside;
         self.sync_nucleus();
-        if self.outside && self.nucleus.outside_callers().next().is_none() {
+        let waiting = self.nucleus.outside_waiting();
+        if self.outside && waiting > 0 {
+            self.say(&format!(
+                "{waiting} more call it with no room here: X shows them in their module"
+            ));
+        }
+        if self.outside && waiting == 0 && self.nucleus.outside_callers().next().is_none() {
             self.outside = false;
             self.sync_nucleus();
             let name = self

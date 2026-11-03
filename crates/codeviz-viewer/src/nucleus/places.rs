@@ -54,6 +54,9 @@ const FAR: f32 = 0.05;
 const SPREAD: f32 = 0.6;
 const SPREAD_REACH: f32 = 0.9;
 
+/// Keys at or past this stand for places kept free, not functions.
+const SPARE_KEYS: usize = usize::MAX / 2;
+
 /// A sphere to lay out: where it is, and what it names, in order.
 pub(super) struct Room {
     pub(super) cluster: usize,
@@ -72,6 +75,9 @@ pub(super) struct Room {
 pub(super) struct Placed {
     pub(super) points: HashMap<usize, Vec3>,
     pub(super) free: HashMap<usize, Vec<Vec3>>,
+    /// Of those, by cluster and place, the ones with no room clear of the names round
+    /// them: whoever would take one is left for the module expanded to show.
+    pub(super) crowded: HashSet<(usize, usize)>,
     /// The functions whose names go on their left.
     pub(super) left: HashSet<usize>,
 }
@@ -223,15 +229,12 @@ impl Board<'_> {
                 cost += OVER;
             }
         }
-        // A place kept free keeps off a name on either side of its dot: the name may
-        // take either, and whoever comes in later is drawn under neither.
+        // A place kept free keeps clear of the names round it, and of where they
+        // might go.
         if tile.is_none() {
-            for (&named, &there) in &self.at {
-                let other_side = self.name(Some(named), there, !self.left.contains(&named));
-                if other_side.near(at, self.dot) {
-                    cost += OVER;
-                }
-            }
+            cost += OVER
+                * (f32::from(u8::from(self.crowded(at)))
+                    + f32::from(u8::from(self.either_side(at))));
         }
         // Its lines: through no dot and no name put before it.
         if let Some(tile) = tile {
@@ -286,6 +289,31 @@ impl Board<'_> {
         }
     }
 
+    /// Whether a place kept free at `at` has no room clear of the functions round
+    /// it: near a dot, or under a name, by a name's height besides, as names stay
+    /// their size when the view draws back, so whoever comes in reads as no one's.
+    fn crowded(&self, at: Vec2) -> bool {
+        let clear = self.dot + self.high / 2.0 + self.gap;
+        self.at
+            .iter()
+            .any(|(&tile, &there)| tile < SPARE_KEYS && there.distance(at) < self.dot * 2.0)
+            || self
+                .names
+                .iter()
+                .any(|&(tile, name)| tile < SPARE_KEYS && name.near(at, clear))
+    }
+
+    /// Whether a name of a function on either side of its dot comes near `at`: the
+    /// name may take either side.
+    fn either_side(&self, at: Vec2) -> bool {
+        self.at.iter().any(|(&tile, &there)| {
+            tile < SPARE_KEYS
+                && [false, true]
+                    .into_iter()
+                    .any(|left| self.name(Some(tile), there, left).near(at, self.dot))
+        })
+    }
+
     fn put(&mut self, tile: usize, at: Vec2, left: bool) {
         let name = self.name(Some(tile), at, left);
         self.at.insert(tile, at);
@@ -316,6 +344,25 @@ fn best(
         .map(|(_, i, at, left)| (i, at, left))?;
     spots[index] = None;
     Some((at, left))
+}
+
+/// Up to `count` places over the sphere whose middle and room are given, closer than
+/// names keep rows apart, none on a dot put or a place in `spots`.
+fn closer(
+    board: &Board,
+    spots: &[Option<Vec2>],
+    (middle, reach): (Vec2, f32),
+    count: usize,
+) -> Vec<Option<Vec2>> {
+    spaced((count, count), reach, ROW_WIDE, 0.0)
+        .into_iter()
+        .map(|at| middle + at)
+        .filter(|at| {
+            let apart = |there: &Vec2| there.distance(*at) >= board.dot * 2.0;
+            board.at.values().all(apart) && spots.iter().flatten().all(apart)
+        })
+        .map(Some)
+        .collect()
 }
 
 /// Where each of `rooms`' functions goes, the rooms in turn and each one's in order,
@@ -361,11 +408,23 @@ pub(super) fn place(
     let mut placed = Placed::default();
     // Places left free are kept clear as dots are, under keys no function has.
     let mut spare_key = usize::MAX;
+    debug_assert!(rooms.iter().flat_map(|r| &r.tiles).all(|&t| t < SPARE_KEYS));
     let mut keep_free = |board: &mut Board, room: &Room, spots: &mut [Option<Vec2>], count| {
         let (middle, reach) = (flat(room.center), atlas::disc(room.radius));
         let free = placed.free.entry(room.cluster).or_default();
         for _ in 0..count {
+            // Never on a dot or a place already kept.
+            for spot in spots.iter_mut() {
+                if spot
+                    .is_some_and(|at| board.at.values().any(|t| t.distance(at) < board.dot * 2.0))
+                {
+                    *spot = None;
+                }
+            }
             if let Some((at, left)) = best(board, None, spots, (middle, reach)) {
+                if board.crowded(at) {
+                    placed.crowded.insert((room.cluster, free.len()));
+                }
                 // Kept for whoever takes it: what is put after keeps off it.
                 board.put(spare_key, at, left);
                 spare_key -= 1;
@@ -406,23 +465,21 @@ pub(super) fn place(
         // As many free as every sphere round the nucleus keeps, so the spheres laid
         // out after lie the same whoever may come in; the rest once every function
         // is put.
+        // Places kept free may sit closer, between the rows of names, where one may
+        // be clear of them all when the rows are full.
+        let count = (laid + besides.max(room.spare)) * PLACES_EACH;
+        spots.extend(closer(&board, &spots, (middle, reach), count));
         keep_free(&mut board, room, &mut spots, besides);
-        left_over.push((room, laid, spots));
+        left_over.push((room, spots));
         for &tile in room.tiles.iter().chain(&room.middle) {
             if let Some(&at) = board.at.get(&tile) {
                 placed.points.insert(tile, room.center + world(at - middle));
             }
         }
     }
-    for (room, laid, mut spots) in left_over {
+    for (room, mut spots) in left_over {
         let kept = if room.middle.is_some() { 0 } else { BESIDES };
         let more = room.spare.saturating_sub(kept);
-        // Short of places, closer ones: a name may then reach over one.
-        if spots.iter().flatten().count() < more {
-            let count = laid + kept + more;
-            let closer = spaced((count, count), atlas::disc(room.radius), ROW_WIDE, 0.0);
-            spots.extend(closer.into_iter().map(|at| Some(flat(room.center) + at)));
-        }
         keep_free(&mut board, room, &mut spots, more);
     }
     placed.left = board.left;

@@ -52,6 +52,7 @@ impl Nucleus {
             columns,
             outside: HashSet::new(),
             aside: None,
+            waiting: 0,
             folded: HashSet::new(),
             tubes,
             links,

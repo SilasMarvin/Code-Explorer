@@ -769,7 +769,9 @@ impl<'a> Naming<'a> {
                         graph_view::NodeLook::Faded if !unselected => Shade::Faded,
                         _ => Shade::Plain,
                     },
-                    outside: nucleus.outside(tile),
+                    // One the journey runs deeper is kept off as its ghost is when
+                    // I does not bring it in, so I moves no name.
+                    outside: nucleus.outside(tile) && nucleus.journey_level(tile).is_none(),
                     may_light: dot != Dot::Speck
                         || nucleus.browsing()
                         || nucleus.journey_level(tile).is_some(),
