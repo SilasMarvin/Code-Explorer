@@ -53,6 +53,8 @@ pub(crate) struct Disclosed {
     whens: HashMap<usize, Option<String>>,
     /// The journey as the nucleus draws it.
     trail: Trail,
+    /// Shown calls the graph draws nowhere.
+    unseen: HashSet<SpanId>,
 }
 
 impl Disclosed {
@@ -70,7 +72,8 @@ impl Disclosed {
             return disclosed;
         };
         let tile = |span: SpanId| track.tile(span, map);
-        // A call only guessed among several functions runs to each of them.
+        // A call only guessed among several functions is drawn to those of them the
+        // journey runs anyway.
         let ends = |span: SpanId| track.ends(span, map);
         let root = journey.root();
         // Every call, numbered from the root, and the closures each runs.
@@ -123,8 +126,13 @@ impl Disclosed {
             .collect();
         disclosed.mark_tiles(journey, &ends, root);
         let mut tiles: HashMap<usize, Vec<String>> = HashMap::new();
+        let mut unseen = HashSet::new();
         for (span, number) in disclosed.numbered() {
-            for tile in ends(span) {
+            let ends = ends(span);
+            if ends.is_empty() {
+                unseen.insert(span);
+            }
+            for tile in ends {
                 let list = tiles.entry(tile).or_default();
                 if !number.is_empty() {
                     list.push(number.to_owned());
@@ -135,6 +143,7 @@ impl Disclosed {
             numbers.sort_by_key(|n| number_order(n));
         }
         disclosed.tiles = tiles;
+        disclosed.unseen = unseen;
         disclosed.trail = disclosed.trace(
             (&tile, &ends),
             &|span| journey.span(span).is_some_and(guessed),
@@ -186,9 +195,10 @@ impl Disclosed {
         self.guessed_tiles.retain(|tile| !sure.contains(tile));
     }
 
-    /// The journey from `start` as the nucleus draws it: each call shown, and every
-    /// function below the start at any depth, by node, from the node a call runs in
-    /// (`tile`) to each it may run (`ends`).
+    /// The journey from `start` as the nucleus draws it: each call shown, from the
+    /// node it runs in (`tile`) to each it is drawn to (`ends`); and every function
+    /// below the start at any depth and every call it makes, by node, what the
+    /// layout is for, which a guess never changes.
     fn trace(
         &self,
         (tile, ends): (
@@ -208,7 +218,7 @@ impl Disclosed {
             for span in wave {
                 for &child in self.children(span) {
                     if seen.insert(child) {
-                        for to in ends(child) {
+                        if let Some(to) = tile(child) {
                             trail.whole.entry(to).or_insert(level);
                         }
                         next.push(child);
@@ -224,19 +234,19 @@ impl Disclosed {
         // every call it makes, at any depth.
         let mut stack = vec![start];
         while let Some(span) = stack.pop() {
-            if span != start {
-                for to in ends(span) {
-                    if !trail.order.contains(&to) {
-                        trail.order.push(to);
-                    }
-                }
+            if span != start
+                && let Some(to) = tile(span)
+                && !trail.order.contains(&to)
+            {
+                trail.order.push(to);
             }
             if let Some(from) = tile(span) {
                 for &child in self.children(span) {
-                    for to in ends(child) {
-                        if from != to && !trail.reach.contains(&(from, to)) {
-                            trail.reach.push((from, to));
-                        }
+                    if let Some(to) = tile(child)
+                        && from != to
+                        && !trail.reach.contains(&(from, to))
+                    {
+                        trail.reach.push((from, to));
                     }
                 }
             }
@@ -286,6 +296,13 @@ impl Disclosed {
     /// Whether a span shows.
     pub(crate) fn shows(&self, span: SpanId) -> bool {
         self.shown.contains(&span)
+    }
+
+    /// A shown call's number as its bar says it: none for one the graph draws
+    /// nowhere, a call only guessed among functions the journey runs nowhere else, or
+    /// one to nothing on the map, so the panel numbers only what the graph does.
+    pub(crate) fn bar_number(&self, span: SpanId) -> Option<&str> {
+        self.number(span).filter(|_| !self.unseen.contains(&span))
     }
 
     /// A shown call's number; empty for the root.

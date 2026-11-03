@@ -742,7 +742,7 @@ fn bars(view: &View) -> Vec<Value> {
                 .find(|(s, _)| *s == span)
                 .map(|(_, r)| rect(*r));
             json!({
-                "number": disclosed.number(span),
+                "number": disclosed.bar_number(span),
                 "name": explorer.label(span),
                 "unit": track.unit_id(span).map(ToString::to_string),
                 "rect": rect(r),

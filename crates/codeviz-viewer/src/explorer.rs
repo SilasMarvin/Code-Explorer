@@ -97,14 +97,19 @@ impl Track {
         self.unit_id(id).and_then(|unit| map.tile_of(unit))
     }
 
-    /// The nodes of `map` a span may run: the one function it resolved to, or each of
-    /// the functions a call only guessed among several may be.
+    /// The nodes of `map` a span runs on the graph: the one function it resolved to;
+    /// of a call only guessed among several, those the journey runs anyway, so a
+    /// guess never brings in what the journey does not.
     pub(crate) fn ends(&self, id: SpanId, map: &CodebaseMap) -> Vec<usize> {
-        self.span(id)
-            .map_or(&[][..], |span| targets(&span.target))
-            .iter()
-            .filter_map(|unit| map.tile_of(unit))
-            .collect()
+        match self.span(id).map(|span| &span.target) {
+            Some(SpanTarget::Unit(unit)) => map.tile_of(unit).into_iter().collect(),
+            Some(SpanTarget::Ambiguous(units)) => units
+                .iter()
+                .filter(|unit| self.units.contains(*unit))
+                .filter_map(|unit| map.tile_of(unit))
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// Unrolls the journey from its start on the happy path, with the cursor on the
@@ -126,7 +131,10 @@ impl Track {
             .journey
             .iter()
             .flat_map(Journey::spans)
-            .flat_map(|(_, span)| targets(&span.target).iter().cloned())
+            .filter_map(|(_, span)| match &span.target {
+                SpanTarget::Unit(unit) => Some(unit.clone()),
+                _ => None,
+            })
             .collect();
         // A rebuilt journey numbers its spans afresh.
         self.expanded.clear();
@@ -1500,15 +1508,6 @@ pub(crate) enum Step {
 }
 
 /// Whether a span runs only sometimes on this path: under a condition, or in a loop.
-/// The functions a call may run: the one it resolved to, or its candidates.
-fn targets(target: &SpanTarget) -> &[UnitId] {
-    match target {
-        SpanTarget::Unit(unit) => std::slice::from_ref(unit),
-        SpanTarget::Ambiguous(units) => units,
-        SpanTarget::Unresolved(_) => &[],
-    }
-}
-
 pub(crate) fn is_conditional(span: &Span) -> bool {
     !span.conditions.is_empty() || span.repeats
 }
@@ -1779,6 +1778,51 @@ pub(crate) mod tests {
                 .disclosure()
                 .number(explorer.cursor_span().unwrap()),
             Some("1.1")
+        );
+    }
+
+    #[test]
+    fn a_guess_is_drawn_only_to_what_the_journey_runs_anyway() {
+        // main's first call could run b or c; its second runs d, which runs b. A
+        // guess between e and f, neither of which the journey runs, is drawn nowhere.
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" }, "units": [
+            { "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "dyn#0", "text": "handler.run", "targets": [
+                    { "unit": "x:b", "certainty": "exact" }, { "unit": "x:c", "certainty": "exact" } ] },
+                { "key": "d#0", "text": "d", "targets": [ { "unit": "x:d", "certainty": "exact" } ] },
+                { "key": "dyn#1", "text": "other.run", "targets": [
+                    { "unit": "x:e", "certainty": "exact" }, { "unit": "x:f", "certainty": "exact" } ] } ] },
+            { "id": "x:b", "name": "b", "kind": "fn", "role": "invocable" },
+            { "id": "x:c", "name": "c", "kind": "fn", "role": "invocable" },
+            { "id": "x:d", "name": "d", "kind": "fn", "role": "invocable", "calls": [
+                { "key": "b#0", "text": "b", "targets": [ { "unit": "x:b", "certainty": "exact" } ] } ] },
+            { "id": "x:e", "name": "e", "kind": "fn", "role": "invocable" },
+            { "id": "x:f", "name": "f", "kind": "fn", "role": "invocable" } ] }"#;
+        let system = System::new([Document::from_json(json).unwrap()]);
+        let explorer = opened(system, "x:main");
+        let [main, b, c, e] = ["main", "b", "c", "e"].map(|name| tile(&explorer, name));
+        let disclosed = explorer.disclosure();
+        let trail = disclosed.trail();
+        assert!(
+            trail
+                .calls
+                .iter()
+                .any(|call| call.from == main && call.to == b && call.guessed)
+        );
+        for not in [c, e] {
+            assert!(
+                !trail.calls.iter().any(|call| call.to == not),
+                "no line to it"
+            );
+            assert!(!trail.whole.contains_key(&not), "nor laid out for");
+        }
+        let journey = explorer.journey().unwrap();
+        let calls = &journey.span(journey.root()).unwrap().children;
+        assert_eq!(disclosed.bar_number(calls[0]), Some("1"), "on b, numbered");
+        assert_eq!(
+            disclosed.bar_number(calls[2]),
+            None,
+            "drawn nowhere, unnumbered"
         );
     }
 

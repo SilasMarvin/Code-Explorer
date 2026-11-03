@@ -432,7 +432,7 @@ fn canvas(
         }
 
         // The same number the graph puts on the node, then the name.
-        let number = disclosed.number(bar.span).unwrap_or_default();
+        let number = disclosed.bar_number(bar.span).unwrap_or_default();
         let number_width = text_width(&painter, number, BAR_TEXT_SMALL);
         // What is folded under the bar, as a badge that opens it, where there is room
         // for its number beside it: a number says which call it is, the badge only
@@ -545,7 +545,7 @@ fn canvas(
             outline(&painter, rect, egui_color(HOVER), 1.0);
         }
         let mut tip = explorer.label(span);
-        let number = disclosed.number(span).unwrap_or_default();
+        let number = disclosed.bar_number(span).unwrap_or_default();
         if !number.is_empty() {
             tip = format!("{number}  {tip}");
         }
@@ -770,7 +770,7 @@ fn bar_text(
     room: f32,
 ) -> Option<(String, f32)> {
     let disclosed = explorer.disclosure();
-    let number = disclosed.number(span).unwrap_or_default();
+    let number = disclosed.bar_number(span).unwrap_or_default();
     let mut name = explorer.label(span);
     // What the graph's name says of it calling round, the same words; said so, the
     // mark of a journey stopped where it runs already would say it twice.
