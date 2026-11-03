@@ -12,6 +12,10 @@
 //! while the camera is not where the user's hands put it, what is in focus on screen.
 //! Each passes (`pass: true`), fails with the offending functions, labels and pixel
 //! numbers, or does not apply (`pass: null`, saying why).
+//!
+//! They come in families sharing one geometry: what must lie in the free area
+//! ([`Disc`], [`outside`]); names, near their own dot and off the rest ([`Node::gap`],
+//! [`Node::overlooks`], [`Room`]); and calls ([`Arrow::pieces`]).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -24,15 +28,19 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    colors::{CALLEE, CALLER, CURSOR, DEEPER, FURTHER, GROUND},
+    arrows,
+    colors::{CALL_STRENGTH, CALLEE, CALLER, CURSOR, DEEPER, FURTHER, GROUND},
+    framing,
     labels::{self, CLEAR as NAME_CLEAR, GAP as NAME_GAP, PILL_PAD as NAME_PILL},
     nucleus::VIEW,
     script::Kind,
+    sizes::EXPANDED_SHARE,
     text,
 };
 
 // What the checks allow, each in one place. Points are window points, as in the PNG;
-// world sizes are the scene's units.
+// world sizes are the scene's units. What the product sets itself (a call's width, the
+// room the framing leaves) is the product's own constant, not a copy.
 
 /// How far a dot may poke out of its sphere, as a share of the sphere's radius,
 /// before it counts as outside: rounding in the positions, not leeway.
@@ -58,10 +66,8 @@ const NAME_SIZES: (f32, f32) = (11.0, 18.0);
 /// Most distinct font sizes on screen at once: module name, function name, panel,
 /// and small print.
 const MOST_TEXT_SIZES: usize = 4;
-/// The least and most share of the free area's smaller side the expanded module's
-/// diameter fills, and how far past either it may show (a sphere's disc seen in
-/// perspective is a little bigger than its rim points framed).
-const EXPANDED_BAND: (f32, f32) = (0.45, 0.85);
+/// How far past the expanded module's band ([`EXPANDED_SHARE`]) it may show: a
+/// sphere's disc seen in perspective is a little bigger than its rim points framed.
 const EXPANDED_SLACK: f32 = 0.04;
 /// Expanded below the band's top, how near, in points, two of its dots may show
 /// for a name to fit between them, and the share of its dots that may be nearer.
@@ -108,11 +114,11 @@ const ARROW_WIDTH: f32 = 2.5;
 /// half its width when that is more, as for a head seen end on.
 const HEAD_SIZE: (f32, f32) = (5.0, 12.0);
 /// How far a module's name may sit off its sphere's middle, across, and how far
-/// above its top edge (or below it, inside, where it is smaller: at most this font
-/// size), in points.
+/// above its top edge (or below it, inside, where it is smaller: at most the small
+/// font's size), in points.
 const NAME_CENTRED: f32 = 3.0;
 const NAME_ABOVE: f32 = 8.0;
-const INSIDE_NAME: f32 = 11.5;
+const INSIDE_NAME: f32 = text::SMALL + 0.5;
 /// How far a dot's radius in the snapshot may be from the placer's, rounded.
 const ROUNDING: f32 = 0.25;
 /// A character's width as a share of its font size, when no name drawn says, for a
@@ -127,26 +133,16 @@ const HUE_SLACK: f32 = 25.0;
 const GREY: f32 = 0.3;
 /// The most alpha a faint call or bar is drawn with.
 const FAINT: f32 = 0.5;
-/// A call's line, in points, and how much of its color it keeps, as drawn when not
-/// followed: wider or stronger is followed.
-const CALL_WIDTH: f32 = 1.5;
-const CALL_STRENGTH: f32 = 0.85;
 /// How bright a dot only guessed is drawn at most, against its role's color.
 const GUESSED_DOT: f32 = 0.8;
 /// A color this near white, in every channel (0 to 1), reads as the selection's.
 const WHITE: f32 = 0.85;
-/// Room the framing leaves round a lit dot or a sphere for it to show whole, in
-/// points: a depth change draws the camera back for one nearer the free area's edge
-/// than this.
-const SHOWN_WHOLE: f32 = 10.0;
-/// Room the framing leaves above a journey's sphere for its name, in points.
-const NAME_ROOM: f32 = 24.0;
 /// How far into a dot, or a name's pill, a call's line may run before it counts as
 /// passing through, in points: rounding, not leeway.
 const ARROW_SLACK: f32 = 1.0;
-/// How much longer than straight a call's line may run, against the product's 1.3
-/// with rounding: a loop round a dot or a name is a detour, not a bend.
-const ARROW_DETOUR: f32 = 1.35;
+/// How much longer than straight a call's line may run: the product's bound, with
+/// rounding. A loop round a dot or a name is a detour, not a bend.
+const ARROW_DETOUR: f32 = arrows::DETOUR + 0.05;
 /// How far clear of a lit dot's ring a bent line passes, in points.
 const RING_MARGIN: f32 = 1.0;
 /// How far a call drawn in two snapshots may run elsewhere before it counts as moved,
@@ -155,39 +151,58 @@ const ARROW_MOVED: f32 = 3.0;
 /// Offenders listed per check; `count` says how many in all.
 const LISTED: usize = 12;
 
-/// Every check, in the order a snapshot lists them.
-pub(crate) const NAMES: [&str; 30] = [
-    "dots-in-spheres",
-    "dots-apart",
-    "dot-sizes",
-    "spheres-apart",
-    "sphere-sizes",
-    "labels-near",
-    "labels-clear",
-    "named-on-screen",
-    "text-sizes",
-    "panel-agrees",
-    "expanded-fill",
-    "expanded-drawn",
-    "framed",
-    "zoom-to-pointer",
-    "zoom-bounds",
-    "nothing-moved",
-    "focus-on-screen",
-    "camera-outside",
-    "map-on-screen",
-    "spheres-unclipped",
-    "arrow-sizes",
-    "module-names",
-    "named-when-room",
-    "journey-fills",
-    "colours",
-    "arrows-clear",
-    "names-distinct",
-    "exits-named",
-    "calls-drawn",
-    "bars-in-view",
+/// Why a check of where the view puts things leaves the view alone.
+const BY_HAND: &str = "the camera is where the user's hands put it";
+
+/// A check: the snapshot, the one before it, and what happened between them.
+type Check = fn(&Snap, Option<&Snap>, &Since) -> Value;
+
+/// Every check, by the name testers read, in the order a snapshot lists them.
+const CHECKS: [(&str, Check); 30] = [
+    ("dots-in-spheres", |s, _, _| dots_in_spheres(s)),
+    ("dots-apart", |s, _, _| dots_apart(s)),
+    ("dot-sizes", |s, _, _| dot_sizes(s)),
+    ("spheres-apart", |s, _, _| spheres_apart(s)),
+    ("sphere-sizes", |s, _, _| sphere_sizes(s)),
+    ("labels-near", |s, _, _| labels_near(s)),
+    ("labels-clear", |s, _, _| labels_clear(s)),
+    ("named-on-screen", |s, _, _| named_on_screen(s)),
+    ("text-sizes", |s, _, _| text_sizes(s)),
+    ("panel-agrees", |s, _, _| panel_agrees(s)),
+    ("expanded-fill", expanded_fill),
+    ("expanded-drawn", |s, _, _| expanded_drawn(s)),
+    ("framed", |s, _, since| framed(s, since)),
+    ("zoom-to-pointer", zoom_to_pointer),
+    ("zoom-bounds", |s, _, since| zoom_bounds(s, since)),
+    ("nothing-moved", nothing_moved),
+    ("focus-on-screen", focus_on_screen),
+    ("camera-outside", |s, _, _| camera_outside(s)),
+    ("map-on-screen", |s, _, since| map_on_screen(s, since)),
+    ("spheres-unclipped", |s, _, since| {
+        spheres_unclipped(s, since)
+    }),
+    ("arrow-sizes", |s, _, _| arrow_sizes(s)),
+    ("module-names", |s, _, _| module_names(s)),
+    ("named-when-room", |s, _, _| named_when_room(s)),
+    ("journey-fills", journey_fills),
+    ("colours", |s, _, _| colours(s)),
+    ("arrows-clear", |s, _, _| arrows_clear(s)),
+    ("names-distinct", |s, _, _| names_distinct(s)),
+    ("exits-named", |s, _, _| exits_named(s)),
+    ("calls-drawn", |s, _, _| calls_drawn(s)),
+    ("bars-in-view", |s, _, _| bars_in_view(s)),
 ];
+
+/// Every check's name, as `expect check NAME` takes it.
+pub(crate) const NAMES: [&str; CHECKS.len()] = {
+    let mut names = [""; CHECKS.len()];
+    let mut i = 0;
+    while i < names.len() {
+        names[i] = CHECKS[i].0;
+        i += 1;
+    }
+    names
+};
 
 /// What happened since the snapshot before: what each step may move, and whether the
 /// camera stands where the user's hands put it (a wheel turn, an orbit or a pan since
@@ -232,6 +247,9 @@ impl Since {
 struct Snap {
     window: [f32; 2],
     graph_area: [f32; 4],
+    /// The graph's part of the window that nothing lies over, where names are drawn:
+    /// the graph less a docked panel.
+    free_area: Option<[f32; 4]>,
     camera: Option<Eye>,
     state: State,
     nodes: Vec<Node>,
@@ -374,8 +392,6 @@ struct Node {
     label_rect: Option<[f32; 4]>,
     /// How big its name was laid out, room found for it or not.
     name_size: Option<[f32; 2]>,
-    /// The one place its name was tried, as the view is: the side it holds, or its
-    /// home.
     /// How far from its middle names keep, in points.
     kept_off: Option<f32>,
     color: Option<String>,
@@ -458,6 +474,37 @@ struct Text {
     size: f32,
 }
 
+/// Something drawn as a disc on screen that must lie in the free area: a function's
+/// dot or a module's sphere.
+struct Disc<'a> {
+    kind: &'static str,
+    name: &'a str,
+    at: [f32; 2],
+    radius: f32,
+    on_screen: bool,
+}
+
+/// Each disc off screen, or sticking out of `area` by more than `margin` points.
+fn outside<'a>(area: egui::Rect, margin: f32, discs: impl IntoIterator<Item = Disc<'a>>) -> Found {
+    discs
+        .into_iter()
+        .filter_map(|d| {
+            let out = circle_out(area, v2(d.at), d.radius);
+            (out > margin || !d.on_screen).then(|| {
+                let offender = json!({ d.kind: d.name, "at": pt(d.at), "radius": r1(d.radius), "out_by": r1(out) });
+                (out, offender)
+            })
+        })
+        .collect()
+}
+
+/// Offenders, each with how bad it is: the worst are listed first.
+type Found = Vec<(f32, Value)>;
+
+/// Something drawn in two snapshots that a wheel turn is judged by: its name, where
+/// it shows and how big.
+type Probe = (String, [f32; 2], f32);
+
 impl Node {
     /// Whether the dot is lit: anything but a speck, faint or named.
     fn lit(&self) -> bool {
@@ -481,15 +528,44 @@ impl Node {
         (self.is("opened") || self.is("plain")) && !self.focus()
     }
 
+    /// Nothing lights it: a speck, or plain.
+    fn unlit(&self) -> bool {
+        !self.lit() || self.plain()
+    }
+
+    /// The journey level its role gives it, if any.
+    fn level(&self) -> Option<u32> {
+        self.roles
+            .iter()
+            .find_map(|r| r.strip_prefix("journey level ")?.parse::<u32>().ok())
+    }
+
     /// Whether `other`'s dot keeps this one's name off: any lit one, but a plain one
     /// only from a plain name.
     fn kept_off_by(&self, other: &Node) -> bool {
         other.lit() && (self.plain() || !other.plain())
     }
 
+    /// Whether this one's name, lit, at `pill`, pays `other`'s dot no mind: one drawn
+    /// faded, or one nothing lights that the opaque pill hides wholly.
+    fn overlooks(&self, other: &Node, pill: egui::Rect) -> bool {
+        !self.unlit()
+            && (other.faded()
+                || other.unlit()
+                    && pill
+                        .shrink(NAME_CLEAR)
+                        .contains_rect(disc(other.at, other.radius - ROUNDING)))
+    }
+
+    /// How far a name's text at `r` lies from the dot's edge, the dot taken `radius`
+    /// big, in points.
+    fn gap(&self, r: egui::Rect, radius: f32) -> f32 {
+        r.distance_to_pos(pos(self.at)) - radius
+    }
+
     /// A dot nothing lights drawn faded beside what is lit: no lit name keeps off it.
     fn faded(&self) -> bool {
-        (!self.lit() || self.plain())
+        self.unlit()
             && self
                 .color
                 .as_deref()
@@ -507,10 +583,6 @@ impl Node {
     /// calls, its callers, the calls further down, whatever else is lit, (the modules
     /// brought in from off the journey,) then the rest.
     fn rank(&self) -> u8 {
-        let level = self
-            .roles
-            .iter()
-            .find_map(|r| r.strip_prefix("journey level ")?.parse::<u32>().ok());
         if self.is("start") || self.is("selection") {
             0
         } else if self.is("cursor") {
@@ -520,7 +592,7 @@ impl Node {
         } else if self.is("caller") {
             5
         } else {
-            match (level, self.numbers.is_empty()) {
+            match (self.level(), self.numbers.is_empty()) {
                 (Some(1), false) => 4,
                 (Some(_), false) => 6,
                 (Some(_), true) => 7,
@@ -536,6 +608,16 @@ impl Node {
             matches!(r.as_str(), "start" | "cursor" | "caller") || r.starts_with("journey level")
         })
     }
+
+    fn disc(&self) -> Disc<'_> {
+        Disc {
+            kind: "function",
+            name: &self.name,
+            at: self.at,
+            radius: self.radius,
+            on_screen: self.on_screen,
+        }
+    }
 }
 
 impl Module {
@@ -543,6 +625,33 @@ impl Module {
     /// nothing lit lives in after every function lit.
     fn rank(&self) -> u8 {
         if self.body == "faint" { 8 } else { 3 }
+    }
+
+    fn disc(&self) -> Disc<'_> {
+        Disc {
+            kind: "module",
+            name: &self.name,
+            at: self.at,
+            radius: self.radius,
+            on_screen: self.on_screen,
+        }
+    }
+}
+
+impl Arrow {
+    /// Whether it shows on screen.
+    fn shown(&self) -> bool {
+        self.on_screen && self.drawn != Some(false)
+    }
+
+    /// The straight pieces its line runs along.
+    fn pieces(&self) -> Vec<(Vec2, Vec2)> {
+        self.path.windows(2).map(|p| (v2(p[0]), v2(p[1]))).collect()
+    }
+
+    /// Whether `unit` is one of its own ends.
+    fn ends_at(&self, unit: Option<&str>) -> bool {
+        unit.is_some() && (unit == self.from_unit.as_deref() || unit == self.to_unit.as_deref())
     }
 }
 
@@ -555,12 +664,27 @@ impl Snap {
         self.modules.iter().filter(|m| m.shown)
     }
 
+    /// The spheres drawn with some size on screen.
+    fn sized(&self) -> impl Iterator<Item = &Module> {
+        self.spheres().filter(|m| m.radius > 0.0)
+    }
+
     /// The function the journey's cursor is on, by unit.
     fn cursor(&self) -> Option<&str> {
         self.nodes
             .iter()
             .find(|n| n.is("cursor"))
             .and_then(|n| n.unit.as_deref())
+    }
+
+    /// The function set aside, drawn.
+    fn aside(&self) -> Option<&Node> {
+        self.nodes.iter().find(|n| n.is("aside"))
+    }
+
+    /// The module holding the function set aside.
+    fn aside_module(&self) -> Option<&str> {
+        self.aside().and_then(|n| n.module.as_deref())
     }
 
     /// Expanded in a journey, whether the cursor moved since `before`: the view keeps
@@ -576,6 +700,11 @@ impl Snap {
         self.nodes.iter().find(|n| n.unit.as_deref() == Some(unit))
     }
 
+    /// The module of the function drawn for a unit.
+    fn module_of(&self, unit: Option<&str>) -> Option<&str> {
+        self.node(unit?)?.module.as_deref()
+    }
+
     /// Whether a point lies under an overlay.
     fn under_overlay(&self, r: egui::Rect) -> bool {
         self.overlays.iter().any(|o| rect(o.rect).intersects(r))
@@ -589,28 +718,16 @@ impl Snap {
         }
     }
 
-    /// The graph's part of the window that nothing lies over: the graph area less any
-    /// panel docked along one of its sides.
+    /// The graph's part of the window that nothing lies over, as the view laid its
+    /// names out in it; in a snapshot from before it was recorded, the graph.
     fn free(&self) -> egui::Rect {
-        let mut free = rect(self.graph_area);
-        for overlay in &self.overlays {
-            let r = rect(overlay.rect);
-            if !r.intersects(free) {
-                continue;
-            }
-            let wide = r.width() >= free.width() * 0.5;
-            let tall = r.height() >= free.height() * 0.5;
-            if wide && r.max.y >= free.max.y - EDGE {
-                free.max.y = free.max.y.min(r.min.y);
-            } else if wide && r.min.y <= free.min.y + EDGE {
-                free.min.y = free.min.y.max(r.max.y);
-            } else if tall && r.max.x >= free.max.x - EDGE {
-                free.max.x = free.max.x.min(r.min.x);
-            } else if tall && r.min.x <= free.min.x + EDGE {
-                free.min.x = free.min.x.max(r.max.x);
-            }
-        }
-        free
+        rect(self.free_area.unwrap_or(self.graph_area))
+    }
+
+    /// How much of the free area's smaller side a sphere's diameter spans.
+    fn fill(&self, m: &Module) -> f32 {
+        let free = self.free();
+        2.0 * m.radius / free.width().min(free.height())
     }
 }
 
@@ -618,55 +735,20 @@ impl Snap {
 /// what happened between them.
 pub(crate) fn run(now: &Value, before: Option<&Value>, since: &Since) -> Value {
     let read = |v: &Value| serde_json::from_value::<Snap>(v.clone());
-    let (now, before) = match (read(now), before.map(read).transpose()) {
-        (Ok(now), Ok(before)) => (now, before),
+    let results: Map<String, Value> = match (read(now), before.map(read).transpose()) {
+        (Ok(now), Ok(before)) => CHECKS
+            .iter()
+            .map(|(name, check)| ((*name).to_owned(), check(&now, before.as_ref(), since)))
+            .collect(),
         (Err(error), _) | (_, Err(error)) => {
             let why = format!("the snapshot's JSON could not be read: {error}");
-            return NAMES
+            NAMES
                 .iter()
                 .map(|&name| (name.to_owned(), fail(&why)))
-                .collect();
+                .collect()
         }
     };
-    let before = before.as_ref();
-    let results = [
-        dots_in_spheres(&now),
-        dots_apart(&now),
-        dot_sizes(&now),
-        spheres_apart(&now),
-        sphere_sizes(&now),
-        labels_near(&now),
-        labels_clear(&now),
-        named_on_screen(&now),
-        text_sizes(&now),
-        panel_agrees(&now),
-        expanded_fill(&now, before, since),
-        expanded_drawn(&now),
-        framed(&now, since),
-        zoom_to_pointer(&now, before, since),
-        zoom_bounds(&now, since),
-        nothing_moved(&now, before, since),
-        focus_on_screen(&now, before, since),
-        camera_outside(&now),
-        map_on_screen(&now, since),
-        spheres_unclipped(&now, before, since),
-        arrow_sizes(&now),
-        module_names(&now),
-        named_when_room(&now),
-        journey_fills(&now, before, since),
-        colours(&now),
-        arrows_clear(&now),
-        names_distinct(&now),
-        exits_named(&now),
-        calls_drawn(&now),
-        bars_in_view(&now),
-    ];
-    NAMES
-        .iter()
-        .zip(results)
-        .map(|(&name, result)| (name.to_owned(), result))
-        .collect::<Map<String, Value>>()
-        .into()
+    results.into()
 }
 
 /// What moved from one snapshot to the next: the camera; functions drawn in both, in
@@ -707,6 +789,8 @@ pub(crate) fn summarise(snaps: &[(String, Value)]) -> Value {
         .into()
 }
 
+// What any one picture shows: dots, spheres and their sizes.
+
 fn dots_in_spheres(s: &Snap) -> Value {
     let spheres: HashMap<&str, &Module> = s.spheres().map(|m| (m.name.as_str(), m)).collect();
     if spheres.is_empty() {
@@ -720,12 +804,11 @@ fn dots_in_spheres(s: &Snap) -> Value {
             let centre = Vec3::from_array(m.world);
             let out = Vec3::from_array(n.world?).distance(centre) + n.world_radius - m.world_radius;
             (out > m.world_radius * SPHERE_SLACK).then(|| {
-                let share = out / m.world_radius.max(f32::EPSILON);
                 let offender = json!({
                     "function": n.name, "module": m.name, "at": pt(n.at),
                     "out_by": r3(out), "sphere_radius": r3(m.world_radius),
                 });
-                (share, offender)
+                (out / m.world_radius.max(f32::EPSILON), offender)
             })
         })
         .collect();
@@ -733,18 +816,15 @@ fn dots_in_spheres(s: &Snap) -> Value {
 }
 
 fn dots_apart(s: &Snap) -> Value {
+    // A faint dot with no name is nothing a reader tells apart.
     let dots: Vec<&Node> = s
         .nodes
         .iter()
-        .filter(|n| n.on_screen && n.radius > 0.0)
+        .filter(|n| n.on_screen && n.radius > 0.0 && !n.faint())
         .collect();
     let mut offenders = Vec::new();
     for (i, a) in dots.iter().enumerate() {
         for b in &dots[i + 1..] {
-            // A faint dot with no name is nothing a reader tells apart.
-            if a.faint() || b.faint() {
-                continue;
-            }
             let apart = v2(a.at).distance(v2(b.at));
             let short = a.radius + b.radius + DOT_GAP - apart;
             if short > 0.0 {
@@ -774,10 +854,7 @@ fn dot_sizes(s: &Snap) -> Value {
             } else {
                 return None;
             };
-            let offender = json!({
-                "function": n.name, "roles": n.roles, "radius": r1(n.radius), "allowed": bound,
-            });
-            Some((off, offender))
+            Some((off, json!({ "function": n.name, "roles": n.roles, "radius": r1(n.radius), "allowed": bound })))
         })
         .collect();
     verdict(offenders)
@@ -793,13 +870,10 @@ fn spheres_apart(s: &Snap) -> Value {
         for b in &spheres[i + 1..] {
             let apart = Vec3::from_array(a.world).distance(Vec3::from_array(b.world));
             let overlap = a.world_radius + b.world_radius - apart;
+            let share = overlap / a.world_radius.min(b.world_radius).max(f32::EPSILON);
             if overlap > SPHERE_OVERLAP {
-                let smaller = a.world_radius.min(b.world_radius).max(f32::EPSILON);
-                let offender = json!({
-                    "modules": [a.name, b.name], "overlap": r3(overlap),
-                    "share_of_smaller": r2(overlap / smaller),
-                });
-                offenders.push((overlap / smaller, offender));
+                let offender = json!({ "modules": [a.name, b.name], "overlap": r3(overlap), "share_of_smaller": r2(share) });
+                offenders.push((share, offender));
             }
         }
     }
@@ -810,33 +884,25 @@ fn sphere_sizes(s: &Snap) -> Value {
     // Expanded, the module in the middle is meant to be bigger than the rest.
     let sized: Vec<&Module> = s
         .spheres()
-        .filter(|m| !(s.expanded() && m.body == "nucleus"))
-        .filter(|m| m.world_radius > 0.0)
+        .filter(|m| !(s.expanded() && m.body == "nucleus") && m.world_radius > 0.0)
         .collect();
-    let (Some(small), Some(big)) = (
-        sized
-            .iter()
-            .min_by(|a, b| a.world_radius.total_cmp(&b.world_radius)),
-        sized
-            .iter()
-            .max_by(|a, b| a.world_radius.total_cmp(&b.world_radius)),
-    ) else {
+    let by_size = |a: &&&Module, b: &&&Module| a.world_radius.total_cmp(&b.world_radius);
+    let (Some(small), Some(big)) = (sized.iter().min_by(by_size), sized.iter().max_by(by_size))
+    else {
         return skip("no module spheres drawn");
     };
     let ratio = big.world_radius / small.world_radius;
     let mut offenders = Vec::new();
     if ratio > SPHERE_RATIO {
-        let offender = json!({
-            "largest": big.name, "smallest": small.name, "ratio": r2(ratio), "most": SPHERE_RATIO,
-        });
+        let offender = json!({ "largest": big.name, "smallest": small.name, "ratio": r2(ratio), "most": SPHERE_RATIO });
         offenders.push((ratio, offender));
     }
     // Bigger with more functions, but less than in proportion.
     for a in &sized {
-        for b in &sized {
-            if a.functions <= b.functions || b.functions == 0 {
-                continue;
-            }
+        for b in sized
+            .iter()
+            .filter(|b| a.functions > b.functions && b.functions > 0)
+        {
             let grows = a.world_radius / b.world_radius;
             let count = a.functions as f32 / b.functions as f32;
             let why = if grows < 1.0 - SPHERE_SLACK {
@@ -857,156 +923,28 @@ fn sphere_sizes(s: &Snap) -> Value {
     with(verdict(offenders), "ratio", json!(r2(ratio)))
 }
 
-fn labels_near(s: &Snap) -> Value {
-    let mut offenders = Vec::new();
-    // The start, the cursor, the selection and the function set aside are named come
-    // what may: one with room nowhere round its dot lies where it covers least.
-    let room = std::cell::OnceCell::new();
-    let crowded =
-        |n: &Node| n.focus() && room.get_or_init(|| Room::new(s)).function_spot(n).is_none();
-    let gap = |r: egui::Rect, n: &Node| (r.distance_to_pos(pos(n.at)) - n.radius).max(0.0);
-    let drawn: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen).collect();
-    for n in &s.nodes {
-        let (Some(label), Some(r)) = (&n.label, n.label_rect) else {
-            continue;
-        };
-        let mine = gap(rect(r), n);
-        // The dot nearest the name, any but its own, and for a lit name those faded
-        // or that its pill hides.
-        let pill = rect(r).expand2(NAME_PILL);
-        let nearest = drawn
-            .iter()
-            .filter(|other| {
-                other.unit != n.unit
-                    && !(n.lit() && !n.plain() && (other.faded() || hidden(pill, other)))
+fn camera_outside(s: &Snap) -> Value {
+    let Some(eye) = s.camera else {
+        return skip("no camera");
+    };
+    let at = Vec3::from_array(eye.at);
+    let offenders = s
+        .spheres()
+        .filter_map(|m| {
+            let into = m.world_radius - at.distance(Vec3::from_array(m.world));
+            (into > 0.0).then(|| {
+                let offender = json!({ "module": m.name, "camera_inside_by": r3(into), "sphere_radius": r3(m.world_radius) });
+                (into / m.world_radius.max(f32::EPSILON), offender)
             })
-            .map(|other| (other, gap(rect(r), other)))
-            .min_by(|a, b| a.1.total_cmp(&b.1));
-        if !n.on_screen {
-            let offender =
-                json!({ "function": n.name, "label": label, "why": "its dot is off screen" });
-            offenders.push((f32::MAX, offender));
-        } else if mine > LABEL_REACH {
-            let offender =
-                json!({ "function": n.name, "label": label, "gap": r1(mine), "most": LABEL_REACH });
-            offenders.push((mine, offender));
-        } else if let Some((other, theirs)) = nearest
-            && theirs + NEARER < mine
-            && !crowded(n)
-        {
-            let offender = json!({
-                "function": n.name, "label": label, "nearer_dot": other.name,
-                "own_gap": r1(mine), "their_gap": r1(theirs),
-            });
-            offenders.push((mine - theirs, offender));
-        }
-    }
-    for m in s.spheres() {
-        let (Some(label), Some(r)) = (&m.label, m.label_rect) else {
-            continue;
-        };
-        let gap = rim_gap(rect(r), v2(m.at), m.radius);
-        if gap > LABEL_REACH {
-            let offender = json!({ "module": m.name, "label": label, "gap_to_rim": r1(gap), "most": LABEL_REACH });
-            offenders.push((gap, offender));
-        }
-    }
-    verdict(offenders)
-}
-
-fn labels_clear(s: &Snap) -> Value {
-    let naming = |l: &Label| matches!(l.names.as_str(), "function" | "module");
-    let mut offenders = Vec::new();
-    for (i, label) in s.labels.iter().enumerate() {
-        if !naming(label) {
-            continue;
-        }
-        // A notice is said over nothing named.
-        if label.under.iter().any(|o| o == "notice") {
-            let offender = json!({ "label": label.text, "under": "notice" });
-            offenders.push((rect(label.rect).area(), offender));
-        }
-        for &j in &label.overlaps {
-            let Some(other) = s.labels.get(j) else {
-                continue;
-            };
-            // Each pair of names once.
-            if naming(other) && j < i {
-                continue;
-            }
-            let both = rect(label.rect).intersect(rect(other.rect));
-            let offender = json!({
-                "label": label.text, "over_label": other.text,
-                "overlap": [r1(both.width()), r1(both.height())],
-            });
-            offenders.push((both.area(), offender));
-        }
-    }
-    // The labels where calls leave the free area lie over no name either.
-    for e in &s.exits {
-        for label in s.labels.iter().filter(|l| naming(l)) {
-            let both = rect(e.rect).intersect(rect(label.rect));
-            if both.width() > 0.0 && both.height() > 0.0 {
-                let offender = json!({
-                    "exit": e.text, "over_label": label.text,
-                    "overlap": [r1(both.width()), r1(both.height())],
-                });
-                offenders.push((both.area(), offender));
-            }
-        }
-    }
-    let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen && n.lit()).collect();
-    for n in &s.nodes {
-        let (Some(label), Some(r)) = (&n.label, n.label_rect) else {
-            continue;
-        };
-        let pill = rect(r).shrink(1.0);
-        for other in &lit {
-            if std::ptr::eq(*other, n) || !n.kept_off_by(other) {
-                continue;
-            }
-            let into = other.radius - pill.distance_to_pos(pos(other.at));
-            if into > 0.0 {
-                let offender =
-                    json!({ "label": label, "of": n.name, "over_dot": other.name, "by": r1(into) });
-                offenders.push((into, offender));
-            }
-        }
-    }
-    verdict(offenders)
-}
-
-fn named_on_screen(s: &Snap) -> Value {
-    if s.state.help {
-        return skip("the key help is open over the graph");
-    }
-    let mut offenders = Vec::new();
-    for label in &s.labels {
-        if !matches!(label.names.as_str(), "function" | "module") {
-            continue;
-        }
-        if label.cut_off {
-            let offender = json!({ "label": label.text, "of": label.of, "rect": rect_json(label.rect), "why": "cut off by the graph's edge" });
-            offenders.push((2.0, offender));
-        }
-        // The search box opens over the graph for a moment, as the key help does.
-        let under: Vec<&String> = label
-            .under
-            .iter()
-            .filter(|o| o.as_str() != "search box")
-            .collect();
-        if !under.is_empty() {
-            let offender = json!({ "label": label.text, "of": label.of, "rect": rect_json(label.rect), "under": under });
-            offenders.push((1.0, offender));
-        }
-    }
+        })
+        .collect();
     verdict(offenders)
 }
 
 fn text_sizes(s: &Snap) -> Value {
     let mut offenders = Vec::new();
+    let (least, most) = NAME_SIZES;
     for label in s.labels.iter().filter(|l| l.names == "function") {
-        let (least, most) = NAME_SIZES;
         let off = (least - label.size).max(label.size - most);
         if off > 0.01 {
             let offender =
@@ -1016,75 +954,53 @@ fn text_sizes(s: &Snap) -> Value {
     }
     // Each size seen, to the half point, with a text drawn at it.
     let mut sizes: BTreeMap<i32, &str> = BTreeMap::new();
-    let texts = s
-        .labels
-        .iter()
-        .map(|l| (l.size, l.text.as_str()))
-        .chain(s.text.iter().map(|t| (t.size, t.text.as_str())))
-        .filter(|(size, _)| *size > 0.0);
-    for (size, text) in texts {
+    let texts = s.labels.iter().map(|l| (l.size, l.text.as_str()));
+    let texts = texts.chain(s.text.iter().map(|t| (t.size, t.text.as_str())));
+    for (size, text) in texts.filter(|(size, _)| *size > 0.0) {
         #[expect(clippy::cast_possible_truncation, reason = "a font size")]
         sizes.entry((size * 2.0).round() as i32).or_insert(text);
     }
-    let seen: Vec<Value> = sizes
-        .iter()
-        .map(|(&half, text)| json!({ "size": f64::from(half) / 2.0, "e.g.": text }))
-        .collect();
     if sizes.len() > MOST_TEXT_SIZES {
+        let seen: Vec<Value> = sizes
+            .iter()
+            .map(|(&half, text)| json!({ "size": f64::from(half) / 2.0, "e.g.": text }))
+            .collect();
         let offender =
             json!({ "distinct_sizes": sizes.len(), "most": MOST_TEXT_SIZES, "sizes": seen });
         offenders.push((f32::MAX, offender));
     }
-    with(
-        verdict(offenders),
-        "sizes",
-        json!(
-            sizes
-                .keys()
-                .map(|&h| f64::from(h) / 2.0)
-                .collect::<Vec<_>>()
-        ),
-    )
+    let seen: Vec<f64> = sizes.keys().map(|&h| f64::from(h) / 2.0).collect();
+    with(verdict(offenders), "sizes", json!(seen))
 }
+
+// The journey panel against the graph.
 
 fn panel_agrees(s: &Snap) -> Value {
     if s.bars.is_empty() {
         return skip("no journey bars drawn");
     }
     let mut offenders = Vec::new();
-    // Each numbered bar has its call on the graph: a call only guessed among several
-    // functions, with no one function of its own, on each of them.
-    for bar in s
-        .bars
-        .iter()
-        .filter(|b| b.number.as_ref().is_some_and(|n| !n.is_empty()))
-    {
-        let number = bar.number.as_deref().unwrap_or_default();
-        if !s
-            .nodes
-            .iter()
-            .any(|n| n.numbers.iter().any(|m| m == number))
-        {
-            let offender = json!({ "bar": number, "name": bar.name, "why": "numbered in the panel, but no function on the graph carries the number" });
-            offenders.push((2.0, offender));
-        }
-    }
     for bar in &s.bars {
-        let Some(unit) = &bar.unit else {
-            continue;
-        };
-        let drawn = s.node(unit);
-        // The start's bar carries no number.
+        let drawn = bar.unit.as_deref().and_then(|u| s.node(u));
+        // Each numbered bar has its call on the graph: a call only guessed among
+        // several functions, with no one function of its own, on each of them. The
+        // start's bar carries no number.
         if let Some(number) = bar.number.as_ref().filter(|n| !n.is_empty()) {
-            if let Some(n) = drawn
-                && !n.numbers.contains(number)
-            {
-                let offender =
-                    json!({ "bar": number, "name": bar.name, "node_numbers": n.numbers });
-                offenders.push((1.0, offender));
+            if !s.nodes.iter().any(|n| n.numbers.contains(number)) {
+                let why = "numbered in the panel, but no function on the graph carries the number";
+                offenders.push((2.0, json!({ "bar": number, "name": bar.name, "why": why })));
             }
-            for n in &s.nodes {
-                if n.numbers.contains(number) && n.unit.as_ref() != Some(unit) {
+            if bar.unit.is_some() {
+                if let Some(n) = drawn.filter(|n| !n.numbers.contains(number)) {
+                    let offender =
+                        json!({ "bar": number, "name": bar.name, "node_numbers": n.numbers });
+                    offenders.push((1.0, offender));
+                }
+                for n in s
+                    .nodes
+                    .iter()
+                    .filter(|n| n.numbers.contains(number) && n.unit != bar.unit)
+                {
                     let offender =
                         json!({ "bar": number, "name": bar.name, "but_on_the_graph": n.name });
                     offenders.push((1.0, offender));
@@ -1092,35 +1008,37 @@ fn panel_agrees(s: &Snap) -> Value {
             }
         }
         // The same name on the bar as on the graph.
-        if let Some(n) = drawn
-            && !same_name(&bar.name, n)
-        {
-            let offender = json!({
-                "bar": bar.number, "bar_says": bar.name,
-                "graph_says": n.label.as_deref().unwrap_or(&n.name),
-            });
+        if let Some(n) = drawn.filter(|n| !same_name(&bar.name, n)) {
+            let says = n.label.as_deref().unwrap_or(&n.name);
+            let offender = json!({ "bar": bar.number, "bar_says": bar.name, "graph_says": says });
             offenders.push((0.5, offender));
         }
     }
-    let marked: Vec<&Node> = s.nodes.iter().filter(|n| n.is("cursor")).collect();
+    let marked: Vec<&String> = s
+        .nodes
+        .iter()
+        .filter(|n| n.is("cursor"))
+        .map(|n| &n.name)
+        .collect();
     let cursor_bars: Vec<&Bar> = s.bars.iter().filter(|b| b.cursor).collect();
     if !marked.is_empty() && cursor_bars.len() != 1 {
         let offender = json!({
             "why": "the graph has a cursor, but the panel shows not one cursor bar",
-            "cursor_on_the_graph": marked.iter().map(|n| &n.name).collect::<Vec<_>>(),
+            "cursor_on_the_graph": marked,
             "cursor_bars": cursor_bars.iter().map(|b| &b.name).collect::<Vec<_>>(),
         });
         offenders.push((3.0, offender));
     }
     if let [bar] = cursor_bars.as_slice() {
         let drawn = bar.unit.as_deref().and_then(|u| s.node(u));
-        let agrees =
-            marked.iter().all(|n| n.unit == bar.unit) && drawn.is_none_or(|n| n.is("cursor"));
+        let agrees = s
+            .nodes
+            .iter()
+            .filter(|n| n.is("cursor"))
+            .all(|n| n.unit == bar.unit)
+            && drawn.is_none_or(|n| n.is("cursor"));
         if !agrees {
-            let offender = json!({
-                "cursor_bar": bar.number, "name": bar.name,
-                "cursor_on_the_graph": marked.iter().map(|n| &n.name).collect::<Vec<_>>(),
-            });
+            let offender = json!({ "cursor_bar": bar.number, "name": bar.name, "cursor_on_the_graph": marked });
             offenders.push((2.0, offender));
         }
     }
@@ -1138,8 +1056,8 @@ fn bars_in_view(s: &Snap) -> Value {
     }
     let mut offenders = Vec::new();
     if !panel.rows_track {
-        let offender = json!({ "below": panel.below, "why": "bars lie below the panel's foot, and nothing says so" });
-        offenders.push((1.0, offender));
+        let why = "bars lie below the panel's foot, and nothing says so";
+        offenders.push((1.0, json!({ "below": panel.below, "why": why })));
     }
     verdict(offenders)
 }
@@ -1159,6 +1077,10 @@ fn same_name(bar: &str, n: &Node) -> bool {
     }
 }
 
+// In view: what must lie in the free area, after the steps that put it there. Each
+// judges discs against the free area ([`outside`]); they differ in what must be
+// inside and after which steps, and all leave a camera the user's hands put alone.
+
 fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // Expanded in a journey, the cursor or the function set aside takes the expansion
     // to its module; browsing, a pick takes it to the selection's.
@@ -1172,28 +1094,24 @@ fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         return skip("collapsed");
     }
     if since.by_hand {
-        return skip("the camera is where the user's hands put it");
+        return skip(BY_HAND);
     }
     let Some(m) = s.expanded_sphere() else {
-        return verdict(vec![(
-            1.0,
-            json!({ "why": "expanded, but no module drawn expanded" }),
-        )]);
+        return fail("expanded, but no module drawn expanded");
     };
     let free = s.free();
-    let side = free.width().min(free.height());
-    let fill = 2.0 * m.radius / side;
-    let (least, most) = EXPANDED_BAND;
-    let mut offenders = Vec::new();
-    let about = || {
+    let fill = s.fill(m);
+    let (least, most) = EXPANDED_SHARE;
+    let mut offenders = outside(free, EDGE, [m.disc()]);
+    let about = |why: &str| {
         json!({
             "module": m.name, "fill": r2(fill), "band": [least, most], "functions": m.functions,
-            "diameter": r1(2.0 * m.radius), "free_area": [r1(free.width()), r1(free.height())],
+            "diameter": r1(2.0 * m.radius), "free_area": [r1(free.width()), r1(free.height())], "why": why,
         })
     };
     if fill < least - EXPANDED_SLACK || fill > most + EXPANDED_SLACK {
         let off = (fill - fill.clamp(least, most)).abs();
-        offenders.push((off, with(about(), "why", json!("outside the band"))));
+        offenders.push((off, about("outside the band")));
     }
     // Below the band's top it has room to grow: its dots must have room for names.
     let dots: Vec<Vec2> = s
@@ -1206,9 +1124,7 @@ fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         .iter()
         .enumerate()
         .filter(|&(i, &at)| {
-            dots.iter()
-                .enumerate()
-                .any(|(j, &other)| i != j && at.distance(other) < CROWDED_GAP)
+            (dots.iter().enumerate()).any(|(j, &other)| i != j && at.distance(other) < CROWDED_GAP)
         })
         .count();
     #[expect(clippy::cast_precision_loss, reason = "dot counts")]
@@ -1218,27 +1134,19 @@ fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
             "its dots crowd ({crowded} of {} nearer than {CROWDED_GAP} points) though it could grow",
             dots.len()
         );
-        offenders.push((crowded_share, with(about(), "why", json!(why))));
+        offenders.push((crowded_share, about(&why)));
     }
     // An expand from the collapsed view zooms in.
     if since.has(Kind::Expand)
         && let Some(b) = before.filter(|b| !b.expanded())
         && let Some(was) = b.spheres().find(|w| w.name == m.name)
     {
-        let was_free = b.free();
-        let was_fill = 2.0 * was.radius / was_free.width().min(was_free.height());
+        let was_fill = b.fill(was);
         if fill <= was_fill * 1.05 && was_fill < most - EXPANDED_SLACK {
-            let offender = json!({
-                "why": "the expand did not zoom in", "module": m.name,
-                "fill_before": r2(was_fill), "fill": r2(fill),
-            });
+            let why = "the expand did not zoom in";
+            let offender = json!({ "why": why, "module": m.name, "fill_before": r2(was_fill), "fill": r2(fill) });
             offenders.push((was_fill - fill + 1.0, offender));
         }
-    }
-    let out = circle_out(free, v2(m.at), m.radius);
-    if out > EDGE {
-        let offender = json!({ "module": m.name, "sticks_out_by": r1(out), "at": pt(m.at), "radius": r1(m.radius) });
-        offenders.push((out, offender));
     }
     with(verdict(offenders), "fill", json!(r2(fill)))
 }
@@ -1259,8 +1167,7 @@ fn expanded_drawn(s: &Snap) -> Value {
     let dots = s
         .nodes
         .iter()
-        .filter(|n| n.module.as_ref() == Some(name))
-        .filter(|n| n.on_screen && free.contains(pos(n.at)))
+        .filter(|n| n.module.as_ref() == Some(name) && n.on_screen && free.contains(pos(n.at)))
         .count();
     if !m.shown || matches!(m.body.as_str(), "closed" | "faint") || dots == 0 {
         let offender = json!({
@@ -1278,13 +1185,7 @@ fn framed(s: &Snap, since: &Since) -> Value {
     let mut offenders = Vec::new();
     match since.last_move() {
         Some(Kind::FrameAll) => {
-            for m in s.spheres() {
-                let out = circle_out(free, v2(m.at), m.radius);
-                if out > EDGE || !m.on_screen {
-                    let offender = json!({ "module": m.name, "sticks_out_by": r1(out), "at": pt(m.at), "radius": r1(m.radius) });
-                    offenders.push((out, offender));
-                }
-            }
+            offenders.extend(outside(free, EDGE, s.spheres().map(Module::disc)));
             if let Some(camera) = s.state.camera
                 && ((camera.yaw - VIEW.0).abs() > FRONT_SLACK
                     || (camera.pitch - VIEW.1).abs() > FRONT_SLACK)
@@ -1296,29 +1197,19 @@ fn framed(s: &Snap, since: &Since) -> Value {
                 offenders.push((f32::MAX, offender));
             }
         }
+        Some(Kind::FrameFocus) if s.expanded() => {
+            offenders.extend(outside(free, EDGE, s.expanded_sphere().map(Module::disc)));
+        }
         Some(Kind::FrameFocus) => {
-            if s.expanded() {
-                if let Some(m) = s.expanded_sphere() {
-                    let out = circle_out(free, v2(m.at), m.radius);
-                    if out > EDGE {
-                        let offender = json!({ "module": m.name, "sticks_out_by": r1(out) });
-                        offenders.push((out, offender));
-                    }
-                }
-            } else {
-                let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.lit()).collect();
-                if lit.is_empty() {
-                    return skip("nothing lit for F to frame");
-                }
-                let inner = free.shrink(FRAME_MARGIN);
-                for n in lit {
-                    let out = circle_out(inner, v2(n.at), n.radius);
-                    if out > 0.0 || !n.on_screen {
-                        let offender = json!({ "function": n.name, "roles": n.roles, "at": pt(n.at), "out_by": r1(out) });
-                        offenders.push((out, offender));
-                    }
-                }
+            let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.lit()).collect();
+            if lit.is_empty() {
+                return skip("nothing lit for F to frame");
             }
+            offenders.extend(outside(
+                free.shrink(FRAME_MARGIN),
+                0.0,
+                lit.into_iter().map(Node::disc),
+            ));
         }
         _ => {
             return skip(
@@ -1334,10 +1225,7 @@ fn zoom_to_pointer(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if turns == 0 {
         return skip("no wheel turn since the last snapshot");
     }
-    let others = since
-        .kinds
-        .iter()
-        .any(|k| !matches!(k, Kind::Zoom { .. } | Kind::Still));
+    let others = (since.kinds.iter()).any(|k| !matches!(k, Kind::Zoom { .. } | Kind::Still));
     if turns > 1 || others {
         return skip("more than one wheel turn, or other moves, since the last snapshot");
     }
@@ -1353,30 +1241,25 @@ fn zoom_to_pointer(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // A point of the world in both snapshots, nearest the pointer: a sphere's middle
     // on screen, else any sphere's, else a function's. How big it shows grows as its
     // distance from the pointer does, when the zoom is about the pointer.
-    let spheres = |snap: &Snap, on_screen: bool| -> Vec<(String, [f32; 2], f32)> {
-        snap.spheres()
-            .filter(|m| m.radius > 0.0 && (m.on_screen || !on_screen))
+    let spheres = |snap: &Snap, on_screen: bool| -> Vec<Probe> {
+        snap.sized()
+            .filter(|m| m.on_screen || !on_screen)
             .map(|m| (m.name.clone(), m.at, m.radius))
             .collect()
     };
-    let dots = |snap: &Snap| -> Vec<(String, [f32; 2], f32)> {
-        snap.nodes
-            .iter()
-            .filter(|n| n.radius > 0.0)
+    let dots = |snap: &Snap| -> Vec<Probe> {
+        (snap.nodes.iter().filter(|n| n.radius > 0.0))
             .filter_map(|n| Some((n.unit.clone()?, n.at, n.radius)))
             .collect()
     };
-    let probe = |was: Vec<(String, [f32; 2], f32)>, now: Vec<(String, [f32; 2], f32)>| {
+    let from_pointer = |at: [f32; 2]| v2(at).distance(pointer);
+    let probe = |was: Vec<Probe>, now: Vec<Probe>| {
         now.into_iter()
             .filter_map(|(name, at, radius)| {
                 let then = was.iter().find(|w| w.0 == name)?;
                 Some((name, at, radius, then.1, then.2))
             })
-            .min_by(|a, b| {
-                v2(a.3)
-                    .distance(pointer)
-                    .total_cmp(&v2(b.3).distance(pointer))
-            })
+            .min_by(|a, b| from_pointer(a.3).total_cmp(&from_pointer(b.3)))
     };
     let found = probe(spheres(before, true), spheres(s, false))
         .or_else(|| probe(spheres(before, false), spheres(s, false)))
@@ -1404,46 +1287,40 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
     if since.zooms() == 0 {
         return skip("no wheel turn since the last snapshot");
     }
-    let free = s.free();
-    let spheres: Vec<&Module> = s.spheres().collect();
-    if spheres.is_empty() {
+    let Some(extent) = map_extent(s) else {
         return skip("no module spheres drawn");
-    }
-    let circle =
-        |m: &Module| egui::Rect::from_center_size(pos(m.at), egui::Vec2::splat(2.0 * m.radius));
+    };
+    let free = s.free();
     let mut offenders = Vec::new();
     // Zoomed in, the sphere under the pointer, nearest the camera (biggest on screen).
     let under = s.state.pointer.and_then(|p| {
-        spheres
-            .iter()
+        s.spheres()
             .filter(|m| v2(m.at).distance(v2(p)) <= m.radius)
             .max_by(|a, b| a.radius.total_cmp(&b.radius))
     });
     if since.has(Kind::Zoom { out: false })
         && let Some(m) = under
     {
-        let side = free.width().min(free.height());
-        let fill = 2.0 * m.radius / side;
+        let fill = s.fill(m);
         if fill > ZOOM_IN_MOST {
-            let offender = json!({ "why": "zoomed in past the sphere under the pointer filling the free area", "module": m.name, "fill": r2(fill), "most": ZOOM_IN_MOST });
+            let why = "zoomed in past the sphere under the pointer filling the free area";
+            let offender =
+                json!({ "why": why, "module": m.name, "fill": r2(fill), "most": ZOOM_IN_MOST });
             offenders.push((fill, offender));
         } else if fill >= ZOOM_IN_KEPT {
-            let out = circle_out(free, v2(m.at), m.radius);
-            if out > EDGE {
-                let offender = json!({ "why": "zoomed in to the near bound, the sphere under the pointer is not all in the free area", "module": m.name, "out_by": r1(out) });
-                offenders.push((out, offender));
-            }
+            let why = "zoomed in to the near bound, the sphere under the pointer is not all in the free area";
+            offenders.extend(
+                outside(free, EDGE, [m.disc()])
+                    .into_iter()
+                    .map(|(out, o)| (out, with(o, "why", json!(why)))),
+            );
         }
     }
-    if !spheres.iter().any(|m| circle(m).intersects(free)) {
+    let discs: Vec<egui::Rect> = s.sized().map(|m| disc(m.at, m.radius)).collect();
+    if !discs.iter().any(|d| d.intersects(free)) {
         let offender = json!({ "why": "nothing of the map is on screen" });
         offenders.push((f32::MAX, offender));
-    } else if spheres.iter().all(|m| free.contains_rect(circle(m))) {
-        let extent = spheres
-            .iter()
-            .map(|m| circle(m))
-            .reduce(egui::Rect::union)
-            .unwrap_or(egui::Rect::NOTHING);
+    } else if discs.iter().all(|d| free.contains_rect(*d)) {
         let span = extent.width().max(extent.height());
         let least = ZOOM_OUT_LEAST * free.width().min(free.height());
         if span < least {
@@ -1454,6 +1331,229 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
     verdict(offenders)
 }
 
+fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
+    // Wherever the hands put the camera, a cursor that moves expanded in a journey is
+    // kept in view.
+    let cursor_only = since.by_hand && s.cursor_moved_expanded(before);
+    if since.by_hand && !cursor_only {
+        return skip(BY_HAND);
+    }
+    if since.has(Kind::Expand) {
+        return skip("an expand frames the module, wherever the focus is");
+    }
+    // A function picked browsing since (a click, a search, Back), or set aside in a
+    // journey, is in view wherever it is: the expansion follows it.
+    let picked = before.is_some_and(|b| {
+        (s.state.mode == "browse"
+            && s.state.selection.is_some()
+            && b.state.selection != s.state.selection)
+            || (s.state.aside.is_some() && b.state.aside != s.state.aside)
+    });
+    if picked && !s.nodes.iter().any(|n| n.is("selection") || n.is("aside")) {
+        return fail("the function picked is selected but not drawn");
+    }
+    // Expanded, the view is on the module expanded: what is in focus in another may
+    // lie off it.
+    let expanded = s.state.expanded.as_ref().filter(|_| s.expanded());
+    let focus: Vec<&Node> = s
+        .nodes
+        .iter()
+        .filter(|n| {
+            if cursor_only {
+                n.is("cursor")
+            } else {
+                n.focus()
+            }
+        })
+        .filter(|n| {
+            (picked && (n.is("selection") || n.is("aside")))
+                || expanded.is_none_or(|m| n.module.as_ref() == Some(m))
+        })
+        .collect();
+    if focus.is_empty() {
+        return skip("no selection, start or cursor drawn, in the module expanded if one is");
+    }
+    verdict(outside(s.free(), EDGE, focus.into_iter().map(Node::disc)))
+}
+
+fn map_on_screen(s: &Snap, since: &Since) -> Value {
+    let out = (since.kinds.iter())
+        .any(|k| matches!(k, Kind::Zoom { out: true } | Kind::FrameAll | Kind::Pan));
+    if !out {
+        return skip("no wheel turn out, pan or R since the last snapshot");
+    }
+    let Some(extent) = map_extent(s) else {
+        return skip("no module spheres drawn");
+    };
+    let free = s.free();
+    let map = rect_json(corners(extent));
+    let middle = pt([free.center().x, free.center().y]);
+    let mut offenders = Vec::new();
+    if extent.width() > free.width() || extent.height() > free.height() {
+        // Dragged, a map bigger than the free area keeps over its middle.
+        if !since.has(Kind::Pan) {
+            return skip("the map is bigger than the free area at this zoom");
+        }
+        if !extent.contains(free.center()) {
+            let why = "dragged off the middle of the free area";
+            offenders.push((1.0, json!({ "why": why, "map": map, "middle": middle })));
+        }
+        return verdict(offenders);
+    }
+    let area = |m: &&Module| m.radius * m.radius;
+    let all: f32 = s.sized().map(|m| area(&m)).sum();
+    let out: Vec<&Module> = s
+        .sized()
+        .filter(|m| circle_out(free, v2(m.at), m.radius) > EDGE)
+        .collect();
+    let share = 1.0 - out.iter().map(area).sum::<f32>() / all.max(f32::EPSILON);
+    // Dragged, a map that fits stays in the free area whole.
+    let least = if since.has(Kind::Pan) { 1.0 } else { MAP_SHOWN };
+    // Zoomed all the way out, the map is held over the free area's middle, however
+    // it was dragged.
+    if s.state.camera.is_some_and(|c| c.farthest) && !extent.contains(free.center()) {
+        let why = "zoomed all the way out, the map is off the middle of the free area";
+        let offender = json!({ "why": why, "map": map, "middle": middle });
+        offenders.push((f32::MAX, offender));
+    }
+    if share < least {
+        let offender = json!({
+            "why": "the whole map would fit in the free area, but not this much of it is there",
+            "inside": r2(share), "least": least, "map": map,
+            "outside": out.iter().map(|m| &m.name).collect::<Vec<_>>(),
+        });
+        offenders.push((least - share, offender));
+    }
+    with(verdict(offenders), "inside", json!(r2(share)))
+}
+
+/// Where every sphere shown lies on screen, together.
+fn map_extent(s: &Snap) -> Option<egui::Rect> {
+    s.sized()
+        .map(|m| disc(m.at, m.radius))
+        .reduce(egui::Rect::union)
+}
+
+fn spheres_unclipped(s: &Snap, since: &Since) -> Value {
+    let graph = rect(s.graph_area);
+    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(s.window[0], s.window[1]));
+    if !graph.is_positive() {
+        return skip("no graph area");
+    }
+    // The top of a panel docked along the graph's foot, where the view framed itself,
+    // expanded too: what it cuts shows half under the panel.
+    let free = s.free();
+    let panel = (free.max.y < graph.max.y - EDGE && !since.by_hand).then_some(free.max.y);
+    // An edge of the graph past which the window shows nothing of the graph, but no
+    // panel or window edge either: what it cuts shows cut off.
+    let panel_below = |y: f32| {
+        s.overlays.iter().any(|o| {
+            let r = rect(o.rect);
+            r.width() >= graph.width() * 0.5 && (r.min.y - y).abs() <= HIDDEN_EDGE
+        })
+    };
+    let bottom = graph.max.y < window.max.y - HIDDEN_EDGE && !panel_below(graph.max.y);
+    let left = graph.min.x > window.min.x + HIDDEN_EDGE;
+    let right = graph.max.x < window.max.x - HIDDEN_EDGE;
+    let eye = s.camera.map(|e| Vec3::from_array(e.at));
+    // A faint sphere is left alone at the panel, but the one holding the function
+    // set aside, which the view brings in whole.
+    let aside = s.aside_module();
+    let mut offenders = Vec::new();
+    for m in s.sized() {
+        // Zoomed past it, the camera inside, it shows as no disc to cut.
+        if eye.is_some_and(|eye| eye.distance(Vec3::from_array(m.world)) < m.world_radius) {
+            continue;
+        }
+        let faint = m.body == "faint" && aside != Some(m.name.as_str());
+        let c = v2(m.at);
+        let across = c.x + m.radius > graph.min.x && c.x - m.radius < graph.max.x;
+        let down = c.y + m.radius > graph.min.y && c.y - m.radius < graph.max.y;
+        let cut = [
+            (
+                bottom && across && (c.y - graph.max.y).abs() < m.radius,
+                "the graph's bottom edge, in open window",
+            ),
+            (
+                panel.is_some_and(|y| !faint && across && (c.y - y).abs() < m.radius),
+                "the top of the panel",
+            ),
+            (
+                left && down && (c.x - graph.min.x).abs() < m.radius,
+                "the graph's left edge, in open window",
+            ),
+            (
+                right && down && (c.x - graph.max.x).abs() < m.radius,
+                "the graph's right edge, in open window",
+            ),
+        ];
+        for (_, by) in cut.into_iter().filter(|(cut, _)| *cut) {
+            let offender = json!({
+                "module": m.name, "cut_by": by,
+                "at": pt(m.at), "radius": r1(m.radius), "graph_area": rect_json(s.graph_area),
+            });
+            offenders.push((m.radius, offender));
+        }
+    }
+    verdict(offenders)
+}
+
+fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
+    if s.state.mode != "journey" {
+        return skip("no journey open");
+    }
+    if s.expanded() {
+        return skip("expanded");
+    }
+    if since.by_hand {
+        return skip(BY_HAND);
+    }
+    if since.playing {
+        return skip("a frame of a transition still playing");
+    }
+    let opened = since.opening
+        || before.is_none_or(|b| b.state.mode != "journey" || b.state.start != s.state.start);
+    let framed = matches!(
+        since.last_move(),
+        Some(Kind::FrameAll | Kind::FrameFocus | Kind::Depth)
+    );
+    if !opened && !framed {
+        return skip("no journey opened, depth change, R, F or Fit since the last snapshot");
+    }
+    let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.in_journey()).collect();
+    if lit.len() < 2 {
+        return skip("fewer than two of the journey's functions drawn");
+    }
+    let free = s.free();
+    // The spheres holding what the journey lights, and the function set aside; a
+    // faint one holds none of it, but for the one set aside.
+    let aside = s.aside_module();
+    let spheres: Vec<&Module> = s
+        .sized()
+        .filter(|m| m.body != "faint" || aside == Some(m.name.as_str()))
+        .collect();
+    let span = lit
+        .iter()
+        .flat_map(|n| std::iter::once(disc(n.at, n.radius)).chain(n.label_rect.map(rect)))
+        .chain(spheres.iter().map(|m| disc(m.at, m.radius)))
+        .reduce(egui::Rect::union)
+        .unwrap_or(egui::Rect::NOTHING);
+    let share = (span.width() / free.width()).max(span.height() / free.height());
+    let mut offenders = outside(free, EDGE, spheres.into_iter().map(Module::disc));
+    offenders.extend(outside(free, EDGE, lit.into_iter().map(Node::disc)));
+    if share < JOURNEY_FILL {
+        let offender = json!({
+            "why": "the journey's spheres, functions and names take too little of the free area",
+            "share": r2(share), "least": JOURNEY_FILL, "span": [r1(span.width()), r1(span.height())],
+            "free_area": [r1(free.width()), r1(free.height())],
+        });
+        offenders.push((JOURNEY_FILL - share, offender));
+    }
+    with(verdict(offenders), "share", json!(r2(share)))
+}
+
+// What moved since the snapshot before.
+
 fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     let Some(before) = before else {
         return skip("no snapshot before");
@@ -1463,36 +1563,29 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     }
     // Expanding or shrinking back in a journey moves the camera, never the journey.
     let journey = s.state.mode == "journey" && before.state.mode == "journey";
-    if journey
-        && since.has(Kind::Expand)
-        && since
-            .kinds
-            .iter()
-            .all(|k| matches!(k, Kind::Still | Kind::Expand))
-    {
+    let only = |kinds: &[Kind]| since.kinds.iter().all(|k| kinds.contains(k));
+    if journey && since.has(Kind::Expand) && only(&[Kind::Still, Kind::Expand]) {
         return verdict(journey_kept(before, s));
     }
-    if let Some(kind) = since
-        .kinds
-        .iter()
-        .find(|k| !matches!(k, Kind::Still | Kind::Click | Kind::Depth))
+    if let Some(kind) =
+        (since.kinds.iter()).find(|k| !matches!(k, Kind::Still | Kind::Click | Kind::Depth))
     {
         return skip(&format!(
             "a step since the last snapshot may move the view ({kind:?})"
         ));
     }
-    if since.has(Kind::Click) && s.expanded() && s.state.mode == "journey" {
-        return skip("a click expanded in a journey may re-centre on what it clicks");
-    }
-    if s.cursor_moved_expanded(Some(before)) {
-        return skip(
-            "the cursor moved expanded in a journey: the camera may pan to keep it in view, or fly to its module",
-        );
+    let expanded_journey = journey && s.expanded();
+    if expanded_journey && before.state.expanded != s.state.expanded {
+        return skip("the cursor took the expansion to another module");
     }
     // A depth change may draw the camera back to show what it brought in, when that
-    // would be off the free area, and no more.
+    // would be off the free area, and no more. Expanded in a journey, a click may
+    // re-centre on what it clicks, and a cursor that moves may pan to keep it in
+    // view: the camera has leave to move there, nothing else has.
     let depth = since.has(Kind::Depth);
-    let (summary, mut offenders) = compare(before, s, depth);
+    let recentres =
+        expanded_journey && (since.has(Kind::Click) || s.cursor_moved_expanded(Some(before)));
+    let (summary, mut offenders) = compare(before, s, depth || recentres);
     // A click that selects another function lights others, named first: a lit
     // function's name whose side they take tries its others rather than go, and a
     // module's name its spot inside its sphere.
@@ -1502,25 +1595,25 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
             o["label"].is_null()
                 || o["unit"]
                     .as_str()
-                    .and_then(|unit| s.node(unit))
-                    .is_some_and(|n| !n.lit() || n.plain())
+                    .and_then(|u| s.node(u))
+                    .is_some_and(Node::unlit)
         });
     }
     if depth {
         offenders.extend(depth_camera(before, s));
     }
     // A click that selects another function lights others, and names them instead;
-    // a depth change that drew the camera back shows everything smaller, and names
-    // what fits now; any other step here only reads, and takes no name away.
-    let drew_back = depth && summary["camera"]["moved"] == json!(true);
-    if !selected && !drew_back {
+    // a camera that drew back or panned shows things elsewhere, and names what fits
+    // now; any other step here only reads, and takes no name away.
+    let camera_moved = summary["camera"]["moved"] == json!(true);
+    if !selected && !((depth || recentres) && camera_moved) {
         offenders.extend(gone_labels(before, s));
     }
     verdict(offenders)
 }
 
 /// Each of the journey's dots drawn before and now that moved in the world.
-fn journey_kept(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
+fn journey_kept(before: &Snap, now: &Snap) -> Found {
     now.nodes
         .iter()
         .filter(|n| n.in_journey())
@@ -1529,8 +1622,10 @@ fn journey_kept(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
             let by = Vec3::from_array(n.world?).distance(Vec3::from_array(was.world?));
             let why = "expanding in a journey moves the camera, not the journey's dots";
             (by > MOVED_WORLD).then(|| {
-                let offender = json!({ "function": n.name, "moved_in_world": r3(by), "why": why });
-                (by, offender)
+                (
+                    by,
+                    json!({ "function": n.name, "moved_in_world": r3(by), "why": why }),
+                )
             })
         })
         .collect()
@@ -1539,7 +1634,7 @@ fn journey_kept(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
 /// How the camera moved on a depth change, when it should not have: anything but
 /// drawing back (and framing the journey afresh as it does), or drawing back when
 /// all that came in would have shown anyway.
-fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
+fn depth_camera(before: &Snap, now: &Snap) -> Found {
     let (Some(a), Some(b)) = (before.state.camera, now.state.camera) else {
         return Vec::new();
     };
@@ -1555,52 +1650,41 @@ fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
         let why = "a depth change may only draw the camera back";
         return vec![(f32::MAX, json!({ "camera": camera, "why": why }))];
     }
-    let old: Vec<&str> = before
-        .nodes
-        .iter()
+    let old: Vec<&str> = (before.nodes.iter())
         .filter_map(|n| n.unit.as_deref())
         .collect();
+    let came_in = |n: &&Node| n.unit.as_deref().is_some_and(|u| !old.contains(&u));
+    let graph = rect(now.graph_area);
     // The free area as the depth change left it: a taller panel takes more of it.
-    let free = now.free().shrink(SHOWN_WHOLE);
-    let came: Vec<&Node> = now
-        .nodes
-        .iter()
-        .filter(|n| n.unit.as_deref().is_some_and(|u| !old.contains(&u)))
-        .collect();
+    let free = now.free();
+    let whole = free.shrink(framing::DOT_ROOM);
     // What came in, or anything of the journey's, as the camera from before would
     // have shown it: off the free area, or too near its edge to show whole, draws
     // the camera back.
-    let judged = now
-        .nodes
-        .iter()
-        .filter(|n| n.in_journey() || n.unit.as_deref().is_some_and(|u| !old.contains(&u)));
-    let off = judged.into_iter().any(|n| {
-        n.world.is_some_and(|world| {
-            shown_from(a, rect(now.graph_area), Vec3::from_array(world))
-                .is_none_or(|was| !free.contains(egui::pos2(was.x, was.y)))
-        })
-    });
+    let off = (now.nodes.iter())
+        .filter(|n| n.in_journey() || came_in(n))
+        .any(|n| {
+            n.world.is_some_and(|world| {
+                shown_from(a, graph, Vec3::from_array(world))
+                    .is_none_or(|was| !whole.contains(egui::pos2(was.x, was.y)))
+            })
+        });
     // A sphere that came in, or any while the panel has grown, cut by the free area
     // as the camera from before would have shown it, or with no room above it for
     // its name, draws the camera back too.
-    let grown = now.free() != before.free();
-    let free = now.free();
-    let named = egui::Rect::from_min_max(free.min + egui::vec2(0.0, NAME_ROOM), free.max);
-    let cut = now
-        .spheres()
+    let grown = free != before.free();
+    let named =
+        egui::Rect::from_min_max(free.min + egui::vec2(0.0, framing::NAME_ROOM.y), free.max);
+    let right = Quat::from_euler(EulerRot::YXZ, a.yaw, a.pitch, 0.0) * Vec3::X;
+    let cut = (now.spheres())
         .filter(|m| grown || !before.spheres().any(|b| b.name == m.name))
         .any(|m| {
             let world = Vec3::from_array(m.world);
-            let right = Quat::from_euler(EulerRot::YXZ, a.yaw, a.pitch, 0.0) * Vec3::X;
-            let graph = rect(now.graph_area);
-            match (
-                shown_from(a, graph, world),
-                shown_from(a, graph, world + right * m.world_radius),
-            ) {
+            let rim = world + right * m.world_radius;
+            match (shown_from(a, graph, world), shown_from(a, graph, rim)) {
                 (Some(at), Some(rim)) => {
                     let radius = at.distance(rim);
-                    circle_out(free.shrink(SHOWN_WHOLE), at, radius) > 0.0
-                        || circle_out(named, at, radius) > 0.0
+                    circle_out(whole, at, radius) > 0.0 || circle_out(named, at, radius) > 0.0
                 }
                 _ => true,
             }
@@ -1608,14 +1692,15 @@ fn depth_camera(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
     if off || cut {
         return Vec::new();
     }
-    let why = if came.is_empty() {
+    let came = now.nodes.iter().filter(came_in).count();
+    let why = if came == 0 {
         "the camera drew back, but nothing came in"
     } else {
         "the camera drew back, but what came in would have shown from where it was"
     };
     vec![(
         f32::MAX,
-        json!({ "camera": camera, "why": why, "came_in": came.len() }),
+        json!({ "camera": camera, "why": why, "came_in": came }),
     )]
 }
 
@@ -1639,7 +1724,7 @@ fn shown_from(camera: Camera, graph: egui::Rect, world: Vec3) -> Option<Vec2> {
 
 /// Names that went while what they name is still drawn on screen: a step that only
 /// reads takes no name away.
-fn gone_labels(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
+fn gone_labels(before: &Snap, now: &Snap) -> Found {
     let named: Vec<(String, Option<String>)> = now.labels.iter().filter_map(label_key).collect();
     before
         .labels
@@ -1659,15 +1744,17 @@ fn gone_labels(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
             }
         })
         .map(|(_, l)| {
-            let offender = json!({ "label": l.text, "gone": true, "was_at": rect_json(l.rect) });
-            (MOVED_SCREEN, offender)
+            (
+                MOVED_SCREEN,
+                json!({ "label": l.text, "gone": true, "was_at": rect_json(l.rect) }),
+            )
         })
         .collect()
 }
 
 /// What moved between two snapshots, and, as offenders, everything that did: when
 /// `camera_free`, only what moved in the world, the camera having had leave to move.
-fn compare(before: &Snap, now: &Snap, camera_free: bool) -> (Value, Vec<(f32, Value)>) {
+fn compare(before: &Snap, now: &Snap, camera_free: bool) -> (Value, Found) {
     let mut offenders = Vec::new();
     let camera = before.state.camera.zip(now.state.camera).map(|(a, b)| {
         let by = Vec3::from_array(a.target).distance(Vec3::from_array(b.target));
@@ -1682,9 +1769,7 @@ fn compare(before: &Snap, now: &Snap, camera_free: bool) -> (Value, Vec<(f32, Va
         offenders.push((f32::MAX, json!({ "camera": camera })));
     }
 
-    let was: HashMap<&str, &Node> = before
-        .nodes
-        .iter()
+    let was: HashMap<&str, &Node> = (before.nodes.iter())
         .filter_map(|n| Some((n.unit.as_deref()?, n)))
         .collect();
     let mut shifts: Vec<(&str, f32, f32)> = now
@@ -1724,19 +1809,14 @@ fn compare(before: &Snap, now: &Snap, camera_free: bool) -> (Value, Vec<(f32, Va
     }
 
     let (labels, moved_labels) = labels_moved(before, now);
-    if screen_counts {
-        offenders.extend(
-            moved_labels
-                .iter()
-                .map(|(by, offender)| (*by, offender.clone())),
-        );
-    }
-
     // A click that selects another function lights other calls, which keep off
     // other dots.
     let (arrows, moved_arrows) = arrows_moved(before, now);
-    if screen_counts && before.state.selection == now.state.selection {
-        offenders.extend(moved_arrows.iter().cloned());
+    if screen_counts {
+        offenders.extend(moved_labels.iter().cloned());
+        if before.state.selection == now.state.selection {
+            offenders.extend(moved_arrows.iter().cloned());
+        }
     }
 
     let units =
@@ -1769,28 +1849,26 @@ fn compare(before: &Snap, now: &Snap, camera_free: bool) -> (Value, Vec<(f32, Va
 
 /// How many calls are drawn in both snapshots, and those whose line runs elsewhere,
 /// with how far.
-fn arrows_moved(before: &Snap, now: &Snap) -> (usize, Vec<(f32, Value)>) {
+fn arrows_moved(before: &Snap, now: &Snap) -> (usize, Found) {
     let key = |a: &Arrow| (a.from_unit.clone(), a.to_unit.clone(), a.flow.clone());
+    let lines = |a: &&Arrow| a.path.len() >= 2;
     let was: HashMap<_, &Arrow> = before
         .arrows
         .iter()
-        .filter(|a| a.path.len() >= 2)
+        .filter(lines)
         .map(|a| (key(a), a))
         .collect();
-    let mut compared = 0;
-    let mut moved = Vec::new();
-    for arrow in now.arrows.iter().filter(|a| a.path.len() >= 2) {
-        let Some(then) = was.get(&key(arrow)) else {
-            continue;
-        };
-        compared += 1;
-        let by = path_gap(&arrow.path, &then.path).max(path_gap(&then.path, &arrow.path));
-        if by > ARROW_MOVED {
-            let offender = json!({ "arrow": [arrow.from, arrow.to], "by": r1(by) });
-            moved.push((by, offender));
-        }
-    }
-    (compared, moved)
+    let both: Vec<(&Arrow, &Arrow)> = (now.arrows.iter().filter(lines))
+        .filter_map(|a| Some((a, *was.get(&key(a))?)))
+        .collect();
+    let moved = both
+        .iter()
+        .filter_map(|(a, then)| {
+            let by = path_gap(&a.path, &then.path).max(path_gap(&then.path, &a.path));
+            (by > ARROW_MOVED).then(|| (by, json!({ "arrow": [a.from, a.to], "by": r1(by) })))
+        })
+        .collect();
+    (both.len(), moved)
 }
 
 /// How far the point of `a` farthest from the line through `b` is from it.
@@ -1815,319 +1893,159 @@ fn label_key(l: &Label) -> Option<(String, Option<String>)> {
 }
 
 /// How many names show in both snapshots, and those that moved, with how far.
-fn labels_moved(before: &Snap, now: &Snap) -> (usize, Vec<(f32, Value)>) {
-    let named: HashMap<(String, Option<String>), &Label> = before
-        .labels
-        .iter()
+fn labels_moved(before: &Snap, now: &Snap) -> (usize, Found) {
+    let named: HashMap<(String, Option<String>), &Label> = (before.labels.iter())
         .filter_map(|l| Some((label_key(l)?, l)))
         .collect();
-    let mut compared = 0;
-    let mut moved = Vec::new();
-    for label in &now.labels {
-        let Some(then) = label_key(label).and_then(|k| named.get(&k)) else {
+    let both: Vec<(&Label, &Label)> = (now.labels.iter())
+        .filter_map(|l| Some((l, *named.get(&label_key(l)?)?)))
+        .collect();
+    let moved = both
+        .iter()
+        .filter_map(|(label, then)| {
+            let by = label_shift(rect(then.rect), rect(label.rect));
+            (by > MOVED_SCREEN).then(|| {
+                let offender = json!({
+                    "label": label.text, "unit": label.unit, "from": rect_json(then.rect),
+                    "to": rect_json(label.rect), "by": r1(by),
+                });
+                (by, offender)
+            })
+        })
+        .collect();
+    (both.len(), moved)
+}
+
+// Names: each by its own dot or sphere, clear of the rest, on screen, and shown
+// wherever there is room. They share how far a name's text lies from a dot
+// ([`Node::gap`]), which dots a lit name pays no mind ([`Node::overlooks`]), and
+// where a name would fit ([`Room`]).
+
+fn labels_near(s: &Snap) -> Value {
+    let mut offenders = Vec::new();
+    // The start, the cursor, the selection and the function set aside are named come
+    // what may: one with room nowhere round its dot lies where it covers least.
+    let room = std::cell::OnceCell::new();
+    let crowded =
+        |n: &Node| n.focus() && room.get_or_init(|| Room::new(s)).function_spot(n).is_none();
+    let drawn: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen).collect();
+    for n in &s.nodes {
+        let (Some(label), Some(r)) = (&n.label, n.label_rect.map(rect)) else {
             continue;
         };
-        compared += 1;
-        let by = label_shift(rect(then.rect), rect(label.rect));
-        if by > MOVED_SCREEN {
+        let mine = n.gap(r, n.radius).max(0.0);
+        // The dot nearest the name, any but its own and those it pays no mind.
+        let pill = r.expand2(NAME_PILL);
+        let nearest = (drawn.iter())
+            .filter(|other| other.unit != n.unit && !n.overlooks(other, pill))
+            .map(|other| (other, other.gap(r, other.radius).max(0.0)))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if !n.on_screen {
+            let why = "its dot is off screen";
+            let offender = json!({ "function": n.name, "label": label, "why": why });
+            offenders.push((f32::MAX, offender));
+        } else if mine > LABEL_REACH {
+            let offender =
+                json!({ "function": n.name, "label": label, "gap": r1(mine), "most": LABEL_REACH });
+            offenders.push((mine, offender));
+        } else if let Some((other, theirs)) = nearest
+            && theirs + NEARER < mine
+            && !crowded(n)
+        {
             let offender = json!({
-                "label": label.text, "unit": label.unit, "from": rect_json(then.rect),
-                "to": rect_json(label.rect), "by": r1(by),
+                "function": n.name, "label": label, "nearer_dot": other.name,
+                "own_gap": r1(mine), "their_gap": r1(theirs),
             });
-            moved.push((by, offender));
+            offenders.push((mine - theirs, offender));
         }
     }
-    (compared, moved)
-}
-
-fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
-    // Wherever the hands put the camera, a cursor that moves expanded in a journey is
-    // kept in view.
-    let cursor_only = since.by_hand && s.cursor_moved_expanded(before);
-    if since.by_hand && !cursor_only {
-        return skip("the camera is where the user's hands put it");
-    }
-    if since.has(Kind::Expand) {
-        return skip("an expand frames the module, wherever the focus is");
-    }
-    let free = s.free();
-    // A function picked browsing since (a click, a search, Back), or set aside in a
-    // journey, is in view wherever it is: the expansion follows it.
-    let picked = before.is_some_and(|b| {
-        (s.state.mode == "browse"
-            && s.state.selection.is_some()
-            && b.state.selection != s.state.selection)
-            || (s.state.aside.is_some() && b.state.aside != s.state.aside)
-    });
-    // Expanded, the view is on the module expanded: what is in focus in another may
-    // lie off it.
-    let in_view = |n: &&Node| {
-        (picked && (n.is("selection") || n.is("aside")))
-            || s.state
-                .expanded
-                .as_ref()
-                .filter(|_| s.expanded())
-                .is_none_or(|m| n.module.as_ref() == Some(m))
-    };
-    let focus: Vec<&Node> = s
-        .nodes
-        .iter()
-        .filter(|n| {
-            if cursor_only {
-                n.is("cursor")
-            } else {
-                n.focus()
-            }
-        })
-        .filter(in_view)
-        .collect();
-    if picked && !s.nodes.iter().any(|n| n.is("selection") || n.is("aside")) {
-        return fail("the function picked is selected but not drawn");
-    }
-    if focus.is_empty() {
-        return skip("no selection, start or cursor drawn, in the module expanded if one is");
-    }
-    let offenders = focus
-        .into_iter()
-        .filter_map(|n| {
-            let out = circle_out(free, v2(n.at), n.radius);
-            (out > EDGE).then(|| {
-                let offender = json!({ "function": n.name, "roles": n.roles, "at": pt(n.at), "out_by": r1(out) });
-                (out, offender)
-            })
-        })
-        .collect();
-    verdict(offenders)
-}
-
-fn camera_outside(s: &Snap) -> Value {
-    let Some(eye) = s.camera else {
-        return skip("no camera");
-    };
-    let at = Vec3::from_array(eye.at);
-    let offenders = s
-        .spheres()
-        .filter_map(|m| {
-            let into = m.world_radius - at.distance(Vec3::from_array(m.world));
-            (into > 0.0).then(|| {
-                let offender = json!({ "module": m.name, "camera_inside_by": r3(into), "sphere_radius": r3(m.world_radius) });
-                (into / m.world_radius.max(f32::EPSILON), offender)
-            })
-        })
-        .collect();
-    verdict(offenders)
-}
-
-fn map_on_screen(s: &Snap, since: &Since) -> Value {
-    let out = since
-        .kinds
-        .iter()
-        .any(|k| matches!(k, Kind::Zoom { out: true } | Kind::FrameAll | Kind::Pan));
-    if !out {
-        return skip("no wheel turn out, pan or R since the last snapshot");
-    }
-    let free = s.free();
-    let spheres: Vec<&Module> = s.spheres().filter(|m| m.radius > 0.0).collect();
-    let Some(extent) = map_extent(s) else {
-        return skip("no module spheres drawn");
-    };
-    if extent.width() > free.width() || extent.height() > free.height() {
-        // Dragged, a map bigger than the free area keeps over its middle.
-        if since.has(Kind::Pan) {
-            let mut offenders = Vec::new();
-            if !extent.contains(free.center()) {
-                let offender = json!({
-                    "why": "dragged off the middle of the free area",
-                    "map": rect_json([extent.min.x, extent.min.y, extent.max.x, extent.max.y]),
-                    "middle": pt([free.center().x, free.center().y]),
-                });
-                offenders.push((1.0, offender));
-            }
-            return verdict(offenders);
-        }
-        return skip("the map is bigger than the free area at this zoom");
-    }
-    let area = |m: &&Module| m.radius * m.radius;
-    let all: f32 = spheres.iter().map(area).sum();
-    let inside: f32 = spheres
-        .iter()
-        .filter(|m| circle_out(free, v2(m.at), m.radius) <= EDGE)
-        .map(area)
-        .sum();
-    let share = inside / all.max(f32::EPSILON);
-    // Dragged, a map that fits stays in the free area whole.
-    let least = if since.has(Kind::Pan) { 1.0 } else { MAP_SHOWN };
-    let mut offenders = Vec::new();
-    // Zoomed all the way out, the map is held over the free area's middle, however
-    // it was dragged.
-    if s.state.camera.is_some_and(|c| c.farthest) && !extent.contains(free.center()) {
-        let offender = json!({
-            "why": "zoomed all the way out, the map is off the middle of the free area",
-            "map": rect_json([extent.min.x, extent.min.y, extent.max.x, extent.max.y]),
-            "middle": pt([free.center().x, free.center().y]),
-        });
-        offenders.push((f32::MAX, offender));
-    }
-    if share < least {
-        let outside: Vec<&str> = spheres
-            .iter()
-            .filter(|m| circle_out(free, v2(m.at), m.radius) > EDGE)
-            .map(|m| m.name.as_str())
-            .collect();
-        let offender = json!({
-            "why": "the whole map would fit in the free area, but not this much of it is there",
-            "inside": r2(share), "least": least, "map": rect_json([extent.min.x, extent.min.y, extent.max.x, extent.max.y]),
-            "outside": outside,
-        });
-        offenders.push((least - share, offender));
-    }
-    with(verdict(offenders), "inside", json!(r2(share)))
-}
-
-/// Where every sphere shown lies on screen, together.
-fn map_extent(s: &Snap) -> Option<egui::Rect> {
-    s.spheres()
-        .filter(|m| m.radius > 0.0)
-        .map(|m| egui::Rect::from_center_size(pos(m.at), egui::Vec2::splat(2.0 * m.radius)))
-        .reduce(egui::Rect::union)
-}
-
-fn spheres_unclipped(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
-    let graph = rect(s.graph_area);
-    let window = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(s.window[0], s.window[1]));
-    if !graph.is_positive() {
-        return skip("no graph area");
-    }
-    // The top of a panel docked along the graph's foot, where the view framed itself,
-    // expanded too: what it cuts shows half under the panel. Shrunk back, the camera
-    // stands where it stood before, whatever came in meanwhile.
-    let free = s.free();
-    let collapsed = before.is_some_and(Snap::expanded) && !s.expanded();
-    let panel =
-        (free.max.y < graph.max.y - EDGE && !since.by_hand && !collapsed).then_some(free.max.y);
-    // An edge of the graph past which the window shows nothing of the graph, but no
-    // panel or window edge either: what it cuts shows cut off.
-    let panel_below = |y: f32| {
-        s.overlays.iter().any(|o| {
-            let r = rect(o.rect);
-            r.width() >= graph.width() * 0.5 && (r.min.y - y).abs() <= HIDDEN_EDGE
-        })
-    };
-    let bottom = graph.max.y < window.max.y - HIDDEN_EDGE && !panel_below(graph.max.y);
-    let left = graph.min.x > window.min.x + HIDDEN_EDGE;
-    let right = graph.max.x < window.max.x - HIDDEN_EDGE;
-    let eye = s.camera.map(|e| Vec3::from_array(e.at));
-    // A faint sphere is left alone at the panel, but the one holding the function
-    // set aside, which the view brings in whole.
-    let aside = s
-        .nodes
-        .iter()
-        .find(|n| n.is("aside"))
-        .and_then(|n| n.module.as_ref());
-    let mut offenders = Vec::new();
-    for m in s.spheres().filter(|m| m.radius > 0.0) {
-        let faint = m.body == "faint" && aside != Some(&m.name);
-        // Zoomed past it, the camera inside, it shows as no disc to cut.
-        if eye.is_some_and(|eye| eye.distance(Vec3::from_array(m.world)) < m.world_radius) {
+    for m in s.spheres() {
+        let (Some(label), Some(r)) = (&m.label, m.label_rect) else {
             continue;
-        }
-        let c = v2(m.at);
-        let across = c.x + m.radius > graph.min.x && c.x - m.radius < graph.max.x;
-        let down = c.y + m.radius > graph.min.y && c.y - m.radius < graph.max.y;
-        let cut = [
-            (
-                bottom && across && (c.y - graph.max.y).abs() < m.radius,
-                "bottom",
-            ),
-            (
-                panel.is_some_and(|y| !faint && across && (c.y - y).abs() < m.radius),
-                "panel",
-            ),
-            (left && down && (c.x - graph.min.x).abs() < m.radius, "left"),
-            (
-                right && down && (c.x - graph.max.x).abs() < m.radius,
-                "right",
-            ),
-        ];
-        for (_, edge) in cut.iter().filter(|(cut, _)| *cut) {
-            let by = if *edge == "panel" {
-                "the top of the panel".to_owned()
-            } else {
-                format!("the graph's {edge} edge, in open window")
-            };
-            let offender = json!({
-                "module": m.name, "cut_by": by,
-                "at": pt(m.at), "radius": r1(m.radius), "graph_area": rect_json(s.graph_area),
-            });
-            offenders.push((m.radius, offender));
+        };
+        let gap = rim_gap(rect(r), v2(m.at), m.radius);
+        if gap > LABEL_REACH {
+            let offender = json!({ "module": m.name, "label": label, "gap_to_rim": r1(gap), "most": LABEL_REACH });
+            offenders.push((gap, offender));
         }
     }
     verdict(offenders)
 }
 
-fn arrow_sizes(s: &Snap) -> Value {
+/// Whether a label names a function or a module.
+fn naming(l: &Label) -> bool {
+    matches!(l.names.as_str(), "function" | "module")
+}
+
+fn labels_clear(s: &Snap) -> Value {
     let mut offenders = Vec::new();
-    let mut judged = 0;
-    let shown = |a: &&Arrow| a.on_screen && a.drawn != Some(false);
-    for (kind, arrows) in [("call", &s.arrows), ("module", &s.module_arrows)] {
-        for a in arrows.iter().filter(shown) {
-            judged += 1;
-            let most = ARROW_WIDTH;
-            let width = a.width.unwrap_or(0.0);
-            if width > most {
-                let offender = json!({ "arrow": kind, "from": a.from, "to": a.to, "width": r1(width), "most": most });
-                offenders.push((width - most, offender));
+    for (i, label) in s.labels.iter().enumerate().filter(|(_, l)| naming(l)) {
+        // A notice is said over nothing named.
+        if label.under.iter().any(|o| o == "notice") {
+            let offender = json!({ "label": label.text, "under": "notice" });
+            offenders.push((rect(label.rect).area(), offender));
+        }
+        // Each pair of names once.
+        for (j, other) in (label.overlaps.iter()).filter_map(|&j| Some((j, s.labels.get(j)?))) {
+            if naming(other) && j < i {
+                continue;
             }
-            let head = a.head.unwrap_or(0.0).max(a.head_width.unwrap_or(0.0) / 2.0);
-            // The whole map's faint links between modules need no head to be seen.
-            let (least, most) = HEAD_SIZE;
-            let least = if a.flow == "module" { 0.0 } else { least };
-            if !(least..=most).contains(&head) {
-                let offender = json!({ "arrow": kind, "from": a.from, "to": a.to, "head": r1(head), "allowed": [least, most] });
-                offenders.push(((least - head).max(head - most), offender));
+            let both = rect(label.rect).intersect(rect(other.rect));
+            let offender = json!({ "label": label.text, "over_label": other.text, "overlap": [r1(both.width()), r1(both.height())] });
+            offenders.push((both.area(), offender));
+        }
+    }
+    // The labels where calls leave the free area lie over no name either.
+    for e in &s.exits {
+        for label in s.labels.iter().filter(|l| naming(l)) {
+            let both = rect(e.rect).intersect(rect(label.rect));
+            if both.width() > 0.0 && both.height() > 0.0 {
+                let offender = json!({ "exit": e.text, "over_label": label.text, "overlap": [r1(both.width()), r1(both.height())] });
+                offenders.push((both.area(), offender));
             }
         }
     }
-    // The whole map's links between modules are one width, however many calls each
-    // carries.
-    let widths: Vec<f32> = s
-        .module_arrows
-        .iter()
-        .filter(shown)
-        .filter_map(|a| a.width)
-        .collect();
-    let (thinnest, widest) = widths
-        .iter()
-        .fold((f32::INFINITY, 0.0_f32), |(lo, hi), &w| {
-            (lo.min(w), hi.max(w))
-        });
-    if widest - thinnest > 0.1 {
-        let offender = json!({ "arrow": "module", "why": "the whole map's links differ in width", "widths": [r1(thinnest), r1(widest)] });
-        offenders.push((widest - thinnest, offender));
-    }
-    // One head per arrow: a module arrow ends in a head at the sphere's edge only
-    // when no call drawn along it goes on to a dot with a head of its own.
-    let module = |unit: &Option<String>| {
-        unit.as_deref()
-            .and_then(|u| s.node(u))
-            .and_then(|n| n.module.clone())
-    };
-    for m in s.module_arrows.iter().filter(shown) {
-        let through = s.arrows.iter().filter(shown).find(|a| {
-            module(&a.from_unit).as_deref() == Some(m.from.as_str())
-                && module(&a.to_unit).as_deref() == Some(m.to.as_str())
-        });
-        if let Some(call) = through {
-            let offender = json!({
-                "arrow": "module", "from": m.from, "to": m.to,
-                "why": "a head at the sphere's edge, and another where the call goes on to its dot",
-                "call": [call.from, call.to],
-            });
-            offenders.push((1.0, offender));
+    let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.on_screen && n.lit()).collect();
+    for n in &s.nodes {
+        let (Some(label), Some(r)) = (&n.label, n.label_rect) else {
+            continue;
+        };
+        let pill = rect(r).shrink(1.0);
+        for other in lit
+            .iter()
+            .filter(|o| !std::ptr::eq(**o, n) && n.kept_off_by(o))
+        {
+            let into = -other.gap(pill, other.radius);
+            if into > 0.0 {
+                let offender =
+                    json!({ "label": label, "of": n.name, "over_dot": other.name, "by": r1(into) });
+                offenders.push((into, offender));
+            }
         }
     }
-    if judged == 0 {
-        return skip("no arrow drawn on screen");
+    verdict(offenders)
+}
+
+fn named_on_screen(s: &Snap) -> Value {
+    if s.state.help {
+        return skip("the key help is open over the graph");
+    }
+    let mut offenders = Vec::new();
+    for label in s.labels.iter().filter(|l| naming(l)) {
+        let about = json!({ "label": label.text, "of": label.of, "rect": rect_json(label.rect) });
+        if label.cut_off {
+            offenders.push((
+                2.0,
+                with(about.clone(), "why", json!("cut off by the graph's edge")),
+            ));
+        }
+        // The search box opens over the graph for a moment, as the key help does.
+        let under: Vec<&String> = (label.under.iter())
+            .filter(|o| o.as_str() != "search box")
+            .collect();
+        if !under.is_empty() {
+            offenders.push((1.0, with(about, "under", json!(under))));
+        }
     }
     verdict(offenders)
 }
@@ -2137,19 +2055,15 @@ fn module_names(s: &Snap) -> Value {
     let mut offenders = Vec::new();
     let mut named = 0;
     for m in s.spheres() {
-        let (Some(label), Some(r)) = (&m.label, m.label_rect) else {
+        let (Some(label), Some(r)) = (&m.label, m.label_rect.map(rect)) else {
             continue;
         };
         named += 1;
-        let r = rect(r);
         let off_middle = (r.center().x - m.at[0]).abs();
-        let top = m.at[1] - m.radius;
-        let above = top - r.max.y;
+        let above = m.at[1] - m.radius - r.max.y;
         // Where the room above is taken, smaller inside the top of its sphere: its
         // corners within the rim, over the sphere's middle.
-        let size = s
-            .labels
-            .iter()
+        let size = (s.labels.iter())
             .find(|l| l.names == "module" && l.of.as_ref() == Some(&m.name))
             .map_or(0.0, |l| l.size);
         let corner = [
@@ -2170,10 +2084,7 @@ fn module_names(s: &Snap) -> Value {
             });
             offenders.push((off_middle.max(above.abs()), offender));
         }
-        for other in &spheres {
-            if other.name == m.name {
-                continue;
-            }
+        for other in spheres.iter().filter(|o| o.name != m.name) {
             let into = other.radius - r.distance_to_pos(pos(other.at));
             if into > 1.0 {
                 let offender = json!({ "module": m.name, "label": label, "over_sphere": other.name, "by": r1(into) });
@@ -2182,13 +2093,15 @@ fn module_names(s: &Snap) -> Value {
         }
         // Over none of its dots: inside its sphere, none lit, its opaque pill hiding
         // the others.
+        let own = |n: &&Node| n.on_screen && n.module.as_ref() == Some(&m.name) && n.radius > 0.0;
         for n in s
             .nodes
             .iter()
-            .filter(|n| n.on_screen && n.module.as_ref() == Some(&m.name) && n.radius > 0.0)
+            .filter(own)
+            .filter(|n| !(within && n.unlit()))
         {
-            let into = n.radius - r.shrink(1.0).distance_to_pos(pos(n.at));
-            if into > 0.0 && !(within && (!n.lit() || n.plain())) {
+            let into = -n.gap(r.shrink(1.0), n.radius);
+            if into > 0.0 {
                 let offender = json!({ "module": m.name, "label": label, "over_its_dot": n.name, "by": r1(into) });
                 offenders.push((into + 100.0, offender));
             }
@@ -2200,18 +2113,6 @@ fn module_names(s: &Snap) -> Value {
     verdict(offenders)
 }
 
-/// Whether an opaque pill at `pill` hides the whole of `n`'s dot, one nothing
-/// lights.
-fn hidden(pill: egui::Rect, n: &Node) -> bool {
-    (!n.lit() || n.plain())
-        && pill
-            .shrink(NAME_CLEAR)
-            .contains_rect(egui::Rect::from_center_size(
-                pos(n.at),
-                egui::Vec2::splat(2.0 * (n.radius - ROUNDING)),
-            ))
-}
-
 /// Where a name could go, as the placer has room for it: in the free area, under no
 /// overlay, over no name placed as early, a function's off the dots drawn and those a
 /// deeper level shows, a module's off other spheres and its own dots.
@@ -2220,7 +2121,6 @@ struct Room<'a> {
     free: egui::Rect,
     taken: Vec<(egui::Rect, u8, Option<&'a str>)>,
     drawn: Vec<&'a Node>,
-    spheres: Vec<&'a Module>,
 }
 
 impl<'a> Room<'a> {
@@ -2230,15 +2130,15 @@ impl<'a> Room<'a> {
             free: s.free(),
             taken: names_by_rank(s),
             drawn: s.nodes.iter().filter(|n| n.on_screen).collect(),
-            spheres: s.spheres().filter(|m| m.radius > 0.0).collect(),
         }
     }
 
     /// Whether a pill at `r` would fit: in the free area, under no overlay, over no
     /// name placed as early but `own`'s; a function's off every other dot drawn (as
     /// far as the placer keeps names, the calls a deeper level shows among them) but
-    /// those it would hide, and nearer none of them than its own; a module's off every
-    /// other sphere and its own dots, but those it would hide inside its sphere.
+    /// those it would pay no mind, and nearer none of them than its own; a module's
+    /// off every other sphere and its own dots, but those it would hide inside its
+    /// sphere.
     fn clear(
         &self,
         r: egui::Rect,
@@ -2248,14 +2148,16 @@ impl<'a> Room<'a> {
     ) -> bool {
         // How far the placer kept names from a dot, leaning to less room either way.
         let kept = |n: &Node| n.kept_off.unwrap_or(n.radius) + ROUNDING;
-        // Its own as drawn: the placer takes it as small as it is drawn lit.
-        let own_kept = |n: &Node| n.radius - ROUNDING;
-        // Over a dot judged by the pill, nearer one by the text, as labels-near does.
+        // Over a dot judged by the pill, nearer one by the text, as labels-near does;
+        // its own as drawn, as small as the placer takes it lit.
         let text = r.shrink2(NAME_PILL);
-        let gap = |at: [f32; 2], radius: f32| text.distance_to_pos(pos(at)) - radius;
-        let mine = own.map_or(0.0, |n| gap(n.at, own_kept(n)));
-        let near = |at: [f32; 2], radius: f32| {
-            r.distance_to_pos(pos(at)) - radius < NAME_CLEAR || gap(at, radius) < mine - NEARER
+        let mine = own.map_or(0.0, |n| n.gap(text, n.radius - ROUNDING));
+        let near = |n: &Node, radius: f32| {
+            n.gap(r, radius) < NAME_CLEAR || n.gap(text, radius) < mine - NEARER
+        };
+        let held = |h: &Held| {
+            let gap = |area: egui::Rect| area.distance_to_pos(pos(h.at)) - h.radius - ROUNDING;
+            gap(r) < NAME_CLEAR || gap(text) < mine - NEARER
         };
         let unit = own.and_then(|n| n.unit.as_deref());
         self.free.contains_rect(r)
@@ -2264,23 +2166,17 @@ impl<'a> Room<'a> {
                 by <= rank && (unit.is_none() || of != unit) && t.intersects(r.expand(NAME_CLEAR))
             })
             && own.is_none_or(|own| {
-                !self.drawn.iter().any(|n| {
-                    n.unit != own.unit
-                        && !(own.lit() && !own.plain() && (n.faded() || hidden(r, n)))
-                        && near(n.at, kept(n))
-                })
+                !(self.drawn.iter())
+                    .any(|n| n.unit != own.unit && !own.overlooks(n, r) && near(n, kept(n)))
             })
-            && !self.s.held.iter().any(|h| near(h.at, h.radius + ROUNDING))
+            && !self.s.held.iter().any(held)
             && module.is_none_or(|(module, within)| {
-                !self
-                    .spheres
-                    .iter()
+                !(self.s.sized())
                     .any(|m| m.name != module && r.distance_to_pos(pos(m.at)) < m.radius - 0.5)
-                    && !self.s.nodes.iter().any(|n| {
-                        n.on_screen
-                            && n.module.as_deref() == Some(module)
-                            && !(within && (!n.lit() || n.plain()))
-                            && near(n.at, kept(n))
+                    && !self.drawn.iter().any(|n| {
+                        n.module.as_deref() == Some(module)
+                            && !(within && n.unlit())
+                            && near(n, kept(n))
                     })
             })
     }
@@ -2297,45 +2193,33 @@ impl<'a> Room<'a> {
                 guess_size(self.s, &text, "function", (12.5, text::CHAR_WIDTH))
             },
             |[w, h]| egui::vec2(w, h),
-        );
-        let size = size + 2.0 * NAME_PILL;
+        ) + 2.0 * NAME_PILL;
         let reach = n.kept_off.unwrap_or(n.radius) + NAME_GAP;
         // Every place round its dot the placer tries.
-        let rank = n.rank();
         (0..labels::SPOTS.len())
             .filter(|&i| labels::spot_takes(i, size))
             .flat_map(|i| {
-                labels::SLIDES
-                    .iter()
-                    .map(move |&by| labels::slid(i, pos(n.at), reach, size, by))
+                (labels::SLIDES.iter()).map(move |&by| labels::slid(i, pos(n.at), reach, size, by))
             })
-            .find(|r| self.clear(*r, rank, Some(n), None))
+            .find(|r| self.clear(*r, n.rank(), Some(n), None))
     }
 }
 
 fn named_when_room(s: &Snap) -> Value {
     let room = Room::new(s);
-    let free = s.free();
     let mut offenders = Vec::new();
     // A dot off the free area, under the panel or past its edge, is no one's to name
     // beside it: an exit label carries it.
-    for n in room
-        .drawn
-        .iter()
-        .filter(|n| n.lit() && !n.plain() && free.contains(pos(n.at)))
-    {
-        if n.label.is_some() || n.unit.is_none() {
-            continue;
-        }
+    let unnamed = |n: &&&Node| {
+        !n.unlit() && room.free.contains(pos(n.at)) && n.label.is_none() && n.unit.is_some()
+    };
+    for n in room.drawn.iter().filter(unnamed) {
         if let Some(spot) = room.function_spot(n) {
-            let offender = json!({ "function": n.name, "roles": n.roles, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
+            let offender = json!({ "function": n.name, "roles": n.roles, "would_fit_at": rect_json(corners(spot)) });
             offenders.push((1.0 + f32::from(u8::from(n.focus())), offender));
         }
     }
-    for m in s
-        .spheres()
-        .filter(|m| m.on_screen && m.radius > 0.0 && m.label.is_none())
-    {
+    for m in s.sized().filter(|m| m.on_screen && m.label.is_none()) {
         let size = m.name_size.map_or_else(
             || guess_size(s, &m.name.to_uppercase(), "module", (13.5, CAPITAL_WIDTH)),
             |[w, h]| egui::vec2(w, h),
@@ -2347,7 +2231,7 @@ fn named_when_room(s: &Snap) -> Value {
                 spot.filter(|&spot| room.clear(spot, m.rank(), None, Some((&m.name, within))))
             });
         if let Some(spot) = fits {
-            let offender = json!({ "module": m.name, "would_fit_at": rect_json([spot.min.x, spot.min.y, spot.max.x, spot.max.y]) });
+            let offender = json!({ "module": m.name, "would_fit_at": rect_json(corners(spot)) });
             offenders.push((0.5, offender));
         }
     }
@@ -2358,14 +2242,16 @@ fn named_when_room(s: &Snap) -> Value {
 /// just above its sphere, and where that is taken, smaller inside its top, where it
 /// fits the sphere's width there.
 fn module_spots(m: &Module, size: egui::Vec2) -> [Option<egui::Rect>; 2] {
-    let top = m.at[1] - m.radius;
     let pill = size + 2.0 * NAME_PILL;
-    let above = egui::Rect::from_min_size(
-        egui::pos2(m.at[0] - pill.x / 2.0, top - labels::ABOVE - pill.y),
-        pill,
+    let top = egui::pos2(
+        m.at[0] - pill.x / 2.0,
+        m.at[1] - m.radius - labels::ABOVE - pill.y,
     );
     let small = size * (text::SMALL / text::TITLE) + 2.0 * NAME_PILL;
-    [Some(above), labels::inside(pos(m.at), m.radius, small)]
+    [
+        Some(egui::Rect::from_min_size(top, pill)),
+        labels::inside(pos(m.at), m.radius, small),
+    ]
 }
 
 /// Each name drawn, its pill round it, with the rank of what it names: only those
@@ -2380,9 +2266,7 @@ fn names_by_rank(s: &Snap) -> Vec<(egui::Rect, u8, Option<&str>)> {
                     .as_deref()
                     .and_then(|u| s.node(u))
                     .map_or(0, Node::rank),
-                "module" => s
-                    .modules
-                    .iter()
+                "module" => (s.modules.iter())
                     .find(|m| Some(&m.name) == l.of.as_ref())
                     .map_or(0, Module::rank),
                 _ => 0,
@@ -2400,339 +2284,171 @@ fn guess_size(s: &Snap, text: &str, kind: &str, fallback: (f32, f32)) -> egui::V
     let size = drawn().next().map_or(fallback.0, |l| l.size);
     let width = drawn()
         .map(|l| rect(l.rect).width() / (l.text.trim().chars().count().max(1) as f32 * l.size))
-        .fold(None, |most: Option<f32>, w| {
-            Some(most.map_or(w, |m| m.max(w)))
-        })
+        .reduce(f32::max)
         .unwrap_or(fallback.1);
     egui::vec2(text.chars().count() as f32 * size * width, size * 1.2)
 }
 
-fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
-    if s.state.mode != "journey" {
-        return skip("no journey open");
-    }
-    if s.expanded() {
-        return skip("expanded");
-    }
-    if since.by_hand {
-        return skip("the camera is where the user's hands put it");
-    }
-    if since.playing {
-        return skip("a frame of a transition still playing");
-    }
-    let opened = since.opening
-        || before.is_none_or(|b| b.state.mode != "journey" || b.state.start != s.state.start);
-    let framed = matches!(
-        since.last_move(),
-        Some(Kind::FrameAll | Kind::FrameFocus | Kind::Depth)
-    );
-    if !opened && !framed {
-        return skip("no journey opened, depth change, R, F or Fit since the last snapshot");
-    }
-    let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.in_journey()).collect();
-    if lit.len() < 2 {
-        return skip("fewer than two of the journey's functions drawn");
-    }
-    let free = s.free();
-    let disc = |at: [f32; 2], radius: f32| {
-        egui::Rect::from_center_size(pos(at), egui::Vec2::splat(2.0 * radius))
-    };
-    // The spheres holding what the journey lights, and the function set aside; a
-    // faint one holds none of it, but for the one set aside.
-    let aside = s
-        .nodes
+/// No two functions read the same name: on the graph within one module, in the
+/// journey's bars, or among the search's rows, each judged on its own. Two alike are
+/// told apart by their type or module.
+fn names_distinct(s: &Snap) -> Value {
+    let graph = (s.labels.iter().filter(|l| l.names == "function")).filter_map(|l| {
+        let unit = l.unit.as_deref()?;
+        Some((
+            format!(
+                "{} in {}",
+                l.of.as_ref()?,
+                s.module_of(Some(unit)).unwrap_or_default()
+            ),
+            unit,
+        ))
+    });
+    let bars = s
+        .bars
         .iter()
-        .find(|n| n.is("aside"))
-        .and_then(|n| n.module.as_ref());
-    let spheres: Vec<&Module> = s
-        .spheres()
-        .filter(|m| m.radius > 0.0 && (m.body != "faint" || aside == Some(&m.name)))
-        .collect();
-    let span = lit
-        .iter()
-        .flat_map(|n| std::iter::once(disc(n.at, n.radius)).chain(n.label_rect.map(rect)))
-        .chain(spheres.iter().map(|m| disc(m.at, m.radius)))
-        .reduce(egui::Rect::union)
-        .unwrap_or(egui::Rect::NOTHING);
-    let share = (span.width() / free.width()).max(span.height() / free.height());
+        .filter_map(|b| Some((b.name.clone(), b.unit.as_deref()?)));
+    let rows =
+        (s.search_rows.iter().flatten()).filter_map(|r| Some((r.text.clone(), r.unit.as_deref()?)));
+    let lists: [(&str, Vec<(String, &str)>); 3] = [
+        ("graph", graph.collect()),
+        ("bars", bars.collect()),
+        ("search rows", rows.collect()),
+    ];
     let mut offenders = Vec::new();
-    for m in spheres {
-        let out = circle_out(free, v2(m.at), m.radius);
-        if out > EDGE {
-            let offender = json!({ "module": m.name, "out_of_the_free_area_by": r1(out) });
-            offenders.push((out, offender));
+    for (place, names) in &lists {
+        let mut by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (name, unit) in names {
+            let units = by_name.entry(name.as_str()).or_default();
+            if !units.contains(unit) {
+                units.push(*unit);
+            }
         }
-    }
-    if share < JOURNEY_FILL {
-        let offender = json!({
-            "why": "the journey's spheres, functions and names take too little of the free area",
-            "share": r2(share), "least": JOURNEY_FILL, "span": [r1(span.width()), r1(span.height())],
-            "free_area": [r1(free.width()), r1(free.height())],
-        });
-        offenders.push((JOURNEY_FILL - share, offender));
-    }
-    for n in lit {
-        let out = circle_out(free, v2(n.at), n.radius);
-        if out > EDGE {
-            let offender =
-                json!({ "function": n.name, "roles": n.roles, "out_of_the_free_area_by": r1(out) });
-            offenders.push((out, offender));
-        }
-    }
-    with(verdict(offenders), "share", json!(r2(share)))
-}
-
-fn colours(s: &Snap) -> Value {
-    let mut offenders = Vec::new();
-    // Hovering never looks like the selection: no white fill, no ring the selection's
-    // color.
-    let marked: Vec<[f32; 3]> = s
-        .nodes
-        .iter()
-        .filter(|n| n.is("start") || n.is("selection"))
-        .flat_map(|n| n.rings.iter().filter_map(|r| rgb(&r.color)))
-        .collect();
-    for n in s.nodes.iter().filter(|n| n.is("hovered") && !n.focus()) {
-        let white = n.color.as_deref().and_then(rgb).is_some_and(whitish);
-        let ring = n
-            .rings
-            .iter()
-            .filter_map(|r| rgb(&r.color))
-            .find(|c| whitish(*c) || marked.iter().any(|m| distance(*m, *c) < 0.1));
-        if white || ring.is_some() {
-            let offender = json!({
-                "function": n.name, "why": "hovered, it looks like the selection",
-                "fill": n.color, "rings": n.rings.iter().map(|r| &r.color).collect::<Vec<_>>(),
-            });
-            offenders.push((2.0, offender));
-        }
-    }
-    // Each function's fill and each arrow's color is its role's.
-    let cursor = s
-        .nodes
-        .iter()
-        .find(|n| n.is("cursor"))
-        .and_then(|n| n.unit.clone());
-    for n in &s.nodes {
-        let Some(want) = node_role_color(n) else {
-            continue;
-        };
-        if let Some(got) = n.color.as_deref().and_then(rgb)
-            && !like(got, want)
-        {
-            let offender = json!({ "function": n.name, "roles": n.roles, "fill": n.color, "role_color": hex3(want) });
+        for (name, units) in by_name.into_iter().filter(|(_, u)| u.len() > 1) {
+            let offender = json!({ "in": place, "name": name, "functions": units });
             offenders.push((1.0, offender));
         }
     }
-    // The function set aside keeps its role's fill, and a white ring says it is.
-    for n in s.nodes.iter().filter(|n| n.is("aside") && !n.is("cursor")) {
-        let white = n.rings.iter().filter_map(|r| rgb(&r.color)).any(whitish);
-        if !white {
-            let offender = json!({ "function": n.name, "why": "set aside, but no white ring", "rings": n.rings.iter().map(|r| &r.color).collect::<Vec<_>>() });
-            offenders.push((1.0, offender));
-        }
-        if n.color.as_deref().and_then(rgb).is_some_and(whitish) {
-            let offender = json!({ "function": n.name, "why": "set aside, but filled white as the start is", "fill": n.color });
-            offenders.push((1.0, offender));
-        }
+    if lists.iter().all(|(_, names)| names.is_empty()) {
+        return skip("no function named");
     }
-    // A call only guessed is drawn faint, as its bar is: darker than its role's.
-    for n in s.nodes.iter().filter(|n| n.is("guessed")) {
-        let (Some(got), Some(want)) = (n.color.as_deref().and_then(rgb), node_role_color(n)) else {
-            continue;
-        };
-        let bright = |c: [f32; 3]| c[0].max(c[1]).max(c[2]);
-        if bright(got) > GUESSED_DOT * bright(want) {
-            let offender = json!({ "function": n.name, "why": "only guessed, but drawn as bright as a sure call", "fill": n.color, "role_color": hex3(want) });
-            offenders.push((1.0, offender));
-        }
-    }
-    // A call that calls the start back is ringed in the caller's violet.
-    for n in s.nodes.iter().filter(|n| n.is("calls back") && !n.focus()) {
-        let violet = n
-            .rings
-            .iter()
-            .filter_map(|r| rgb(&r.color))
-            .any(|c| like(c, srgb(CALLER)));
-        if !violet {
-            let offender = json!({ "function": n.name, "why": "calls back, but no violet ring", "rings": n.rings.iter().map(|r| &r.color).collect::<Vec<_>>() });
-            offenders.push((1.0, offender));
-        }
-    }
-    // A bar is painted as its node is: the cursor's other runs as it would be were
-    // the cursor elsewhere; a call only guessed in the same hue, faint.
-    caller_bar_colours(s, &mut offenders);
-    for bar in s.bars.iter().filter(|b| !b.cursor && !b.caller) {
-        let (Some(unit), Some(got)) = (&bar.unit, bar.color.as_deref().and_then(rgb)) else {
-            continue;
-        };
-        let strength = bar.color.as_deref().and_then(alpha).unwrap_or(1.0);
-        if bar.guessed && strength > FAINT {
-            let offender = json!({ "bar": bar.number, "name": bar.name, "bar_color": bar.color, "why": "only guessed, but not faint", "most_alpha": FAINT });
-            offenders.push((1.0, offender));
-        }
-        let Some(n) = s.node(unit).filter(|n| !n.is("cursor")) else {
-            continue;
-        };
-        let want = if n.is("guessed") {
-            node_role_color(n)
-        } else {
-            n.color.as_deref().and_then(rgb)
-        };
-        if let Some(want) = want
-            && !like(got, want)
-        {
-            let offender = json!({ "bar": bar.number, "name": bar.name, "bar_color": bar.color, "node_color": n.color });
-            offenders.push((1.0, offender));
-        }
-    }
-    call_colours(s, cursor.as_deref(), &mut offenders);
     verdict(offenders)
 }
 
-/// A bar in the row of the start's callers is violet, whatever else its function is;
-/// faint, as its dot is, one folded into its module's count.
-fn caller_bar_colours(s: &Snap, offenders: &mut Vec<(f32, Value)>) {
-    for bar in s.bars.iter().filter(|b| b.caller) {
-        let Some(got) = bar.color.as_deref().and_then(rgb) else {
-            continue;
+// Calls: of a size, clear of what they pass, labelled where they leave, drawn
+// wherever the selection's are due, and in their role's color.
+
+fn arrow_sizes(s: &Snap) -> Value {
+    let mut offenders = Vec::new();
+    let shown = || {
+        (s.arrows.iter().map(|a| ("call", a))).chain(s.module_arrows.iter().map(|a| ("module", a)))
+    };
+    let shown: Vec<(&str, &Arrow)> = shown().filter(|(_, a)| a.shown()).collect();
+    if shown.is_empty() {
+        return skip("no arrow drawn on screen");
+    }
+    for &(kind, a) in &shown {
+        let width = a.width.unwrap_or(0.0);
+        if width > ARROW_WIDTH {
+            let offender = json!({ "arrow": kind, "from": a.from, "to": a.to, "width": r1(width), "most": ARROW_WIDTH });
+            offenders.push((width - ARROW_WIDTH, offender));
+        }
+        let head = a.head.unwrap_or(0.0).max(a.head_width.unwrap_or(0.0) / 2.0);
+        // The whole map's faint links between modules need no head to be seen.
+        let (least, most) = HEAD_SIZE;
+        let least = if a.flow == "module" { 0.0 } else { least };
+        if !(least..=most).contains(&head) {
+            let offender = json!({ "arrow": kind, "from": a.from, "to": a.to, "head": r1(head), "allowed": [least, most] });
+            offenders.push(((least - head).max(head - most), offender));
+        }
+    }
+    // The whole map's links between modules are one width, however many calls each
+    // carries.
+    let widths = (shown.iter())
+        .filter(|(kind, _)| *kind == "module")
+        .filter_map(|(_, a)| a.width);
+    let (thinnest, widest) = widths.fold((f32::INFINITY, 0.0_f32), |(lo, hi), w| {
+        (lo.min(w), hi.max(w))
+    });
+    if widest - thinnest > 0.1 {
+        let offender = json!({ "arrow": "module", "why": "the whole map's links differ in width", "widths": [r1(thinnest), r1(widest)] });
+        offenders.push((widest - thinnest, offender));
+    }
+    // One head per arrow: a module arrow ends in a head at the sphere's edge only
+    // when no call drawn along it goes on to a dot with a head of its own.
+    for (_, m) in shown.iter().filter(|(kind, _)| *kind == "module") {
+        let along = |(kind, a): &&(&str, &Arrow)| {
+            *kind == "call"
+                && s.module_of(a.from_unit.as_deref()) == Some(m.from.as_str())
+                && s.module_of(a.to_unit.as_deref()) == Some(m.to.as_str())
         };
-        let strength = bar.color.as_deref().and_then(alpha).unwrap_or(1.0);
-        let folded = bar
-            .unit
-            .as_deref()
-            .and_then(|u| s.node(u))
-            .is_some_and(|n| n.roles.iter().any(|r| r.contains("folded")));
-        if !like(got, srgb(CALLER)) || folded != (strength <= FAINT) {
-            let offender = json!({ "caller_bar": bar.name, "bar_color": bar.color, "folded": folded, "why": "a caller's bar is violet, faint only when folded into its module's count" });
+        if let Some((_, call)) = shown.iter().find(along) {
+            let offender = json!({
+                "arrow": "module", "from": m.from, "to": m.to,
+                "why": "a head at the sphere's edge, and another where the call goes on to its dot",
+                "call": [call.from, call.to],
+            });
             offenders.push((1.0, offender));
         }
     }
+    verdict(offenders)
 }
 
-/// Each call's color is its role's: none reads white; only the journey's call into
-/// the `cursor` and the calls of the function set aside are drawn followed; a call
-/// off the journey among the expanded module's functions, and one only guessed, are
-/// faint.
-fn call_colours(s: &Snap, cursor: Option<&str>, offenders: &mut Vec<(f32, Value)>) {
-    let aside = s
-        .nodes
-        .iter()
-        .find(|n| n.is("aside"))
-        .and_then(|n| n.unit.as_deref());
-    for a in &s.arrows {
-        let Some(got) = a.color.as_deref().and_then(rgb) else {
-            continue;
-        };
-        let strength = a.color.as_deref().and_then(alpha).unwrap_or(1.0);
-        let from_aside = aside.is_some() && a.from_unit.as_deref() == aside;
-        let into_cursor = cursor.is_some() && a.to_unit.as_deref() == cursor && a.flow == "journey";
-        // White is the selection's and the start's alone: no call reads white on the
-        // ground, a grey one from off the journey followed least of all.
-        let shown = over_ground(got, strength);
-        if whitish(shown) {
-            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": "a call that reads white, as the selection does", "shows": hex3(shown) });
-            offenders.push((1.0, offender));
-            continue;
-        }
-        // Only the journey's call into the cursor and the calls of the function set
-        // aside are drawn stronger or wider than the rest: pointing at a function
-        // lights none.
-        let bright = strength > CALL_STRENGTH + 0.05 || a.width.unwrap_or(0.0) > CALL_WIDTH + 0.25;
-        if bright && !from_aside && !into_cursor {
-            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "width": a.width, "why": "drawn as followed, but neither into the cursor nor from the function set aside" });
-            offenders.push((1.0, offender));
-            continue;
-        }
-        // A call among the expanded module's functions that the journey does not make,
-        // out of the function set aside too, and a call only guessed, are faint.
-        let faint = a.flow == "inner" || a.guessed;
-        if faint && strength > FAINT {
-            let why = if a.guessed {
-                "a call only guessed drawn strong"
-            } else {
-                "a call off the journey drawn bright"
-            };
-            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": why, "most_alpha": FAINT });
-            offenders.push((1.0, offender));
-            continue;
-        }
-        let want = flow_color(&a.flow, a.level);
-        let pink = into_cursor && like(got, srgb(CURSOR));
-        if !like(got, want) && !pink {
-            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "level": a.level, "color": a.color, "role_color": hex3(want) });
-            offenders.push((1.0, offender));
-        }
-    }
-}
-
-/// No call's line runs through a lit dot, or a lit function's name in a sphere it
-/// leaves or enters, but its own ends': it goes round them. Left out: the faint
-/// calls, among an expanded module's functions or only guessed; faint unnamed dots;
-/// an expanded module's plain functions, dots and names, which in a crowded one no
-/// line could keep off (it breaks round a dot); and browsing, names, which sit where
-/// the map's dots leave room.
+/// No call's line runs more than [`ARROW_DETOUR`] as long as straight; a bent one
+/// runs through no lit dot nor the ring round one, but its own ends', nor through
+/// its own ends' names away from where it leaves its dot. A line may pass under any
+/// other name: the pill hides it there, and bending round names would loop past the
+/// bound. Left out: the faint calls, among an expanded module's functions or only
+/// guessed; faint unnamed dots; and an expanded module's plain functions, which in a
+/// crowded one no line could keep off (it breaks round a dot).
 fn arrows_clear(s: &Snap) -> Value {
-    let dots: Vec<&Node> = s
-        .nodes
-        .iter()
-        // Lines are routed without the callers I brings in, so I bends none.
-        .filter(|n| n.on_screen && n.lit() && !n.plain() && (!n.is("outside") || n.focus()))
+    // Lines are routed without the callers I brings in, so I bends none.
+    let dots: Vec<&Node> = (s.nodes.iter())
+        .filter(|n| n.on_screen && !n.unlit() && (!n.is("outside") || n.focus()))
         .collect();
     let lit = |unit: &Option<String>| dots.iter().any(|n| n.unit.is_some() && n.unit == *unit);
-    let names: Vec<&Label> = s
-        .labels
-        .iter()
+    let names: Vec<&Label> = (s.labels.iter())
         .filter(|l| l.names == "function" && lit(&l.unit))
         .collect();
-    let mut offenders = Vec::new();
-    let mut judged = 0;
-    for a in s
-        .arrows
-        .iter()
+    let calls: Vec<&Arrow> = (s.arrows.iter())
         .filter(|a| a.flow != "inner" && !a.guessed && a.path.len() >= 2)
-    {
-        judged += 1;
-        let pieces: Vec<(Vec2, Vec2)> = a.path.windows(2).map(|p| (v2(p[0]), v2(p[1]))).collect();
+        .collect();
+    if calls.is_empty() {
+        return skip("no call drawn");
+    }
+    let mut offenders = Vec::new();
+    for a in calls {
+        let pieces = a.pieces();
         let run: f32 = pieces.iter().map(|(p, q)| p.distance(*q)).sum();
         let chord = v2(a.path[0]).distance(v2(a.path[a.path.len() - 1]));
         if run > chord * ARROW_DETOUR + ARROW_SLACK {
-            let offender = json!({ "arrow": [a.from, a.to], "detour": r2(run / chord.max(1.0)), "run": r1(run), "straight": r1(chord) });
-            offenders.push((run / chord.max(1.0), offender));
+            let detour = run / chord.max(1.0);
+            let offender = json!({ "arrow": [a.from, a.to], "detour": r2(detour), "run": r1(run), "straight": r1(chord) });
+            offenders.push((detour, offender));
         }
-        offenders.extend(through_dots(a, &pieces, &dots));
-        offenders.extend(through_names(s, a, &pieces, &names));
-    }
-    if judged == 0 {
-        return skip("no call drawn");
+        // A straight line through a dot is drawn broken round it, as no gentle bend
+        // clears it.
+        if a.path.len() > 2 {
+            offenders.extend(through_dots(a, &pieces, &dots));
+            offenders.extend(through_names(s, a, &pieces, &names));
+        }
     }
     verdict(offenders)
 }
 
-/// Whether `unit` is one of the call's own ends.
-fn own_end(a: &Arrow, unit: Option<&str>) -> bool {
-    unit.is_some() && (unit == a.from_unit.as_deref() || unit == a.to_unit.as_deref())
-}
-
 /// The lit dots a bent call's line runs through, or the ring round one (but the
-/// pointer's): a straight line is drawn broken round a dot no gentle bend clears.
-fn through_dots(a: &Arrow, pieces: &[(Vec2, Vec2)], dots: &[&Node]) -> Vec<(f32, Value)> {
-    if a.path.len() <= 2 {
-        return Vec::new();
-    }
+/// pointer's).
+fn through_dots(a: &Arrow, pieces: &[(Vec2, Vec2)], dots: &[&Node]) -> Found {
     let mut offenders = Vec::new();
-    for n in dots.iter().filter(|n| !own_end(a, n.unit.as_deref())) {
+    for n in dots.iter().filter(|n| !a.ends_at(n.unit.as_deref())) {
+        let rings = n.rings.iter().map(|r| r.radius + RING_MARGIN);
         let ring = if n.is("hovered") {
             0.0
         } else {
-            n.rings
-                .iter()
-                .map(|r| r.radius + RING_MARGIN)
-                .fold(0.0, f32::max)
+            rings.fold(0.0, f32::max)
         };
         let reach = n.radius.max(ring);
-        let near = pieces
-            .iter()
+        let near = (pieces.iter())
             .map(|&(p, q)| piece_distance(p, q, v2(n.at)))
             .fold(f32::INFINITY, f32::min);
         if near < reach - ARROW_SLACK {
@@ -2744,19 +2460,10 @@ fn through_dots(a: &Arrow, pieces: &[(Vec2, Vec2)], dots: &[&Node]) -> Vec<(f32,
 }
 
 /// The names of a bent call's own ends its line runs through, away from where it
-/// leaves its dot. A line may pass under any other name: the pill hides it there,
-/// and bending round names would loop past the 1.3x bound.
-fn through_names(
-    s: &Snap,
-    a: &Arrow,
-    pieces: &[(Vec2, Vec2)],
-    names: &[&Label],
-) -> Vec<(f32, Value)> {
-    if a.path.len() <= 2 {
-        return Vec::new();
-    }
+/// leaves its dot.
+fn through_names(s: &Snap, a: &Arrow, pieces: &[(Vec2, Vec2)], names: &[&Label]) -> Found {
     let mut offenders = Vec::new();
-    for l in names.iter().filter(|l| own_end(a, l.unit.as_deref())) {
+    for l in names.iter().filter(|l| a.ends_at(l.unit.as_deref())) {
         let dot = l.unit.as_deref().and_then(|u| s.node(u));
         let off_dot = |p: Vec2, q: Vec2| {
             dot.is_none_or(|n| {
@@ -2776,69 +2483,18 @@ fn through_names(
     offenders
 }
 
-/// No two functions read the same name: on the graph within one module, in the
-/// journey's bars, or among the search's rows, each judged on its own. Two alike are
-/// told apart by their type or module.
-fn names_distinct(s: &Snap) -> Value {
-    let module = |unit: &str| {
-        s.node(unit)
-            .and_then(|n| n.module.clone())
-            .unwrap_or_default()
-    };
-    let graph = s
-        .labels
-        .iter()
-        .filter(|l| l.names == "function")
-        .filter_map(|l| {
-            let unit = l.unit.clone()?;
-            Some((format!("{} in {}", l.of.clone()?, module(&unit)), unit))
-        });
-    let bars = s
-        .bars
-        .iter()
-        .filter_map(|b| Some((b.name.clone(), b.unit.clone()?)));
-    let rows = s
-        .search_rows
-        .iter()
-        .flatten()
-        .filter_map(|r| Some((r.text.clone(), r.unit.clone()?)));
-    let lists: [(&str, Vec<(String, String)>); 3] = [
-        ("graph", graph.collect()),
-        ("bars", bars.collect()),
-        ("search rows", rows.collect()),
-    ];
-    let mut offenders = Vec::new();
-    let mut judged = 0;
-    for (place, names) in &lists {
-        judged += names.len();
-        let mut by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for (name, unit) in names {
-            let units = by_name.entry(name.as_str()).or_default();
-            if !units.contains(&unit.as_str()) {
-                units.push(unit);
-            }
-        }
-        for (name, units) in by_name.into_iter().filter(|(_, u)| u.len() > 1) {
-            let offender = json!({ "in": place, "name": name, "functions": units });
-            offenders.push((1.0, offender));
-        }
-    }
-    if judged == 0 {
-        return skip("no function named");
-    }
-    verdict(offenders)
-}
-
-/// Expanded in a journey, every call drawn from a function in the free area to one
-/// off it is labelled where its line leaves, with the far function's name, on a pill
-/// inside the free area.
+/// With a module expanded, every lit call drawn from a function in the free area to
+/// one off it, or in a journey every call in from outside, is labelled where its line
+/// leaves, with the far function's name (or past a few, its module's), on a pill
+/// inside the free area; no other call is, and no two labels name one far function
+/// or lie over each other.
 fn exits_named(s: &Snap) -> Value {
     if !s.expanded() && s.state.mode != "journey" {
         return skip("browsing with no module expanded");
     }
     let free = s.free();
     let inside = |at: [f32; 2]| free.contains(pos(at));
-    let module = |unit: &Option<String>| unit.as_deref().and_then(|u| s.node(u)?.module.clone());
+    let module = |unit: &Option<String>| s.module_of(unit.as_deref());
     let expanded = s.state.expanded.as_deref().filter(|_| s.expanded());
     let in_expanded = |unit: &Option<String>| {
         module(unit).is_some_and(|m| expanded.is_some_and(|e| m.eq_ignore_ascii_case(e)))
@@ -2851,9 +2507,7 @@ fn exits_named(s: &Snap) -> Value {
     };
     let mut offenders = Vec::new();
     let mut judged = 0;
-    for a in s
-        .arrows
-        .iter()
+    for a in (s.arrows.iter())
         .filter(|a| a.flow != "inner" && a.path.len() >= 2)
         .filter(|a| relevant(&a.from_unit, &a.to_unit, &a.flow))
     {
@@ -2867,10 +2521,7 @@ fn exits_named(s: &Snap) -> Value {
         } else {
             (&a.from, &a.from_unit)
         };
-        let exit = s
-            .exits
-            .iter()
-            .find(|e| e.from_unit == a.from_unit && e.to_unit == a.to_unit);
+        let exit = (s.exits.iter()).find(|e| e.from_unit == a.from_unit && e.to_unit == a.to_unit);
         // A label names its far function, or, past a few, that function's module.
         let names_far = |e: &Exit| {
             e.text.contains(far.as_str())
@@ -2879,48 +2530,35 @@ fn exits_named(s: &Snap) -> Value {
         match exit {
             Some(e) if names_far(e) && free.contains_rect(rect(e.rect)) => {}
             Some(e) => {
-                let offender = json!({ "arrow": [a.from, a.to], "why": "its exit label does not name the far function inside the free area", "label": e.text, "rect": rect_json(e.rect) });
+                let why = "its exit label does not name the far function inside the free area";
+                let offender = json!({ "arrow": [a.from, a.to], "why": why, "label": e.text, "rect": rect_json(e.rect) });
                 offenders.push((1.0, offender));
             }
             None => {
-                let offender = json!({ "arrow": [a.from, a.to], "why": "leaves the free area unlabelled", "far": far });
+                let why = "leaves the free area unlabelled";
+                let offender = json!({ "arrow": [a.from, a.to], "why": why, "far": far });
                 offenders.push((1.0, offender));
             }
         }
     }
-    let flow = |e: &Exit| {
-        s.arrows
-            .iter()
-            .find(|a| a.from_unit == e.from_unit && a.to_unit == e.to_unit)
-            .map_or("", |a| a.flow.as_str())
-    };
-    offenders.extend(exits_apart(s, &|e| {
-        relevant(&e.from_unit, &e.to_unit, flow(e))
-    }));
-    if judged == 0 && s.exits.is_empty() {
-        return skip("no call leaves the free area");
-    }
-    verdict(offenders)
-}
-
-/// The exit labels for calls that should have none, two naming one far function,
-/// and two lying over each other.
-fn exits_apart(s: &Snap, relevant: &dyn Fn(&Exit) -> bool) -> Vec<(f32, Value)> {
-    let mut offenders = Vec::new();
     let mut pills: Vec<(egui::Rect, &Exit)> = Vec::new();
     for e in &s.exits {
-        if !relevant(e) {
-            let offender = json!({ "label": e.text, "why": "labels a call that should have none: a plain one among the expanded module's, or collapsed, one not in from outside" });
-            offenders.push((1.0, offender));
+        let flow = (s.arrows.iter())
+            .find(|a| a.from_unit == e.from_unit && a.to_unit == e.to_unit)
+            .map_or("", |a| a.flow.as_str());
+        if !relevant(&e.from_unit, &e.to_unit, flow) {
+            let why = "labels a call that should have none: a plain one among the expanded module's, or collapsed, one not in from outside";
+            offenders.push((1.0, json!({ "label": e.text, "why": why })));
         }
-        let r = rect(e.rect);
         // One label names every call leaving for its function or module.
+        let r = rect(e.rect);
         if pills.iter().any(|(p, _)| *p == r) {
             continue;
         }
         for (p, other) in &pills {
             if other.far_unit.is_some() && other.far_unit == e.far_unit {
-                let offender = json!({ "label": e.text, "why": "names a far function another label names", "other": other.text });
+                let why = "names a far function another label names";
+                let offender = json!({ "label": e.text, "why": why, "other": other.text });
                 offenders.push((1.0, offender));
             } else if p.intersects(r) {
                 let both = p.intersect(r);
@@ -2930,7 +2568,10 @@ fn exits_apart(s: &Snap, relevant: &dyn Fn(&Exit) -> bool) -> Vec<(f32, Value)> 
         }
         pills.push((r, e));
     }
-    offenders
+    if judged == 0 && s.exits.is_empty() {
+        return skip("no call leaves the free area");
+    }
+    verdict(offenders)
 }
 
 /// Every call into the selection (or the start) and each of its own, between two dots
@@ -2944,10 +2585,7 @@ fn calls_drawn(s: &Snap) -> Value {
     if node(centre).is_none() {
         return skip("the selection or the start is not on screen");
     }
-    let own = s
-        .content
-        .calls
-        .iter()
+    let own = (s.content.calls.iter())
         .filter(|c| c.parent.as_deref().is_none_or(str::is_empty))
         .map(|c| (centre.as_str(), c.name.as_str()));
     let into = s
@@ -2962,12 +2600,13 @@ fn calls_drawn(s: &Snap) -> Value {
             continue;
         };
         // Two dots touching leave no room for a line, its gaps and its head.
-        if v2(a.at).distance(v2(b.at)) <= a.radius + b.radius + HEAD_SIZE.0 + 2.0 {
+        let apart = v2(a.at).distance(v2(b.at));
+        if apart <= a.radius + b.radius + HEAD_SIZE.0 + 2.0 {
             continue;
         }
         judged += 1;
         if !s.arrows.iter().any(|x| x.from == from && x.to == to) {
-            let offender = json!({ "call": [from, to], "apart": r1(v2(a.at).distance(v2(b.at))), "why": "not drawn" });
+            let offender = json!({ "call": [from, to], "apart": r1(apart), "why": "not drawn" });
             offenders.push((1.0, offender));
         }
     }
@@ -2977,35 +2616,171 @@ fn calls_drawn(s: &Snap) -> Value {
     verdict(offenders)
 }
 
-/// How near the piece of line from `p` to `q` comes to `at`.
-fn piece_distance(p: Vec2, q: Vec2, at: Vec2) -> f32 {
-    let along = q - p;
-    let t = ((at - p).dot(along) / along.length_squared().max(f32::EPSILON)).clamp(0.0, 1.0);
-    (p + along * t).distance(at)
+// Colors.
+
+fn colours(s: &Snap) -> Value {
+    let mut offenders = Vec::new();
+    let rings = |n: &Node| n.rings.iter().map(|r| r.color.clone()).collect::<Vec<_>>();
+    let ringed = |n: &Node, test: &dyn Fn([f32; 3]) -> bool| {
+        n.rings.iter().filter_map(|r| rgb(&r.color)).any(test)
+    };
+    let fill = |n: &Node| n.color.as_deref().and_then(rgb);
+    // Hovering never looks like the selection: no white fill, no ring the selection's
+    // color.
+    let marked: Vec<[f32; 3]> = (s.nodes.iter())
+        .filter(|n| n.is("start") || n.is("selection"))
+        .flat_map(|n| n.rings.iter().filter_map(|r| rgb(&r.color)))
+        .collect();
+    for n in s.nodes.iter().filter(|n| n.is("hovered") && !n.focus()) {
+        let selection_like =
+            |c: [f32; 3]| whitish(c) || marked.iter().any(|m| distance(*m, c) < 0.1);
+        if fill(n).is_some_and(whitish) || ringed(n, &selection_like) {
+            let why = "hovered, it looks like the selection";
+            let offender =
+                json!({ "function": n.name, "why": why, "fill": n.color, "rings": rings(n) });
+            offenders.push((2.0, offender));
+        }
+    }
+    // Each function's fill is its role's.
+    for n in &s.nodes {
+        if let (Some(want), Some(got)) = (node_role_color(n), fill(n))
+            && !like(got, want)
+        {
+            let offender = json!({ "function": n.name, "roles": n.roles, "fill": n.color, "role_color": hex3(want) });
+            offenders.push((1.0, offender));
+        }
+    }
+    // The function set aside keeps its role's fill, and a white ring says it is.
+    for n in s.nodes.iter().filter(|n| n.is("aside") && !n.is("cursor")) {
+        if !ringed(n, &whitish) {
+            let why = "set aside, but no white ring";
+            let offender = json!({ "function": n.name, "why": why, "rings": rings(n) });
+            offenders.push((1.0, offender));
+        }
+        if fill(n).is_some_and(whitish) {
+            let why = "set aside, but filled white as the start is";
+            let offender = json!({ "function": n.name, "why": why, "fill": n.color });
+            offenders.push((1.0, offender));
+        }
+    }
+    // A call only guessed is drawn faint, as its bar is: darker than its role's.
+    let bright = |c: [f32; 3]| c[0].max(c[1]).max(c[2]);
+    for n in s.nodes.iter().filter(|n| n.is("guessed")) {
+        if let (Some(got), Some(want)) = (fill(n), node_role_color(n))
+            && bright(got) > GUESSED_DOT * bright(want)
+        {
+            let why = "only guessed, but drawn as bright as a sure call";
+            offenders.push((1.0, json!({ "function": n.name, "why": why, "fill": n.color, "role_color": hex3(want) })));
+        }
+    }
+    // A call that calls the start back is ringed in the caller's violet.
+    for n in s.nodes.iter().filter(|n| n.is("calls back") && !n.focus()) {
+        if !ringed(n, &|c: [f32; 3]| like(c, srgb(CALLER))) {
+            let why = "calls back, but no violet ring";
+            let offender = json!({ "function": n.name, "why": why, "rings": rings(n) });
+            offenders.push((1.0, offender));
+        }
+    }
+    bar_colours(s, &mut offenders);
+    call_colours(s, &mut offenders);
+    verdict(offenders)
 }
 
-/// Whether the piece of line from `p` to `q` runs through `r`.
-fn crosses_rect(p: Vec2, q: Vec2, r: egui::Rect) -> bool {
-    if r.width() <= 0.0 || r.height() <= 0.0 {
-        return false;
-    }
-    let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
-    let along = q - p;
-    for (start, delta, low, high) in [
-        (p.x, along.x, r.min.x, r.max.x),
-        (p.y, along.y, r.min.y, r.max.y),
-    ] {
-        if delta.abs() < f32::EPSILON {
-            if start < low || start > high {
-                return false;
+/// A bar is painted as its node is: the cursor's other runs as it would be were the
+/// cursor elsewhere; a call only guessed in the same hue, faint. A bar in the row of
+/// the start's callers is violet, whatever else its function is; faint, as its dot
+/// is, one folded into its module's count.
+fn bar_colours(s: &Snap, offenders: &mut Found) {
+    for bar in &s.bars {
+        let Some(got) = bar.color.as_deref().and_then(rgb) else {
+            continue;
+        };
+        let strength = bar.color.as_deref().and_then(alpha).unwrap_or(1.0);
+        let node = bar.unit.as_deref().and_then(|u| s.node(u));
+        if bar.caller {
+            let folded = node.is_some_and(|n| n.roles.iter().any(|r| r.contains("folded")));
+            if !like(got, srgb(CALLER)) || folded != (strength <= FAINT) {
+                let why =
+                    "a caller's bar is violet, faint only when folded into its module's count";
+                offenders.push((1.0, json!({ "caller_bar": bar.name, "bar_color": bar.color, "folded": folded, "why": why })));
             }
             continue;
         }
-        let (u0, u1) = ((low - start) / delta, (high - start) / delta);
-        t0 = t0.max(u0.min(u1));
-        t1 = t1.min(u0.max(u1));
+        if bar.cursor || bar.unit.is_none() {
+            continue;
+        }
+        if bar.guessed && strength > FAINT {
+            let why = "only guessed, but not faint";
+            let offender = json!({ "bar": bar.number, "name": bar.name, "bar_color": bar.color, "why": why, "most_alpha": FAINT });
+            offenders.push((1.0, offender));
+        }
+        let Some(n) = node.filter(|n| !n.is("cursor")) else {
+            continue;
+        };
+        let want = if n.is("guessed") {
+            node_role_color(n)
+        } else {
+            n.color.as_deref().and_then(rgb)
+        };
+        if want.is_some_and(|want| !like(got, want)) {
+            let offender = json!({ "bar": bar.number, "name": bar.name, "bar_color": bar.color, "node_color": n.color });
+            offenders.push((1.0, offender));
+        }
     }
-    t0 < t1
+}
+
+/// Each call's color is its role's: none reads white; only the journey's call into
+/// the cursor and the calls of the function set aside are drawn followed; a call
+/// off the journey among the expanded module's functions, and one only guessed, are
+/// faint.
+fn call_colours(s: &Snap, offenders: &mut Found) {
+    let cursor = s.cursor();
+    let aside = s.aside().and_then(|n| n.unit.as_deref());
+    for a in &s.arrows {
+        let Some(got) = a.color.as_deref().and_then(rgb) else {
+            continue;
+        };
+        let strength = a.color.as_deref().and_then(alpha).unwrap_or(1.0);
+        let from_aside = aside.is_some() && a.from_unit.as_deref() == aside;
+        let into_cursor = cursor.is_some() && a.to_unit.as_deref() == cursor && a.flow == "journey";
+        let about = |why: &str| json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": why });
+        // White is the selection's and the start's alone: no call reads white on the
+        // ground, a grey one from off the journey followed least of all.
+        let shown = over_ground(got, strength);
+        if whitish(shown) {
+            let why = "a call that reads white, as the selection does";
+            offenders.push((1.0, with(about(why), "shows", json!(hex3(shown)))));
+            continue;
+        }
+        // Only the journey's call into the cursor and the calls of the function set
+        // aside are drawn stronger or wider than the rest: pointing at a function
+        // lights none.
+        let followed =
+            strength > CALL_STRENGTH + 0.05 || a.width.unwrap_or(0.0) > arrows::CALL_WIDTH + 0.25;
+        if followed && !from_aside && !into_cursor {
+            let why =
+                "drawn as followed, but neither into the cursor nor from the function set aside";
+            offenders.push((1.0, with(about(why), "width", json!(a.width))));
+            continue;
+        }
+        // A call among the expanded module's functions that the journey does not make,
+        // out of the function set aside too, and a call only guessed, are faint.
+        if (a.flow == "inner" || a.guessed) && strength > FAINT {
+            let why = if a.guessed {
+                "a call only guessed drawn strong"
+            } else {
+                "a call off the journey drawn bright"
+            };
+            offenders.push((1.0, with(about(why), "most_alpha", json!(FAINT))));
+            continue;
+        }
+        let want = flow_color(&a.flow, a.level);
+        let pink = into_cursor && like(got, srgb(CURSOR));
+        if !like(got, want) && !pink {
+            let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "level": a.level, "color": a.color, "role_color": hex3(want) });
+            offenders.push((1.0, offender));
+        }
+    }
 }
 
 /// How `color` drawn at `strength` shows over the ground behind the graph.
@@ -3017,23 +2792,16 @@ fn over_ground(color: [f32; 3], strength: f32) -> [f32; 3] {
 /// The color a function's role gives its fill, if its roles name one.
 fn node_role_color(n: &Node) -> Option<[f32; 3]> {
     if n.is("cursor") {
-        return Some(srgb(CURSOR));
-    }
-    if n.is("start") || n.is("selection") {
-        return Some([1.0, 1.0, 1.0]);
-    }
-    if n.is("caller") {
-        return Some(srgb(CALLER));
-    }
-    let level = n
-        .roles
-        .iter()
-        .find_map(|r| r.strip_prefix("journey level ")?.parse::<u32>().ok());
-    match level {
-        Some(level) => Some(flow_color("journey", Some(level))),
+        Some(srgb(CURSOR))
+    } else if n.is("start") || n.is("selection") {
+        Some([1.0, 1.0, 1.0])
+    } else if n.is("caller") {
+        Some(srgb(CALLER))
+    } else if let Some(level) = n.level() {
+        Some(flow_color("journey", Some(level)))
+    } else {
         // Set aside off the journey: grey, its ring alone white.
-        None if n.is("aside") => Some(srgb(FURTHER)),
-        None => None,
+        n.is("aside").then(|| srgb(FURTHER))
     }
 }
 
@@ -3053,7 +2821,6 @@ fn srgb(color: bevy::color::Color) -> [f32; 3] {
     [c.red, c.green, c.blue]
 }
 
-/// A color from `#rrggbb` or `#rrggbbaa`, alpha left out.
 /// A `#rrggbbaa` color's alpha, 0 to 1.
 fn alpha(hex: &str) -> Option<f32> {
     let hex = hex.trim_start_matches('#');
@@ -3062,6 +2829,7 @@ fn alpha(hex: &str) -> Option<f32> {
         .map(|a| f32::from(a) / 255.0)
 }
 
+/// A color from `#rrggbb` or `#rrggbbaa`, alpha left out.
 fn rgb(hex: &str) -> Option<[f32; 3]> {
     let hex = hex.trim_start_matches('#');
     let channel = |at: usize| {
@@ -3122,6 +2890,39 @@ fn like(got: [f32; 3], want: [f32; 3]) -> bool {
     gs >= GREY / 2.0 && apart.min(360.0 - apart) <= HUE_SLACK
 }
 
+// Geometry, and how results read.
+
+/// How near the piece of line from `p` to `q` comes to `at`.
+fn piece_distance(p: Vec2, q: Vec2, at: Vec2) -> f32 {
+    let along = q - p;
+    let t = ((at - p).dot(along) / along.length_squared().max(f32::EPSILON)).clamp(0.0, 1.0);
+    (p + along * t).distance(at)
+}
+
+/// Whether the piece of line from `p` to `q` runs through `r`.
+fn crosses_rect(p: Vec2, q: Vec2, r: egui::Rect) -> bool {
+    if r.width() <= 0.0 || r.height() <= 0.0 {
+        return false;
+    }
+    let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
+    let along = q - p;
+    for (start, delta, low, high) in [
+        (p.x, along.x, r.min.x, r.max.x),
+        (p.y, along.y, r.min.y, r.max.y),
+    ] {
+        if delta.abs() < f32::EPSILON {
+            if start < low || start > high {
+                return false;
+            }
+            continue;
+        }
+        let (u0, u1) = ((low - start) / delta, (high - start) / delta);
+        t0 = t0.max(u0.min(u1));
+        t1 = t1.min(u0.max(u1));
+    }
+    t0 < t1
+}
+
 /// How far a name moved as a whole, rather than grew or shrank about one edge or its
 /// middle as its text changed: along whichever axis moved more, the least of how far
 /// its two edges and its middle moved.
@@ -3146,13 +2947,7 @@ fn rim_gap(r: egui::Rect, centre: Vec2, radius: f32) -> f32 {
     .iter()
     .map(|corner| corner.distance(c))
     .fold(0.0, f32::max);
-    if radius < near {
-        near - radius
-    } else if radius > far {
-        radius - far
-    } else {
-        0.0
-    }
+    (near - radius).max(radius - far).max(0.0)
 }
 
 /// How far a circle sticks out of a rectangle, past its farthest side.
@@ -3167,8 +2962,13 @@ fn circle_out(r: egui::Rect, centre: Vec2, radius: f32) -> f32 {
     .fold(0.0, f32::max)
 }
 
+/// The square on screen a circle fills.
+fn disc(at: [f32; 2], radius: f32) -> egui::Rect {
+    egui::Rect::from_center_size(pos(at), egui::Vec2::splat(2.0 * radius))
+}
+
 /// Passes with no offenders; else fails, listing the worst first.
-fn verdict(mut offenders: Vec<(f32, Value)>) -> Value {
+fn verdict(mut offenders: Found) -> Value {
     offenders.sort_by(|a, b| b.0.total_cmp(&a.0));
     let count = offenders.len();
     let listed: Vec<Value> = offenders.into_iter().take(LISTED).map(|(_, v)| v).collect();
@@ -3198,6 +2998,11 @@ fn rect(r: [f32; 4]) -> egui::Rect {
 
 fn rect_json(r: [f32; 4]) -> Value {
     json!(r.map(r1))
+}
+
+/// A rectangle's corners, as the JSON gives them: `[x0, y0, x1, y1]`.
+fn corners(r: egui::Rect) -> [f32; 4] {
+    [r.min.x, r.min.y, r.max.x, r.max.y]
 }
 
 fn v2(at: [f32; 2]) -> Vec2 {
@@ -3770,6 +3575,7 @@ mod tests {
         );
         let mut s = expanded(scene(), 400.0, "f");
         s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 800.0, 1600.0, 1000.0] }]);
+        s["free_area"] = json!([0.0, 24.0, 1600.0, 800.0]);
         let result = fill(&s);
         assert!(!passes(&result), "the panel takes the bottom: {result}");
         assert_eq!(result["count"], 2, "too big, and under the panel");
@@ -3853,7 +3659,7 @@ mod tests {
         assert_eq!(VIEW.0, -0.45, "the scene's camera is at the usual view");
         let result = framed(&s);
         assert_eq!(result["count"], 2);
-        assert_eq!(result["offenders"][1]["sticks_out_by"], 60.0);
+        assert_eq!(result["offenders"][1]["out_by"], 60.0);
         let resized = after(&s, &s, &[Kind::FrameAll, Kind::Resize], "framed");
         assert_eq!(resized["count"], 2, "a window sized anew frames as R did");
         assert_eq!(
@@ -4101,6 +3907,52 @@ mod tests {
     }
 
     #[test]
+    fn expanded_in_a_journey_a_click_may_pan_but_moves_nothing_else() {
+        let mut before = journey();
+        before["state"]["nucleus"] = json!("expanded");
+        before["state"]["expanded"] = json!("b");
+        let mut now = before.clone();
+        now["state"]["camera"]["target"] = json!([1.0, 0.0, 0.0]);
+        for (i, at) in [
+            (0, [330.0, 500.0]),
+            (1, [390.0, 500.0]),
+            (2, [950.0, 500.0]),
+        ] {
+            now["nodes"][i]["at"] = json!(at);
+        }
+        for (i, rect) in [
+            (1, [340.0, 494.0, 360.0, 506.0]),
+            (2, [958.0, 494.0, 966.0, 506.0]),
+        ] {
+            now["labels"][i]["rect"] = json!(rect);
+        }
+        assert!(
+            passes(&after(&before, &now, &[Kind::Click], "nothing-moved")),
+            "panned: the camera has leave"
+        );
+        now["modules"][1]["world"] = json!([11.0, 0.0, 0.0]);
+        let result = after(&before, &now, &[Kind::Click], "nothing-moved");
+        assert_eq!(result["offenders"][0]["module"], "b", "{result}");
+        now["state"]["expanded"] = json!("a");
+        assert_eq!(
+            after(&before, &now, &[Kind::Still], "nothing-moved")["pass"],
+            Value::Null,
+            "the cursor took the expansion along"
+        );
+    }
+
+    #[test]
+    fn a_sphere_half_under_the_panel_just_after_shrinking_back_is_named() {
+        let mut s = scene();
+        s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 560.0, 1600.0, 1000.0] }]);
+        s["free_area"] = json!([0.0, 24.0, 1600.0, 560.0]);
+        let mut before = s.clone();
+        before["state"]["nucleus"] = json!("expanded");
+        let result = after(&before, &s, &[Kind::Expand], "spheres-unclipped");
+        assert_eq!(result["count"], 2, "{result}");
+    }
+
+    #[test]
     fn the_panel_shows_one_cursor_bar_named_as_the_graph_names_it() {
         let mut s = journey();
         assert!(passes(&check(&s, "panel-agrees")));
@@ -4186,6 +4038,7 @@ mod tests {
     fn what_is_in_focus_shows_unless_the_hands_moved_the_camera() {
         let mut s = journey();
         s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 800.0, 1600.0, 1000.0] }]);
+        s["free_area"] = json!([0.0, 24.0, 1600.0, 800.0]);
         s["nodes"][2]["at"] = json!([1000.0, 820.0]);
         let result = check(&s, "focus-on-screen");
         assert_eq!(result["offenders"][0]["function"], "h", "{result}");
@@ -4263,6 +4116,7 @@ mod tests {
         s["window"] = json!([1600.0, 1000.0]);
         s["graph_area"] = json!([0.0, 24.0, 1600.0, 1000.0]);
         s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 560.0, 1600.0, 1000.0] }]);
+        s["free_area"] = json!([0.0, 24.0, 1600.0, 560.0]);
         let result = check(&s, "spheres-unclipped");
         assert_eq!(result["count"], 2, "{result}");
         assert_eq!(result["offenders"][0]["cut_by"], "the top of the panel");
@@ -4309,6 +4163,7 @@ mod tests {
     fn expanded_the_focus_off_the_module_and_a_hand_placed_camera_are_left_alone() {
         let mut s = journey();
         s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 800.0, 1600.0, 1000.0] }]);
+        s["free_area"] = json!([0.0, 24.0, 1600.0, 800.0]);
         s["nodes"][2]["at"] = json!([1000.0, 820.0]);
         s["state"]["nucleus"] = json!("expanded");
         s["state"]["expanded"] = json!("a");
@@ -4600,6 +4455,7 @@ mod tests {
         assert!(passes(&after(&s, &s, &[Kind::Depth], "journey-fills")));
         // A sphere half under the panel.
         s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 560.0, 1600.0, 1000.0] }]);
+        s["free_area"] = json!([0.0, 24.0, 1600.0, 560.0]);
         let result = after(&browse, &s, &[Kind::Moves], "journey-fills");
         assert_eq!(result["offenders"][0]["module"], "a", "{result}");
     }

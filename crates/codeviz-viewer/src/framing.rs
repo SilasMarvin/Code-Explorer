@@ -82,10 +82,10 @@ const ROOM: f32 = 0.72;
 
 /// Room left round a journey's functions for their names when it is framed, across
 /// and up, in points.
-const NAME_ROOM: egui::Vec2 = egui::vec2(150.0, 24.0);
+pub(crate) const NAME_ROOM: egui::Vec2 = egui::vec2(150.0, 24.0);
 
 /// Room left round the free area's edges for a dot to show whole, in points.
-const DOT_ROOM: f32 = 10.0;
+pub(crate) const DOT_ROOM: f32 = 10.0;
 
 /// How much further back than the camera is something must need it to be, as a share
 /// of its distance, for a level more or less to draw it back: rounding, not leeway.

@@ -34,7 +34,7 @@ use crate::{
 
 /// A call's line, in points; the one into the cursor or out of the function set
 /// aside, a little wider; a call among the expanded module's functions, thinner.
-const CALL_WIDTH: f32 = 1.5;
+pub(crate) const CALL_WIDTH: f32 = 1.5;
 const BRIGHT_WIDTH: f32 = 2.0;
 const INNER_WIDTH: f32 = 1.0;
 /// A call's head: its length along the line and its width, in points; and the least
@@ -66,7 +66,7 @@ const BENDS: [f32; 9] = [5.0, 9.0, 14.0, 22.0, 32.0, 46.0, 64.0, 90.0, 128.0];
 const MOST_BEND: f32 = 0.6;
 /// How much longer than straight a bowed line may run: past that it goes straight,
 /// broken round the dot in its way.
-const DETOUR: f32 = 1.3;
+pub(crate) const DETOUR: f32 = 1.3;
 /// Where along a bent line it bows out most: evenly, nearer its start, nearer its
 /// end, close by either, or one way then the other: where along it each of its two
 /// pulls stands, as a share of its length, and the share of the bend each takes.

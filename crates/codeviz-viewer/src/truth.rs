@@ -222,6 +222,7 @@ pub(crate) fn scene(view: &View) -> Value {
     json!({
         "window": [screen.window.x, screen.window.y],
         "graph_area": rect(screen.graph),
+        "free_area": rect(screen.names),
         "camera": camera(view),
         "state": state(view),
         "nodes": nodes,
