@@ -196,11 +196,17 @@ impl Viewer {
             println!("script ok: {steps} steps, every name found");
             return AppExit::Success;
         }
+        // A scripted session opens hidden, without a frame, and without taking the
+        // keyboard or bringing the app to the front; it then tucks the window away.
+        let scripted = self.screenshot.is_some() && self.script.is_some();
         let mut app = App::new();
         app.add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: self.title,
                 resolution: (1600, 1000).into(),
+                focused: !scripted,
+                visible: !scripted,
+                decorations: !scripted,
                 ..default()
             }),
             ..default()
