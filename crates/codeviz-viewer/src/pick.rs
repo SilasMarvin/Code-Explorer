@@ -250,10 +250,6 @@ pub(crate) fn double_click(
     }
 }
 
-/// Seconds the names round the function under the pointer take to settle once the
-/// pointer moves onto it or off it.
-const HOVER_SETTLE: f32 = 0.4;
-
 /// Seconds the pointer rests on a function, or off it, before it counts as hovered
 /// or no longer: passing over one on the way elsewhere draws nothing.
 const HOVER_DELAY: f32 = 0.15;
@@ -299,15 +295,13 @@ impl Settle {
 #[derive(Debug, Default)]
 pub(crate) struct Pointing {
     held: Settle,
-    /// Seconds left while the names round what is pointed at settle.
-    settling: f32,
     /// Where the pointer was at the last click or key, while it has not moved since.
     resting: Option<Vec2>,
 }
 
 /// The one notion of hover: the function under the pointer counts as hovered once
 /// the pointer has rested on it, so passing over a function draws nothing; its name
-/// and ring show, and its bars light, while the names round it settle. What is not
+/// and ring show, and its bars light. What is not
 /// drawn is never hovered, though the pointer was on it when it went. After a click
 /// or a key the view moves under a resting pointer, so nothing counts as hovered
 /// until the pointer itself moves.
@@ -339,13 +333,8 @@ pub(crate) fn hover(
         && explorer.bypass_change_detection().hover(over)
     {
         explorer.set_changed();
-        pointing.settling = HOVER_SETTLE;
     }
     if pointing.held.waiting() {
-        awake.0 = true;
-    }
-    if pointing.settling > 0.0 {
-        pointing.settling -= time.delta_secs();
         awake.0 = true;
     }
 }

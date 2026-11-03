@@ -78,10 +78,12 @@ impl<T: PartialEq> History<T> {
     }
 
     /// Records leaving `from` for somewhere new; what was ahead is dropped, as a
-    /// browser drops it when you follow a link after going back.
+    /// browser drops it when you follow a link after going back. Leaving the place
+    /// last left again remembers it as it was seen this time.
     pub(crate) fn leave(&mut self, from: T) {
-        if self.back.last() != Some(&from) {
-            self.back.push(from);
+        match self.back.last_mut() {
+            Some(last) if *last == from => *last = from,
+            _ => self.back.push(from),
         }
         if self.back.len() > LIMIT {
             self.back.remove(0);

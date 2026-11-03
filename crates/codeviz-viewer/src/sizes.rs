@@ -97,12 +97,7 @@ pub(crate) fn comfort(dots: &[(bevy::math::Vec2, usize)]) -> f32 {
 /// Expanded, the least and most share of the free area's smaller side the module's
 /// diameter takes: as much as its functions need to sit comfortably
 /// ([`comfort`]), between the two.
-pub(crate) const EXPANDED_SHARE: (f32, f32) = (0.35, 0.85);
-
-/// A module of this many functions or fewer is small: expanded in a journey, it
-/// comes no nearer than keeps the journey's modules it calls or is called from on
-/// screen beside it.
-pub(crate) const SMALL_MODULE: usize = 6;
+pub(crate) const EXPANDED_SHARE: (f32, f32) = (0.45, 0.85);
 
 /// The share of the free area's smaller side an expanded module's diameter takes,
 /// showing at `share` now with its functions needing `comfort` ([`comfort`]).
