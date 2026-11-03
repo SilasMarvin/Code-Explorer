@@ -1363,6 +1363,19 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // would be off the free area, and no more.
     let depth = since.has(Kind::Depth);
     let (summary, mut offenders) = compare(before, s, depth);
+    // A click that selects another function lights others, named first: a lit
+    // function's name whose side they take tries its others rather than go, and a
+    // module's name its spot inside its sphere.
+    let selected = before.state.selection != s.state.selection;
+    if selected {
+        offenders.retain(|(_, o)| {
+            o["label"].is_null()
+                || o["unit"]
+                    .as_str()
+                    .and_then(|unit| s.node(unit))
+                    .is_some_and(|n| !n.lit() || n.plain())
+        });
+    }
     if depth {
         offenders.extend(depth_camera(before, s));
     }
@@ -1370,7 +1383,7 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // a depth change that drew the camera back shows everything smaller, and names
     // what fits now; any other step here only reads, and takes no name away.
     let drew_back = depth && summary["camera"]["moved"] == json!(true);
-    if before.state.selection == s.state.selection && !drew_back {
+    if !selected && !drew_back {
         offenders.extend(gone_labels(before, s));
     }
     verdict(offenders)
@@ -1624,7 +1637,8 @@ fn labels_moved(before: &Snap, now: &Snap) -> (usize, Vec<(f32, Value)>) {
         let by = label_shift(rect(then.rect), rect(label.rect));
         if by > MOVED_SCREEN {
             let offender = json!({
-                "label": label.text, "from": rect_json(then.rect), "to": rect_json(label.rect), "by": r1(by),
+                "label": label.text, "unit": label.unit, "from": rect_json(then.rect),
+                "to": rect_json(label.rect), "by": r1(by),
             });
             moved.push((by, offender));
         }
@@ -2047,12 +2061,12 @@ fn named_when_room(s: &Snap) -> Value {
                         n.on_screen
                             && n.module.as_deref() == Some(module)
                             && !(within && (!n.lit() || n.plain()))
-                            && near(n.at, n.radius)
+                            && near(n.at, kept(n))
                     })
             })
     };
     let mut offenders = Vec::new();
-    for n in drawn.iter().filter(|n| n.lit()) {
+    for n in drawn.iter().filter(|n| n.lit() && !n.plain()) {
         if n.label.is_some() || n.unit.is_none() {
             continue;
         }

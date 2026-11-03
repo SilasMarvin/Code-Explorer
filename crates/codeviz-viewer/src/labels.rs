@@ -723,8 +723,9 @@ impl<'a> Naming<'a> {
 
     /// Every dot on the graph as names keep off it: one drawn bigger than a speck as
     /// big as the cursor's; a speck as big as it is drawn, or for the `neutral` view
-    /// as a lit one. Browsing, the neutral view sizes each dot as nothing selected
-    /// would, an expanded module's as big as the cursor's, and lights none.
+    /// as a lit one. Browsing, the neutral view sizes every dot as big as the cursor's,
+    /// and its own as small as a speck, whatever is selected, so a side taken there
+    /// fits whatever lights, and lights none.
     fn dots(&self, neutral: bool) -> Vec<Disc> {
         let nucleus = self.nucleus;
         let unselected = neutral && nucleus.browsing();
@@ -737,9 +738,7 @@ impl<'a> Naming<'a> {
                 let world = self.explorer.tile_point(tile)?;
                 let steady = self.shows(tile, world, at, Dot::Focus);
                 let radius = match dot {
-                    _ if unselected && !nucleus.opened_up(tile) => {
-                        self.shows(tile, world, at, Dot::Lit)
-                    }
+                    _ if unselected => steady,
                     Dot::Speck if neutral => self.shows(tile, world, at, Dot::Lit),
                     Dot::Speck => self.shows(tile, world, at, Dot::Speck),
                     _ => steady,
@@ -750,6 +749,7 @@ impl<'a> Naming<'a> {
                     && nucleus.level(tile).is_none()
                     && !nucleus.outside(tile);
                 let least = match dot {
+                    _ if unselected => self.shows(tile, world, at, Dot::Speck),
                     Dot::Speck => self.shows(tile, world, at, Dot::Speck),
                     _ => self.shows(tile, world, at, Dot::Lit),
                 };
@@ -1282,12 +1282,27 @@ impl<'a> Naming<'a> {
         if let Some(cluster) = module.filter(|&c| !named(Named::Group(c)))
             && let Some((middle, edge)) = self.sphere_on_screen(cluster)
         {
+            // Above its sphere, else inside its top; over no name placed, as pointing
+            // hides no name, nor another sphere.
+            let free = |pill: egui::Rect| {
+                placer.bounds.contains_rect(pill)
+                    && placer.over_names(pill) == 0
+                    && !placer.spheres.iter().any(|&(c, at, radius)| {
+                        c != cluster && pill.distance_to_pos(at) < radius - 0.5
+                    })
+            };
             let (galley, size) = pill_of(painter, self.module_label(cluster, text::TITLE));
-            let pill = above(middle, edge, size);
-            // Not over a name placed: pointing hides no name.
-            if !placer.bounds.contains_rect(pill) || placer.over_names(pill) > 0 {
+            let (small, small_size) = pill_of(painter, self.module_label(cluster, text::SMALL));
+            let Some((pill, galley)) = Some((above(middle, edge, size), galley))
+                .filter(|&(pill, _)| free(pill))
+                .or_else(|| {
+                    inside(middle, edge, small_size)
+                        .filter(|&p| free(p))
+                        .map(|p| (p, small))
+                })
+            else {
                 return over;
-            }
+            };
             over.push(Label {
                 named: Named::Group(cluster),
                 side: None,
