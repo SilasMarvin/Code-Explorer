@@ -851,8 +851,8 @@ pub(crate) struct TubeMark {
 }
 
 /// How an arrow shows on screen, in points: its line's width, its head's length and
-/// width, where its tip is, and the points its line runs through, from its start to
-/// its tip.
+/// width, where its tip is, the points its line runs through, from its start to its
+/// tip, and where along them it breaks round a dot.
 #[derive(Debug, Clone)]
 pub(crate) struct ArrowShape {
     pub(crate) width: f32,
@@ -860,6 +860,9 @@ pub(crate) struct ArrowShape {
     pub(crate) head_width: f32,
     pub(crate) tip: Vec2,
     pub(crate) path: Vec<Vec2>,
+    /// Where its line breaks round a dot it passes, as how far along it from its
+    /// start, in points.
+    pub(crate) gaps: Vec<[f32; 2]>,
 }
 
 /// A ring round a function, so big in the world, in a color.

@@ -551,6 +551,7 @@ fn shape(view: &View, shape: &ArrowShape) -> Value {
         "head_width": round(shape.head_width),
         "tip": point(shape.tip),
         "path": shape.path.iter().map(|&p| point(p)).collect::<Vec<_>>(),
+        "gaps": shape.gaps.iter().map(|g| [round(g[0]), round(g[1])]).collect::<Vec<_>>(),
         "on_screen": crosses_free(view.screen.names, &shape.path),
     })
 }

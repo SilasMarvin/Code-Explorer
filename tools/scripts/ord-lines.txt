@@ -1,0 +1,49 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus ui::draw_names --depth 1
+# Calls from one dot the same way never share a line (ux11-fresh4-4/15); lines
+# keep off plain dots in an expanded journey or break round them (ux11-look-2/08);
+# only the call along the cursor's path into it is pink (ux11-look-4/12,
+# ux11-journey-4/20); exit labels say "to N name · MODULE" and group as "to
+# MODULE: N name, N name +k" (ux11-cons-3/37, 4/16).
+snap draw names
+expect check arrows-clear pass
+key /
+type Explorer::spotlit
+key enter
+key enter
+key .
+key .
+key .
+key .
+snap spotlit d5
+expect check arrows-clear pass
+key x
+snap spotlit d5 expanded
+expect check arrows-clear pass
+expect check exits-named pass
+key x
+key esc
+key esc
+key /
+type Index::walk
+key enter
+key enter
+key .
+key .
+key .
+key .
+key .
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+key down
+snap index walk cursor deep
+expect check colours pass
+expect check arrows-clear pass
