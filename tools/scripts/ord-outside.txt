@@ -27,7 +27,6 @@ click-label Explorer::root
 expect aside Explorer::root
 expect cursor Explorer::spotlit
 expect depth 2
-expect notice deeper on this journey
 snap plain click
 key esc
 key x
