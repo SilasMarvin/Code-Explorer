@@ -687,7 +687,8 @@ impl Explorer {
 
     /// In a journey, shows every function off it that calls the one the cursor is on,
     /// or leaves them out again (I); nothing already there moves. With none to show,
-    /// says so instead. Browsing, it says a journey must be open first.
+    /// says so instead; those with no room the bar along the top counts. Browsing, it
+    /// says a journey must be open first.
     pub(crate) fn toggle_outside(&mut self) {
         if self.no_journey() {
             return;
@@ -695,11 +696,6 @@ impl Explorer {
         self.outside = !self.outside;
         self.sync_nucleus();
         let waiting = self.nucleus.outside_waiting();
-        if self.outside && waiting > 0 {
-            self.say(&format!(
-                "{waiting} more call it with no room here: X shows them in their module"
-            ));
-        }
         if self.outside && waiting == 0 && self.nucleus.outside_callers().next().is_none() {
             self.outside = false;
             self.sync_nucleus();
@@ -1282,24 +1278,6 @@ impl Explorer {
         }
     }
 
-    /// The names of `ids` as [`Self::function_name`] has them, but with any two of
-    /// them alike told apart by their type or module: a list read together, as the
-    /// search's rows are.
-    pub(crate) fn function_names(&self, ids: &[&UnitId]) -> Vec<String> {
-        let names: Vec<String> = ids.iter().map(|id| self.function_name(id)).collect();
-        names
-            .iter()
-            .zip(ids)
-            .map(|(name, id)| {
-                if names.iter().filter(|n| *n == name).count() > 1 {
-                    self.unit_name(id)
-                } else {
-                    name.clone()
-                }
-            })
-            .collect()
-    }
-
     /// A function's name with its type or module before it; where another in its
     /// module reads the same so, with the impl it is in after it.
     pub(crate) fn unit_name(&self, id: &UnitId) -> String {
@@ -1418,15 +1396,16 @@ impl Explorer {
     }
 
     /// The keys along the row of the start's callers, with the caller at `index` set
-    /// aside: ← and → move along it, ↓ goes back down to the start, ↑ says how to go
-    /// further up; any other key goes back to the cursor.
+    /// aside: ← and → move along it, ↓ goes back down to the start, ↑ says there is no
+    /// row above (the chip in the top bar says how to go further up); any other key
+    /// goes back to the cursor.
     fn walk_callers(&mut self, step: Step, index: usize) -> Option<SpanId> {
         let callers = self.start_callers();
         let along = match step {
             Step::Next => Some(index + 1),
             Step::Previous => index.checked_sub(1),
             Step::Parent => {
-                self.say("Enter starts a journey at this caller, to go further up");
+                self.say("No row above the callers");
                 return None;
             }
             Step::Child => {

@@ -392,33 +392,87 @@ impl Disclosed {
     }
 
     /// Where each shown span sits in the flame graph: its left edge and width, in
-    /// slots, and its row. Each call without shown calls of its own takes one slot,
-    /// and a caller spans its calls, so every name has room whatever it costs in time.
-    pub(crate) fn layout(&self, root: SpanId) -> (HashMap<SpanId, (f32, f32, usize)>, f32) {
-        fn place(
+    /// points, and its row. Each takes what `need` says it needs across, at the least
+    /// and to say all it says, and a caller spans its calls; the whole is made as
+    /// near `width` as that allows: what each says cut short alike down to the least,
+    /// spread out past all of it. Returns how wide the whole is.
+    pub(crate) fn layout(
+        &self,
+        root: SpanId,
+        width: f32,
+        need: &dyn Fn(SpanId) -> (f32, f32),
+    ) -> (HashMap<SpanId, (f32, f32, usize)>, f32) {
+        fn calls(disclosed: &Disclosed, span: SpanId) -> impl Iterator<Item = SpanId> + '_ {
+            disclosed
+                .children(span)
+                .iter()
+                .copied()
+                .filter(|&c| disclosed.shows(c))
+        }
+        // How wide each span is, `cut` of the way from saying all to the least.
+        fn needed(
             disclosed: &Disclosed,
             span: SpanId,
-            left: f32,
-            row: usize,
-            out: &mut HashMap<SpanId, (f32, f32, usize)>,
+            cut: f32,
+            own: &HashMap<SpanId, (f32, f32)>,
+            out: &mut HashMap<SpanId, f32>,
         ) -> f32 {
-            let mut width = 0.0;
-            for &child in disclosed.children(span) {
-                if disclosed.shows(child) {
-                    width += place(disclosed, child, left + width, row + 1, out);
-                }
-            }
-            let width = width.max(1.0);
+            let (least, most) = own.get(&span).copied().unwrap_or_default();
+            let mine = most - cut * (most - least);
+            let below: f32 = calls(disclosed, span)
+                .map(|c| needed(disclosed, c, cut, own, out))
+                .sum();
+            let wide = mine.max(below);
+            out.insert(span, wide);
+            wide
+        }
+        fn place(
+            disclosed: &Disclosed,
+            (span, left, width, row): (SpanId, f32, f32, usize),
+            wide: &HashMap<SpanId, f32>,
+            out: &mut HashMap<SpanId, (f32, f32, usize)>,
+        ) {
             out.insert(span, (left, width, row));
-            width
+            let below: f32 = calls(disclosed, span).map(|c| wide[&c]).sum();
+            let mut at = left;
+            for call in calls(disclosed, span) {
+                let share = width * wide[&call] / below;
+                place(disclosed, (call, at, share, row + 1), wide, out);
+                at += share;
+            }
         }
         let mut out = HashMap::new();
-        let width = if self.shows(root) {
-            place(self, root, 0.0, 0, &mut out)
-        } else {
+        if !self.shows(root) {
+            return (out, 0.0);
+        }
+        let mut own = HashMap::new();
+        let mut todo = vec![root];
+        while let Some(span) = todo.pop() {
+            own.insert(span, need(span));
+            todo.extend(calls(self, span));
+        }
+        let whole = |cut: f32| needed(self, root, cut, &own, &mut HashMap::new());
+        // Cut no more than it takes to fit, found by halving.
+        let cut = if whole(0.0) <= width {
             0.0
+        } else if whole(1.0) >= width {
+            1.0
+        } else {
+            let (mut fits, mut over) = (1.0, 0.0);
+            for _ in 0..16 {
+                let mid = f32::midpoint(fits, over);
+                if whole(mid) <= width {
+                    fits = mid;
+                } else {
+                    over = mid;
+                }
+            }
+            fits
         };
-        (out, width)
+        let mut wide = HashMap::new();
+        let across = needed(self, root, cut, &own, &mut wide).max(width);
+        place(self, (root, 0.0, across, 0), &wide, &mut out);
+        (out, across)
     }
 }
 

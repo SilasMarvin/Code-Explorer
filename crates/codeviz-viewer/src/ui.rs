@@ -138,6 +138,8 @@ struct Row {
 
 /// At most this many functions are listed; the box says how many more it found.
 const LISTED: usize = 100;
+/// How many rows the search box shows before it scrolls: whole rows, none cut.
+const ROWS_SHOWN: f32 = 14.0;
 
 /// Whether the search box is open.
 #[derive(Resource, Default)]
@@ -527,9 +529,11 @@ fn search_box(
                         ui.label(egui::RichText::new("no function matches").color(MUTED));
                     }
                     let mut drawn = Vec::new();
+                    let gap = ui.spacing().item_spacing.y;
+                    let pitch = ui.spacing().interact_size.y + gap;
                     let shown = egui::ScrollArea::vertical()
                         .id_salt("units")
-                        .max_height(300.0)
+                        .max_height(pitch * ROWS_SHOWN - gap)
                         .show(ui, |ui| {
                             for (index, row) in search.rows.iter().enumerate() {
                                 let highlighted = index == search.highlighted;
@@ -554,14 +558,21 @@ fn search_box(
                                 });
                             }
                         });
+                    // Those found but not in view: scrolled away, or past what is listed.
+                    let in_view = drawn
+                        .iter()
+                        .filter(|row| shown.inner_rect.expand(0.5).contains_rect(row.rect))
+                        .count();
+                    let more = search.found.saturating_sub(in_view);
                     // Where each row is, for a scripted session to pick.
                     crate::drive::note_search_rows(ui.ctx(), shown.inner_rect, drawn);
-                    let more = search.found.saturating_sub(search.rows.len());
                     if more > 0 {
                         ui.label(
-                            egui::RichText::new(format!("{more} more: type more of the name"))
-                                .small()
-                                .color(MUTED),
+                            egui::RichText::new(format!(
+                                "{more} more: scroll, or type more of the name"
+                            ))
+                            .small()
+                            .color(MUTED),
                         );
                     }
                 });
@@ -664,17 +675,27 @@ fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
         .collect();
     ranked.sort_by(|(a, x), (b, y)| (a, x.name.len(), &x.name).cmp(&(b, y.name.len(), &y.name)));
     let found = ranked.len();
-    let mut rows: Vec<Row> = ranked
-        .into_iter()
-        .take(LISTED)
-        .map(|(_, row)| row)
+    ranked.truncate(LISTED);
+    // Two rows of one name are told apart by their type or module, as two names alike
+    // on the graph are; and a row found by its path, not its name, says the type or
+    // module that holds what was asked for.
+    let bare: Vec<Option<&str>> = ranked
+        .iter()
+        .map(|(_, row)| system.unit(&row.unit).map(|u| u.name.as_str()))
         .collect();
-    // Two rows alike are told apart, as two names alike on the graph are.
-    let ids: Vec<&UnitId> = rows.iter().map(|row| &row.unit).collect();
-    let names = explorer.function_names(&ids);
-    for (row, name) in rows.iter_mut().zip(names) {
-        row.name = name;
-    }
+    let shared =
+        |name: Option<&str>| name.is_some() && bare.iter().filter(|&&n| n == name).count() > 1;
+    let rows = ranked
+        .iter()
+        .zip(&bare)
+        .map(|((rank, row), &name)| {
+            let mut row = row.clone();
+            if route(&row.unit).is_none() && (shared(name) || *rank >= 3) {
+                row.name = explorer.unit_name(&row.unit);
+            }
+            row
+        })
+        .collect();
     (rows, found)
 }
 
@@ -875,8 +896,9 @@ mod tests {
         );
         assert_eq!(
             names("order")[..2],
-            ["POST /users/{id}/orders", "place"],
-            "a function whose name holds the word before one whose module does"
+            ["POST /users/{id}/orders", "orders.place"],
+            "a function whose name holds the word before one whose module does, which \
+             says its module"
         );
         let (rows, found) = find(&explorer, "helper");
         assert_eq!(
@@ -890,6 +912,94 @@ mod tests {
             ["POST /users/{id}/orders"],
             "no query: the entry points"
         );
+    }
+
+    #[test]
+    fn the_search_box_shows_whole_rows_and_says_how_many_more() {
+        let helpers: Vec<String> = (0..30)
+            .map(|n| {
+                format!(r#"{{ "id": "x:m::helper{n}", "name": "helper{n}", "kind": "fn", "role": "invocable", "parent": "x:m" }}"#)
+            })
+            .collect();
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }},
+            "units": [ {{ "id": "x:m", "name": "m", "kind": "module", "role": "group" }}, {} ] }}"#,
+            helpers.join(",")
+        );
+        let mut explorer = Explorer::new(System::new([Document::from_json(&json).unwrap()]));
+        let mut search = Search {
+            query: "helper".to_owned(),
+            ..Search::default()
+        };
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+        let mut texts = Vec::new();
+        // An area is sized on its first frame and drawn from the second.
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut open = true;
+            let mut output = ctx.run_ui(input, |ui| {
+                search_box(
+                    ui.ctx(),
+                    screen,
+                    &mut explorer,
+                    &mut search,
+                    &mut open,
+                    false,
+                );
+            });
+            output.textures_delta.clear();
+            texts = output
+                .shapes
+                .into_iter()
+                .filter_map(|clipped| match clipped.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect();
+        }
+        let rows = texts.iter().filter(|t| t.starts_with("helper")).count();
+        let shown = 14;
+        assert_eq!(ROWS_SHOWN, 14.0, "the box shows {shown} rows");
+        assert!(rows >= shown, "{shown} rows show at least: {texts:?}");
+        let more = format!("{} more: scroll, or type more of the name", 30 - shown);
+        assert!(texts.contains(&more), "{more:?} in {texts:?}");
+    }
+
+    #[test]
+    fn search_rows_of_one_name_say_whose() {
+        let json = r#"{ "schema": "codeviz/0.1", "producer": { "name": "t", "version": "0" },
+            "units": [
+                { "id": "x:journey", "name": "journey", "kind": "module", "role": "group" },
+                { "id": "x:track", "name": "track", "kind": "module", "role": "group" },
+                { "id": "x:journey::Journey::root", "name": "root", "kind": "fn", "role": "invocable", "parent": "x:journey" },
+                { "id": "x:track::Track::root", "name": "root", "kind": "fn", "role": "invocable", "parent": "x:track" },
+                { "id": "x:journey::SpanId::index", "name": "index", "kind": "fn", "role": "invocable", "parent": "x:journey" }
+            ] }"#;
+        let explorer = Explorer::new(System::new([Document::from_json(json).unwrap()]));
+        let names = |query: &str| -> Vec<String> {
+            let mut names: Vec<String> = find(&explorer, query)
+                .0
+                .into_iter()
+                .map(|row| row.name)
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            names("root"),
+            ["journey.root", "track.root"],
+            "never a bare root"
+        );
+        assert_eq!(
+            names("spanid"),
+            ["journey.index"],
+            "found by its path, it says what holds it"
+        );
+        assert_eq!(names("index"), ["index"], "found by its own name, bare");
     }
 
     #[test]

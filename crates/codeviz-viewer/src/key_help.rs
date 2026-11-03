@@ -5,7 +5,7 @@ use bevy_egui::egui;
 
 use crate::{
     colors::{
-        CALLEE, CALLER, CURSOR, DEEPER, EDGE, MUTED, PILL, SELECTED, SURFACE, TEXT, egui_color,
+        CALLEE, CALLER, CURSOR, DEEPER, EDGE, MUTED, OK, PILL, SELECTED, SURFACE, TEXT, egui_color,
     },
     labels::PILL_PAD,
     text,
@@ -87,19 +87,18 @@ impl When {
 }
 
 /// Every key, what it does, and in which view; H lists those that apply to the view
-/// open.
-const KEYS: [(&str, &str, When); 26] = [
+/// open. One line each.
+const KEYS: [(&str, &str, When); 25] = [
     ("click", "select a function; nothing moves", When::Browse),
     (
         "click",
-        "a call on the journey (its dot, name or bar): go to it; any other function: \
-         select it",
+        "a call on the journey: go to it; another function: pick it",
         When::Journey,
     ),
     ("click empty space", "clear the selection", When::Browse),
     (
         "click empty space",
-        "let go of the function selected off the journey",
+        "let go of the function picked",
         When::Journey,
     ),
     (
@@ -109,15 +108,14 @@ const KEYS: [(&str, &str, When); 26] = [
     ),
     (
         "Enter",
-        "start a journey at the function selected off it, else at the call you are on",
+        "a journey at the function picked, else at the call you are on",
         When::Journey,
     ),
     ("Shift click", "open a function's journey", When::Always),
     ("↓  ↑", "into the call / out to its caller", When::Journey),
     (
         "↑ at the start",
-        "to the functions that call it, in the violet row above it: ← → pick one, \
-         Enter starts its journey, ↓ comes back",
+        "its callers' row: ← → pick one, Enter opens it, ↓ back",
         When::Journey,
     ),
     (
@@ -127,115 +125,111 @@ const KEYS: [(&str, &str, When); 26] = [
     ),
     (
         "[  ]",
-        "the previous / next call in the order they run",
+        "the previous / next call as they run",
         When::Journey,
     ),
-    (",  .", "show a level less / more", When::Journey),
-    (
-        "I",
-        "show the functions off the journey that call the one you are on",
-        When::Journey,
-    ),
+    (",  .", "a level less / more", When::Journey),
+    ("I", "who else calls the call you are on", When::Journey),
     (
         "/",
-        "find a function by name; picking it is a click on it",
+        "find a function; picking it is a click on it",
         When::Always,
     ),
     (
         "X, double-click",
-        "zoom into a module; again to back out. Zoomed in, picking a function in \
-         another module, or the cursor moving to one, takes the zoom there",
-        When::Always,
+        "zoom into a module; again to back out",
+        When::Browse,
+    ),
+    (
+        "X, double-click",
+        "zoom into a module, which follows the cursor; again to back out",
+        When::Journey,
     ),
     ("wheel", "zoom towards the pointer", When::Always),
-    ("drag", "turn the view", When::Always),
-    ("right drag", "move the view", When::Always),
+    ("drag, right drag", "turn the view, move it", When::Always),
     ("F", "fit the selection on screen", When::Browse),
     ("F", "fit the journey on screen", When::Journey),
     ("R", "the whole map, from the front", When::Browse),
-    (
-        "R",
-        "the whole journey and its modules, from the front",
-        When::Journey,
-    ),
+    ("R", "the whole journey, from the front", When::Journey),
     ("Backspace", "back; with Shift, forward", When::Always),
     (
         "Esc",
-        "one step out: close this or the search; back out of a module; then clear the \
-         selection",
+        "one step out: this, search, module, selection",
         When::Browse,
     ),
     (
         "Esc",
-        "one step out: close this or the search; let go of the function selected off \
-         the journey; back out of a module; then leave the journey",
+        "one step out: this, search, the function picked, module, journey",
         When::Journey,
     ),
-    ("H", "this help", When::Always),
 ];
 
-/// What each color means, as the help leads with it.
-fn color_key(browsing: bool) -> Vec<(egui::Color32, &'static str)> {
+/// What the picture shows, one line each: a mark as drawn, in its color, and what
+/// it means. Browsing, then in a journey.
+fn legend(browsing: bool) -> Vec<(&'static str, egui::Color32, &'static str)> {
+    let white = egui_color(SELECTED);
+    let violet = egui_color(CALLER);
+    let mut lines = vec![
+        (
+            "○ sphere",
+            MUTED,
+            "a module, bigger the more functions it holds",
+        ),
+        ("● dot", MUTED, "a function; point at it for its name"),
+        (
+            "— grey line",
+            MUTED,
+            "functions in one module call the other's",
+        ),
+    ];
     if browsing {
-        return vec![
-            (egui_color(SELECTED), "the function selected"),
-            (egui_color(CALLER), "calls it"),
-            (egui_color(CALLEE), "it calls"),
-        ];
+        lines.extend([
+            ("● white", white, "the function selected"),
+            ("● violet", violet, "calls it"),
+            ("● blue", egui_color(CALLEE), "it calls"),
+            ("◎ violet ring", violet, "it calls, and calls it back"),
+            ("faint sphere", MUTED, "neither calls it nor is called"),
+            (
+                "faint dot, line",
+                MUTED,
+                "a call only guessed, or handed off",
+            ),
+        ]);
+        return lines;
     }
-    vec![
-        (egui_color(SELECTED), "where the journey starts"),
-        (egui_color(CALLER), "calls it"),
-        (egui_color(CALLEE), "it calls"),
-        (egui_color(DEEPER), "called further on, darker the deeper"),
-        (egui_color(CURSOR), "the call you are on"),
-    ]
-}
-
-/// What the picture shows, in plain words, as the help says it.
-fn reading(browsing: bool) -> &'static [&'static str] {
-    const MAP: &str = "Each sphere is a module of the code, and each dot in it one of its \
-        functions; the more functions, the bigger the sphere. A grey line between two \
-        spheres: functions in one call functions in the other. A name that does not fit \
-        is left off: point at a dot for it.";
-    const BOTH: &str = "A blue or amber dot ringed in violet is both: it is called, and \
-        calls back in.";
-    if browsing {
-        return &[
-            MAP,
-            BOTH,
-            "Faint, a sphere and its dots: a module the function selected neither calls \
-             nor is called from. Faint, a dot and its line: a call only guessed at (a \
-             trait or callback the code may not take) or handed off to run later. Point \
-             at a sphere for how many functions it holds.",
-        ];
-    }
-    &[
-        MAP,
-        BOTH,
-        "A journey shows the calls one function makes, a level at a time, and the \
-         functions that call it. A number says where a call comes: 2 is the start's \
-         second call, 2.1 the first call that one makes; +1 after it, the journey makes \
-         the call once more later on.",
-        "The panel at the foot lists the same calls: the start's bar, then a row a level \
-         down, left to right as they run; above the start, the functions that call it. \
-         Dashed: runs only sometimes. ▼ and a count: calls hidden under it; click to \
-         show them. A green end returns, a red one can fail. ↺ calls itself: it calls \
-         itself straight back; ↺ calls back: it calls the start again.",
-        "Faint, a dot, its line and its bar: a call only guessed at (a trait or callback \
-         the code may not take) or handed off to run later; or a caller counted on its \
-         module's name rather than named; or, grey, a caller from off the journey that I \
-         shows. Ringed in white: a function picked off the journey, in its own color.",
-    ]
-}
-
-/// One color and what it means, as one piece that wraps whole to the next line.
-fn legend(color: egui::Color32, what: &str) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    let font = egui::FontId::proportional(text::SMALL);
-    job.append("● ", 0.0, egui::TextFormat::simple(font.clone(), color));
-    job.append(what, 0.0, egui::TextFormat::simple(font, MUTED));
-    job
+    lines.extend([
+        ("● white", white, "where the journey starts"),
+        ("● pink", egui_color(CURSOR), "the call you are on"),
+        ("● blue", egui_color(CALLEE), "a call the start makes"),
+        (
+            "● amber",
+            egui_color(DEEPER),
+            "called further on, darker the deeper",
+        ),
+        ("● violet", violet, "calls the start: the row above its bar"),
+        (
+            "◎ violet ring",
+            violet,
+            "on the journey, and calls the start back",
+        ),
+        ("◎ white ring", white, "a function picked off the journey"),
+        ("● grey", MUTED, "off the journey; I shows who calls in"),
+        (
+            "faint",
+            MUTED,
+            "only guessed, handed off, or counted on its module",
+        ),
+        (
+            "2.1  +1",
+            TEXT,
+            "call 2's first call; +1, made once more later",
+        ),
+        ("▼ 3", TEXT, "calls folded under a bar: click to show"),
+        ("dashed bar", TEXT, "runs only sometimes"),
+        ("green, red end", OK, "returns, can fail"),
+        ("↺", TEXT, "calls itself, or calls the start again"),
+    ]);
+    lines
 }
 
 /// Width of the keys' column in the help.
@@ -284,25 +278,13 @@ pub(crate) fn key_help(ctx: &egui::Context, area: egui::Rect, open: &mut bool, b
                         });
                     });
                     let body = |ui: &mut egui::Ui| {
-                        ui.spacing_mut().item_spacing.y = 3.0;
-                        for line in reading(browsing) {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(*line).size(text::SMALL).color(MUTED),
-                                )
-                                .wrap(),
-                            );
+                        for (mark, color, what) in legend(browsing) {
+                            line(ui, (mark, color), what);
                         }
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
-                            for (color, what) in color_key(browsing) {
-                                ui.add(egui::Label::new(legend(color, what)).extend());
-                            }
-                        });
                         ui.add_space(4.0);
                         ui.label(egui::RichText::new("Keys").strong().size(text::BODY));
                         for (key, what) in &keys {
-                            key_line(ui, key, what);
+                            line(ui, (key, TEXT), what);
                         }
                     };
                     // As tall as the window lets it be: a scroll area is otherwise only
@@ -345,15 +327,15 @@ fn more_below(ui: &egui::Ui, scroll: &egui::scroll_area::ScrollAreaOutput<()>) {
     ui.painter().galley(at, galley, TEXT);
 }
 
-/// One key, in a fixed column, and what it does wrapping beside it.
-fn key_line(ui: &mut egui::Ui, key: &str, what: &str) {
+/// One key or mark, in its color in a fixed column, and what it means beside it.
+fn line(ui: &mut egui::Ui, (key, color): (&str, egui::Color32), what: &str) {
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(
             egui::vec2(KEY_WIDTH, 13.0),
             egui::Layout::left_to_right(egui::Align::Min),
             |ui| {
                 ui.set_min_width(KEY_WIDTH);
-                ui.label(egui::RichText::new(key).size(text::SMALL).color(TEXT));
+                ui.label(egui::RichText::new(key).size(text::SMALL).color(color));
             },
         );
         ui.add(egui::Label::new(egui::RichText::new(what).size(text::SMALL).color(MUTED)).wrap());
@@ -423,13 +405,43 @@ mod tests {
     }
 
     #[test]
+    fn each_colour_state_and_key_takes_one_line() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            let wide = |text: &str| {
+                painter
+                    .layout_no_wrap(
+                        text.to_owned(),
+                        egui::FontId::proportional(text::SMALL),
+                        TEXT,
+                    )
+                    .size()
+                    .x
+            };
+            // The sheet at its widest, less its margins, the keys' column and a gap.
+            let room = HELP_WIDTH - 30.0 - KEY_WIDTH - 8.0;
+            for browsing in [false, true] {
+                let lines = legend(browsing)
+                    .into_iter()
+                    .map(|(mark, _, what)| (mark, what))
+                    .chain(KEYS.iter().map(|&(key, what, _)| (key, what)));
+                for (key, what) in lines {
+                    assert!(wide(key) <= KEY_WIDTH, "{key:?} fits its column");
+                    assert!(wide(what) <= room, "{what:?} fits one line");
+                }
+            }
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
     fn the_help_speaks_plainly() {
         for browsing in [false, true] {
-            let words = reading(browsing)
-                .iter()
-                .copied()
-                .chain(KEYS.iter().map(|(_, what, _)| *what))
-                .chain(color_key(browsing).into_iter().map(|(_, what)| what));
+            let words = legend(browsing)
+                .into_iter()
+                .map(|(_, _, what)| what)
+                .chain(KEYS.iter().map(|(_, what, _)| *what));
             for line in words {
                 for jargon in [" lit", "focus", "callers of the start", " of 39", "nucleus"] {
                     assert!(!line.contains(jargon), "{jargon:?} in {line:?}");
