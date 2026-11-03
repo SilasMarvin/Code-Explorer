@@ -1385,6 +1385,17 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if since.kinds.is_empty() {
         return skip("no step since the last snapshot");
     }
+    // Expanding or shrinking back in a journey moves the camera, never the journey.
+    let journey = s.state.mode == "journey" && before.state.mode == "journey";
+    if journey
+        && since.has(Kind::Expand)
+        && since
+            .kinds
+            .iter()
+            .all(|k| matches!(k, Kind::Still | Kind::Expand))
+    {
+        return verdict(journey_kept(before, s));
+    }
     if let Some(kind) = since
         .kinds
         .iter()
@@ -1417,6 +1428,23 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         offenders.extend(gone_labels(before, s));
     }
     verdict(offenders)
+}
+
+/// Each of the journey's dots drawn before and now that moved in the world.
+fn journey_kept(before: &Snap, now: &Snap) -> Vec<(f32, Value)> {
+    now.nodes
+        .iter()
+        .filter(|n| n.in_journey())
+        .filter_map(|n| {
+            let was = before.nodes.iter().find(|b| b.unit == n.unit)?;
+            let by = Vec3::from_array(n.world?).distance(Vec3::from_array(was.world?));
+            let why = "expanding in a journey moves the camera, not the journey's dots";
+            (by > MOVED_WORLD).then(|| {
+                let offender = json!({ "function": n.name, "moved_in_world": r3(by), "why": why });
+                (by, offender)
+            })
+        })
+        .collect()
 }
 
 /// How the camera moved on a depth change, when it should not have: anything but
@@ -3603,6 +3631,20 @@ mod tests {
         assert_eq!(result["offenders"][0]["bar"], "2", "{result}");
         s["nodes"][1]["numbers"] = json!(["2"]);
         assert!(passes(&check(&s, "panel-agrees")));
+    }
+
+    #[test]
+    fn expanding_in_a_journey_moves_none_of_its_dots_in_the_world() {
+        let before = journey();
+        let mut now = journey();
+        now["state"]["nucleus"] = json!("expanded");
+        // The camera came in: on screen everything grew and moved.
+        now["nodes"][2]["at"] = json!([900.0, 300.0]);
+        let result = after(&before, &now, &[Kind::Expand], "nothing-moved");
+        assert!(passes(&result), "{result}");
+        now["nodes"][2]["world"] = json!([12.0, 1.0, 0.0]);
+        let result = after(&before, &now, &[Kind::Expand], "nothing-moved");
+        assert_eq!(result["offenders"][0]["function"], "h", "{result}");
     }
 
     #[test]

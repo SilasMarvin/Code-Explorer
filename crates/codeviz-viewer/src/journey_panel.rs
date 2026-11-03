@@ -509,39 +509,21 @@ fn canvas(
     }
     // Wider than the panel, a track along its foot shows which part is in view.
     if slots > across + 1e-3 {
-        let track = egui::Rect::from_min_max(
-            egui::pos2(content.min.x, content.max.y - 3.0),
-            egui::pos2(content.max.x, content.max.y),
+        let foot = content.with_min_y(content.max.y - 3.0);
+        scroll_track(
+            &painter,
+            foot,
+            (panel.left / slots, (panel.left + across) / slots),
         );
-        let thumb = egui::Rect::from_min_max(
-            egui::pos2(
-                track.min.x + track.width() * panel.left / slots,
-                track.min.y,
-            ),
-            egui::pos2(
-                track.min.x + track.width() * ((panel.left + across) / slots).min(1.0),
-                track.max.y,
-            ),
-        );
-        painter.rect_filled(track, 1.5, TRACK);
-        painter.rect_filled(thumb, 1.5, THUMB);
     }
     // Deeper than the panel shows, a track down its right side shows which rows are
     // in view.
     let rows = disclosed.rows() as f32;
     let down = (rows > visible_rows).then(|| {
-        let track = egui::Rect::from_min_max(
-            egui::pos2(content.max.x - 3.0, content.min.y),
-            egui::pos2(content.max.x, content.max.y),
-        );
-        let share = |row: f32| track.min.y + track.height() * (row / rows).min(1.0);
-        let thumb = egui::Rect::from_min_max(
-            egui::pos2(track.min.x, share(panel.top_row)),
-            egui::pos2(track.max.x, share(panel.top_row + visible_rows)),
-        );
-        painter.rect_filled(track, 1.5, TRACK);
-        painter.rect_filled(thumb, 1.5, THUMB);
-        track
+        let side = content.with_min_x(content.max.x - 3.0);
+        let shown = (panel.top_row / rows, (panel.top_row + visible_rows) / rows);
+        scroll_track(&painter, side, shown);
+        side
     });
 
     if let Some((tile, _)) = caller_hovered {
@@ -710,17 +692,9 @@ fn callers_row(
     }
     // More than fit: a track along its foot shows which part is in view.
     if callers.len() > across {
-        let track = egui::Rect::from_min_max(
-            egui::pos2(row.min.x, row.max.y + 1.0),
-            egui::pos2(row.max.x, row.max.y + 2.0),
-        );
-        let share = |at: usize| track.min.x + track.width() * at as f32 / callers.len() as f32;
-        let thumb = egui::Rect::from_min_max(
-            egui::pos2(share(first), track.min.y),
-            egui::pos2(share(first + across), track.max.y),
-        );
-        painter.rect_filled(track, 0.5, TRACK);
-        painter.rect_filled(thumb, 0.5, THUMB);
+        let foot = row.with_min_y(row.max.y + 1.0).with_max_y(row.max.y + 2.0);
+        let share = |at: usize| at as f32 / callers.len() as f32;
+        scroll_track(&painter, foot, (share(first), share(first + across)));
     }
     (hovered, bars)
 }
@@ -757,6 +731,20 @@ pub(crate) fn caller_fill(explorer: &Explorer, tile: usize) -> egui::Color32 {
     } else {
         violet
     }
+}
+
+/// A track along `track` with a thumb over the share of it, from and to, in view:
+/// across it where it is wider than tall, else down it.
+fn scroll_track(painter: &egui::Painter, track: egui::Rect, (from, to): (f32, f32)) {
+    let thumb = if track.width() > track.height() {
+        let at = |share: f32| track.min.x + track.width() * share.min(1.0);
+        track.with_min_x(at(from)).with_max_x(at(to))
+    } else {
+        let at = |share: f32| track.min.y + track.height() * share.min(1.0);
+        track.with_min_y(at(from)).with_max_y(at(to))
+    };
+    painter.rect_filled(track, 1.5, TRACK);
+    painter.rect_filled(thumb, 1.5, THUMB);
 }
 
 /// A line round a bar, just outside it.
