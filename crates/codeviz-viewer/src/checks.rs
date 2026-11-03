@@ -510,16 +510,6 @@ impl Node {
         }
     }
 
-    /// How deep in the journey it first runs: 0 the start or a caller.
-    fn depth(&self) -> Option<u32> {
-        if self.is("start") || self.is("caller") {
-            return Some(0);
-        }
-        self.roles
-            .iter()
-            .find_map(|r| r.strip_prefix("journey level ")?.parse().ok())
-    }
-
     /// Lit in a journey: the start, a call or a caller of it (not one folded into
     /// its module's count).
     fn in_journey(&self) -> bool {
@@ -2568,45 +2558,33 @@ fn through_dots(a: &Arrow, pieces: &[(Vec2, Vec2)], dots: &[&Node]) -> Vec<(f32,
     offenders
 }
 
-/// The lit names a call's line runs through: in a journey, those no deeper than its
-/// ends (a deeper one comes with a level more, which bends no line), browsing any;
-/// its own ends' only for a bent line, away from where it leaves its dot.
+/// The names of a bent call's own ends its line runs through, away from where it
+/// leaves its dot. A line may pass under any other name: the pill hides it there,
+/// and bending round names would loop past the 1.3x bound.
 fn through_names(
     s: &Snap,
     a: &Arrow,
     pieces: &[(Vec2, Vec2)],
     names: &[&Label],
 ) -> Vec<(f32, Value)> {
-    let bent = a.path.len() > 2;
-    let level = |unit: Option<&str>| unit.and_then(|u| s.node(u)).and_then(Node::depth);
-    let deepest = level(a.from_unit.as_deref())
-        .unwrap_or(0)
-        .max(level(a.to_unit.as_deref()).unwrap_or(0));
-    let journey = s.state.mode == "journey";
+    if a.path.len() <= 2 {
+        return Vec::new();
+    }
     let mut offenders = Vec::new();
-    for l in names {
-        let mine = own_end(a, l.unit.as_deref());
-        if mine && !bent {
-            continue;
-        }
-        if journey && !mine && level(l.unit.as_deref()).is_none_or(|d| d > deepest) {
-            continue;
-        }
+    for l in names.iter().filter(|l| own_end(a, l.unit.as_deref())) {
         let dot = l.unit.as_deref().and_then(|u| s.node(u));
         let off_dot = |p: Vec2, q: Vec2| {
-            !mine
-                || dot.is_none_or(|n| {
-                    let clear = n.radius + NAME_GAP + ARROW_SLACK;
-                    p.distance(v2(n.at)) > clear && q.distance(v2(n.at)) > clear
-                })
+            dot.is_none_or(|n| {
+                let clear = n.radius + NAME_GAP + ARROW_SLACK;
+                p.distance(v2(n.at)) > clear && q.distance(v2(n.at)) > clear
+            })
         };
         let pill = rect(l.rect).shrink(ARROW_SLACK);
         if pieces
             .iter()
             .any(|&(p, q)| off_dot(p, q) && crosses_rect(p, q, pill))
         {
-            let through = if mine { "its own name" } else { "name" };
-            let offender = json!({ "arrow": [a.from, a.to], "through": through, "label": l.text, "rect": rect_json(l.rect) });
+            let offender = json!({ "arrow": [a.from, a.to], "through": "its own name", "label": l.text, "rect": rect_json(l.rect) });
             offenders.push((1.0, offender));
         }
     }
@@ -2680,10 +2658,10 @@ fn exits_named(s: &Snap) -> Value {
     let in_expanded = |unit: &Option<String>| {
         module(unit).is_some_and(|m| expanded.is_some_and(|e| m.eq_ignore_ascii_case(e)))
     };
-    // With a module expanded, the calls with one end in it; else, in a journey, the
-    // calls in from outside.
+    // With a module expanded, every call lit (the plain ones among its functions
+    // only with one end in it); else, in a journey, the calls in from outside.
     let relevant = |from: &Option<String>, to: &Option<String>, flow: &str| match expanded {
-        Some(_) => in_expanded(from) != in_expanded(to),
+        Some(_) => flow != "inner" || in_expanded(from) != in_expanded(to),
         None => flow == "outside",
     };
     let mut offenders = Vec::new();
@@ -2747,7 +2725,7 @@ fn exits_apart(s: &Snap, relevant: &dyn Fn(&Exit) -> bool) -> Vec<(f32, Value)> 
     let mut pills: Vec<(egui::Rect, &Exit)> = Vec::new();
     for e in &s.exits {
         if !relevant(e) {
-            let offender = json!({ "label": e.text, "why": "labels a call with both ends in the module expanded, or neither" });
+            let offender = json!({ "label": e.text, "why": "labels a call that should have none: a plain one among the expanded module's, or collapsed, one not in from outside" });
             offenders.push((1.0, offender));
         }
         let r = rect(e.rect);
@@ -3143,14 +3121,20 @@ mod tests {
     }
 
     #[test]
-    fn a_bent_call_through_a_third_dot_or_any_through_a_name_is_named() {
+    fn a_bent_call_through_a_third_dot_or_its_own_name_is_named() {
         let mut s = scene();
         s["state"]["mode"] = json!("journey");
         s["nodes"][0]["roles"] = json!(["start"]);
         s["nodes"][1]["roles"] = json!(["journey level 1"]);
         s["nodes"][1]["radius"] = json!(4.0);
         s["nodes"][2]["roles"] = json!(["journey level 1"]);
-        // Straight from f to h through g: drawn broken round its dot, so it passes.
+        s["labels"]
+            .as_array_mut()
+            .expect("labels")
+            .push(json!({ "text": "g", "rect": [700.0, 494.0, 720.0, 506.0],
+                "names": "function", "of": "g", "unit": "x:a::g" }));
+        // Straight from f to h through g and under its name: drawn broken round the
+        // dot, hidden by the pill, so it passes, browsing too.
         s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
             "flow": "journey", "level": 1, "path": [[386.0, 500.0], [994.0, 500.0]] }]);
         assert!(
@@ -3158,26 +3142,8 @@ mod tests {
             "{}",
             check(&s, "arrows-clear")
         );
-        // A name in the way is named, browsing too.
-        s["labels"]
-            .as_array_mut()
-            .expect("labels")
-            .push(json!({ "text": "g", "rect": [700.0, 494.0, 720.0, 506.0],
-                "names": "function", "of": "g", "unit": "x:a::g" }));
-        let result = check(&s, "arrows-clear");
-        assert_eq!(result["count"], 1, "{result}");
-        assert_eq!(result["offenders"][0]["through"], "name");
-        // A name deeper in the journey than the call's ends comes with a level more,
-        // which bends no line: it may lie over it.
-        s["nodes"][1]["roles"] = json!(["journey level 2"]);
-        assert!(
-            passes(&check(&s, "arrows-clear")),
-            "{}",
-            check(&s, "arrows-clear")
-        );
-        s["nodes"][1]["roles"] = json!(["journey level 1"]);
         s["state"]["mode"] = json!("browse");
-        assert_eq!(check(&s, "arrows-clear")["count"], 1);
+        assert!(passes(&check(&s, "arrows-clear")));
         // Bent, but through g's dot.
         s["arrows"][0]["path"] = json!([
             [386.0, 500.0],
@@ -3188,7 +3154,7 @@ mod tests {
         let result = check(&s, "arrows-clear");
         assert_eq!(result["count"], 1, "{result}");
         assert_eq!(result["offenders"][0]["function"], "g");
-        // Bent round both, it passes, over its own name only where it leaves its dot.
+        // Bent round g, it passes, over its own name only where it leaves its dot.
         s["arrows"][0]["path"] = json!([
             [386.0, 500.0],
             [440.0, 530.0],
@@ -3200,7 +3166,30 @@ mod tests {
             "{}",
             check(&s, "arrows-clear")
         );
+        // Bent back through its own end's name, away from the dot.
+        s["arrows"][0]["path"] = json!([
+            [386.0, 500.0],
+            [440.0, 530.0],
+            [1012.0, 520.0],
+            [1012.0, 500.0],
+            [1006.0, 500.0]
+        ]);
+        let result = check(&s, "arrows-clear");
+        assert!(
+            result["offenders"]
+                .as_array()
+                .expect("offenders")
+                .iter()
+                .any(|o| o["through"] == "its own name"),
+            "{result}"
+        );
         // Too near a ring round g.
+        s["arrows"][0]["path"] = json!([
+            [386.0, 500.0],
+            [440.0, 530.0],
+            [710.0, 530.0],
+            [994.0, 500.0]
+        ]);
         s["nodes"][1]["rings"] = json!([{ "radius": 40.0, "color": "#ffffffff" }]);
         assert_eq!(check(&s, "arrows-clear")["offenders"][0]["function"], "g");
         // A loop more than a third longer than straight is a detour.
@@ -3250,6 +3239,13 @@ mod tests {
             "{}",
             check(&s, "exits-named")
         );
+        // Neither end in the module expanded: a lit call leaving is labelled too.
+        s["state"]["expanded"] = json!("b");
+        s["exits"] = json!([]);
+        assert_eq!(check(&s, "exits-named")["count"], 1);
+        s["exits"] = json!([{ "from_unit": "x:a::f", "to_unit": "x:c::far", "far_unit": "x:c::far",
+            "far": "far", "text": "to far · C", "rect": [350.0, 975.0, 420.0, 995.0] }]);
+        s["state"]["expanded"] = json!("a");
         // Browsing expanded too.
         s["state"]["mode"] = json!("browse");
         assert!(passes(&check(&s, "exits-named")));
@@ -3264,12 +3260,14 @@ mod tests {
             json!({ "from_unit": "x:a::g", "to_unit": "x:c::far", "far_unit": "x:c::far",
             "far": "far", "text": "to far · C", "rect": [360.0, 980.0, 430.0, 1000.0] }),
         );
-        // And one for a call inside the module expanded.
+        // And one for a plain call among the expanded module's own.
         exits.push(
             json!({ "from_unit": "x:a::f", "to_unit": "x:a::g", "far_unit": "x:a::g",
             "far": "g", "text": "to g · A", "rect": [500.0, 975.0, 560.0, 995.0] }),
         );
         s["exits"] = json!(exits);
+        s["arrows"].as_array_mut().expect("arrows").push(json!({ "from": "f", "to": "g",
+            "from_unit": "x:a::f", "to_unit": "x:a::g", "flow": "inner", "path": [[386.0, 500.0], [436.0, 500.0]] }));
         let whys: Vec<String> = check(&s, "exits-named")["offenders"]
             .as_array()
             .expect("offenders")
@@ -3277,7 +3275,10 @@ mod tests {
             .filter_map(|o| o["why"].as_str().map(str::to_owned))
             .collect();
         assert!(whys.iter().any(|w| w.contains("another label")), "{whys:?}");
-        assert!(whys.iter().any(|w| w.contains("both ends")), "{whys:?}");
+        assert!(
+            whys.iter().any(|w| w.contains("should have none")),
+            "{whys:?}"
+        );
         // Collapsed and browsing, nothing to label.
         s["state"]["nucleus"] = json!("modules");
         assert_eq!(check(&s, "exits-named")["pass"], Value::Null);

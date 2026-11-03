@@ -842,8 +842,8 @@ fn path_number(explorer: &Explorer, tile: usize) -> Option<String> {
 }
 
 /// Where calls leave the free area, labelled once per function at their far ends,
-/// or past [`EXITS_APART`] of those, once per module: with a module expanded, the
-/// calls with one end in it; in a journey, the calls in from outside. Each label sits
+/// or past [`EXITS_APART`] of those, once per module: with a module expanded, every
+/// call lit; collapsed in a journey, the calls in from outside. Each label sits
 /// just inside the edge where its calls leave, slid along it clear of names, dots,
 /// the labels before and, where it can, the lines.
 fn exits(
@@ -920,12 +920,12 @@ fn leaving(explorer: &Explorer, area: egui::Rect, drawn: &[(Link, Vec<egui::Pos2
     let graph = explorer.graph();
     let mut fars: Vec<Far> = Vec::new();
     for (link, path) in drawn {
-        let inside = |tile: usize| graph.cluster(tile) == nucleus.expanded_module();
-        let one_end = match nucleus.expanded_module() {
-            Some(_) => inside(link.from) != inside(link.to),
+        // Expanded, every call lit; collapsed, the calls in from outside.
+        let labelled = match nucleus.expanded_module() {
+            Some(_) => link.flow != Flow::Inner,
             None => link.flow == Flow::Outside,
         };
-        if link.flow == Flow::Inner || !one_end {
+        if !labelled {
             continue;
         }
         let Some((at, inward, out)) = leaves(area, path) else {
