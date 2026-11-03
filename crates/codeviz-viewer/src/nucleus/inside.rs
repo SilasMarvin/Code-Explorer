@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use bevy::prelude::*;
 use codeviz_layout::{ForceGraph, atlas};
 
-use super::{Arrangement, Flow, Link, Nucleus, view_rotation};
+use super::{Arrangement, Body, Flow, Link, Nucleus, view_rotation};
 
 /// How much further apart two places along a row are than two rows.
 pub(super) const ROW_WIDE: f32 = 4.0;
@@ -20,8 +20,14 @@ impl Nucleus {
         let members: Vec<usize> = (0..graph.positions.len())
             .filter(|&t| graph.cluster(t) == Some(cluster))
             .collect();
-        // Spread over the whole of it, its dots are drawn their full size.
+        // Spread over the whole of it, its dots are drawn their full size, and its
+        // sphere drawn open, though nothing on the journey lies in it.
         now.dots.remove(&cluster);
+        if let Some(ball) = now.balls.get_mut(cluster)
+            && matches!(ball.body, Body::Closed | Body::Faint)
+        {
+            ball.body = Body::Open;
+        }
         if let Some(ball) = now.balls.get(cluster).copied() {
             let at: Vec<(usize, Vec3)> = members.iter().map(|&t| (t, self.offsets[t])).collect();
             for (tile, offset) in spread(&at, None, atlas::disc(ball.radius)) {
