@@ -960,9 +960,13 @@ fn exit_spot(
         }
     }
     tries.sort_by(|a, b| (a.1.abs() + a.0 * 2.0).total_cmp(&(b.1.abs() + b.0 * 2.0)));
+    // The lines near enough to cross a place among the first tried.
+    let near = egui::Rect::from_center_size(anchor, size)
+        .expand(EXIT_STEP * 12.0 + 3.0 * row);
     let pieces: Vec<(egui::Pos2, egui::Pos2)> = drawn
         .iter()
         .flat_map(|(_, path)| path.windows(2).map(|p| (p[0], p[1])))
+        .filter(|&(p, q)| egui::Rect::from_two_pos(p, q).intersects(near))
         .collect();
     let mut free = None;
     for (tried, (row, by)) in tries.into_iter().enumerate() {
