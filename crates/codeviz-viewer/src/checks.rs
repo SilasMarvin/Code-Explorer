@@ -1998,7 +1998,7 @@ fn hidden(pill: egui::Rect, n: &Node) -> bool {
             .shrink(NAME_CLEAR)
             .contains_rect(egui::Rect::from_center_size(
                 pos(n.at),
-                egui::Vec2::splat(2.0 * (n.kept_off.unwrap_or(n.radius) + ROUNDING)),
+                egui::Vec2::splat(2.0 * (n.radius - ROUNDING)),
             ))
 }
 

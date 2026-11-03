@@ -217,12 +217,12 @@ enum Shade {
     Faded,
 }
 
-/// Whether `pill`, opaque, hides `dot` wholly.
+/// Whether `pill`, opaque, hides `dot` wholly, as small as it is drawn.
 fn hides(pill: egui::Rect, dot: &Disc) -> bool {
     pill.shrink(CLEAR)
         .contains_rect(egui::Rect::from_center_size(
             dot.at,
-            egui::Vec2::splat(2.0 * dot.radius),
+            egui::Vec2::splat(2.0 * dot.least),
         ))
 }
 
