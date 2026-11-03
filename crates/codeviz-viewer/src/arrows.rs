@@ -718,7 +718,11 @@ fn beside(from: egui::Pos2, to: egui::Pos2, by: f32) -> (egui::Pos2, egui::Pos2)
 /// none: hovering only rings it.
 fn followed(explorer: &Explorer, link: &Link) -> bool {
     let into_cursor = matches!(link.flow, Flow::Journey(_)) && explorer.cursor() == Some(link.to);
-    into_cursor || explorer.aside().is_some_and(|aside| aside == link.from)
+    // A call among the expanded module's functions stays faint, out of the function
+    // set aside too: its role's color.
+    let aside =
+        link.flow != Flow::Inner && explorer.aside().is_some_and(|aside| aside == link.from);
+    into_cursor || aside
 }
 
 /// A call's color: its flow's, the cursor's for the journey's call into the cursor;
@@ -730,7 +734,7 @@ fn link_color(explorer: &Explorer, link: &Link, bright: bool) -> Color {
     let nucleus = explorer.nucleus();
     let color = link.flow.color();
     match link.flow {
-        Flow::Outside | Flow::Inner if bright => color.with_alpha(PICKED_STRENGTH),
+        Flow::Outside if bright => color.with_alpha(PICKED_STRENGTH),
         Flow::Outside => color.with_alpha(OUTSIDE_STRENGTH),
         Flow::Inner => color.with_alpha(INNER_STRENGTH),
         _ if nucleus.guessed(link) => color.with_alpha(GUESSED_STRENGTH),

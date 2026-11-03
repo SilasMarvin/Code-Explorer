@@ -1,0 +1,50 @@
+#: view demo/out/axum-server.json --focus orders::place
+# How big a module expands: as much as its functions need, small ones small; in a
+# journey a small module keeps the modules beside it on screen. The journey as it
+# opens fills the view. Keys that do nothing say so; a pan stops at the map's edge,
+# and zoomed all the way out the map stays in the middle.
+snap journey opens
+expect check journey-fills
+key backspace
+expect notice Nothing to go back
+key x
+expect expanded orders
+expect check expanded-fill
+snap x small start module
+key down
+expect expanded users
+expect check expanded-fill
+snap cursor into users
+key right
+key right
+expect expanded pricing
+expect check expanded-fill
+snap cursor into pricing
+key x
+key esc
+expect mode browse
+key esc
+key enter
+expect notice Nothing selected
+snap enter nothing selected
+key f
+expect notice Nothing selected: F
+snap f nothing selected
+key r
+scroll 5 at 1560 950
+pan -400 -200
+expect notice The edge of the map
+expect check map-on-screen
+snap panned to the edge
+key r
+scroll -40
+snap out max
+pan 300 100
+expect notice all the way out
+expect check map-on-screen
+snap out max panned
+click users::register
+key x
+expect expanded users
+expect check expanded-fill
+snap users expanded

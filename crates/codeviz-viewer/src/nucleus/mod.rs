@@ -14,7 +14,7 @@
 //! Expanded (`X`, a double click on a module, or `--expand`), a module opens where it
 //! stands, browsing or in a journey alike: every one of its functions drawn, spread in
 //! rows inside its sphere, with the calls among them. Nothing else moves; the camera
-//! comes in until it fills the view.
+//! comes in until it is as big as its functions need to sit comfortably.
 //!
 //! This file holds what the nucleus is and answers; [`browse`], [`journey`] and
 //! [`inside`] arrange it for each mode, and [`draw`] puts it in the scene. The browsing map itself is [`codeviz_layout::atlas`]'s.
@@ -747,10 +747,18 @@ impl Nucleus {
             .collect()
     }
 
-    /// The modules a journey runs through, by cluster, once a re-centering ends.
+    /// The modules a journey runs through, by cluster, once a re-centering ends, and
+    /// the one holding the function set aside, wherever it is drawn: what framing it
+    /// shows whole.
     pub(crate) fn open_modules(&self) -> Vec<usize> {
+        let aside = self
+            .aside
+            .filter(|_| !self.browse)
+            .and_then(|tile| self.module_of(tile));
         (0..self.now.balls.len())
-            .filter(|&c| matches!(self.now.balls[c].body, Body::Nucleus | Body::Open))
+            .filter(|&c| {
+                matches!(self.now.balls[c].body, Body::Nucleus | Body::Open) || Some(c) == aside
+            })
             .collect()
     }
 

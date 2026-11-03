@@ -138,7 +138,8 @@ const KEYS: [(&str, &str, When); 25] = [
     ),
     (
         "X, double-click",
-        "zoom into a module; again to back out",
+        "zoom into a module; again to back out. Zoomed in, picking a function in \
+         another module, or the cursor moving to one, takes the zoom there",
         When::Always,
     ),
     ("wheel", "zoom towards the pointer", When::Always),

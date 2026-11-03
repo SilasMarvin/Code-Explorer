@@ -98,6 +98,8 @@ pub(crate) enum Expect {
     Named(String),
     /// The function's node is drawn on screen.
     Drawn(String),
+    /// A notice, said for a moment, shows these words (any case).
+    Notice(String),
     /// The camera stands where it stood at the snapshot with this label.
     CameraSameAs(String),
     /// Nothing moved since the last snapshot: nodes, spheres, names, camera.
@@ -184,13 +186,14 @@ const VERBS: [&str; 22] = [
 ];
 
 /// What may follow `expect`.
-const EXPECTS: [&str; 10] = [
+const EXPECTS: [&str; 11] = [
     "selection",
     "cursor",
     "start",
     "aside",
     "named",
     "drawn",
+    "notice",
     "camera-same-as",
     "nothing-moved",
     "check",
@@ -363,6 +366,8 @@ fn expect(text: &str, snaps: &[String]) -> Result<Expect, String> {
         "aside" => maybe().map(Expect::Aside),
         "named" => unit().map(Expect::Named),
         "drawn" => unit().map(Expect::Drawn),
+        "notice" if rest.is_empty() => Err("`expect notice` needs the words it shows".to_owned()),
+        "notice" => Ok(Expect::Notice(rest.to_owned())),
         "nothing-moved" => Ok(Expect::NothingMoved),
         "camera-same-as" => {
             let label = snap_label(Some(rest));
@@ -734,6 +739,7 @@ mod tests {
             expect start main
             expect named main
             expect drawn main
+            expect notice Nothing to go back
             expect camera-same-as before x
             expect camera-same-as 01-before-x
             expect nothing-moved
@@ -762,6 +768,7 @@ mod tests {
                 Expect::Start(Some("main".to_owned())),
                 Expect::Named("main".to_owned()),
                 Expect::Drawn("main".to_owned()),
+                Expect::Notice("Nothing to go back".to_owned()),
                 Expect::CameraSameAs("before-x".to_owned()),
                 Expect::CameraSameAs("before-x".to_owned()),
                 Expect::NothingMoved,

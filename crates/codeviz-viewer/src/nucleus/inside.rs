@@ -45,6 +45,55 @@ impl Nucleus {
             }
         }
     }
+
+    /// The module expanded, once a re-centering ends: its sphere's radius, and each
+    /// of its functions with where it sits across and up the usual view from the
+    /// sphere's middle, in the world.
+    pub(crate) fn expanded_layout(&self) -> Option<(f32, Vec<(usize, Vec2)>)> {
+        let cluster = self.expanded?;
+        let ball = self.now.balls.get(cluster)?;
+        let rotation = view_rotation();
+        let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+        let dots = (0..self.now.points.len())
+            .filter(|&t| self.opened_up(t) && self.placed(t))
+            .map(|t| {
+                let at = self.now.points[t] - ball.center;
+                (t, Vec2::new(at.dot(right), at.dot(up)))
+            })
+            .collect();
+        Some((ball.radius, dots))
+    }
+
+    /// The modules shown that hold a function calling, or called from, one of
+    /// `cluster`'s along a call the view names (the journey's, or its callers'):
+    /// what a small module expanded in a journey keeps on screen beside it.
+    pub(crate) fn neighbours(&self, cluster: usize) -> Vec<usize> {
+        let mut near: Vec<usize> = self
+            .now
+            .links
+            .iter()
+            .filter(|l| matches!(l.flow, Flow::Into | Flow::Journey(_)))
+            .filter_map(|l| match (self.module_of(l.from), self.module_of(l.to)) {
+                (Some(a), Some(b)) if a == cluster && b != cluster => Some(b),
+                (Some(a), Some(b)) if b == cluster && a != cluster => Some(a),
+                _ => None,
+            })
+            .filter(|&m| {
+                self.now
+                    .balls
+                    .get(m)
+                    .is_some_and(|b| self.shows_body(b.body))
+            })
+            .collect();
+        near.sort_unstable();
+        near.dedup();
+        near
+    }
+
+    /// The module a function lives in.
+    pub(crate) fn module_of(&self, tile: usize) -> Option<usize> {
+        self.module_of.get(tile).copied().flatten()
+    }
 }
 
 /// Where `members`, each a tile and where it sits about its module's middle, go when

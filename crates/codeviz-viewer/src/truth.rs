@@ -130,6 +130,8 @@ pub(crate) fn state(view: &View) -> Value {
                 "pitch": fine(pitch),
                 // The last wheel turn out panned to hold the map in the free area.
                 "held": view.orbit_held(),
+                // Zoomed out as far as the wheel goes.
+                "farthest": view.orbit_farthest(),
             })
         }),
     })
