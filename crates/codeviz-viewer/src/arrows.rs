@@ -621,24 +621,46 @@ fn route_one(
 }
 
 /// Whether the line through `path` runs along `other`, which shares a dot with it
-/// and ends at `far` at its other: as [`SHARED_RUN`] says. Each piece of it is
-/// looked at only beside the pieces of `other` near enough.
+/// and ends at `far` at its other: as [`SHARED_RUN`] says.
 fn shares(path: &[egui::Pos2], (other, far): Beside) -> bool {
+    runs_along(path, other, (SHARED_NEAR, SHARED_RUN), Some(far))
+}
+
+/// Whether the line through `path`, a call from outside the journey, runs along
+/// `other`, one of the journey's, anywhere: as [`ALONG_RUN`] says.
+pub(crate) fn alongside(path: &[egui::Pos2], other: &[egui::Pos2]) -> bool {
+    runs_along(path, other, (ALONG_NEAR, ALONG_RUN), None)
+}
+
+/// Whether the line through `path` comes within `near` points of `other` for more
+/// than `run`, away from its own ends, and where `far` is given, within
+/// [`SHARED_FAR`] of it. Each piece of it is looked at only beside the pieces of
+/// `other` near enough.
+fn runs_along(
+    path: &[egui::Pos2],
+    other: &[egui::Pos2],
+    (near, run): (f32, f32),
+    far: Option<egui::Pos2>,
+) -> bool {
     let (first, last) = (path[0], path[path.len() - 1]);
-    let there = egui::Rect::from_center_size(far, egui::Vec2::splat(2.0 * SHARED_FAR));
+    let there =
+        far.map(|far| egui::Rect::from_center_size(far, egui::Vec2::splat(2.0 * SHARED_FAR)));
     let theirs: Vec<(egui::Pos2, egui::Pos2, egui::Rect)> = other
         .windows(2)
         .map(|o| {
-            let bounds = egui::Rect::from_two_pos(o[0], o[1]).expand(SHARED_NEAR);
-            (o[0], o[1], bounds)
+            (
+                o[0],
+                o[1],
+                egui::Rect::from_two_pos(o[0], o[1]).expand(near),
+            )
         })
-        .filter(|o| o.2.intersects(there))
+        .filter(|o| there.is_none_or(|there| o.2.intersects(there)))
         .collect();
-    let mut run = 0.0;
+    let mut along = 0.0;
     for pair in path.windows(2) {
         let bounds = egui::Rect::from_two_pos(pair[0], pair[1]);
-        let near: Vec<_> = theirs.iter().filter(|o| o.2.intersects(bounds)).collect();
-        if near.is_empty() {
+        let beside: Vec<_> = theirs.iter().filter(|o| o.2.intersects(bounds)).collect();
+        if beside.is_empty() {
             continue;
         }
         let piece = pair[0].distance(pair[1]);
@@ -653,51 +675,13 @@ fn shares(path: &[egui::Pos2], (other, far): Beside) -> bool {
         for k in 0..samples {
             #[expect(clippy::cast_precision_loss, reason = "a few samples")]
             let at = pair[0] + (pair[1] - pair[0]) * (k as f32 / samples as f32);
-            if at.distance(far) < SHARED_FAR
+            if far.is_none_or(|far| at.distance(far) < SHARED_FAR)
                 && at.distance(first) >= SHARED_ENDS
                 && at.distance(last) >= SHARED_ENDS
-                && near.iter().any(|o| off_line(o.0, o.1, at) < SHARED_NEAR)
+                && beside.iter().any(|o| off_line(o.0, o.1, at) < near)
             {
-                run += step;
-                if run > SHARED_RUN {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Whether the line through `path` runs along `other` anywhere away from its own
-/// ends: within [`ALONG_NEAR`] points of it for more than [`ALONG_RUN`].
-pub(crate) fn alongside(path: &[egui::Pos2], other: &[egui::Pos2]) -> bool {
-    let (first, last) = (path[0], path[path.len() - 1]);
-    let bounds = egui::Rect::from_points(other).expand(ALONG_NEAR);
-    let mut run = 0.0;
-    for pair in path.windows(2) {
-        if !egui::Rect::from_two_pos(pair[0], pair[1]).intersects(bounds) {
-            continue;
-        }
-        let piece = pair[0].distance(pair[1]);
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a few samples"
-        )]
-        let samples = (piece / 4.0).ceil().max(1.0) as usize;
-        #[expect(clippy::cast_precision_loss, reason = "a few samples")]
-        let step = piece / samples as f32;
-        for k in 0..samples {
-            #[expect(clippy::cast_precision_loss, reason = "a few samples")]
-            let at = pair[0] + (pair[1] - pair[0]) * (k as f32 / samples as f32);
-            if at.distance(first) >= ARRIVAL
-                && at.distance(last) >= ARRIVAL
-                && other
-                    .windows(2)
-                    .any(|o| off_line(o[0], o[1], at) < ALONG_NEAR)
-            {
-                run += step;
-                if run > ALONG_RUN {
+                along += step;
+                if along > run {
                     return true;
                 }
             }
