@@ -4,10 +4,12 @@
 //! puts all of it back, seen as it was, rather than only the node it was on.
 //!
 //! One rule says what makes an entry: whatever changes where the journey starts, opens
-//! or leaves a journey, selects a function browsing, sets one aside, or moves the
-//! cursor by a click, a bar or Enter. A walk with the arrows or
+//! or leaves a journey, selects a function browsing, sets one aside or lets it go, or
+//! moves the cursor by a click, a bar or Enter. A walk with the arrows or
 //! brackets is one entry however many steps it takes, so Back returns to where the
-//! walk began. Back crosses between browsing and a journey as it crosses anything.
+//! walk began; a caller of the start set aside along the row above its bar is no
+//! place of its own. Back crosses between browsing and a journey as it crosses
+//! anything, and never to the place it is at.
 
 use std::collections::HashSet;
 
@@ -91,16 +93,17 @@ impl<T: PartialEq> History<T> {
         self.forward.clear();
     }
 
-    /// The place before `current`, which becomes the place ahead.
+    /// The place before `current`, which becomes the place ahead: one that differs
+    /// from it, so Back never looks like a key that did nothing.
     pub(crate) fn back(&mut self, current: T) -> Option<T> {
-        let to = self.back.pop()?;
+        let to = pop_other(&mut self.back, &current)?;
         self.forward.push(current);
         Some(to)
     }
 
     /// The place ahead of `current`, which becomes the place before.
     pub(crate) fn forward(&mut self, current: T) -> Option<T> {
-        let to = self.forward.pop()?;
+        let to = pop_other(&mut self.forward, &current)?;
         self.back.push(current);
         Some(to)
     }
@@ -118,6 +121,14 @@ impl<T: PartialEq> History<T> {
         self.back.clear();
         self.forward.clear();
     }
+}
+
+/// The last of `places` that is not `current`, dropping those that are.
+fn pop_other<T: PartialEq>(places: &mut Vec<T>, current: &T) -> Option<T> {
+    while places.last() == Some(current) {
+        places.pop();
+    }
+    places.pop()
 }
 
 #[cfg(test)]
@@ -152,5 +163,14 @@ mod tests {
         history.leave(1);
         assert_eq!(history.back(2), Some(1));
         assert!(!history.can_go_back());
+    }
+
+    #[test]
+    fn back_passes_over_the_place_it_is_at() {
+        let mut history = History::default();
+        history.leave(1);
+        history.leave(2);
+        assert_eq!(history.back(2), Some(1), "not 2 again");
+        assert_eq!(history.forward(1), Some(2));
     }
 }

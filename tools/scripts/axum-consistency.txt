@@ -83,3 +83,19 @@ key [
 expect cursor users::find_user
 expect nothing-moved
 snap stepped back
+
+# Left and entered again from browsing, a journey opens anew at its first level; Back
+# puts back the depth each place had.
+key .
+key .
+expect depth 3
+key esc
+expect mode browse
+key enter
+expect start orders::place
+expect depth 1
+snap entered again
+key backspace
+expect mode browse
+key backspace
+expect depth 3

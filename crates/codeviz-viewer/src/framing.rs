@@ -453,8 +453,8 @@ fn pan_into_view(at: Vec3, camera: &mut OrbitCamera, lens: Lens) {
 
 /// When something the journey lights, or `also` (its cursor, the function set
 /// aside), would show off the free area, or not whole, or a sphere of the modules it
-/// `came` to run through, or its name, frames the journey afresh, but never nearer
-/// than the camera is; when it all shows already, nothing moves.
+/// `came` to run through, or its name, draws the camera back about the free area's
+/// middle, as far as shows them all; when it all shows already, nothing moves.
 fn reveal(
     nucleus: &Nucleus,
     also: &[Option<Vec3>],
@@ -466,24 +466,15 @@ fn reveal(
     let mut points = nucleus.journey_points();
     points.extend(also.iter().flatten());
     points.extend(nucleus.rims(rotation, came));
-    let named: Vec<(Vec3, Vec2)> = (nucleus.tops(rotation, came).into_iter())
-        .map(|p| (p, views.named))
-        .collect();
-    if shows(&points, camera, views) && needed(&named, camera, views.free) <= stands_back(camera) {
+    let mut whole: Vec<(Vec3, Vec2)> = points.into_iter().map(|p| (p, views.dots)).collect();
+    whole.extend((nucleus.tops(rotation, came).into_iter()).map(|p| (p, views.named)));
+    let distance = needed(&whole, camera, views.free);
+    if distance <= stands_back(camera) {
         return;
     }
-    let mut framed = journey_points(nucleus, also, rotation, views);
-    framed.extend(
-        nucleus
-            .rims(rotation, came)
-            .into_iter()
-            .map(|p| (p, views.dots)),
-    );
-    framed.extend(named);
-    if let Some((middle, distance)) = place(&framed, rotation, views.free) {
-        let distance = distance.max(camera.goal_distance());
-        camera.glide_to(middle - views.free.shift(rotation) * distance, distance);
-    }
+    let lens = views.free;
+    let middle = camera.target + lens.shift(rotation) * camera.goal_distance();
+    camera.glide_to(middle - lens.shift(rotation) * distance, distance);
 }
 
 /// How far back the camera, turned and looking past what it frames now, must be for
@@ -566,9 +557,7 @@ fn journey_points(
 /// ([`sizes::expanded_share`]), and `also` (the cursor) shows with it: in a journey
 /// and browsing alike, its neighbours left where they fall, carried by the labels
 /// where calls leave the screen. What it holds alone sets that share, so it expands
-/// alike wherever it is. Of the places up or down the free area that leave it whole
-/// there, it takes the nearest the middle that leaves no sphere the journey shows half
-/// under the panel.
+/// alike wherever it is, and it sits in the middle of the free area wherever it is.
 fn fill(
     nucleus: &Nucleus,
     also: Option<Vec3>,
@@ -576,9 +565,7 @@ fn fill(
     rotation: Quat,
     (views, chars): (Views, &dyn Fn(usize) -> usize),
 ) {
-    let (Some(module), Some((radius, dots))) =
-        (nucleus.expanded_module(), nucleus.expanded_layout())
-    else {
+    let Some((radius, dots)) = nucleus.expanded_layout() else {
         return;
     };
     // Where its functions would show, in points, at the least share, and so the
@@ -593,64 +580,7 @@ fn fill(
         .chain(also)
         .map(|p| (p, share))
         .collect();
-    let Some((middle, distance)) = place(&alone, rotation, views.free) else {
-        return;
-    };
-    let target = middle - views.free.shift(rotation) * distance;
-    let others: Vec<usize> = if nucleus.browsing() {
-        Vec::new()
-    } else {
-        let mut open = nucleus.open_modules();
-        open.retain(|&m| m != module);
-        open
-    };
-    // How far up or down it may go and stay whole in the free area, a dot's room
-    // from its edge, in the world; framed with the cursor beside it, nowhere.
-    let lens = views.free;
-    let points = (views.size.y * (1.0 - share.y) / 2.0 - DOT_ROOM).max(0.0);
-    let per_point = 2.0 * lens.half.y * lens.tan.y * distance / views.size.y;
-    let room = if also.is_some() {
-        0.0
-    } else {
-        points * per_point
-    };
-    let up = rotation * Vec3::Y;
-    #[expect(clippy::cast_precision_loss, reason = "a step count")]
-    let target = (0..=PANEL_STEPS)
-        .flat_map(|i| [1.0, -1.0].map(|way| up * way * room * i as f32 / PANEL_STEPS as f32))
-        .map(|by| target + by)
-        .find(|&at| !under_panel(nucleus.balls_of(&others), at, distance, rotation, lens))
-        .unwrap_or(target);
-    camera.glide_to(target, distance);
-}
-
-/// How many places either way of the middle an expanded module may sit [`fill`]
-/// tries, for one that leaves no sphere half under the panel.
-const PANEL_STEPS: usize = 8;
-
-/// Whether any of `balls` shows cut by the foot of the free area, where a panel
-/// docks, seen turned to `rotation` looking at `target` from `distance`; never with
-/// no panel.
-fn under_panel<'a>(
-    balls: impl Iterator<Item = &'a Ball>,
-    target: Vec3,
-    distance: f32,
-    rotation: Quat,
-    lens: Lens,
-) -> bool {
-    let foot = lens.centre.y - lens.half.y;
-    if foot <= -1.0 + 1e-3 {
-        return false;
-    }
-    let eye = target + rotation * Vec3::Z * distance;
-    let mut balls = balls;
-    balls.any(|ball| {
-        lens.project(rotation, eye, ball.center)
-            .is_some_and(|(at, depth)| {
-                let size = Vec2::new(ball.radius, ball.radius) / (depth * lens.tan);
-                at.x.abs() < 1.0 + size.x && (at.y - foot).abs() < size.y
-            })
-    })
+    glide(&alone, camera, rotation, views.free);
 }
 
 /// Glides to take in everything shown from where the camera turns to.
