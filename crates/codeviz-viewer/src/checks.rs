@@ -2030,9 +2030,13 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
                 .map(|n| (disc(n.at, n.kept_off.unwrap_or(n.radius)), None)),
         )
         .collect();
+    // Or one that fell in the naming order: off the cursor's path, or from lit to
+    // plain (a level less), whose name keeps off the calls lit as a lit one's need not.
     let ahead = |n: &Node| n.is("cursor") || n.is("path");
     let fell = |unit: &str| {
-        before.node(unit).is_some_and(ahead) && now.node(unit).is_none_or(|n| !ahead(n))
+        let (then, now) = (before.node(unit), now.node(unit));
+        then.is_some_and(ahead) && now.is_none_or(|n| !ahead(n))
+            || then.is_some_and(|n| !n.unlit()) && now.is_some_and(Node::unlit)
     };
     // A module holding anything lit is named wherever there is room: its name may
     // move where a name placed before it took its place.
