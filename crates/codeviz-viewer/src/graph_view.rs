@@ -3,8 +3,8 @@
 //! fill says what it is to the selection or the journey, in the colors its calls and
 //! names carry: white, violet, blue, amber darker the deeper, pink, and grey for the
 //! rest; its module shows in its sphere alone. Its size says only what it is to the
-//! view ([`Dot`]): a faint speck, lit, or the one in focus. Hovering only rings the
-//! node, so passing over the graph does not repaint it.
+//! view ([`Dot`]): a faint speck, lit, or the one in focus. Hovering rings the node,
+//! and shows a speck as big as a lit one, but never repaints it.
 
 use std::collections::HashMap;
 
@@ -126,7 +126,13 @@ pub(crate) fn drawn_radius(
     camera: &Camera,
     view: &GlobalTransform,
 ) -> f32 {
-    radius_as(explorer, tile, dot(explorer, tile), camera, view)
+    // What the pointer rests on shows at least as big as a lit one, so it stands out
+    // from its neighbours.
+    let dot = match dot(explorer, tile) {
+        Dot::Speck if explorer.hovered() == Some(tile) => Dot::Lit,
+        dot => dot,
+    };
+    radius_as(explorer, tile, dot, camera, view)
 }
 
 /// How big a function would be drawn in the world in `dot`'s role, whatever it is.
@@ -285,11 +291,12 @@ pub(crate) fn size_nodes(
     }
 }
 
-/// At most one thin ring per function, facing the camera, nothing else: white round
+/// A thin ring facing the camera, one per function, nothing else: white round
 /// the start (or the selection), and in a journey round the function set aside; pink
 /// round the journey's cursor, whose fill is pink too; violet round a call that also
 /// calls the start back, so it reads as both; grey round the function hovered, in the
-/// graph or as a bar, so pointing never looks like selecting.
+/// graph or as a bar, so pointing never looks like selecting, outside the ring it
+/// has.
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
@@ -301,9 +308,9 @@ pub(crate) fn draw_graph(
         return;
     };
     let facing = view.rotation();
-    let mut ring = |tile: usize, color: Color| {
+    let mut ring = |tile: usize, color: Color, out: f32| {
         if let Some(at) = explorer.tile_point(tile) {
-            let radius = drawn_radius(&explorer, tile, camera, view) * RING;
+            let radius = drawn_radius(&explorer, tile, camera, view) * out;
             gizmos
                 .circle(Isometry3d::new(at, facing), radius, color)
                 .resolution(32);
@@ -317,11 +324,11 @@ pub(crate) fn draw_graph(
     let nucleus = explorer.nucleus();
     let start = nucleus.start();
     for tile in start.into_iter().chain(explorer.aside()) {
-        ring(tile, SELECTED);
+        ring(tile, SELECTED, RING);
     }
     let cursor = explorer.cursor();
     if let Some(tile) = cursor {
-        ring(tile, CURSOR);
+        ring(tile, CURSOR, RING);
     }
     let ringed = |t: usize| [start, cursor, explorer.aside()].contains(&Some(t));
     let mut both: Vec<usize> = nucleus
@@ -333,15 +340,20 @@ pub(crate) fn draw_graph(
     both.sort_unstable();
     both.dedup();
     for &tile in &both {
-        ring(tile, CALLER);
+        ring(tile, CALLER, RING);
     }
-    if let Some(tile) = explorer
-        .hovered()
-        .filter(|&t| !ringed(t) && !both.contains(&t))
-    {
-        ring(tile, HOVER);
+    if let Some(tile) = explorer.hovered() {
+        let out = if ringed(tile) || both.contains(&tile) {
+            HOVER_RING
+        } else {
+            RING
+        };
+        ring(tile, HOVER, out);
     }
 }
 
 /// How far out a ring sits, against its function's radius.
 pub(crate) const RING: f32 = 1.6;
+/// How far out the ring round the function hovered sits where it has a ring already:
+/// outside that one.
+pub(crate) const HOVER_RING: f32 = 2.2;

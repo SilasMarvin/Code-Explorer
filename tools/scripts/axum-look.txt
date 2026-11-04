@@ -1,13 +1,14 @@
 #: view demo/out/axum-server.json
 # How the graph is drawn on the small demo: arrows thin with one small head each;
-# module names centred above their spheres; every function named where it fits,
-# browsing too; hover never looks like the selection; an expanded module shows all
+# module names centred above their spheres; plain functions named where their sphere
+# shows big enough; hover never looks like the selection; an expanded module shows all
 # its functions, named, with the calls among them; a depth change or `i` takes no
 # name away and moves nothing.
 snap open
 expect check arrow-sizes pass
 expect check module-names pass
 expect check named-when-room pass
+expect check plain-names pass
 expect named pricing::unit_price
 expect named users::register
 

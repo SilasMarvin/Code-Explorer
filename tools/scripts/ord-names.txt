@@ -1,7 +1,16 @@
 #: view $CODEVIZ_DATA/ord-ws-2.json --focus Explorer::spotlit --depth 1
 # Names stay or go, never move: the cursor stepping onto a call beside a name moves
 # no name. Expanded in a journey, the journey's own calls are named before any
-# plain function of the module, which never takes the room a lit name needs.
+# plain function of the module, which never takes the room a lit name needs. The
+# calls on the cursor's path down from the start are named come what may, and I
+# names the callers it brings in where there is room.
+key down
+key i
+expect check named-when-room pass
+expect check outside-callers pass
+key i
+key up
+expect cursor Explorer::spotlit
 key .
 key .
 key .
@@ -25,3 +34,22 @@ expect named Explorer::focus
 expect named Explorer::root_tile
 expect named Explorer::reveal_targets
 snap expanded
+
+key x
+key esc
+key /
+type draw_graph_labels
+key enter
+key enter
+key .
+key .
+bar 3
+snap path start
+key down
+expect nothing-moved
+key down
+expect nothing-moved
+expect named Explorer::graph_focus
+expect named Explorer::focus
+expect check named-when-room pass
+snap down the path
