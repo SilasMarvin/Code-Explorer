@@ -2919,7 +2919,9 @@ fn arrows_clear(s: &Snap) -> Value {
             offenders.push((detour, offender));
         }
         offenders.extend(through_dots(a, &dots));
-        if a.path.len() > 2 {
+        // Names keep no side off a call I brings in, so I moves none: its line may
+        // pass under its callee's name, as under any other.
+        if a.path.len() > 2 && a.flow != "outside" {
             offenders.extend(through_names(a, &names));
         }
     }
