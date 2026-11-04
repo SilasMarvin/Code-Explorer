@@ -292,6 +292,17 @@ that put it there), names, and calls.
 | `bars-in-view` | bars below the journey panel's foot, or past its sides, cut off or out of view, have a track down its side, or along its foot, showing which part is in view; the cursor's bar shows wholly, or across the panel when wider | a journey panel |
 | `outside-callers` | each caller I brings in lies clear of every call's line into the start or along the journey (2 points past its dot) but its own; one on screen unnamed, or one with no room to be drawn (`outside_waiting`), is counted in the bar along the top, unless another notice speaks there | I on |
 
+One check reads the picture rather than the JSON, in the runner (`tools/drive`) once the
+window closes: `look`, the mean RGB level above the ground of what is drawn faint, the
+median over each snap, within the ranges in `LOOK` at the top of `tools/drive`. A faint
+line's level is its brightest pixel near its middle over the darker side of it, sampled
+clear of dots and names; a faint sphere's, its fill at 0.6 of its radius. It applies on
+the whole map with nothing selected (the ground, the faint links between modules, the
+faint spheres) and expanded (the faint calls among the module's functions). A range
+missed means the picture as a whole is drawn differently (blending, colour space,
+tonemapping, lighting, Bevy features): a Bevy build without `bevy_post_process` drew
+every translucent stroke alpha-squared, links at 1-3 levels for 13-15.
+
 What a step may move decides which checks judge it:
 
 | kind | steps | may move |
