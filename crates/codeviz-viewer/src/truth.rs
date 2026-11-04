@@ -4,8 +4,6 @@
 //! only sometimes runs. A scripted session's snapshots say more: what is
 //! drawn where on screen, by name, and what can be clicked ([`scene`]).
 
-use std::collections::HashSet;
-
 use bevy::{
     color::Color,
     math::{Vec2, Vec3},
@@ -225,7 +223,6 @@ pub(crate) fn scene(view: &View) -> Value {
         "camera": camera(view),
         "state": state(view),
         "nodes": nodes,
-        "held": held(explorer, screen, &drawn),
         "modules": modules,
         "arrows": arrows(view),
         "module_arrows": module_arrows(view),
@@ -252,25 +249,6 @@ fn arrivals(screen: &Screen, tile: usize) -> Vec<Vec<[f64; 2]>> {
     (screen.arrivals.iter())
         .filter(|(t, _)| *t == tile)
         .map(|(_, tail)| tail.iter().map(|p| [round(p.x), round(p.y)]).collect())
-        .collect()
-}
-
-/// Where the journey's calls a deeper level shows would be, which names keep off:
-/// each with where, and how far names keep from it.
-fn held(explorer: &Explorer, screen: &Screen, drawn: &[Drawn]) -> Vec<Value> {
-    let shown: HashSet<usize> = drawn.iter().map(|d| d.tile).collect();
-    screen
-        .kept_off
-        .iter()
-        .filter(|k| !shown.contains(&k.0))
-        .map(|&(tile, at, radius)| {
-            json!({
-                "name": node_name(explorer, tile),
-                "unit": explorer.tile_unit(tile).map(ToString::to_string),
-                "at": [round(at.x), round(at.y)],
-                "radius": round(radius),
-            })
-        })
         .collect()
 }
 

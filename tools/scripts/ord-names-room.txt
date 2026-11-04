@@ -1,0 +1,73 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json
+# Names where there is room: on a narrow whole map the big modules named first, one
+# inside its sphere where the room above is taken; on a fresh selection every lit
+# name placed afresh, none kept out by a place it never had; the selection's module
+# and the modules holding anything lit named; a module's plain names all or none, and
+# none over a call lit. In a journey, the calls a deeper level shows keep out no name
+# shown; a caller folded into its module's count lies under no name, nor does the
+# start's name lie on its own incoming call. Expanded, a lit name lies over the plain
+# dots it must, and plain dots show smaller than lit ones.
+window 900 700
+key r
+expect check module-names pass
+expect check named-when-room pass
+snap narrow whole map
+
+window 1600 1000
+key r
+hover Explorer::spotlit
+snap hover
+key /
+type spotlit
+key enter
+expect selection Explorer::spotlit
+expect named ForceGraph::callees
+expect named graph_view::draw_spotlight
+expect check named-when-room pass
+expect check module-names pass
+expect check plain-names pass
+expect check labels-clear pass
+snap spotlit selected
+
+scroll 4 at Explorer::spotlit
+expect check plain-names pass
+expect check labels-clear pass
+snap mid zoom
+
+key r
+key /
+type keyboard
+key enter
+key enter
+expect start scene::keyboard
+expect depth 1
+expect named Explorer::step
+expect check named-when-room pass
+snap keyboard journey
+
+key esc
+key /
+type graph_focus
+key enter
+key enter
+expect start Explorer::graph_focus
+expect check labels-clear pass
+expect check labels-near pass
+
+key esc
+key /
+type spotlit
+key enter
+key enter
+key .
+key .
+key .
+key .
+expect depth 5
+key x
+expect expanded explorer
+expect named Track::root
+expect check named-when-room pass
+expect check labels-clear pass
+expect check dot-sizes pass
+snap expanded depth 5

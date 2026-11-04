@@ -104,13 +104,16 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
     table
 }
 
-/// What a function is to the view.
+/// What a function is to the view: an expanded module's function that nothing
+/// lights is drawn as small as a speck, smaller than what is lit.
 pub(crate) fn dot(explorer: &Explorer, tile: usize) -> Dot {
     let nucleus = explorer.nucleus();
     let focus = [nucleus.start(), explorer.cursor(), explorer.aside()];
+    let opened_plain =
+        nucleus.opened_up(tile) && nucleus.level(tile).is_none() && !nucleus.outside(tile);
     if focus.contains(&Some(tile)) {
         Dot::Focus
-    } else if nucleus.lit(tile) && !nucleus.folded(tile) {
+    } else if nucleus.lit(tile) && !nucleus.folded(tile) && !opened_plain {
         Dot::Lit
     } else {
         Dot::Speck
