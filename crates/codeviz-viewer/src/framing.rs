@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, input::EguiWantsInput};
 
 use crate::{
-    camera::{Bounds, Lens, OrbitCamera, Reach},
+    camera::{Bounds, Lens, NEAREST_FILL, OrbitCamera, Reach},
     disclosure::Disclose,
     explorer::{Explorer, Return},
     nucleus::{BROWSE_REACH, Ball, Nucleus, VIEW, view_rotation},
@@ -175,7 +175,7 @@ pub(crate) fn frame(
         middle: VIEW,
         reach: BROWSE_REACH,
     }));
-    if let Some(reach) = reach(nucleus, lens) {
+    if let Some(reach) = reach(nucleus, (views, &chars), &mut last.nearest) {
         camera.limit(reach);
     }
     let expanded = nucleus.expanded_module();
@@ -198,6 +198,7 @@ pub(crate) fn frame(
         shot,
         opened,
         expanded_on,
+        ..
     } = &mut *last;
     let before = last.replace(now);
     let came = came(nucleus, opened, before.is_some_and(|b| b.free != now.free));
@@ -236,31 +237,36 @@ pub(crate) fn frame(
         });
     }
     if now.expanded.is_some() && before.is_some_and(|b| b.expanded.is_none()) {
-        *expanded_on = explorer.current();
+        *expanded_on = Some((explorer.current(), now.free));
     }
-    let picked = (explorer.current() != *expanded_on)
-        .then_some(current)
-        .flatten();
-    go_back(returning, picked, nucleus, &mut camera, views);
+    let (on, free_then) = expanded_on.unwrap_or_default();
+    let picked = (explorer.current() != on).then_some(current).flatten();
+    let changed = (picked, free_then != now.free);
+    go_back(returning, changed, nucleus, &mut camera, views);
 }
 
 /// What [`frame`] remembers from one frame to the next: what the view was last framed
-/// for and how, the modules the journey ran through, and what the view was on as a
-/// module was expanded.
+/// for and how, the modules the journey ran through, and what the view was on and the
+/// free area as a module was expanded.
 #[derive(Default)]
 pub(crate) struct Memory {
     framed: Option<Framed>,
     shot: Option<Shot>,
     opened: Vec<usize>,
-    expanded_on: Option<usize>,
+    expanded_on: Option<(Option<usize>, [i32; 4])>,
+    /// The module expanded and the free area's size, and the most of the free area
+    /// the wheel takes that module to ([`expanded_shares`]).
+    nearest: Option<((usize, [i32; 2]), f32)>,
 }
 
 /// Sends the camera back where the explorer asks: shrinking back, with what the view
 /// came to be on while expanded (`picked`: a pick, the function set aside) brought
-/// into the free area when it would show off it, as a pick collapsed is ([`reveal`]).
+/// into the free area when it would show off it, as a pick collapsed is, and in a
+/// journey whose panel changed size while expanded (`resized`), its spheres too, as a
+/// level more collapsed brings them ([`reveal`]).
 fn go_back(
     returning: Option<Return>,
-    picked: Option<Vec3>,
+    (picked, resized): (Option<Vec3>, bool),
     nucleus: &Nucleus,
     camera: &mut OrbitCamera,
     views: Views,
@@ -269,8 +275,13 @@ fn go_back(
         Some(Return::To(pose)) => camera.return_to(pose),
         Some(Return::Shrunk(pose)) => {
             camera.return_to(pose);
-            if picked.is_some_and(|at| !shows(&[at], camera, views)) {
-                reveal(nucleus, &[picked], &[], camera, views);
+            let came = if resized && !nucleus.browsing() {
+                nucleus.open_modules()
+            } else {
+                Vec::new()
+            };
+            if !came.is_empty() || picked.is_some_and(|at| !shows(&[at], camera, views)) {
+                reveal(nucleus, &[picked], &came, camera, views);
             }
         }
         _ => {}
@@ -565,22 +576,37 @@ fn fill(
     rotation: Quat,
     (views, chars): (Views, &dyn Fn(usize) -> usize),
 ) {
-    let Some((radius, dots)) = nucleus.expanded_layout() else {
+    let Some((share, _)) = expanded_shares(nucleus, (views, chars)) else {
         return;
     };
-    // Where its functions would show, in points, at the least share, and so the
-    // share they need.
-    let side = views.size.min_element();
-    let least = sizes::EXPANDED_SHARE.0;
-    let scale = least * side / (2.0 * radius).max(f32::EPSILON);
-    let shown: Vec<(Vec2, usize)> = dots.iter().map(|&(t, at)| (at * scale, chars(t))).collect();
-    let share =
-        Vec2::splat(sizes::expanded_share(least, sizes::comfort(&shown)) * side) / views.size;
+    let share = Vec2::splat(share * views.size.min_element()) / views.size;
     let alone: Vec<(Vec3, Vec2)> = (nucleus.nucleus_points(rotation).into_iter())
         .chain(also)
         .map(|p| (p, share))
         .collect();
     glide(&alone, camera, rotation, views.free);
+}
+
+/// The shares of the free area's smaller side the module expanded takes: expanded,
+/// as much as its functions need to sit comfortably, their names `chars` long
+/// ([`sizes::expanded_share`]); and zoomed in as far as the wheel goes, as much as
+/// all of them need ([`sizes::nearest_share`]).
+fn expanded_shares(
+    nucleus: &Nucleus,
+    (views, chars): (Views, &dyn Fn(usize) -> usize),
+) -> Option<(f32, f32)> {
+    let (radius, dots) = nucleus.expanded_layout()?;
+    // Where its functions would show, in points, at the least share, and so the
+    // share they need.
+    let least = sizes::EXPANDED_SHARE.0;
+    let scale = least * views.size.min_element() / (2.0 * radius).max(f32::EPSILON);
+    let shown: Vec<(Vec2, usize)> = dots.iter().map(|&(t, at)| (at * scale, chars(t))).collect();
+    let share = sizes::expanded_share(least, sizes::comfort(&shown, sizes::COMFORTABLE));
+    let every = sizes::comfort(&shown, 1.0);
+    Some((
+        share,
+        sizes::nearest_share(share, least, every, NEAREST_FILL),
+    ))
 }
 
 /// Glides to take in everything shown from where the camera turns to.
@@ -605,8 +631,23 @@ fn glide(points: &[(Vec3, Vec2)], camera: &mut OrbitCamera, rotation: Quat, lens
 /// How near and far the wheel may take the camera, and what it keeps out of and in
 /// view: out, until everything shown takes a little over half the free area from
 /// the usual view, where the flattened map shows widest, so turning leaves the far
-/// end where it is; held in it on the way.
-fn reach(nucleus: &Nucleus, lens: Lens) -> Option<Reach> {
+/// end where it is; held in it on the way; in, with a module expanded, as near as
+/// its functions' names need (`nearest`, remembered for the module and the free
+/// area's size).
+fn reach(
+    nucleus: &Nucleus,
+    (views, chars): (Views, &dyn Fn(usize) -> usize),
+    nearest: &mut Option<((usize, [i32; 2]), f32)>,
+) -> Option<Reach> {
+    // How near the wheel may take the module expanded, worked out once for it and the
+    // free area's size.
+    #[expect(clippy::cast_possible_truncation, reason = "window points")]
+    let key =
+        (nucleus.expanded_module()).map(|m| (m, views.size.to_array().map(|v| v.round() as i32)));
+    if nearest.is_none_or(|(was, _)| Some(was) != key) {
+        *nearest = key.zip(expanded_shares(nucleus, (views, chars)).map(|(_, most)| most));
+    }
+    let lens = views.free;
     let shown: Vec<(usize, Ball)> = nucleus
         .balls()
         .filter(|(_, ball)| nucleus.shows_body(ball.body))
@@ -623,6 +664,7 @@ fn reach(nucleus: &Nucleus, lens: Lens) -> Option<Reach> {
         near,
         far: (fits * FAR_MARGIN).max(near),
         expanded: shown.iter().position(|&(m, _)| Some(m) == expanded),
+        nearest: nearest.map_or(NEAREST_FILL, |(_, most)| most),
         spheres: shown.iter().map(|(_, b)| (b.center, b.radius)).collect(),
         lens,
     })

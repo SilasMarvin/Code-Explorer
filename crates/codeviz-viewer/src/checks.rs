@@ -97,6 +97,11 @@ const ZOOM_OUT_LEAST: f32 = 0.4;
 /// sphere's rim; its disc seen in perspective shows a little bigger.
 const ZOOM_IN_MOST: f32 = 0.95;
 const ZOOM_IN_KEPT: f32 = 0.88;
+/// The module expanded may be zoomed past [`ZOOM_IN_MOST`], until its names fit: the
+/// wheel may stop on it short of this share of the free area's smaller side only
+/// with at least [`NAMES_FIT`] of its functions in the free area named.
+const ZOOM_IN_NAMES: f32 = 2.0;
+const NAMES_FIT: f32 = 0.9;
 /// Least a function or sphere moves in the world, or a dot or name on screen in
 /// points, or the camera turns in radians, to count as moved.
 const MOVED_WORLD: f32 = 0.01;
@@ -1751,7 +1756,10 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
         && let Some(m) = under
     {
         let fill = s.fill(m);
-        if fill > ZOOM_IN_MOST {
+        let expanded = s.expanded() && s.state.expanded.as_ref() == Some(&m.name);
+        if expanded {
+            offenders.extend(zoomed_in_expanded(s, m, fill));
+        } else if fill > ZOOM_IN_MOST {
             let why = "zoomed in past the sphere under the pointer filling the free area";
             let offender =
                 json!({ "why": why, "module": m.name, "fill": r2(fill), "most": ZOOM_IN_MOST });
@@ -1778,6 +1786,46 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
         }
     }
     verdict(offenders)
+}
+
+/// Zoomed in on the module expanded: as near as its functions' names need, past
+/// filling the free area, over its middle then; the wheel stopping short of that
+/// ([`ZOOM_IN_NAMES`]) only with [`NAMES_FIT`] of them named.
+fn zoomed_in_expanded(s: &Snap, m: &Module, fill: f32) -> Vec<(f32, Value)> {
+    let free = s.free();
+    let mut offenders = Vec::new();
+    if fill > 1.0 {
+        let off = v2(m.at).distance(v2([free.center().x, free.center().y]));
+        if off > m.radius {
+            let why = "zoomed past filling the free area, the module expanded is off its middle";
+            let offender =
+                json!({ "why": why, "module": m.name, "fill": r2(fill), "off": r1(off) });
+            offenders.push((off - m.radius, offender));
+        }
+    } else if fill >= ZOOM_IN_KEPT {
+        let why = "zoomed in to fill the free area, the module expanded is not all in it";
+        offenders.extend(
+            outside(free, EDGE, [m.disc()])
+                .into_iter()
+                .map(|(out, o)| (out, with(o, "why", json!(why)))),
+        );
+    }
+    let stopped = (s.text.iter()).any(|t| t.text.contains("Zoomed in as far as it goes"));
+    let shown: Vec<&Node> = (s.nodes.iter())
+        .filter(|n| n.module.as_ref() == Some(&m.name) && free.contains(pos(n.at)))
+        .collect();
+    let named = shown.iter().filter(|n| n.label.is_some()).count();
+    #[expect(clippy::cast_precision_loss, reason = "counts of functions")]
+    let share = named as f32 / shown.len().max(1) as f32;
+    if stopped && fill < ZOOM_IN_NAMES && share < NAMES_FIT {
+        let why = "the wheel stopped on the module expanded before its names fit";
+        let offender = json!({
+            "why": why, "module": m.name, "fill": r2(fill),
+            "named": named, "shown": shown.len(),
+        });
+        offenders.push((NAMES_FIT - share, offender));
+    }
+    offenders
 }
 
 fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
@@ -1877,20 +1925,19 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
     let middle = pt([free.center().x, free.center().y]);
     let mut offenders = Vec::new();
     if extent.width() > free.width() || extent.height() > free.height() {
-        // Dragged, a map bigger than the free area keeps a sphere near its middle.
+        // Dragged, a map bigger than the free area keeps a sphere over its middle third.
         if !since.has(Kind::Pan) {
             return skip("the map is bigger than the free area at this zoom");
         }
         let centre = v2([free.center().x, free.center().y]);
-        let near = free.width().min(free.height()) * camera::NEAR_MIDDLE;
+        let third = v2([free.width(), free.height()]) * camera::MIDDLE_SHARE / 2.0;
         let gap = (s.sized())
-            .map(|m| centre.distance(v2(m.at)) - m.radius)
+            .map(|m| ((v2(m.at) - centre).abs() - third).max(Vec2::ZERO).length() - m.radius)
             .fold(f32::MAX, f32::min);
-        if gap > near + EDGE {
-            let why = "dragged so that no sphere lies near the middle of the free area";
-            let offender =
-                json!({ "why": why, "gap": r1(gap), "near": r1(near), "middle": middle });
-            offenders.push((gap - near, offender));
+        if gap > EDGE {
+            let why = "dragged so that no sphere lies over the middle third of the free area";
+            let offender = json!({ "why": why, "gap": r1(gap), "middle": middle });
+            offenders.push((gap, offender));
         }
         return with(verdict(offenders), "map", map);
     }
@@ -5066,6 +5113,39 @@ mod tests {
             json!(true),
             "out, the bound out alone"
         );
+    }
+
+    #[test]
+    fn zoomed_in_on_the_module_expanded_the_wheel_goes_on_until_its_names_fit() {
+        let mut s = scene();
+        s["state"]["nucleus"] = json!("expanded");
+        s["state"]["expanded"] = json!("a");
+        // a, under the pointer, over the free area's middle, twice its height.
+        s["modules"][0]["radius"] = json!(976.0);
+        s["modules"][0]["at"] = json!([800.0, 512.0]);
+        s["state"]["pointer"] = json!([800.0, 512.0]);
+        let result = after(&s, &s, &[IN], "zoom-bounds");
+        assert!(passes(&result), "past filling it: {result}");
+        s["modules"][0]["at"] = json!([800.0, 1900.0]);
+        s["state"]["pointer"] = json!([800.0, 990.0]);
+        let result = after(&s, &s, &[IN], "zoom-bounds");
+        assert!(!passes(&result), "off the middle: {result}");
+        // Stopped at filling it, with g unnamed.
+        s["modules"][0]["radius"] = json!(440.0);
+        s["modules"][0]["at"] = json!([500.0, 512.0]);
+        s["state"]["pointer"] = json!([500.0, 512.0]);
+        s["text"] =
+            json!([{ "text": "Zoomed in as far as it goes", "rect": [0.0, 0.0, 9.0, 9.0] }]);
+        let result = after(&s, &s, &[IN], "zoom-bounds");
+        assert!(
+            result["offenders"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("before its names fit"),
+            "{result}"
+        );
+        s["nodes"][1]["label"] = json!("g");
+        assert!(passes(&after(&s, &s, &[IN], "zoom-bounds")), "all named");
     }
 
     #[test]

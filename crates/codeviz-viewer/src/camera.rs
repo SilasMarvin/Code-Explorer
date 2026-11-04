@@ -4,12 +4,13 @@
 //! orbits and right- or shift-drag pans. Zoom goes towards the pointer, so you can
 //! zoom into any part of the graph, as near as a module filling most of the view and
 //! as far as the whole scene with room round it. The camera never goes inside a
-//! sphere: the wheel stops once the one under the pointer (with a module expanded,
-//! that one) fills nine tenths of the free part of the view, drawn into it whole as it
-//! comes to, or with none under it, while the one nearest it still shows. One clamp
+//! sphere: the wheel stops once the one under the pointer fills nine tenths of the
+//! free part of the view, drawn into it whole as it comes to, or with none under it,
+//! while the one nearest it still shows; with a module expanded, once that one shows
+//! as big as its functions' names need, over the whole free part when bigger. One clamp
 //! keeps the map in the free part of the view after every move by hand
 //! ([`OrbitCamera::keep_map`]): a pan follows the hand up to the map's edge, or with
-//! the map bigger than the view, as far as a sphere stays near the middle; zoomed
+//! the map bigger than the view, as far as a sphere covers some of its middle third; zoomed
 //! out or turned, the map is drawn in as it comes to fit, held inside once it does,
 //! and in the middle as far out as the wheel goes. Expanded, the map is the module
 //! expanded, kept over the middle, until zoomed out so far that the whole map comes
@@ -143,6 +144,10 @@ pub(crate) struct Reach {
     /// The module expanded, by index into `spheres`: the map kept in view instead,
     /// over the free area's middle, and the sphere the wheel zooms to.
     pub(crate) expanded: Option<usize>,
+    /// Zoomed in as far as the wheel goes, the module expanded's diameter against
+    /// the free area's smaller side: as near as its functions' names need, past
+    /// [`NEAREST_FILL`], however much bigger than the free area.
+    pub(crate) nearest: f32,
     /// The view the camera sees through.
     pub(crate) lens: Lens,
 }
@@ -209,8 +214,9 @@ const DRAWN_FROM: f32 = 1.5;
 const OUTSIDE: f32 = 1.1;
 
 /// Zoomed in as far as the wheel goes, the sphere under the pointer's diameter
-/// against the free area's smaller side.
-const NEAREST_FILL: f32 = 0.9;
+/// against the free area's smaller side; the module expanded, as near as its
+/// functions' names need, [`Reach::nearest`].
+pub(crate) const NEAREST_FILL: f32 = 0.9;
 
 /// Zooming in, the sphere under the pointer's diameter against the free area's
 /// smaller side when the wheel starts to draw it into the free area, all of it in by
@@ -221,10 +227,10 @@ const KEPT_FROM: f32 = 0.6;
 /// the free area's height: about a name's height.
 const NAME_ROOM: f32 = 0.05;
 
-/// How near the free area's middle some sphere's disc stays as a map bigger than
-/// the free area is panned, as a share of the free area's smaller side: near enough
-/// that one always shows there, far enough to pan across the gaps between them.
-pub(crate) const NEAR_MIDDLE: f32 = 0.25;
+/// The share of the free area, across and up about its middle, some sphere's disc
+/// stays over as a map bigger than the free area is panned: its middle third, so one
+/// always shows there, wide enough to pan across the gaps between them.
+pub(crate) const MIDDLE_SHARE: f32 = 1.0 / 3.0;
 
 /// The share of a pan the map's edge must hold back for the pan to count as stopped
 /// there, and say so.
@@ -371,7 +377,7 @@ impl OrbitCamera {
     /// Pans by hand, no further than keeps the map in the free area, then backs off
     /// from any sphere that took the camera in. A map bigger than the free area is
     /// held by its spheres, not the box round them: the pan goes as far as some
-    /// sphere stays near the free area's middle ([`Self::middle_gap`]), then slides
+    /// sphere stays over the free area's middle ([`Self::middle_gap`]), then slides
     /// along that bound.
     /// Returns what stopped it, when the map's edge, or zoomed all the way out the
     /// middle, held back much of the move ([`HELD_BACK`]).
@@ -403,7 +409,7 @@ impl OrbitCamera {
         })
     }
 
-    /// Pans by `offset`, or as far along it as keeps some sphere near the free area's
+    /// Pans by `offset`, or as far along it as keeps some sphere over the free area's
     /// middle, no further from it than [`Self::middle_gap`] allows or than it was;
     /// then the rest of the way along that bound: the part heading away dropped, and
     /// drawn back onto it.
@@ -471,21 +477,24 @@ impl OrbitCamera {
         Some(rotation * Vec3::new(-towards.x, -towards.y, 0.0))
     }
 
-    /// How far the free area's middle lies, with the camera looking at `looking_at`,
-    /// from the nearest sphere's disc, past [`NEAR_MIDDLE`] of the free area's
-    /// smaller side, in the view's units up: at most 0 where some sphere is that
-    /// near, so the view never pans to empty space.
+    /// How far the free area's middle ([`MIDDLE_SHARE`] of it) lies, with the camera
+    /// looking at `looking_at`, from the nearest sphere's disc, in the view's units up:
+    /// at most 0 where some sphere covers some of it, so the view never pans to empty
+    /// space.
     fn middle_gap(&self, reach: &Reach, looking_at: Vec3) -> f32 {
         let lens = &reach.lens;
         let rotation = self.rotation();
         let eye = looking_at + rotation * Vec3::Z * self.distance;
         // Across in the same units as up.
         let wide = Vec2::new(lens.tan.x / lens.tan.y, 1.0);
-        let nearest = (reach.spheres.iter())
+        let middle = lens.half * MIDDLE_SHARE * wide;
+        (reach.spheres.iter())
             .filter_map(|&sphere| disc(lens, rotation, eye, sphere))
-            .map(|(at, _, size)| ((at - lens.centre) * wide).length() - size.y)
-            .fold(f32::MAX, f32::min);
-        nearest - 2.0 * smaller_side(lens) * NEAR_MIDDLE
+            .map(|(at, _, size)| {
+                let off = ((at - lens.centre) * wide).abs();
+                (off - middle).max(Vec2::ZERO).length() - size.y
+            })
+            .fold(f32::MAX, f32::min)
     }
 
     /// Zoomed out, how far from the far end the camera is: 1 where the map just fits
@@ -686,7 +695,8 @@ impl OrbitCamera {
     /// Zoomed in towards the sphere under the pointer, `aimed`, pans it into the free
     /// area, with room for its name above it, as it comes to fill it: not at all while
     /// its diameter is under [`KEPT_FROM`] of the free area's smaller side, the more of
-    /// the way the nearer it is to [`NEAREST_FILL`], and wholly inside once there.
+    /// the way the nearer it is to [`NEAREST_FILL`], and wholly inside once there, or
+    /// once bigger than the free area, over all of it.
     /// Returns whether it panned.
     fn keep_aimed(&mut self, reach: &Reach, aimed: Option<Aim>) -> bool {
         let Some(Aim::Under(index)) = aimed else {
@@ -705,7 +715,9 @@ impl OrbitCamera {
         // The sphere and the room above it for its name.
         let name = Vec2::new(0.0, NAME_ROOM * lens.half.y / 2.0);
         let (off, size) = (at - lens.centre + name, size + name);
-        let room = (lens.half - size).max(Vec2::ZERO);
+        // Bigger than the free area, the module expanded zoomed past filling it may
+        // slide as far as it still covers it.
+        let room = (lens.half - size).abs();
         // Its depth, not the middle's, sets how far a pan moves it.
         let lens = Lens {
             tan: lens.tan * depth / self.distance,
@@ -930,7 +942,12 @@ fn clear_at(
         None => true,
         Some(Aim::Under(index)) => shows(index).is_some_and(|(_, _, size)| {
             // Its diameter against the free area's smaller side.
-            size.y <= smaller_side(lens) * NEAREST_FILL
+            let most = if reach.expanded == Some(index) {
+                reach.nearest
+            } else {
+                NEAREST_FILL
+            };
+            size.y <= smaller_side(lens) * most
         }),
         Some(Aim::Near(index)) => shows(index).is_some_and(|(at, _, size)| {
             let (low, high) = lens.free(1.0);
@@ -1184,6 +1201,7 @@ mod tests {
             far,
             spheres,
             expanded: None,
+            nearest: NEAREST_FILL,
             lens: Lens::whole(std::f32::consts::FRAC_PI_4, 1.6),
         }
     }
@@ -1244,6 +1262,27 @@ mod tests {
             "drawn into the view whole: {at} {size}"
         );
         assert!(camera.eye().distance(sphere.0) > sphere.1 * OUTSIDE);
+
+        // Expanded, as near as its functions' names need, past filling the view,
+        // still covering it.
+        let reach = Reach {
+            expanded: Some(0),
+            nearest: 1.8,
+            ..reach(0.1, 100.0, vec![sphere])
+        };
+        let mut camera = head_on(Vec3::ZERO, 60.0, reach);
+        for _ in 0..60 {
+            camera.zoom(0.8, Some(Vec3::new(4.0, 2.0, 0.0)));
+        }
+        let (at, _, size) = disc(&lens, camera.rotation(), camera.eye(), sphere).unwrap();
+        assert!(
+            (1.78..=1.8).contains(&size.y),
+            "as near as its names need: {size}"
+        );
+        assert!(
+            (at.abs() - size).max_element() <= -1.0 + 1e-4,
+            "over the whole view: {at} {size}"
+        );
     }
 
     #[test]
@@ -1284,7 +1323,7 @@ mod tests {
         assert!(stopped.is_some_and(|why| why.contains("all the way out")));
         assert!(seen(&camera).0.length() < 1e-3, "{}", seen(&camera).0);
         // Close in, the map is far bigger than the view: it pans as far as a sphere
-        // stays near the middle, no further, though the box round them goes on.
+        // stays over the middle, no further, though the box round them goes on.
         let mut camera = head_on(Vec3::new(6.0, 3.5, 0.0), 5.0, reach(0.1, 100.0, spheres));
         let reach = camera.reach.clone().unwrap();
         let stopped = camera.pan_by_hand(Vec3::new(-6.0, 0.0, 0.0));
@@ -1295,7 +1334,7 @@ mod tests {
         let gap = |camera: &OrbitCamera| camera.middle_gap(&reach, camera.looking_at);
         assert!(
             gap(&camera).abs() < 1e-3,
-            "a sphere just near the middle: {}",
+            "a sphere just over the middle: {}",
             gap(&camera)
         );
         assert!(
@@ -1307,7 +1346,7 @@ mod tests {
         let up = camera.looking_at.y;
         camera.pan_by_hand(Vec3::new(-1.0, 0.5, 0.0));
         assert!(camera.looking_at.y > up + 0.3, "{}", camera.looking_at);
-        assert!(gap(&camera) < 1e-3, "still near: {}", gap(&camera));
+        assert!(gap(&camera) < 1e-3, "still over it: {}", gap(&camera));
         // Back the way it came, it comes.
         let across = camera.looking_at.x;
         camera.pan_by_hand(Vec3::new(0.2, 0.0, 0.0));

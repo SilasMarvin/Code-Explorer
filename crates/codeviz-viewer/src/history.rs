@@ -5,10 +5,9 @@
 //!
 //! One rule says what makes an entry: whatever changes where the journey starts, opens
 //! or leaves a journey, selects a function browsing, sets one aside or lets it go, or
-//! moves the cursor by a click, a bar or Enter. A walk with the arrows or
-//! brackets is one entry however many steps it takes, so Back returns to where the
-//! walk began; a caller of the start set aside along the row above its bar is no
-//! place of its own. Back crosses between browsing and a journey as it crosses
+//! moves the cursor, by a click, a bar, Enter or each step with the arrows or
+//! brackets, so Back retraces a walk a step at a time; a caller of the start set
+//! aside along the row above its bar is no place of its own. Back crosses between browsing and a journey as it crosses
 //! anything, and never to the place it is at.
 
 use std::collections::HashSet;

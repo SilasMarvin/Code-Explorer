@@ -2,7 +2,7 @@
 # A journey frames the spheres it runs through whole, with room for their names,
 # clear of the panel, however deep; the wheel in stops with the sphere under the
 # pointer filling at most 90% of the free area, all of it there; a pan keeps the map
-# in the free area, or over its middle when it is bigger.
+# in the free area, or a sphere over its middle third when it is bigger.
 snap walk
 expect check spheres-unclipped
 key .
@@ -55,8 +55,8 @@ pan -700 -400
 expect check map-on-screen
 snap zoomed in panned
 
-# Close in, a pan stops while a sphere is still near the free area's middle, however
-# far the box round the map goes on.
+# Close in, a pan stops while a sphere still covers some of the free area's middle
+# third, however far the box round the map goes on.
 key r
 scroll 14 at Explorer::spotlit
 pan 4000 0

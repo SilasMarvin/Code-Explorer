@@ -1,0 +1,48 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus Explorer::spotlit
+# Zoomed into a module, the wheel goes on until its functions' names fit, past
+# filling the view, in a journey and browsing, at any window size; X back after a
+# level more grew the panel draws the journey's spheres clear of it; close in, a pan
+# stops with a sphere over the middle third of the view.
+window 1600 1000
+key x
+expect expanded explorer
+snap explorer expanded
+scroll 30
+expect check zoom-bounds
+snap explorer wheel in
+key x
+key .
+key .
+expect depth 3
+snap depth 3
+
+key x
+expect expanded explorer
+key .
+key .
+key down
+snap expanded deeper
+key x
+expect nucleus modules
+expect check spheres-unclipped
+snap x back after the panel grew
+
+key esc
+expect mode browse
+window 1000 600
+key x
+expect expanded explorer
+snap browse expanded small window
+scroll 30
+expect check zoom-bounds
+snap browse wheel in small window
+key x
+
+key r
+scroll 14 at Explorer::spotlit
+pan 4000 0
+expect check map-on-screen
+snap close in panned right
+pan 0 -4000
+expect check map-on-screen
+snap close in panned up
