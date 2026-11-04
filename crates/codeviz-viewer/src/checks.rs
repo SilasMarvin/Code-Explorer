@@ -3342,7 +3342,12 @@ fn outside_callers(s: &Snap) -> Value {
         .iter()
         .filter(|a| a.flow == "outside" && a.path.len() >= 2)
     {
-        if !outside.iter().any(|n| n.unit == a.from_unit) {
+        if !a
+            .from_unit
+            .as_deref()
+            .and_then(|u| s.node(u))
+            .is_some_and(|n| n.is("outside"))
+        {
             let why = "a line from a caller I brings in whose dot is not drawn";
             offenders.push((2.0, json!({ "arrow": [a.from, a.to], "why": why })));
         }
