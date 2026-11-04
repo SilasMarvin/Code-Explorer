@@ -108,11 +108,17 @@ pub(crate) fn expanded_share(share: f32, comfort: f32) -> f32 {
 /// many times as far apart as expanding shows them.
 const NEAREST_SPREAD: f32 = 3.0;
 
+/// How much more room than [`comfort`] counts every name needs to be placed: each
+/// name nearer its own dot than any other, off the calls lit, with its pill's margin.
+const PLACED_ROOM: f32 = 1.5;
+
 /// The most of the free area's smaller side an expanded module's diameter takes as
 /// the wheel zooms in, expanded at `expanded` of it, showing at `share` now with every
 /// one of its functions needing `every` ([`comfort`] of them all) for its name to sit
-/// beside it: as near as all its names fit, up to its dots [`NEAREST_SPREAD`] times
-/// as far apart, and never less than `least`, as any sphere may fill.
+/// beside it: as near as all its names fit as placed ([`PLACED_ROOM`]), up to its
+/// dots [`NEAREST_SPREAD`] times as far apart, and never less than `least`, as any sphere may fill.
 pub(crate) fn nearest_share(expanded: f32, share: f32, every: f32, least: f32) -> f32 {
-    (share * every).min(expanded * NEAREST_SPREAD).max(least)
+    (share * every * PLACED_ROOM)
+        .min(expanded * NEAREST_SPREAD)
+        .max(least)
 }

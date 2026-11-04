@@ -20,7 +20,6 @@ key x
 expect expanded explorer
 key .
 key .
-key down
 snap expanded deeper
 key x
 expect nucleus modules
