@@ -1,7 +1,11 @@
 """Tests for tools/drive's own logic: python3 -m unittest tools/test_drive.py"""
 import importlib.machinery
 import importlib.util
+import json
+import struct
+import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 loader = importlib.machinery.SourceFileLoader("drive", str(Path(__file__).with_name("drive")))
@@ -80,6 +84,43 @@ class DriveTest(unittest.TestCase):
         self.assertTrue(rows[4].endswith("ERROR"))
         self.assertIn("1/3 scripts pass", text)
         self.assertIn("killed", text)
+
+    def test_judges_the_faint_lines_by_their_pixels(self):
+        ground, path = (15, 18, 23), [[20.0, 50.0], [100.0, 50.0], [180.0, 50.0]]
+        snap = {"window": [200, 100], "state": {"mode": "browse", "expanded": None},
+                "content": {"selection": None},
+                "nodes": [], "labels": [], "modules": [],
+                "module_arrows": [{"on_screen": True, "drawn": True, "path": path}]}
+
+        def judged(lift):
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                write_png(out / "01-open.png", 200, 100,
+                          lambda x, y: tuple(c + lift for c in ground) if y == 50 else ground)
+                (out / "01-open.json").write_text(json.dumps(snap))
+                summary = {"ok": True, "snaps": {"01-open": {}}, "checks": {}}
+                drive.judge_look(out, summary)
+                return summary
+
+        bright = judged(15)
+        self.assertTrue(bright["ok"])
+        self.assertEqual(bright["snaps"]["01-open"]["look"]["measured"],
+                         {"ground": 18.7, "faint links": 15.0})
+        dark = judged(2)
+        self.assertFalse(dark["ok"])
+        self.assertEqual(dark["checks"]["look"]["failed_in"], ["01-open"])
+        self.assertEqual(dark["snaps"]["01-open"]["look"]["offenders"][0]["what"], "faint links")
+
+
+def write_png(path, width, height, color):
+    """An RGB PNG whose pixel (x, y) is color(x, y)."""
+    rows = b"".join(b"\0" + bytes(c for x in range(width) for c in color(x, y)) for y in range(height))
+
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                     + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
 if __name__ == "__main__":
