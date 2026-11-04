@@ -282,6 +282,8 @@ struct Placer {
     bounds: egui::Rect,
     /// Names placed, and what was there before any: the search box.
     taken: Vec<egui::Rect>,
+    /// Whether each of `taken` is a function's name.
+    functions: Vec<bool>,
     taken_grid: Grid,
     dots: Vec<Disc>,
     dot_grid: Grid,
@@ -309,6 +311,7 @@ impl Placer {
         Self {
             bounds,
             taken: Vec::new(),
+            functions: Vec::new(),
             taken_grid: Grid::default(),
             dots,
             dot_grid,
@@ -361,19 +364,25 @@ impl Placer {
         self.outside || !dot.outside
     }
 
-    fn take(&mut self, rect: egui::Rect) {
+    /// Takes `rect`, a function's name's or not.
+    fn take(&mut self, rect: egui::Rect, function: bool) {
         self.taken_grid.insert(rect, self.taken.len());
         self.taken.push(rect);
+        self.functions.push(function);
     }
 
-    /// Whether `pill` lies over any name placed.
+    /// How many names placed `pill` lies over.
     fn over_names(&self, pill: egui::Rect) -> usize {
+        self.names_under(pill).count()
+    }
+
+    /// The names placed `pill` lies over, by index.
+    fn names_under(&self, pill: egui::Rect) -> impl Iterator<Item = usize> + '_ {
         let pill = pill.expand(CLEAR);
         self.taken_grid
             .near(pill)
             .into_iter()
-            .filter(|&i| self.taken[i].intersects(pill))
-            .count()
+            .filter(move |&i| self.taken[i].intersects(pill))
     }
 
     /// The dots other than `own` that a function's name at `pill` would cover or lie
@@ -541,10 +550,11 @@ impl Placer {
             .unwrap_or_else(|| ((0, 0.0), spot(0, node, reach, size)))
     }
 
-    /// Whether a module's name at `pill` fits: on the graph, over no name, over no
-    /// other sphere and none of its own dots, `own_dots`; `within` its sphere, none of
-    /// them lit, its opaque pill hiding the others it lies over.
-    fn module_fits(
+    /// Whether a module's name at `pill` has room, whatever functions' names lie
+    /// there: on the graph, over no other module's name, over no other sphere and
+    /// none of its own dots, `own_dots`; `within` its sphere, none of them lit, its
+    /// opaque pill hiding the others it lies over.
+    fn module_room(
         &self,
         cluster: usize,
         own_dots: &[usize],
@@ -552,7 +562,7 @@ impl Placer {
         within: bool,
     ) -> bool {
         self.bounds.contains_rect(pill)
-            && self.over_names(pill) == 0
+            && !self.names_under(pill).any(|i| !self.functions[i])
             && !self
                 .spheres
                 .iter()
@@ -1247,9 +1257,10 @@ impl<'a> Naming<'a> {
             .collect()
     }
 
-    /// A module's name at the first of its places ([`Naming::module_places`]) where
-    /// it fits: off other spheres and names, over none of its dots, but inside its
-    /// sphere its opaque pill hiding those nothing lights.
+    /// A module's name at the first of its places ([`Naming::module_places`]) with
+    /// room: off other spheres and modules' names, over none of its dots, but inside
+    /// its sphere its opaque pill hiding those nothing lights; none where a function's
+    /// name placed before it lies there.
     fn module_name(
         &self,
         painter: &egui::Painter,
@@ -1257,10 +1268,15 @@ impl<'a> Naming<'a> {
         cluster: usize,
     ) -> Option<Label> {
         let own = self.own_dots(cluster);
+        // Its place in this view, whatever functions' names lie there; where one of
+        // those, placed before it, took that place, it goes rather than moves.
         let (pill, galley, _) = self
             .module_places(painter, cluster)
             .into_iter()
-            .find(|&(pill, _, within)| placer.module_fits(cluster, &own, pill, within))?;
+            .find(|&(pill, _, within)| placer.module_room(cluster, &own, pill, within))?;
+        if placer.over_names(pill) > 0 {
+            return None;
+        }
         Some(Label {
             named: Named::Group(cluster),
             side: None,
@@ -1690,11 +1706,11 @@ fn place(
             .then(|| m.area_rect(search))
             .flatten()
     }) {
-        placer.take(open);
+        placer.take(open, false);
     }
     if nucleus.browsing() {
         let hint = key_help::hint_rect(painter, painter.clip_rect(), nucleus.expanded());
-        placer.take(hint);
+        placer.take(hint, false);
     }
     let mut labels: Vec<Label> = Vec::new();
     for ((tier, ..), named) in naming.order(neutral) {
@@ -1704,7 +1720,7 @@ fn place(
             Named::Node(tile) => naming.function_name(painter, &placer, (tile, tier), sides),
         };
         if let Some(label) = label {
-            placer.take(label.pill);
+            placer.take(label.pill, matches!(named, Named::Node(_)));
             // A module on the ring not shown at this depth keeps its name's room.
             let shown = match named {
                 Named::Group(cluster) => nucleus
@@ -1779,7 +1795,7 @@ mod tests {
         assert!(!placer.fits(right, 0, Some(right)), "over the other dot");
         let (side, pill) = first(&placer, 0, node, SIZE, true).expect("room on the left");
         assert!(pill.max.x < 100.0);
-        placer.take(pill);
+        placer.take(pill, true);
         let again = first(&placer, 0, node, SIZE, true);
         assert_ne!(again, Some((side, pill)), "its place is taken now");
     }
@@ -1839,7 +1855,7 @@ mod tests {
         assert_ne!(tries[0].0, 0, "right covers the other dot, lit or not");
         assert_eq!(tries.len(), SPOTS.len() * SLIDES.len());
         let (side, by) = tries[0];
-        placer.take(slid(side, node, 12.0, SIZE, by));
+        placer.take(slid(side, node, 12.0, SIZE, by), true);
         assert_eq!(
             placer.tries(0, node, 12.0, (SIZE, SIZE)),
             tries,
@@ -1892,7 +1908,7 @@ mod tests {
         assert!((pill.center().x - 200.0).abs() < 0.5);
         assert!((pill.max.y - (150.0 - ABOVE)).abs() < 0.5);
         assert!(
-            !placer.module_fits(0, &[0], pill, false),
+            !placer.module_room(0, &[0], pill, false),
             "over the sphere above"
         );
         let clear = Placer::new(
@@ -1900,13 +1916,13 @@ mod tests {
             Vec::new(),
             vec![(0, egui::pos2(200.0, 200.0), 50.0)],
         );
-        assert!(clear.module_fits(0, &[], pill, false));
+        assert!(clear.module_room(0, &[], pill, false));
         let own = Placer::new(
             bounds(),
             vec![disc(0, 200.0, 140.0, false)],
             vec![(0, egui::pos2(200.0, 200.0), 50.0)],
         );
-        assert!(!own.module_fits(0, &[0], pill, false), "over its own dot");
+        assert!(!own.module_room(0, &[0], pill, false), "over its own dot");
     }
 
     #[test]
@@ -1931,14 +1947,14 @@ mod tests {
             vec![disc(0, pill.center().x, pill.max.y, false)],
             vec![(0, middle, 50.0)],
         );
-        assert!(hidden.module_fits(0, &[0], pill, true));
+        assert!(hidden.module_room(0, &[0], pill, true));
         let lit = Placer::new(
             bounds(),
             vec![disc(0, pill.center().x, pill.center().y, true)],
             vec![(0, middle, 50.0)],
         );
         assert!(
-            !lit.module_fits(0, &[0], pill, true),
+            !lit.module_room(0, &[0], pill, true),
             "never over a lit dot"
         );
     }

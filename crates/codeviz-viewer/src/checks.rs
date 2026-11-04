@@ -2300,6 +2300,29 @@ impl<'a> Room<'a> {
         own: Option<&Node>,
         module: Option<(&str, bool)>,
     ) -> Option<String> {
+        self.blocked_by(r, rank, own, module, true)
+    }
+
+    /// What keeps a module's name out of `r` but the names of functions: where one
+    /// of those took its place, it goes.
+    fn blocked_but_functions(
+        &self,
+        r: egui::Rect,
+        rank: &Rank,
+        module: (&str, bool),
+    ) -> Option<String> {
+        self.blocked_by(r, rank, None, Some(module), false)
+    }
+
+    /// [`Room::blocked`], the names of functions counted or not.
+    fn blocked_by(
+        &self,
+        r: egui::Rect,
+        rank: &Rank,
+        own: Option<&Node>,
+        module: Option<(&str, bool)>,
+        functions: bool,
+    ) -> Option<String> {
         // How far the placer kept names from a dot, leaning to less room either way.
         let kept = |n: &Node| n.kept_off.unwrap_or(n.radius) + ROUNDING;
         // Over a dot judged by the pill, nearer one by the text, as labels-near does;
@@ -2323,7 +2346,10 @@ impl<'a> Room<'a> {
             return Some("an overlay".to_owned());
         }
         if let Some(&(.., said)) = self.taken.iter().find(|(t, by, of, _)| {
-            by <= rank && (unit.is_none() || *of != unit) && t.intersects(clear)
+            by <= rank
+                && (functions || of.is_none())
+                && (unit.is_none() || *of != unit)
+                && t.intersects(clear)
         }) {
             return Some(format!("the name {}", said.trim()));
         }
@@ -2465,15 +2491,20 @@ fn named_when_room(s: &Snap) -> Value {
             || guess_size(s, &m.name.to_uppercase(), "module", (13.5, CAPITAL_WIDTH)),
             |[w, h]| egui::vec2(w, h),
         );
-        let fits = module_spots(m, size)
+        // Its place, whatever functions' names lie there: where one of those took it,
+        // it goes.
+        let home = module_spots(m, size)
             .into_iter()
             .find_map(|(spot, within)| {
-                spot.filter(|&spot| {
-                    room.blocked(spot, &m.rank(), None, Some((&m.name, within)))
-                        .is_none()
-                })
+                let spot = spot?;
+                (room.blocked_but_functions(spot, &m.rank(), (&m.name, within)))
+                    .is_none()
+                    .then_some((spot, within))
             });
-        if let Some(spot) = fits {
+        let fits = home.filter(|&(spot, within)| {
+            (room.blocked(spot, &m.rank(), None, Some((&m.name, within)))).is_none()
+        });
+        if let Some((spot, _)) = fits {
             let offender = json!({ "module": m.name, "would_fit_at": rect_json(corners(spot)) });
             offenders.push((0.5, offender));
         }
@@ -4255,6 +4286,25 @@ mod tests {
             { "radius": 4.0, "color": "#B07CF0" },
         ]);
         assert!(!passes(&check(&s, "colours")));
+    }
+
+    #[test]
+    fn a_module_name_goes_where_a_function_s_name_took_its_place() {
+        let mut s = scene();
+        s["modules"][0]["label"] = Value::Null;
+        s["modules"][0]["label_rect"] = Value::Null;
+        s["modules"][0]["name_size"] = json!([20.0, 15.0]);
+        s["labels"].as_array_mut().unwrap().remove(0);
+        let result = check(&s, "named-when-room");
+        assert_eq!(result["offenders"][0]["module"], "a", "{result}");
+        // The start's name over the middle of the room above a: a goes, it slides
+        // nowhere.
+        s["nodes"][0]["roles"] = json!(["start"]);
+        s["labels"].as_array_mut().unwrap().push(json!({
+            "text": "f", "rect": [380.0, 360.0, 420.0, 382.0], "names": "function",
+            "of": "f", "unit": "x:a::f", "size": 12.0,
+        }));
+        assert!(passes(&check(&s, "named-when-room")));
     }
 
     #[test]
