@@ -485,15 +485,19 @@ impl Nucleus {
             let ball = balls[*cluster];
             if let Some(free) = placed.free.get(cluster) {
                 for &tile in tiles {
-                    // One whose place has no room clear of the names round it waits
-                    // for its module to be expanded.
-                    let at = placed.points.get(&tile).or_else(|| {
-                        let seat = seats.of(tile, self.aside)?;
-                        let clear = Some(tile) == self.aside
-                            || self.expanded == Some(*cluster)
-                            || !placed.crowded.contains(&(*cluster, seat));
-                        free.get(seat).filter(|_| clear)
-                    });
+                    // One whose place has no room clear of the names round it, or
+                    // lies on another's call, waits for its module to be expanded.
+                    let open = self.expanded == Some(*cluster);
+                    let at = if let Some(at) = placed.points.get(&tile) {
+                        (open || !placed.on_lines.contains(&tile)).then_some(at)
+                    } else {
+                        seats.of(tile, self.aside).and_then(|seat| {
+                            let clear = Some(tile) == self.aside
+                                || open
+                                || !placed.crowded.contains(&(*cluster, seat));
+                            free.get(seat).filter(|_| clear)
+                        })
+                    };
                     if let Some(&at) = at {
                         points[tile] = at;
                         shown[tile] = true;

@@ -62,3 +62,27 @@ key esc
 expect selection none
 expect nothing-moved
 snap esc deselects
+
+# A new journey opens at its start's own calls; Back puts the depth back.
+key /
+type spotlit
+search-pick Explorer::spotlit
+key enter
+key .
+key .
+key .
+key .
+expect depth 5
+key /
+type walk
+search-pick Finder::walk
+key enter
+expect start Finder::walk
+expect depth 1
+expect check panel-agrees
+snap a new journey at depth 1
+key backspace
+key backspace
+expect start Explorer::spotlit
+expect depth 5
+snap back puts the depth back

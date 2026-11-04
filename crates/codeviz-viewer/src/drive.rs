@@ -769,28 +769,32 @@ pub(crate) struct DrawnBars {
     pass: u64,
     /// Where the bars show; one outside it is scrolled out of view.
     pub(crate) content: egui::Rect,
-    pub(crate) bars: Vec<(SpanId, egui::Rect)>,
+    /// Each bar, where it is and what it says.
+    pub(crate) bars: Vec<(SpanId, egui::Rect, String)>,
     /// The badges that unfold a bar's folded calls, by the bar's span.
     pub(crate) chips: Vec<(SpanId, egui::Rect)>,
     /// The bars of the start's callers, in the row above its bar, by function.
-    pub(crate) callers: Vec<(usize, egui::Rect)>,
-    /// The track down the panel's side, drawn when rows lie below what it shows.
+    pub(crate) callers: Vec<(usize, egui::Rect, String)>,
+    /// The track down the panel's side, drawn when rows lie below what it shows; the
+    /// one along its foot, when the journey is wider than it.
     pub(crate) rows_track: Option<egui::Rect>,
+    pub(crate) across_track: Option<egui::Rect>,
 }
 
 fn bars_id() -> egui::Id {
     egui::Id::new("drawn_journey_bars")
 }
 
-/// Notes where the journey panel drew its bars this pass, the badges on them that
-/// unfold what is folded, and the bars of the start's callers.
+/// Notes where the journey panel drew its bars this pass and what each says, the
+/// badges on them that unfold what is folded, the bars of the start's callers, and
+/// the tracks down its side and along its foot.
 pub(crate) fn note_bars(
     ctx: &egui::Context,
     content: egui::Rect,
-    bars: Vec<(SpanId, egui::Rect)>,
+    bars: Vec<(SpanId, egui::Rect, String)>,
     chips: Vec<(SpanId, egui::Rect)>,
-    callers: Vec<(usize, egui::Rect)>,
-    rows_track: Option<egui::Rect>,
+    callers: Vec<(usize, egui::Rect, String)>,
+    (rows_track, across_track): (Option<egui::Rect>, Option<egui::Rect>),
 ) {
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| {
@@ -803,6 +807,7 @@ pub(crate) fn note_bars(
                 chips,
                 callers,
                 rows_track,
+                across_track,
             },
         );
     });
@@ -1210,6 +1215,8 @@ impl View<'_, '_> {
                 e.aim(),
                 e.nucleus().expanded(),
                 self.help.0,
+                // The search box grows over a frame or two as what it finds is laid out.
+                &self.screen.overlays,
             )
         )
     }
@@ -1451,9 +1458,7 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
         // The expansion taken to another module: flown there and framed, but by Back
         // or Forward, put back where the camera stood then, perhaps by hand.
         (true, true) if module != drive.began.0 => {
-            let step = &drive.lines[index].step;
-            drive.by_hand =
-                matches!(step, Step::Key(press) if press.code().0 == KeyCode::Backspace);
+            drive.by_hand = drive.lines[index].step.kind() == Kind::Back;
         }
         (true, false) => {
             let saved = drive.expanded_by_hand.take();
@@ -2215,7 +2220,7 @@ fn bar_point(view: &View, span: SpanId, bar: &str) -> Result<Vec2, String> {
     let Some(drawn) = &view.screen.bars else {
         return Err("the journey panel is not showing: no journey is open".to_owned());
     };
-    let Some(&(_, rect)) = drawn.bars.iter().find(|(s, _)| *s == span) else {
+    let Some(&(_, rect, _)) = drawn.bars.iter().find(|(s, ..)| *s == span) else {
         return Err(format!("bar {bar} is not drawn"));
     };
     let shown = rect.intersect(drawn.content);
@@ -2231,7 +2236,7 @@ fn bar_point(view: &View, span: SpanId, bar: &str) -> Result<Vec2, String> {
 fn caller_bar_point(view: &View, names: &Names, bar: &str) -> Option<Vec2> {
     let tile = names.unit(bar).ok()?;
     let drawn = view.screen.bars.as_ref()?;
-    let &(_, rect) = drawn.callers.iter().find(|(t, _)| *t == tile)?;
+    let &(_, rect, _) = drawn.callers.iter().find(|(t, ..)| *t == tile)?;
     Some(Vec2::new(
         rect.min.x + (rect.width() / 2.0).min(12.0),
         rect.center().y,

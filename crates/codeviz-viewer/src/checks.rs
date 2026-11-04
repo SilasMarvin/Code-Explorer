@@ -153,17 +153,22 @@ const LINE_CLEAR: f32 = 2.0;
 /// How far a call drawn in two snapshots may run elsewhere before it counts as moved,
 /// in points: a dot growing as the cursor lands on it shortens its line by less.
 const ARROW_MOVED: f32 = 3.0;
+/// How far clear of a call's line, past its dot's edge, a caller I brings in sits.
+const OUTSIDE_CLEAR: f32 = 2.0;
 /// Offenders listed per check; `count` says how many in all.
 const LISTED: usize = 12;
 
 /// Why a check of where the view puts things leaves the view alone.
 const BY_HAND: &str = "the camera is where the user's hands put it";
 
+/// Why it leaves Back and Forward alone.
+const BACK: &str = "Back or Forward put back the camera the place had, wherever that shows things";
+
 /// A check: the snapshot, the one before it, and what happened between them.
 type Check = fn(&Snap, Option<&Snap>, &Since) -> Value;
 
 /// Every check, by the name testers read, in the order a snapshot lists them.
-const CHECKS: [(&str, Check); 30] = [
+const CHECKS: [(&str, Check); 31] = [
     ("dots-in-spheres", |s, _, _| dots_in_spheres(s)),
     ("dots-apart", |s, _, _| dots_apart(s)),
     ("dot-sizes", |s, _, _| dot_sizes(s)),
@@ -176,7 +181,7 @@ const CHECKS: [(&str, Check); 30] = [
     ("panel-agrees", |s, _, _| panel_agrees(s)),
     ("expanded-fill", expanded_fill),
     ("expanded-drawn", |s, _, _| expanded_drawn(s)),
-    ("framed", |s, _, since| framed(s, since)),
+    ("framed", framed),
     ("zoom-to-pointer", zoom_to_pointer),
     ("zoom-bounds", |s, _, since| zoom_bounds(s, since)),
     ("nothing-moved", nothing_moved),
@@ -196,6 +201,7 @@ const CHECKS: [(&str, Check); 30] = [
     ("exits-named", |s, _, _| exits_named(s)),
     ("calls-drawn", |s, _, _| calls_drawn(s)),
     ("bars-in-view", |s, _, _| bars_in_view(s)),
+    ("outside-callers", |s, _, _| outside_callers(s)),
 ];
 
 /// Every check's name, as `expect check NAME` takes it.
@@ -326,9 +332,17 @@ struct State {
     expanded: Option<String>,
     /// In a journey, the call the cursor is on.
     cursor: Option<CursorAt>,
+    /// In a journey, the levels it shows, and how many below the start its deepest
+    /// call is.
+    depth: u32,
+    deepest: Option<u32>,
     help: bool,
     pointer: Option<[f32; 2]>,
     camera: Option<Camera>,
+    /// I on: the callers it brings in.
+    outside_callers: bool,
+    /// Of those, how many have no room to be drawn.
+    outside_waiting: usize,
 }
 
 /// The call the journey's cursor is on, by its number: empty for the start.
@@ -459,6 +473,8 @@ struct Label {
 struct Bar {
     number: Option<String>,
     name: String,
+    /// What the bar reads, as drawn.
+    text: Option<String>,
     unit: Option<String>,
     /// In the row of the start's callers.
     caller: bool,
@@ -474,6 +490,12 @@ struct Panel {
     below: usize,
     /// Whether a track down its side shows which rows are in view.
     rows_track: bool,
+    /// Bars past its left or right edge, cut off or out of view.
+    beside: usize,
+    /// Whether a track along its foot shows which part is in view.
+    across_track: bool,
+    /// Whether the cursor's bar is cut off by its edge, or out of view.
+    cursor_cut_off: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1064,6 +1086,14 @@ fn panel_agrees(s: &Snap) -> Value {
         return skip("no journey bars drawn");
     }
     let mut offenders = Vec::new();
+    // The depth the panel reads is one the journey has: from 1 to its deepest call.
+    if let Some(deepest) = s.state.deepest
+        && !(1..=deepest.max(1)).contains(&s.state.depth)
+    {
+        let why = "the depth shown is not one of the journey's levels";
+        let offender = json!({ "depth": s.state.depth, "deepest": deepest, "why": why });
+        offenders.push((3.0, offender));
+    }
     for bar in &s.bars {
         let drawn = bar.unit.as_deref().and_then(|u| s.node(u));
         // Each numbered bar has its call on the graph: a call only guessed among
@@ -1091,12 +1121,26 @@ fn panel_agrees(s: &Snap) -> Value {
                 }
             }
         }
-        // The same name on the bar as on the graph.
+        // The same name on the bar as on the graph, and drawn so: whole, or cut short
+        // of it (or of it less its type), never the number alone.
         if let Some(n) = drawn.filter(|n| !same_name(&bar.name, n)) {
             let says = n.label.as_deref().unwrap_or(&n.name);
             let offender = json!({ "bar": bar.number, "bar_says": bar.name, "graph_says": says });
             offenders.push((0.5, offender));
         }
+        if let Some(text) = bar.text.as_deref().filter(|t| !reads_as(t, bar)) {
+            let why = "the bar's drawn text is not its number and its name, whole or cut short";
+            let offender =
+                json!({ "bar": bar.number, "reads": text, "name": bar.name, "why": why });
+            offenders.push((1.0, offender));
+        }
+    }
+    // The start's callers in the row above its bar.
+    let start = s.content.start.as_deref();
+    let callers = s.content.callers.iter().any(|c| Some(c.as_str()) != start);
+    if callers && s.state.mode == "journey" && !s.bars.iter().any(|b| b.caller) {
+        let why = "the start has callers, but the panel draws no row of them above its bar";
+        offenders.push((2.0, json!({ "callers": s.content.callers, "why": why })));
     }
     let marked: Vec<&String> = s
         .nodes
@@ -1129,21 +1173,51 @@ fn panel_agrees(s: &Snap) -> Value {
     verdict(offenders)
 }
 
-/// Bars the panel cannot show for its height, below what it shows, are said to be
-/// there: a track down its side shows which rows are in view.
+/// Bars the panel cannot show for its height, below what it shows, or for its width,
+/// past its sides, are said to be there: a track down its side, or along its foot,
+/// shows which part is in view. The cursor's bar is always wholly in view.
 fn bars_in_view(s: &Snap) -> Value {
     let Some(panel) = &s.panel else {
         return skip("no journey panel");
     };
-    if panel.below == 0 {
-        return skip("every bar the panel shows is in view down to its foot");
-    }
     let mut offenders = Vec::new();
-    if !panel.rows_track {
+    if panel.below > 0 && !panel.rows_track {
         let why = "bars lie below the panel's foot, and nothing says so";
         offenders.push((1.0, json!({ "below": panel.below, "why": why })));
     }
+    if panel.beside > 0 && !panel.across_track {
+        let why = "bars lie past the panel's side, and nothing says so";
+        offenders.push((1.0, json!({ "beside": panel.beside, "why": why })));
+    }
+    if panel.cursor_cut_off {
+        let why = "the cursor's bar is cut off by the panel's edge";
+        offenders.push((2.0, json!({ "why": why })));
+    }
     verdict(offenders)
+}
+
+/// Whether a bar's drawn text is its number, then its name whole or cut short with an
+/// ellipsis (its type or module may be left off first); the start's bar and a
+/// caller's, with no number, the name alone so.
+fn reads_as(text: &str, bar: &Bar) -> bool {
+    let number = bar.number.as_deref().unwrap_or_default();
+    let Some(rest) = text.strip_prefix(number) else {
+        return false;
+    };
+    let rest = rest.trim_start().trim_start_matches("→ ");
+    if rest.is_empty() {
+        return false;
+    }
+    let name = bar.name.as_str();
+    let tail = match name.rsplit_once('.') {
+        Some((_, tail)) if !name.contains(char::is_whitespace) => tail,
+        _ => name,
+    };
+    let cut = rest.strip_suffix('…');
+    [name, tail].iter().any(|whole| match cut {
+        Some(cut) => whole.starts_with(cut) || rest.starts_with(whole),
+        None => rest.starts_with(whole),
+    })
 }
 
 /// Whether a bar's name is the one the graph gives its function: what the function's
@@ -1264,7 +1338,11 @@ fn expanded_drawn(s: &Snap) -> Value {
     with(verdict(Vec::new()), "dots_in_view", json!(dots))
 }
 
-fn framed(s: &Snap, since: &Since) -> Value {
+fn framed(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
+    // A window sized anew with the camera where the hands put it leaves it there.
+    if since.by_hand && since.has(Kind::Resize) && since.last_move().is_none() {
+        return verdict(before.map_or_else(Vec::new, |b| hands_kept(b, s)));
+    }
     let free = s.free();
     let mut offenders = Vec::new();
     match since.last_move() {
@@ -1302,6 +1380,21 @@ fn framed(s: &Snap, since: &Since) -> Value {
         }
     }
     verdict(offenders)
+}
+
+/// The camera moved off what it looked at, or nearer or further, since `before`.
+fn hands_kept(before: &Snap, now: &Snap) -> Found {
+    let (Some(a), Some(b)) = (before.state.camera, now.state.camera) else {
+        return Vec::new();
+    };
+    let by = Vec3::from_array(a.target).distance(Vec3::from_array(b.target));
+    let further = b.distance - a.distance;
+    if by <= MOVED_WORLD && further.abs() <= MOVED_WORLD {
+        return Vec::new();
+    }
+    let why = "a window sized anew moved a camera the hands had put";
+    let offender = json!({ "target_by": r3(by), "distance_by": r3(further), "why": why });
+    vec![(by + further.abs(), offender)]
 }
 
 fn zoom_to_pointer(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
@@ -1416,14 +1509,36 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
 }
 
 fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
+    // An expand or a shrink back picks nothing: browsing, the selection stays.
+    let only_expands = (since.kinds.iter()).all(|k| matches!(k, Kind::Still | Kind::Expand));
+    let browsed = before.filter(|b| {
+        since.has(Kind::Expand)
+            && only_expands
+            && b.state.mode == "browse"
+            && s.state.mode == "browse"
+    });
+    if let Some(b) = browsed
+        && b.state.selection != s.state.selection
+    {
+        let why = "an expand or shrink back changed the selection";
+        let offender = json!({ "why": why, "was": b.state.selection, "now": s.state.selection });
+        return verdict(vec![(1.0, offender)]);
+    }
     // Wherever the hands put the camera, a cursor that moves expanded in a journey is
     // kept in view.
     let cursor_only = since.by_hand && s.cursor_moved_expanded(before);
     if since.by_hand && !cursor_only {
         return skip(BY_HAND);
     }
-    if since.has(Kind::Expand) {
+    if since.has(Kind::Expand) && s.expanded() {
+        // What an expand must keep, the selection, it kept.
+        if browsed.is_some() {
+            return verdict(Vec::new());
+        }
         return skip("an expand frames the module, wherever the focus is");
+    }
+    if since.has(Kind::Back) {
+        return skip(BACK);
     }
     // A function picked browsing since (a click, a search, Back), or set aside in a
     // journey, is in view wherever it is: the expansion follows it.
@@ -1595,6 +1710,9 @@ fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if since.playing {
         return skip("a frame of a transition still playing");
     }
+    if since.has(Kind::Back) {
+        return skip(BACK);
+    }
     let opened = since.opening
         || before.is_none_or(|b| b.state.mode != "journey" || b.state.start != s.state.start);
     let framed = matches!(
@@ -1660,7 +1778,7 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     }
     let expanded_journey = journey && s.expanded();
     if expanded_journey && before.state.expanded != s.state.expanded {
-        return skip("the cursor took the expansion to another module");
+        return skip("the cursor or the function set aside took the expansion to another module");
     }
     // A depth change may draw the camera back to show what it brought in, when that
     // would be off the free area, and no more. Expanded in a journey, a click may
@@ -2816,6 +2934,52 @@ fn calls_drawn(s: &Snap) -> Value {
     }
     if judged == 0 {
         return skip("no call between two dots on screen");
+    }
+    verdict(offenders)
+}
+
+/// The callers I brings in: each drawn clear of the calls' lines, but its own, so it
+/// reads as no one else's caller; and one left unnamed on screen, or undrawn for want
+/// of room, counted in the bar along the top, unless another notice speaks there.
+fn outside_callers(s: &Snap) -> Value {
+    if !s.state.outside_callers {
+        return skip("I is off");
+    }
+    let outside: Vec<&Node> = (s.nodes.iter())
+        .filter(|n| n.is("outside") && n.on_screen)
+        .collect();
+    let mut offenders = Vec::new();
+    let lines: Vec<&Arrow> = (s.arrows.iter())
+        .filter(|a| matches!(a.flow.as_str(), "into" | "journey") && a.path.len() >= 2)
+        .collect();
+    for n in &outside {
+        for a in lines.iter().filter(|a| !a.ends_at(n.unit.as_deref())) {
+            let by = (a.pieces().iter())
+                .map(|&(p, q)| piece_distance(p, q, v2(n.at)))
+                .fold(f32::INFINITY, f32::min);
+            if by < n.radius + OUTSIDE_CLEAR {
+                let offender =
+                    json!({ "outside": n.name, "on": [a.from, a.to], "points_off": r1(by) });
+                offenders.push((OUTSIDE_CLEAR + n.radius - by, offender));
+            }
+        }
+    }
+    let free = s.free();
+    let unnamed: Vec<&str> = (outside.iter())
+        .filter(|n| n.label.is_none() && free.contains(pos(n.at)))
+        .map(|n| n.name.as_str())
+        .collect();
+    let told = s
+        .text
+        .iter()
+        .any(|t| t.text.contains("left out") || t.text.contains("no room"));
+    let spoken = s.overlays.iter().any(|o| o.name == "notice");
+    if (!unnamed.is_empty() || s.state.outside_waiting > 0) && !told && !spoken {
+        let why =
+            "callers I brings in are unnamed or undrawn, and the bar along the top says nothing";
+        let offender =
+            json!({ "unnamed": unnamed, "undrawn": s.state.outside_waiting, "why": why });
+        offenders.push((1.0, offender));
     }
     verdict(offenders)
 }
@@ -4355,6 +4519,80 @@ mod tests {
     }
 
     #[test]
+    fn bars_past_the_panel_s_side_are_said_to_be_there_and_the_cursor_s_shows() {
+        let mut s = journey();
+        s["panel"] = json!({ "below": 0, "rows_track": false, "beside": 2, "across_track": false });
+        let result = check(&s, "bars-in-view");
+        assert_eq!(result["offenders"][0]["beside"], 2, "{result}");
+        s["panel"]["across_track"] = json!(true);
+        assert!(passes(&check(&s, "bars-in-view")));
+        s["panel"]["cursor_cut_off"] = json!(true);
+        let result = check(&s, "bars-in-view");
+        assert!(
+            result["offenders"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("cursor"),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn a_bar_reads_its_number_and_its_name_never_the_number_alone() {
+        let mut s = journey();
+        for (text, reads) in [
+            ("1  h", true),
+            ("1  h  can fail", true),
+            ("1", false),
+            ("1  q…", false),
+        ] {
+            s["bars"][1]["text"] = json!(text);
+            assert_eq!(passes(&check(&s, "panel-agrees")), reads, "{text}");
+        }
+        s["bars"][1]["name"] = json!("Track.unit_id");
+        s["nodes"][2]["label"] = json!(" 1  Track.unit_id");
+        for (text, reads) in [("1  Track.u…", true), ("1  unit…", true), ("1  Tra", false)] {
+            s["bars"][1]["text"] = json!(text);
+            assert_eq!(passes(&check(&s, "panel-agrees")), reads, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_start_with_callers_has_its_callers_row() {
+        let mut s = journey();
+        s["content"] = json!({ "start": "f", "callers": ["f", "g"] });
+        let result = check(&s, "panel-agrees");
+        assert_eq!(result["offenders"][0]["callers"][1], "g", "{result}");
+        s["bars"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "name": "g", "text": "g", "caller": true }));
+        assert!(passes(&check(&s, "panel-agrees")));
+    }
+
+    #[test]
+    fn a_caller_i_brings_in_sits_off_the_lines_and_is_named_or_counted() {
+        let mut s = journey();
+        s["state"]["outside_callers"] = json!(true);
+        s["nodes"][1]["roles"] = json!(["outside"]);
+        s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
+            "flow": "journey", "level": 1, "path": [[380.0, 500.0], [1000.0, 500.0]] }]);
+        let result = check(&s, "outside-callers");
+        assert_eq!(result["offenders"][0]["outside"], "g", "{result}");
+        // Off the line, unnamed: the bar along the top must count it.
+        s["nodes"][1]["at"] = json!([440.0, 540.0]);
+        let result = check(&s, "outside-callers");
+        assert_eq!(result["offenders"][0]["unnamed"][0], "g", "{result}");
+        s["text"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "text": "1 of 2 lit names left out · zoom in, or point at one" }));
+        assert!(passes(&check(&s, "outside-callers")));
+        s["state"]["outside_callers"] = json!(false);
+        assert_eq!(check(&s, "outside-callers")["pass"], Value::Null);
+    }
+
+    #[test]
     fn names_under_the_key_help_are_left_alone() {
         let mut s = scene();
         s["labels"][1]["under"] = json!(["key help (H)"]);
@@ -4380,6 +4618,81 @@ mod tests {
             run(&s, None, &by_hand)["focus-on-screen"]["pass"],
             Value::Null
         );
+    }
+
+    #[test]
+    fn a_shrink_back_or_back_is_judged_as_such() {
+        let mut s = journey();
+        s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 800.0, 1600.0, 1000.0] }]);
+        s["free_area"] = json!([0.0, 24.0, 1600.0, 800.0]);
+        s["nodes"][2]["at"] = json!([1000.0, 820.0]);
+        // X shrinking back must leave what is in focus in view; expanding need not.
+        let result = after(&s, &s, &[Kind::Expand], "focus-on-screen");
+        assert_eq!(result["offenders"][0]["function"], "h", "{result}");
+        s["state"]["nucleus"] = json!("expanded");
+        s["state"]["expanded"] = json!("b");
+        let result = after(&s, &s, &[Kind::Expand], "focus-on-screen");
+        assert_eq!(result["pass"], Value::Null, "{result}");
+        // Back puts back the camera a place had, wherever that shows things.
+        s["state"]["nucleus"] = json!("modules");
+        for name in ["focus-on-screen", "journey-fills"] {
+            let result = after(&s, &s, &[Kind::Back], name);
+            assert_eq!(result["pass"], Value::Null, "{name}: {result}");
+        }
+    }
+
+    #[test]
+    fn an_expand_keeps_the_selection() {
+        let mut before = scene();
+        before["state"]["selection"] = json!("f");
+        let mut now = before.clone();
+        assert_ne!(
+            after(&before, &now, &[Kind::Expand], "focus-on-screen")["pass"],
+            json!(false)
+        );
+        now["state"]["selection"] = json!("h");
+        now["nodes"][2]["roles"] = json!(["selection"]);
+        let result = after(&before, &now, &[Kind::Expand], "focus-on-screen");
+        assert!(!passes(&result), "{result}");
+        assert_ne!(
+            after(
+                &before,
+                &now,
+                &[Kind::Click, Kind::Expand],
+                "focus-on-screen"
+            )["pass"],
+            json!(false),
+            "a click picks"
+        );
+    }
+
+    #[test]
+    fn a_window_sized_anew_leaves_the_hands_camera_be() {
+        let before = scene();
+        let mut now = before.clone();
+        let resized = Since {
+            kinds: vec![Kind::Resize],
+            by_hand: true,
+            ..Since::default()
+        };
+        assert!(passes(&run(&now, Some(&before), &resized)["framed"]));
+        now["state"]["camera"]["distance"] = json!(140.0);
+        let result = run(&now, Some(&before), &resized)["framed"].clone();
+        assert!(!passes(&result), "{result}");
+    }
+
+    #[test]
+    fn the_depth_shown_is_one_the_journey_has() {
+        let mut s = journey();
+        s["state"]["deepest"] = json!(3);
+        s["state"]["depth"] = json!(3);
+        assert_ne!(
+            check(&s, "panel-agrees")["offenders"][0]["why"],
+            json!("the depth shown is not one of the journey's levels")
+        );
+        s["state"]["depth"] = json!(5);
+        let result = check(&s, "panel-agrees");
+        assert_eq!(result["offenders"][0]["deepest"], 3, "{result}");
     }
 
     #[test]

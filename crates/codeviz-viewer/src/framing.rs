@@ -110,8 +110,9 @@ const CURSOR_ROOM: f32 = 0.85;
 ///   Expanded in a journey, it pans just enough to keep the cursor in view within the
 ///   module, and a level more or less moves nothing; otherwise a level more or less
 ///   moves nothing unless something the journey lights, or a sphere it comes to run
-///   through (any, when the panel grows), would show off the free area, and then it
-///   frames the journey afresh, coming no nearer.
+///   through (any, when the panel grows, and those of the callers I brought in that
+///   the panel comes over), would show off the free area, and then it frames the
+///   journey afresh, coming no nearer.
 /// - F, or the panel's Fit, frames the focus from the angle the camera has:
 ///   browsing, the selection and what it lights; in a journey, the journey and what
 ///   the view is on ([`Explorer::current`]); expanded, the module, as expanding frames it,
@@ -120,17 +121,18 @@ const CURSOR_ROOM: f32 = 0.85;
 ///   what it lights. Either has the last word over the view pointed anew.
 /// - When the explorer asks for the camera back (Back to a place, Esc to browsing,
 ///   shrinking back), it returns to where it stood then, or with no such place,
-///   browsing, takes in the whole codebase.
+///   browsing, takes in the whole codebase. Shrinking back, what the view came to be
+///   on while expanded (a pick, the function set aside) is brought into view.
 /// - A window sized anew frames the view again as it was last framed ([`Shot`]),
-///   unless the hands moved the camera since or it went back to where it stood;
-///   then it stays, what it looks at in the middle.
+///   unless the hands moved the camera since, when it keeps what it looks at and how
+///   far, or it went back to where it stood, when it only draws back to show what
+///   would be off the free area.
 pub(crate) fn frame(
     keys: Res<ButtonInput<KeyCode>>,
     wants: Res<EguiWantsInput>,
     view: Res<GraphView>,
     mut explorer: ResMut<Explorer>,
-    mut last: Local<(Option<Framed>, Option<Shot>)>,
-    mut opened: Local<Vec<usize>>,
+    mut last: Local<Memory>,
     mut cameras: Query<(&mut OrbitCamera, &Projection)>,
 ) {
     let Some(view) = view.0 else {
@@ -191,23 +193,25 @@ pub(crate) fn frame(
         cursor: cursor.filter(|_| expanded.is_some()),
         aside: explorer.aside(),
     };
-    let (last, shot) = &mut *last;
+    let Memory {
+        framed: last,
+        shot,
+        opened,
+        expanded_on,
+    } = &mut *last;
     let before = last.replace(now);
-    let came = came(
-        nucleus,
-        &mut opened,
-        before.is_some_and(|b| b.free != now.free),
-    );
+    let came = came(nucleus, opened, before.is_some_and(|b| b.free != now.free));
     let cursor = cursor.and_then(resting);
     let current = explorer.current().and_then(resting);
+    let aside = explorer.aside().and_then(resting);
+    let resized = before.is_some_and(|b| b.view != now.view);
     let taken = if focus {
         Some(Shot::Pointed { opening: false })
     } else if whole {
         Some(Shot::Whole)
     } else if before != Some(now) {
-        let aside = explorer.aside().and_then(resting);
         follow_view(
-            (before, now),
+            (before, now, resized),
             nucleus,
             (cursor, aside),
             &came,
@@ -218,9 +222,8 @@ pub(crate) fn frame(
         None
     };
     // A window sized anew frames again as the view was last framed, unless the
-    // hands have moved the camera since; then what it looks at stays in the middle.
+    // hands have moved the camera since; then it keeps what it looks at and how far.
     // Asked for the whole codebase back, browsing, it frames that.
-    let resized = before.is_some_and(|b| b.view != now.view);
     let taken = match returning {
         Some(Return::Whole) if browsing => Some(Shot::Whole),
         _ => taken.or_else(|| (*shot).filter(|_| resized && camera.framed())),
@@ -232,8 +235,45 @@ pub(crate) fn frame(
             Shot::Whole => Shot::Whole,
         });
     }
-    if let Some(Return::To(pose)) = returning {
-        camera.return_to(pose);
+    if now.expanded.is_some() && before.is_some_and(|b| b.expanded.is_none()) {
+        *expanded_on = explorer.current();
+    }
+    let picked = (explorer.current() != *expanded_on)
+        .then_some(current)
+        .flatten();
+    go_back(returning, picked, nucleus, &mut camera, views);
+}
+
+/// What [`frame`] remembers from one frame to the next: what the view was last framed
+/// for and how, the modules the journey ran through, and what the view was on as a
+/// module was expanded.
+#[derive(Default)]
+pub(crate) struct Memory {
+    framed: Option<Framed>,
+    shot: Option<Shot>,
+    opened: Vec<usize>,
+    expanded_on: Option<usize>,
+}
+
+/// Sends the camera back where the explorer asks: shrinking back, with what the view
+/// came to be on while expanded (`picked`: a pick, the function set aside) brought
+/// into the free area when it would show off it, as a pick collapsed is ([`reveal`]).
+fn go_back(
+    returning: Option<Return>,
+    picked: Option<Vec3>,
+    nucleus: &Nucleus,
+    camera: &mut OrbitCamera,
+    views: Views,
+) {
+    match returning {
+        Some(Return::To(pose)) => camera.return_to(pose),
+        Some(Return::Shrunk(pose)) => {
+            camera.return_to(pose);
+            if picked.is_some_and(|at| !shows(&[at], camera, views)) {
+                reveal(nucleus, &[picked], &[], camera, views);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -335,7 +375,7 @@ fn lens(projection: &Projection, view: egui::Rect, free: egui::Rect) -> Option<L
 /// the modules `came` too: see [`frame`]. Returns the framing the view pointed
 /// somewhere new takes.
 fn follow_view(
-    (before, now): (Option<Framed>, Framed),
+    (before, now, resized): (Option<Framed>, Framed, bool),
     nucleus: &Nucleus,
     (cursor, aside): (Option<Vec3>, Option<Vec3>),
     came: &[usize],
@@ -347,6 +387,10 @@ fn follow_view(
     if opening || before.is_some_and(|b| (b.start, b.aim) != (now.start, now.aim)) {
         return Some(Shot::Pointed { opening });
     }
+    // A window sized anew leaves the hands' camera be: see [`frame`].
+    if resized && camera.by_hand() {
+        return None;
+    }
     if now.expanded.is_some() {
         if before.is_some_and(|b| b.cursor != now.cursor)
             && let Some(at) = cursor
@@ -354,9 +398,40 @@ fn follow_view(
             pan_into_view(at, camera, lens);
         }
     } else {
-        reveal(nucleus, &[cursor, aside], came, camera, views);
+        // With I on, a panel grown over the spheres of the callers it brought in
+        // draws the camera back from them too.
+        let mut came = came.to_vec();
+        if before.is_some_and(|b| b.free[3] > now.free[3]) {
+            came.extend(outside_under_panel(nucleus, camera, lens));
+        }
+        reveal(nucleus, &[cursor, aside], &came, camera, views);
     }
     None
+}
+
+/// The modules of the callers from off the journey I brings in that show, from where
+/// the camera is going, reaching under the foot of the free area, where a panel docks.
+fn outside_under_panel(nucleus: &Nucleus, camera: &OrbitCamera, lens: Lens) -> Vec<usize> {
+    let foot = lens.centre.y - lens.half.y;
+    let (target, distance, _) = camera.pose().parts();
+    let rotation = camera.aim_rotation();
+    let eye = target + rotation * Vec3::Z * distance;
+    let mut modules: Vec<usize> = nucleus
+        .outside_callers()
+        .filter_map(|tile| nucleus.module_of(tile))
+        .filter(|&m| {
+            nucleus.balls_of(&[m]).any(|ball| {
+                lens.project(rotation, eye, ball.center)
+                    .is_some_and(|(at, depth)| {
+                        let size = Vec2::splat(ball.radius) / (depth * lens.tan);
+                        at.x.abs() < 1.0 + size.x && at.y - size.y < foot && at.y + size.y > -1.0
+                    })
+            })
+        })
+        .collect();
+    modules.sort_unstable();
+    modules.dedup();
+    modules
 }
 
 /// Pans, from as far as the camera is going to be, just far enough that `at` shows
@@ -391,22 +466,45 @@ fn reveal(
     let mut points = nucleus.journey_points();
     points.extend(also.iter().flatten());
     points.extend(nucleus.rims(rotation, came));
-    // About the middle the camera frames now.
-    let middle = camera.target + views.free.shift(rotation) * camera.goal_distance();
-    let show = |points: &[Vec3], share: Vec2| {
-        let points: Vec<(Vec3, Vec2)> = points.iter().map(|&p| (p, share)).collect();
-        distance_from(&points, middle, rotation, views.free)
-    };
-    let needed = show(&points, views.dots).max(show(&nucleus.tops(rotation, came), views.named));
-    // What a framing put on the edge of its share stays there.
-    if needed <= camera.goal_distance() * (1.0 + REVEAL_SLACK) {
+    let named: Vec<(Vec3, Vec2)> = (nucleus.tops(rotation, came).into_iter())
+        .map(|p| (p, views.named))
+        .collect();
+    if shows(&points, camera, views) && needed(&named, camera, views.free) <= stands_back(camera) {
         return;
     }
-    let framed = journey_points(nucleus, also, rotation, views);
+    let mut framed = journey_points(nucleus, also, rotation, views);
+    framed.extend(
+        nucleus
+            .rims(rotation, came)
+            .into_iter()
+            .map(|p| (p, views.dots)),
+    );
+    framed.extend(named);
     if let Some((middle, distance)) = place(&framed, rotation, views.free) {
         let distance = distance.max(camera.goal_distance());
         camera.glide_to(middle - views.free.shift(rotation) * distance, distance);
     }
+}
+
+/// How far back the camera, turned and looking past what it frames now, must be for
+/// each of `points` to show within its share of the free area.
+fn needed(points: &[(Vec3, Vec2)], camera: &OrbitCamera, lens: Lens) -> f32 {
+    let rotation = camera.aim_rotation();
+    let middle = camera.target + lens.shift(rotation) * camera.goal_distance();
+    distance_from(points, middle, rotation, lens)
+}
+
+/// How far back the camera is going to be, give or take rounding: what a framing put
+/// on the edge of its share stays there.
+fn stands_back(camera: &OrbitCamera) -> f32 {
+    camera.goal_distance() * (1.0 + REVEAL_SLACK)
+}
+
+/// Whether every one of `points` shows whole in the free area from where the camera is
+/// going.
+fn shows(points: &[Vec3], camera: &OrbitCamera, views: Views) -> bool {
+    let points: Vec<(Vec3, Vec2)> = points.iter().map(|&p| (p, views.dots)).collect();
+    needed(&points, camera, views.free) <= stands_back(camera)
 }
 
 /// Glides to frame, turned to `rotation`, `also` (the journey's cursor, or what the
@@ -467,8 +565,10 @@ fn journey_points(
 /// its functions need to sit comfortably, their names `chars` long
 /// ([`sizes::expanded_share`]), and `also` (the cursor) shows with it: in a journey
 /// and browsing alike, its neighbours left where they fall, carried by the labels
-/// where calls leave the screen. Of the shares near that, it takes the nearest that
-/// leaves no sphere the journey shows half under the panel.
+/// where calls leave the screen. What it holds alone sets that share, so it expands
+/// alike wherever it is. Of the places up or down the free area that leave it whole
+/// there, it takes the nearest the middle that leaves no sphere the journey shows half
+/// under the panel.
 fn fill(
     nucleus: &Nucleus,
     also: Option<Vec3>,
@@ -484,20 +584,19 @@ fn fill(
     // Where its functions would show, in points, at the least share, and so the
     // share they need.
     let side = views.size.min_element();
-    let (least, most) = sizes::EXPANDED_SHARE;
+    let least = sizes::EXPANDED_SHARE.0;
     let scale = least * side / (2.0 * radius).max(f32::EPSILON);
     let shown: Vec<(Vec2, usize)> = dots.iter().map(|&(t, at)| (at * scale, chars(t))).collect();
-    let wanted = sizes::expanded_share(least, sizes::comfort(&shown));
-    let framed = |share: f32| {
-        let share = Vec2::splat(share * side) / views.size;
-        let alone: Vec<(Vec3, Vec2)> = nucleus
-            .nucleus_points(rotation)
-            .into_iter()
-            .chain(also)
-            .map(|p| (p, share))
-            .collect();
-        place(&alone, rotation, views.free)
+    let share =
+        Vec2::splat(sizes::expanded_share(least, sizes::comfort(&shown)) * side) / views.size;
+    let alone: Vec<(Vec3, Vec2)> = (nucleus.nucleus_points(rotation).into_iter())
+        .chain(also)
+        .map(|p| (p, share))
+        .collect();
+    let Some((middle, distance)) = place(&alone, rotation, views.free) else {
+        return;
     };
+    let target = middle - views.free.shift(rotation) * distance;
     let others: Vec<usize> = if nucleus.browsing() {
         Vec::new()
     } else {
@@ -505,36 +604,29 @@ fn fill(
         open.retain(|&m| m != module);
         open
     };
-    let cut = |(middle, distance): (Vec3, f32)| {
-        let target = middle - views.free.shift(rotation) * distance;
-        under_panel(
-            nucleus.balls_of(&others),
-            target,
-            distance,
-            rotation,
-            views.free,
-        )
+    // How far up or down it may go and stay whole in the free area, a dot's room
+    // from its edge, in the world; framed with the cursor beside it, nowhere.
+    let lens = views.free;
+    let points = (views.size.y * (1.0 - share.y) / 2.0 - DOT_ROOM).max(0.0);
+    let per_point = 2.0 * lens.half.y * lens.tan.y * distance / views.size.y;
+    let room = if also.is_some() {
+        0.0
+    } else {
+        points * per_point
     };
-    // The share wanted, else the nearest to it a step at a time either way.
-    let shares = (0..=PANEL_STEPS).flat_map(|i| {
-        #[expect(clippy::cast_precision_loss, reason = "a step count")]
-        let by = i as f32 * (most - least) / PANEL_STEPS as f32;
-        [wanted - by, wanted + by]
-    });
-    let chosen = shares
-        .filter(|share| (least..=most).contains(share))
-        .filter_map(framed)
-        .find(|&framing| !cut(framing))
-        .or_else(|| framed(wanted));
-    if let Some((middle, distance)) = chosen {
-        camera.glide_to(middle - views.free.shift(rotation) * distance, distance);
-    }
+    let up = rotation * Vec3::Y;
+    #[expect(clippy::cast_precision_loss, reason = "a step count")]
+    let target = (0..=PANEL_STEPS)
+        .flat_map(|i| [1.0, -1.0].map(|way| up * way * room * i as f32 / PANEL_STEPS as f32))
+        .map(|by| target + by)
+        .find(|&at| !under_panel(nucleus.balls_of(&others), at, distance, rotation, lens))
+        .unwrap_or(target);
+    camera.glide_to(target, distance);
 }
 
-/// How many steps between the least and most share an expanded module may take
-/// [`fill`] tries, either way from the one it wants, for one that leaves no sphere
-/// half under the panel.
-const PANEL_STEPS: usize = 16;
+/// How many places either way of the middle an expanded module may sit [`fill`]
+/// tries, for one that leaves no sphere half under the panel.
+const PANEL_STEPS: usize = 8;
 
 /// Whether any of `balls` shows cut by the foot of the free area, where a panel
 /// docks, seen turned to `rotation` looking at `target` from `distance`; never with

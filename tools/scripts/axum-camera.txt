@@ -1,6 +1,6 @@
 #: view demo/out/axum-server.json
-# The camera on the small demo: a double click on a function selects it and expands
-# its module; Back and Forward while expanded keep it expanded; F frames the
+# The camera on the small demo: a double click on a function expands its module and
+# keeps the selection; Back and Forward while expanded keep it expanded; F frames the
 # expanded module; the wheel stops at a module filling the view; X again returns to
 # exactly where the camera was; a click off every function deselects and moves no
 # camera; in a journey X expands the module under the pointer, Esc shrinks it back,
@@ -9,7 +9,7 @@ click pricing::quote
 snap before
 
 doubleclick users::find_user
-expect selection users::find_user
+expect selection pricing::quote
 expect expanded users
 expect check expanded-fill
 snap double clicked a function
@@ -20,7 +20,7 @@ expect expanded users
 snap selected inside
 
 key backspace
-expect selection users::find_user
+expect selection pricing::quote
 expect expanded users
 snap back while expanded
 
@@ -108,3 +108,31 @@ expect check map-on-screen
 snap resized after r
 window 1600 1000
 snap resized back
+
+# X on a caller set aside, then Esc: back to the journey as it was, collapsed.
+key esc
+key esc
+click orders::place
+key enter
+key up
+snap caller set aside
+key x
+expect nucleus expanded
+key esc
+expect expanded none
+expect aside none
+expect camera-same-as caller set aside
+
+# Expanded, zoomed all the way out, the whole map is held in the middle, turned and
+# panned too.
+key esc
+key r
+click pricing::quote
+key x
+scroll -30
+expect check map-on-screen
+snap expanded zoomed all the way out
+drag 200 -80
+pan 300 100
+expect check map-on-screen
+snap expanded out turned and panned

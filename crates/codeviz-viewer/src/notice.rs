@@ -1,7 +1,8 @@
 //! A line said in the bar along the top until the next key, as why a key moved nothing: the
 //! cursor already at the journey's start, no further call from the same caller, calls
 //! folded past the depth shown; while none is, how many functions lit have no room
-//! for a name. Never over the graph, where it would hide a name.
+//! for a name, and how many callers I brings in no room to be drawn. Never over the
+//! graph, where it would hide a name.
 
 use bevy::{input::mouse::AccumulatedMouseScroll, prelude::*};
 use bevy_egui::{EguiContexts, egui};
@@ -93,17 +94,22 @@ pub(crate) fn draw(
         return;
     };
     let pass = ctx.cumulative_pass_nr();
+    // Quietly, what is left out: names with no room, and callers I brings in with no
+    // room to be drawn.
     let unnamed = ctx
         .data(|d| d.get_temp::<(u64, usize, usize)>(unnamed_id()))
-        .filter(|&(at, unnamed, _)| at == pass && unnamed > 0);
-    let (text, color, size) = match (notice, unnamed) {
-        (Some((_, text)), _) => (text.to_owned(), TEXT, text::BODY),
-        (None, Some((_, unnamed, lit))) => (
-            format!("{unnamed} of {lit} lit names left out · zoom in, or point at one"),
-            MUTED,
-            text::SMALL,
-        ),
-        (None, None) => return,
+        .filter(|&(at, unnamed, _)| at == pass && unnamed > 0)
+        .map(|(_, unnamed, lit)| {
+            format!("{unnamed} of {lit} lit names left out · zoom in, or point at one")
+        });
+    let waiting = Some(explorer.nucleus().outside_waiting())
+        .filter(|&waiting| waiting > 0 && explorer.outside_shown())
+        .map(|waiting| format!("{waiting} more call it with no room here: X shows them"));
+    let left_out: Vec<String> = unnamed.into_iter().chain(waiting).collect();
+    let (text, color, size) = match notice {
+        Some((_, text)) => (text.to_owned(), TEXT, text::BODY),
+        None if !left_out.is_empty() => (left_out.join(" · "), MUTED, text::SMALL),
+        None => return,
     };
     let screen = ctx.viewport_rect();
     let free = ctx

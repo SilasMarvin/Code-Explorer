@@ -1464,10 +1464,13 @@ pub(crate) fn graph_names(
         d.insert_temp(kept_off_id(), Arc::new(kept_off));
     });
     let over = naming.pointed(painter, &placer, &labels);
-    // Every function lit and on screen is named, or counted here as not.
+    // Every function lit and on screen, and every caller I brings in, is named, or
+    // counted here as not.
     let lit: Vec<usize> = (0..naming.discs.len())
         .filter(|&tile| {
-            naming.discs[tile].is_some() && nucleus.level(tile).is_some() && !nucleus.folded(tile)
+            naming.discs[tile].is_some()
+                && (nucleus.level(tile).is_some() || nucleus.outside(tile))
+                && !nucleus.folded(tile)
         })
         .collect();
     let unnamed = lit
