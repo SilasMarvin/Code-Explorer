@@ -100,9 +100,20 @@ pub(crate) struct OrbitCamera {
     /// other, or an orbit or pan, drew the map, or the sphere it zoomed to, into the
     /// free area or held it there, beside zooming about the pointer.
     held: Option<bool>,
-    /// Whether the view framed itself where the camera is going, rather than the
-    /// hands moving it there or it going back to a pose it had.
-    framed: bool,
+    /// Who put the camera where it is going: the view framing itself, the hands, or
+    /// a pose it had put back.
+    placed: Placed,
+}
+
+/// Who put the camera where it is going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placed {
+    /// The view, framing itself.
+    Framed,
+    /// The hands: a wheel turn, an orbit or a pan.
+    Hands,
+    /// The view, putting back a pose it had.
+    Back,
 }
 
 /// Where the camera stands, for a move from one stand to another.
@@ -255,7 +266,7 @@ impl Default for OrbitCamera {
             bounds: None,
             reach: None,
             held: None,
-            framed: false,
+            placed: Placed::Back,
         }
     }
 }
@@ -286,7 +297,7 @@ impl OrbitCamera {
 
     /// Stops wherever it is on its way: a hand on the wheel or a drag takes over.
     fn halt(&mut self) {
-        self.framed = false;
+        self.placed = Placed::Hands;
         self.target = self.looking_at;
         self.goal_distance = None;
         self.goal_angles = None;
@@ -332,13 +343,19 @@ impl OrbitCamera {
     pub(crate) fn glide_to(&mut self, target: Vec3, distance: f32) {
         self.target = target;
         self.goal_distance = Some(distance);
-        self.framed = true;
+        self.placed = Placed::Framed;
     }
 
     /// Whether the view framed itself where the camera is going: no hand has moved it
     /// since, and it is not going back to a pose it had.
     pub(crate) fn framed(&self) -> bool {
-        self.framed
+        self.placed == Placed::Framed
+    }
+
+    /// Whether the hands moved it there since the view last framed itself or put
+    /// back a pose it had.
+    pub(crate) fn by_hand(&self) -> bool {
+        self.placed == Placed::Hands
     }
 
     /// Moves the point orbited by `offset` at once.
@@ -728,7 +745,7 @@ impl OrbitCamera {
 
     /// Eases back to a pose it had.
     pub(crate) fn return_to(&mut self, pose: Pose) {
-        self.framed = false;
+        self.placed = Placed::Back;
         self.target = pose.target;
         self.goal_distance = Some(pose.distance);
         self.turn_to(pose.angles);
@@ -1269,9 +1286,13 @@ mod tests {
     fn a_hand_on_the_wheel_stops_a_move() {
         let mut camera = OrbitCamera::default();
         camera.glide_to(Vec3::new(10.0, 0.0, 0.0), 30.0);
+        assert!(camera.framed() && !camera.by_hand());
         camera.advance(0.5);
         camera.zoom(0.9, None);
         assert!(!camera.easing(), "it stays where the hand put it");
+        assert!(camera.by_hand() && !camera.framed());
+        camera.return_to(camera.pose());
+        assert!(!camera.by_hand() && !camera.framed(), "put back");
     }
 
     #[test]

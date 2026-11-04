@@ -124,8 +124,9 @@ const CURSOR_ROOM: f32 = 0.85;
 ///   browsing, takes in the whole codebase. Shrinking back, what the view came to be
 ///   on while expanded (a pick, the function set aside) is brought into view.
 /// - A window sized anew frames the view again as it was last framed ([`Shot`]),
-///   unless the hands moved the camera since or it went back to where it stood;
-///   then it keeps what it looks at and how far.
+///   unless the hands moved the camera since, when it keeps what it looks at and how
+///   far, or it went back to where it stood, when it only draws back to show what
+///   would be off the free area.
 pub(crate) fn frame(
     keys: Res<ButtonInput<KeyCode>>,
     wants: Res<EguiWantsInput>,
@@ -386,8 +387,8 @@ fn follow_view(
     if opening || before.is_some_and(|b| (b.start, b.aim) != (now.start, now.aim)) {
         return Some(Shot::Pointed { opening });
     }
-    // A window sized anew frames again, or leaves the hands' camera be: see [`frame`].
-    if resized {
+    // A window sized anew leaves the hands' camera be: see [`frame`].
+    if resized && camera.by_hand() {
         return None;
     }
     if now.expanded.is_some() {
@@ -400,7 +401,7 @@ fn follow_view(
         // With I on, a panel grown over the spheres of the callers it brought in
         // draws the camera back from them too.
         let mut came = came.to_vec();
-        if before.is_some_and(|b| b.free != now.free) {
+        if before.is_some_and(|b| b.free[3] > now.free[3]) {
             came.extend(outside_under_panel(nucleus, camera, lens));
         }
         reveal(nucleus, &[cursor, aside], &came, camera, views);
