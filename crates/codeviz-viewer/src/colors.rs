@@ -34,13 +34,15 @@ pub(crate) fn deeper(level: u32, last: u32) -> Color {
 }
 
 /// How much of its color a call's line keeps, by what it is: a call the view names;
-/// one among the expanded module's functions no role names; a caller of the start
-/// folded into its module's count; a call in from off the journey (I); one only
+/// one of a journey two levels deep or more off the cursor's path, not the cursor's
+/// own; one among the expanded module's functions no role names; a caller of the
+/// start folded into its module's count; a call in from off the journey (I); one only
 /// guessed, or handed off; a line between modules on the whole map; at most, a call
 /// crossing the view with both its ends off it. The calls of a
 /// function set aside keep all of it, a grey one [`PICKED_STRENGTH`]: grey still,
 /// never the selection's white.
 pub(crate) const CALL_STRENGTH: f32 = 0.85;
+pub(crate) const DIMMED_STRENGTH: f32 = 0.4;
 pub(crate) const INNER_STRENGTH: f32 = 0.28;
 pub(crate) const FOLDED_STRENGTH: f32 = 0.25;
 pub(crate) const OUTSIDE_STRENGTH: f32 = 0.35;

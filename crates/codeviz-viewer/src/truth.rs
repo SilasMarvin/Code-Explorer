@@ -505,6 +505,9 @@ fn roles(explorer: &Explorer, tile: usize) -> Vec<String> {
     if crate::graph_view::guessed(explorer, tile) {
         roles.push("guessed".to_owned());
     }
+    if crate::arrows::Spine::of(explorer).dims(n, tile) {
+        roles.push("dimmed".to_owned());
+    }
     if is(n.hovered()) {
         roles.push("hovered".to_owned());
     }
@@ -566,6 +569,7 @@ fn shape(view: &View, shape: &ArrowShape) -> Value {
         "tip": point(shape.tip),
         "path": shape.path.iter().map(|&p| point(p)).collect::<Vec<_>>(),
         "gaps": shape.gaps.iter().map(|g| [round(g[0]), round(g[1])]).collect::<Vec<_>>(),
+        "under": shape.under.iter().filter_map(|&tile| view.explorer.tile_unit(tile).map(ToString::to_string)).collect::<Vec<_>>(),
         "on_screen": crosses_free(view.screen.names, &shape.path),
     })
 }

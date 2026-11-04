@@ -335,9 +335,11 @@ fn names_key(ctx: &egui::Context, explorer: &Explorer, routes: u64, area: egui::
     for float in floats {
         float.to_bits().hash(&mut hasher);
     }
+    // The cursor by its call, not its function: two calls of one function have two
+    // paths down from the start, two pink lines and two numbers.
     (
         routes,
-        explorer.cursor(),
+        explorer.cursor_span(),
         explorer.aside(),
         explorer.hovered(),
         // Browsing has none, made afresh each time it is asked for.
