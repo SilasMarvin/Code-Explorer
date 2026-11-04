@@ -18,6 +18,7 @@ snap depth 3
 
 key x
 expect expanded explorer
+snap expanded again
 key .
 key .
 snap expanded deeper
