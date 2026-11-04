@@ -2,8 +2,9 @@
 //! it looks, and where it goes. Every function and module is named where its name
 //! fits, placed greedily in one fixed order of importance: the start (browsing, the
 //! selection), the cursor, the calls on the cursor's path down from the start, the
-//! function set aside, the journey's other calls in number order, the callers, what
-//! I brings in, the modules holding anything lit, the other modules biggest first,
+//! function set aside, the journey's other calls in number order, the callers (once
+//! two levels show, the cursor's own calls, the callers, then the calls off its path,
+//! drawn dimmer), what I brings in, the modules holding anything lit, the other modules biggest first,
 //! then plain functions. A name never loses its place to one later in that order. A
 //! name sits nearer its own dot than any other drawn and not covered, and never on
 //! the side its own calls come in from, or goes. A plain name stays where it was or
@@ -813,9 +814,13 @@ enum Tier {
     Path,
     /// The function set aside in a journey.
     Aside,
-    /// The journey's calls, numbered, in number order.
+    /// The journey's calls, numbered, in number order: once two levels show, the
+    /// cursor's own.
     Numbered,
     Caller,
+    /// Once two levels show, the journey's other calls, off the cursor's path, drawn
+    /// dimmer, in number order.
+    Dimmed,
     /// Whatever else is lit: browsing, the selection's calls.
     Lit,
     /// The callers I brings in from off the journey.
@@ -880,6 +885,8 @@ struct Naming<'a> {
     cursor_number: Option<String>,
     /// The functions on the cursor's path: [`cursor_path`].
     path: HashMap<usize, String>,
+    /// What the cursor's path leaves dimmer.
+    spine: arrows::Spine,
     /// By tile, where each dot drawn on the graph shows, and how far from its middle
     /// its name sits: as far as the biggest a dot is drawn, whatever this one is to
     /// the view, so a name stays put as the selection or the cursor comes and goes.
@@ -944,6 +951,7 @@ impl<'a> Naming<'a> {
             disclosed,
             cursor_number,
             path: cursor_path(explorer),
+            spine: arrows::Spine::of(explorer),
             discs: Vec::new(),
             ladder: ladder.into_iter().map(|(_, tile)| tile).collect(),
             sizes: RefCell::default(),
@@ -1109,7 +1117,11 @@ impl<'a> Naming<'a> {
             // then, so the sides names take are the same at every depth.
             || (neutral && nucleus.journey_level(tile).is_some())
         {
-            Tier::Numbered
+            if !neutral && self.spine.dims(nucleus, tile) {
+                Tier::Dimmed
+            } else {
+                Tier::Numbered
+            }
         } else if nucleus.level(tile) == Some(-1) {
             Tier::Caller
         } else if nucleus.outside(tile) {
@@ -1141,7 +1153,7 @@ impl<'a> Naming<'a> {
             let within = match tier {
                 // Down the path from the start.
                 Tier::Path => self.path.get(&tile).map_or(0, |n| n.matches('.').count()),
-                Tier::Numbered => rungs.get(&tile).copied().unwrap_or(usize::MAX),
+                Tier::Numbered | Tier::Dimmed => rungs.get(&tile).copied().unwrap_or(usize::MAX),
                 Tier::Plain => usize::MAX - self.explorer.graph().degree(tile),
                 _ => 0,
             };
@@ -2249,7 +2261,8 @@ mod tests {
     fn names_are_placed_in_one_order_of_importance() {
         assert!(Tier::Start < Tier::Cursor && Tier::Cursor < Tier::Path);
         assert!(Tier::Path < Tier::Aside && Tier::Aside < Tier::Numbered);
-        assert!(Tier::Numbered < Tier::Caller && Tier::Caller < Tier::Lit);
+        assert!(Tier::Numbered < Tier::Caller && Tier::Caller < Tier::Dimmed);
+        assert!(Tier::Dimmed < Tier::Lit);
         assert!(Tier::Lit < Tier::Outside && Tier::Outside < Tier::Module);
         assert!(Tier::Module < Tier::Beyond && Tier::Beyond < Tier::Plain);
         assert!(Tier::Path.always() && Tier::Aside.always() && !Tier::Numbered.always());

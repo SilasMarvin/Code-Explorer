@@ -1,0 +1,47 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus Explorer::spotlit
+# The cursor's path is the journey's spine: every call on it pink, the rest of a
+# journey two levels deep dimmer (ux12-fresh5-4/02, 06; ux12-journey-3/18-27).
+# Moving the cursor to another call of the same function moves the path, its pink
+# and its numbers with it (ux12-cons-3/53, 3/57; ux12-journey-3/26-28).
+key .
+snap depth 2
+bar 1.1
+expect cursor Explorer::graph_focus
+expect check colours pass
+expect check panel-agrees pass
+snap cursor 1.1 graph_focus
+bar 2
+expect cursor Explorer::graph_focus
+expect check colours pass
+expect check panel-agrees pass
+expect nothing-moved
+snap cursor 2 graph_focus
+key .
+snap depth 3
+bar 2.3.2
+expect cursor CodebaseMap::tile_of
+expect check colours pass
+expect check panel-agrees pass
+snap cursor 2.3.2 tile_of
+bar 2.2
+expect cursor CodebaseMap::tile_of
+expect check colours pass
+expect check panel-agrees pass
+expect check named-when-room pass
+expect nothing-moved
+snap cursor 2.2 tile_of
+key .
+key down
+key down
+snap depth 4 deep cursor
+expect check colours pass
+expect check panel-agrees pass
+expect check arrows-clear pass
+key x
+snap depth 4 expanded
+expect check colours pass
+expect check arrows-clear pass
+key x
+key esc
+snap browse after the journey
+expect check arrows-clear pass
