@@ -1219,9 +1219,9 @@ impl Explorer {
     }
 
     /// How many levels the journey shows: its deepest call shown, in a branch opened by
-    /// hand too.
+    /// hand too; at the least 1, as it opens.
     pub(crate) fn depth(&self) -> u32 {
-        self.disclosed.deepest_shown()
+        self.disclosed.deepest_shown().max(1)
     }
 
     /// Browsing, says that a journey key needs a journey open, and returns true.
