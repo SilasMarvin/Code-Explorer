@@ -1258,8 +1258,8 @@ fn panel_agrees(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
             offenders.push((0.5, offender));
         }
         if let Some(text) = (bar.text.as_deref()).filter(|t| {
-            !reads_as(t, bar)
-                && !(t.is_empty() && s.panel.as_ref().is_some_and(|p| under_mark(p, bar)))
+            let covered = t.is_empty() && s.panel.as_ref().is_some_and(|p| under_mark(p, bar));
+            !reads_as(t, bar) && !covered
         }) {
             let why =
                 "the bar's drawn text is not its number and its name, whole or its type cut short";
