@@ -96,8 +96,8 @@ carries, in any case.
 | `snap [LABEL]` | writes `NN-label.png` and `NN-label.json`, with the checks run |
 | `frames N` | right after the step before it, without waiting for it to rest, snaps each of the next N frames (1 to 30) as `NN-frame-K`: the transition as it plays |
 
-After every step the harness waits until the camera, the spheres and the names stop
-moving (at least 0.5 s, at most 8 s, else the step's trouble says it was still moving).
+After every step the harness waits until the camera, the spheres, the names and the
+overlays (the search box growing as what it finds is laid out) stop moving (at least 0.5 s, at most 8 s, else the step's trouble says it was still moving).
 The step log's `settled_ms` is how long the view kept moving after the step's input,
 `waited_ms` how long the harness waited; a `pan` also logs `view_moved`, `moved_by`
 (how far what the camera looked at moved on screen, in points) and `dragged_by`. A pan
@@ -170,7 +170,8 @@ scene's units.
   journey's), `start_module` (the module in the middle: the start's, or the
   selection's), `cursor` (`number`, `name`), `aside` (the function set aside in a
   journey), `nucleus`
-  (`modules`, `expanded`), `expanded` (the module expanded, by name), `depth`, `outside_callers`, `hovered` (the function the
+  (`modules`, `expanded`), `expanded` (the module expanded, by name), `depth`, `outside_callers`,
+  `outside_waiting` (of the callers I brings in, how many have no room to be drawn), `hovered` (the function the
   pointer has rested on, as drawn) and `under_pointer` (what the pointer is on now),
   `search`, `help`, `back`, `forward`, `camera` (where it stands that frame, on its
   way or not: `target`, `distance`, `yaw`, `pitch`, `held`: the wheel turns since it
@@ -217,14 +218,17 @@ scene's units.
 - `module_arrows`: each arrow between modules: `from`, `to`, `calls`, `flow`, `level`,
   `role`, `drawn`, and when drawn `width` (the shaft), `head`, `head_width`, `tip`,
   `on_screen`.
-- `bars`: journey bars in view: `number`, `name`, `unit`, `rect`, `cursor`, `lit`,
+- `bars`: journey bars in view: `number`, `name`, `text` (what it reads, as drawn), `unit`, `rect`, `cursor`, `lit`,
   `color` (its fill, `#RRGGBB`, with its alpha after where see-through, as a call only
   guessed is), `guessed` (a call only guessed or handed off, drawn faint), `cut_off`, `folded` (calls folded under it), `chip` (the badge that unfolds
   them); then the bars of the start's callers in the row above its bar: `caller` true,
-  no `number`, `aside` (the one set aside), `color`. `panel` (while the journey panel
-  shows): `below`, how many of its bars lie below its foot, cut off or out of view, and
-  `rows_track`, whether a track down its side shows which rows are in view.
-  `search_rows` (while the search box shows): `text`, `unit`, `rect`, `shown`,
+  no `number`, `aside` (the one set aside), `color`, `text`. `panel` (while the journey
+  panel shows): `below`, how many of its bars lie below its foot, cut off or out of view,
+  and `rows_track`, whether a track down its side shows which rows are in view;
+  `beside`, how many lie past its left or right edge, and `across_track`, whether a
+  track along its foot says so; `cursor_cut_off`, the cursor's bar showing less of
+  itself than the panel could.
+  `search_rows` (while the search box shows): `text`, `unit`, `rect`, `shown` (wholly in view),
   `highlighted` (what Enter takes). `buttons`: `text`, `rect`, `enabled`, `cut_off`.
   `overlays`: `name`, `rect`, `clipped` (the journey panel, the key help, the search
   box, and a notice while one shows, in the bar along the top, or while none does, how
@@ -262,7 +266,7 @@ that put it there), names, and calls.
 | `labels-clear` | no name overlaps another or lies under a notice, no exit label lies over a name, a function's name covers no other lit dot (a lit name may lie over a plain one, `opened`) and lies across none of the last 30 points of a call (`into` or `journey`) drawn into its own dot, the side its calls arrive from; but a name shown come what may with room nowhere round its dot | always |
 | `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel; not the search box, which opens over the graph for a moment) | unless the key help is open |
 | `text-sizes` | function names are 11 to 18 points; at most 4 font sizes show at once | always |
-| `panel-agrees` | each numbered bar's number is on the graph (a call guessed among several functions is drawn, and numbered, only to those the journey runs anyway; drawn nowhere, its bar has no number); each numbered bar's function carries that number on the graph, no other function does; each bar reads the name the graph gives its function (what its label leads with after its numbers); with a cursor on the graph, exactly one cursor bar shows, for that function | journey bars drawn |
+| `panel-agrees` | each numbered bar's number is on the graph (a call guessed among several functions is drawn, and numbered, only to those the journey runs anyway; drawn nowhere, its bar has no number); each numbered bar's function carries that number on the graph, no other function does; each bar reads the name the graph gives its function (what its label leads with after its numbers), and draws it after its number, whole or cut short with an ellipsis (its type or module may go first), never its number alone; with a cursor on the graph, exactly one cursor bar shows, for that function; a start with callers has their row above its bar | journey bars drawn |
 | `expanded-fill` | the expanded module's (`state.expanded`) diameter takes 45% to 85% of the free area's smaller side (the graph less a docked panel), 4% either way allowed; below 81% none of its dots crowds another (a quarter of them at most nearer than 18 points), since it could grow; an expand from the collapsed view zooms in (the module shows bigger than before, unless it already filled 81%); and it lies inside the free area | after `x` or a double click, when expanded; or when the cursor, the function set aside, or browsing a pick took the expansion to another module; not while the camera is where the user's hands put it (Back to a place seen expanded counts as that) |
 | `expanded-drawn` | expanded, the module expanded is drawn (not closed or faint) and some of its functions show in the free area | while expanded |
 | `framed` | after R: every sphere inside the free area, camera at the usual view the map opens at (yaw and pitch within 0.05 of it); after F: every lit dot (or the expanded module) inside it with a 4-point margin | when F or R is the last step since the snap before that moves the view, a `window` after it aside (a window sized anew frames again as the view was last framed) |
@@ -283,7 +287,8 @@ that put it there), names, and calls.
 | `names-distinct` | no two functions read the same name on the graph within one module, among the journey's bars, or among the search's rows | a function named |
 | `exits-named` | each call that should be labelled (with a module expanded, any lit call; collapsed in a journey, one in from outside) drawn from inside the free area to off it has an exit label inside it naming the far function, or its module; no label for a plain call among the expanded module's functions, nor collapsed for one not in from outside; no two labels name one far function or lie over each other | a module expanded, or a journey; a call leaving the free area or a label drawn |
 | `calls-drawn` | each call into the selection (or the start) and each of its own, between two dots on screen apart by more than their radii, a head and its gaps, is drawn | a selection or a journey, a call between two dots on screen |
-| `bars-in-view` | bars below the journey panel's foot, cut off or out of view, have a track down its side showing which rows are in view | a journey panel with bars below its foot |
+| `bars-in-view` | bars below the journey panel's foot, or past its sides, cut off or out of view, have a track down its side, or along its foot, showing which part is in view; the cursor's bar shows wholly, or across the panel when wider | a journey panel |
+| `outside-callers` | each caller I brings in lies clear of every call's line into the start or along the journey (2 points past its dot) but its own; one on screen unnamed, or one with no room to be drawn (`outside_waiting`), is counted in the bar along the top, unless another notice speaks there | I on |
 
 What a step may move decides which checks judge it:
 
@@ -324,15 +329,15 @@ such a camera alone.
 | `axum-consistency`, `ord-consistency` | the same action the same everywhere: the journey keys browsing do nothing, Esc browsing clears the selection, a search in a journey moves the cursor or sets aside (drawn), the depth keys stop at the deepest level and at 1, with `i` on a cursor step moves nothing; a call that calls the start back ringed violet browsing and in a journey; Esc steps out one level at a time |
 | `axum-look`, `ord-look` | how the graph is drawn: arrow sizes, module names above their spheres, names wherever they fit (plain ones only where their sphere shows 130 points across), hover unlike the selection, an expanded module showing and naming all its functions, a depth change and `i` taking no name away but where one placed before it takes its place |
 | `axum-callers` | the way up a journey: ↑ from the start into the row of its callers, ← → along it, ↓ back, Enter and Shift-click open a caller's journey, a caller's bar sets it aside; `i` with nothing calling in from outside stays off; `inside` on the top bar; search ranks a function's own name before its module's |
-| `axum-search` | search: ↓ and Enter take the row highlighted; a route found by its path and its function's name, listed once; reopened, the last query is selected and typing replaces it; Esc from a journey selects its start |
+| `axum-search` | search: ↓ and Enter take the row highlighted; every row found in view, whole; a route found by its path and its function's name, listed once; reopened, the last query is selected and typing replaces it; Esc from a journey selects its start; the help in both modes |
 | `ord-follow` | a big module expanding to the band; browsing expanded, a pick in another module taking the expansion there and Back bringing it back; Back across journeys putting back the expansion the place had; a search off the journey showing its sphere whole; X with a function set aside expanding its module |
 | `ord-routes` | calls' lines bent by nothing that only reads: a level more or less, `i`, a cursor step, the pointer, collapsed and expanded; none looping past 1.3× straight |
 | `ord-exits` | where calls leave the free area: one label per far function or, past six, per module, over no name or other label; browsing expanded; a narrow window whose panel grows on `.` |
 | `ord-names` | names stay or go, never move: the cursor stepping onto a call beside a name; expanded in a journey, the journey's calls named before any plain function; I naming the caller it brings in; the calls on the cursor's path named as it walks down |
 | `ord-names-browse`, `axum-names` | names browsing: module names on a narrow and a wide whole map; no plain names at mid zoom; the function hovered standing out; a click inside an expanded module moving no plain name; no name nearer another dot than its own |
 | `axum-visual`, `ord-visual` | how a journey is drawn: no call through a lit dot or name, hovering lighting no call, the function set aside in its own color with a white ring, a guessed call faint; the whole map's links one width, module names above or inside their spheres; two functions alike told apart in the search; both calls of a function that calls the selection and is called by it, browsing |
-| `ord-outside` | I: every caller from off the journey of the cursor's call drawn apart from the journey's dots, none moving as the cursor steps; X in a journey moving none of its dots; a click on a plain function expanded opening no bar; a deep journey in a small window, the panel's rows track |
-| `ord-panel` | the panel on a crowded journey: bars keep their numbers, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk) |
+| `ord-outside` | I: every caller from off the journey of the cursor's call drawn apart from the journey's dots and off their lines, none moving as the cursor steps; X in a journey moving none of its dots; a click on a plain function expanded opening no bar; a deep journey in a small window, the panel's rows track |
+| `ord-panel` | the panel on a crowded journey: bars keep their numbers and some of their names, five levels fitting across 1200 wide, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk) |
 
 `tools/drive suite` checks every script's names, then runs them one window at a time and
 prints a table (failed steps, `expect`s passed, failing checks, verdict) and, for each

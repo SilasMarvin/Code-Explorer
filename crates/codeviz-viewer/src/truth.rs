@@ -115,6 +115,7 @@ pub(crate) fn state(view: &View) -> Value {
         "expanded": nucleus.expanded_module().map(|c| explorer.cluster_name(c)),
         "depth": explorer.disclose().0,
         "outside_callers": explorer.outside_shown(),
+        "outside_waiting": nucleus.outside_waiting(),
         "hovered": explorer.hovered().map(name),
         "under_pointer": explorer.under_pointer.map(name),
         "search": view.chrome.search,
@@ -705,7 +706,7 @@ fn search_rows(view: &View) -> Value {
                 "text": row.text,
                 "unit": row.unit,
                 "rect": rect(row.rect),
-                "shown": search.content.intersects(row.rect),
+                "shown": search.content.expand(0.5).contains_rect(row.rect),
                 "highlighted": row.highlighted,
             })
         })
@@ -719,17 +720,42 @@ fn merge(into: &mut Value, more: Value) {
 }
 
 /// How much of the journey the panel shows: how many of its bars lie below what it
-/// shows, cut off or out of view, and whether a track down its side says so.
+/// shows, cut off or out of view, and whether a track down its side says so; how many
+/// lie past its left or right edge, cut off or out of view, and whether a track
+/// along its foot says so.
 fn panel(view: &View) -> Value {
     let Some(drawn) = &view.screen.bars else {
         return Value::Null;
     };
+    let content = drawn.content;
     let below = drawn
         .bars
         .iter()
-        .filter(|(_, r)| r.max.y > drawn.content.max.y + 0.5)
+        .filter(|(_, r, _)| r.max.y > content.max.y + 0.5)
         .count();
-    json!({ "below": below, "rows_track": drawn.rows_track.is_some() })
+    let beside = drawn
+        .bars
+        .iter()
+        .filter(|(_, r, _)| r.min.x < content.min.x - 0.5 || r.max.x > content.max.x + 0.5)
+        .count();
+    let cursor = view.explorer.cursor_span();
+    // As much of the cursor's bar as the panel can show, shown: wholly, or a bar wider
+    // than the panel, across it.
+    let cursor_cut_off = cursor.is_some_and(|cursor| {
+        !(drawn.bars.iter()).any(|(span, r, _)| {
+            let shown = r.intersect(content);
+            *span == cursor
+                && shown.height() >= r.height() - 0.5
+                && shown.width() >= r.width().min(content.width()) - 0.5
+        })
+    });
+    json!({
+        "below": below,
+        "rows_track": drawn.rows_track.is_some(),
+        "beside": beside,
+        "across_track": drawn.across_track.is_some(),
+        "cursor_cut_off": cursor_cut_off,
+    })
 }
 
 /// The journey's bars drawn in its panel, by number, then the bars of its start's
@@ -745,8 +771,9 @@ fn bars(view: &View) -> Vec<Value> {
     drawn
         .bars
         .iter()
-        .filter(|(_, r)| r.intersects(drawn.content))
-        .map(|&(span, r)| {
+        .filter(|(_, r, _)| r.intersects(drawn.content))
+        .map(|(span, r, text)| {
+            let (span, r) = (*span, *r);
             let tile = track.tile(span, explorer.map());
             let chip = drawn
                 .chips
@@ -756,6 +783,7 @@ fn bars(view: &View) -> Vec<Value> {
             json!({
                 "number": disclosed.bar_number(span),
                 "name": explorer.label(span),
+                "text": text,
                 "unit": track.unit_id(span).map(ToString::to_string),
                 "rect": rect(r),
                 "folded": disclosed.folded(span),
@@ -767,11 +795,13 @@ fn bars(view: &View) -> Vec<Value> {
                 "cut_off": !drawn.content.contains_rect(r),
             })
         })
-        .chain(drawn.callers.iter().map(|&(tile, r)| {
+        .chain(drawn.callers.iter().map(|(tile, r, text)| {
+            let (tile, r) = (*tile, *r);
             let unit = explorer.tile_unit(tile);
             json!({
                 "number": null,
                 "name": unit.map(|u| explorer.function_name(u)).unwrap_or_default(),
+                "text": text,
                 "unit": unit.map(ToString::to_string),
                 "rect": rect(r),
                 "caller": true,

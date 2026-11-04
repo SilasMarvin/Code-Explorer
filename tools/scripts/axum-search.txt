@@ -1,7 +1,8 @@
 #: view demo/out/axum-server.json
 # Search: arrows pick a row, Enter takes the one picked; a route is found by its path
 # and by its function's name, listed once; opened again, the last query is selected,
-# so typing replaces it. Esc from a journey selects its start, whatever the cursor.
+# so typing replaces it; every row it finds in view, whole. Esc from a journey selects
+# its start, whatever the cursor. The help, a line per color and key.
 key /
 type place
 snap typed
@@ -10,6 +11,11 @@ snap down
 key enter
 expect selection handlers::place_order
 expect search false
+key /
+type user
+expect search true
+snap user rows
+key esc
 key /
 type find_user
 snap retyped
@@ -27,7 +33,14 @@ key down
 key down
 expect mode journey
 snap cursor deep
+key h
+snap help journey
+key h
 key esc
 expect mode browse
 expect selection handlers::place_order
 snap left
+key h
+expect help true
+snap help browsing
+key h
