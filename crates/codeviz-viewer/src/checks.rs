@@ -3146,6 +3146,11 @@ fn plain_names(s: &Snap) -> Value {
         let unnamed: Vec<&str> = (s.nodes.iter())
             .filter(|n| n.module.as_deref() == Some(module) && n.roles == ["speck"])
             .filter(|n| n.on_screen && free.contains(pos(n.at)))
+            // A dot under the hint at the keys is out of sight, named or not.
+            .filter(|n| {
+                !(s.overlays.iter())
+                    .any(|o| o.name == "key hint" && rect(o.rect).contains(pos(n.at)))
+            })
             .map(|n| n.name.as_str())
             .collect();
         if !unnamed.is_empty() {
@@ -5402,8 +5407,14 @@ mod tests {
         assert_eq!(result["offenders"][0]["module"], "a", "{result}");
         s["modules"][0]["radius"] = json!(250.0);
         assert!(passes(&check(&s, "plain-names")));
-        // The module expanded, small, may name a part of them.
+        // One under the hint at the keys may go unnamed.
         s["modules"][0]["radius"] = json!(150.0);
+        let result = check(&s, "plain-names");
+        assert_eq!(result["offenders"][0]["module"], "a", "{result}");
+        s["overlays"] = json!([{ "name": "key hint", "rect": [400.0, 550.0, 440.0, 570.0] }]);
+        assert!(passes(&check(&s, "plain-names")));
+        // The module expanded, small, may name a part of them.
+        s["overlays"] = json!([]);
         s["state"]["expanded"] = json!("a");
         assert!(passes(&check(&s, "plain-names")));
     }
