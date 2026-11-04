@@ -224,9 +224,6 @@ pub(crate) struct Explorer {
     /// Bumped whenever the view is pointed somewhere by hand, so the camera turns to
     /// it even when that is where it already was.
     aim: u64,
-    /// Whether the cursor is being walked with the keys, its start already
-    /// remembered, so the rest of the walk is not.
-    walking: bool,
     /// The function under the pointer, in the graph or as a bar in the journey, as
     /// the pointer finds it: what a click picks. What is drawn as hovered is the one
     /// the pointer has rested on ([`Self::hovered`]).
@@ -343,7 +340,6 @@ impl Explorer {
             moved: 0,
             history: History::default(),
             aim: 0,
-            walking: false,
             disclose: Disclose::default(),
             disclosed: Arc::default(),
             under_pointer: None,
@@ -443,7 +439,6 @@ impl Explorer {
         self.mode = view.mode;
         self.selection = view.selection;
         self.outside = view.outside;
-        self.walking = false;
         self.expanded_on = None;
         // The panel follows the cursor afresh.
         self.revision += 1;
@@ -490,7 +485,6 @@ impl Explorer {
         }
         if self.place() != before {
             self.history.leave(before);
-            self.walking = false;
         }
     }
 
@@ -1403,16 +1397,11 @@ impl Explorer {
     }
 
     /// Moves the cursor. Returns the new position. With a function set aside, it only
-    /// goes back to the cursor. A walk of steps is remembered once, from where it
-    /// began.
+    /// goes back to the cursor. Each step is a place of its own, so Back retraces a
+    /// walk one step at a time; along the row of the start's callers, none is.
     pub(crate) fn step(&mut self, step: Step) -> Option<SpanId> {
-        let before = self.place();
-        let next = self.walk(step);
-        self.sync_nucleus();
-        if !self.walking && self.place() != before {
-            self.history.leave(before);
-            self.walking = true;
-        }
+        let mut next = None;
+        self.navigate(|explorer| next = explorer.walk(step));
         next
     }
 
@@ -1794,7 +1783,9 @@ pub(crate) mod tests {
             explorer.disclosure().shows(a_span),
             "a still opened by hand"
         );
-        assert!(explorer.go_back(), "then the walk to it");
+        assert!(explorer.go_back(), "then the walk to it, a step at a time");
+        assert_eq!(at(&explorer), "a");
+        assert!(explorer.go_back());
         assert!(!explorer.go_back(), "from the first place");
     }
 
@@ -1846,33 +1837,27 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_walk_with_the_keys_is_one_move() {
+    fn back_retraces_a_walk_with_the_keys_one_step_at_a_time() {
         let mut explorer = explorer();
         explorer.step(Step::Into);
         explorer.set_disclose(Disclose(2));
         explorer.step(Step::Into);
         assert_eq!(at(&explorer), "c");
         explorer.step(Step::Back);
-        assert!(explorer.go_back(), "the walk is remembered");
-        assert_eq!(at(&explorer), "main", "from where it began");
+        assert!(explorer.go_back());
+        assert_eq!(at(&explorer), "c", "the step before");
+        assert!(explorer.go_back());
+        assert_eq!(at(&explorer), "a");
+        assert!(explorer.go_back());
+        assert_eq!(at(&explorer), "main", "where the walk began");
         assert_eq!(
             explorer.disclose(),
             Disclose::default(),
             "at the depth it had"
         );
-        assert!(!explorer.can_go_back(), "as one move");
+        assert!(!explorer.can_go_back());
         assert!(explorer.go_forward());
-        assert_eq!(at(&explorer), "a", "forward to where it ended");
-
-        // A click ends the walk; the next walk is a move of its own.
-        explorer.click(tile(&explorer, "main"), None);
-        explorer.set_disclose(Disclose(2));
-        explorer.step(Step::Into);
-        explorer.step(Step::Into);
-        assert!(explorer.go_back());
-        assert_eq!(at(&explorer), "main", "back to where the second walk began");
-        assert!(explorer.go_back());
-        assert_eq!(at(&explorer), "a", "then to before the click");
+        assert_eq!(at(&explorer), "a", "forward a step at a time too");
     }
 
     #[test]
