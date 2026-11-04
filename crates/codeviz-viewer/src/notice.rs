@@ -104,7 +104,15 @@ pub(crate) fn draw(
         });
     let waiting = Some(explorer.nucleus().outside_waiting())
         .filter(|&waiting| waiting > 0 && explorer.outside_shown())
-        .map(|waiting| format!("{waiting} more call it with no room here: X shows them"));
+        .map(|waiting| {
+            // Expanded, X shrinks back: no room it gives.
+            let advice = if explorer.nucleus().expanded() {
+                ""
+            } else {
+                ": X shows them"
+            };
+            format!("{waiting} more call it with no room here{advice}")
+        });
     let left_out: Vec<String> = unnamed.into_iter().chain(waiting).collect();
     let (text, color, size) = match notice {
         Some((_, text)) => (text.to_owned(), TEXT, text::BODY),

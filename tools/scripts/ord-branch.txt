@@ -1,0 +1,67 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus scene::keyboard
+# One branch at a time: ↓ on a call whose calls are folded opens that call's alone and
+# steps in, graph and panel alike, the depth reading the deepest level shown; `.`
+# deepens every branch a level, `,` folds every branch back to a level less than the
+# deepest shown; "can fail" reads the same at every depth (fails-kept, every snap).
+# In a small window the start's bar stays under its callers' row as the rows below
+# scroll; a journey wider than the panel counts the bars past its side there.
+snap open
+key down
+key right
+expect cursor Explorer::step
+snap on step
+key down
+expect depth 2
+expect check panel-agrees pass
+expect check nothing-moved pass
+snap stepped in
+bar 2.15
+expect cursor Explorer::select
+key down
+expect cursor Explorer::graph_focus
+expect depth 3
+expect check panel-agrees pass
+snap stepped in again
+key .
+expect depth 4
+expect check panel-agrees pass
+snap every branch deeper
+key ,
+expect depth 3
+key ,
+expect depth 2
+key ,
+expect depth 1
+expect cursor Explorer::step
+expect check panel-agrees pass
+snap folded back
+chip 2
+expect depth 2
+expect check panel-agrees pass
+snap badge steps in
+window 1000 600
+key .
+key .
+key .
+key ]
+key ]
+key ]
+key ]
+key ]
+key ]
+expect check panel-agrees pass
+expect check bars-in-view pass
+snap small deep
+window 1600 1000
+key /
+type Explorer::reroot
+key enter
+key enter
+expect start Explorer::reroot
+key .
+key .
+key .
+key .
+expect check bars-in-view pass
+expect check panel-agrees pass
+snap reroot wide

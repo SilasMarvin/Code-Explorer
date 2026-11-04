@@ -4,6 +4,8 @@
 //! its node, and the cursor and what is hovered are shared with the graph, so a bar
 //! and its node light up together.
 
+use std::collections::{HashMap, HashSet};
+
 use bevy::prelude::*;
 use bevy_egui::egui;
 use codeviz_core::SpanId;
@@ -15,7 +17,7 @@ use crate::{
         MUTED, OK, ON_FILL, PANEL_EDGE, SELECTED, SOMETIMES, SURFACE, TEXT, THUMB, TRACK,
         egui_color,
     },
-    disclosure::Disclose,
+    disclosure::Disclosed,
     explorer::{Explorer, is_conditional},
     graph_view::{look_color, role_look},
     text,
@@ -96,8 +98,18 @@ impl JourneyPanel {
 struct Bar {
     span: SpanId,
     rect: egui::Rect,
+    /// Where it can show: the start's row stays put, and the rows below it scroll
+    /// under it.
+    clip: egui::Rect,
     /// Whether it is disclosed; folded bars keep their place but are not drawn.
     shown: bool,
+}
+
+impl Bar {
+    /// What of it shows.
+    fn shows(&self) -> egui::Rect {
+        self.rect.intersect(self.clip)
+    }
 }
 
 /// The bar a tether runs from to its node: the one under the pointer, the cursor's
@@ -151,10 +163,10 @@ pub(crate) fn draw(
     tethers
 }
 
-/// How much of the journey shows: levels of calls below the root; − and + do as `,`
-/// and `.` do.
+/// How much of the journey shows: levels of calls below the root, the deepest shown;
+/// − and + do as `,` and `.` do.
 fn disclosure(ui: &mut egui::Ui, explorer: &mut Explorer) {
-    let Disclose(depth) = explorer.disclose();
+    let depth = explorer.depth();
     if ui
         .small_button("+")
         .on_hover_text("One more level of calls (.)")
@@ -262,8 +274,13 @@ fn canvas(
     // Only what is disclosed is laid out, each bar as wide as what it says needs, the
     // whole squeezed to the panel's width where it can be.
     let disclosed = explorer.disclosure();
+    let twins = twins(explorer, &disclosed);
     let (placed, slots) = disclosed.layout(journey.root(), content.width(), &|span| {
-        needs(&painter, &says(explorer, span), disclosed.folded(span))
+        needs(
+            &painter,
+            &says(explorer, span, &twins),
+            disclosed.folded(span),
+        )
     });
     let slots = slots.max(1.0);
     let fit = content.width() / slots;
@@ -277,8 +294,12 @@ fn canvas(
     }
     let scale = panel.zoom.unwrap_or(usual);
     let pitch = ROW + ROW_GAP;
-    let visible_rows = (content.height() / pitch).floor().max(1.0);
-    let max_top = (disclosed.rows() as f32 - visible_rows).max(0.0);
+    // The start's bar stays put under the row of its callers, so that row never sits
+    // on calls it does not make; the rows below it scroll.
+    let deep = content.with_min_y(content.min.y + ROW + 1.0);
+    let visible_rows = ((content.height() / pitch).floor() - 1.0).max(1.0);
+    let deep_rows = disclosed.rows().saturating_sub(1) as f32;
+    let max_top = (deep_rows - visible_rows).max(0.0);
 
     // Zoom about the pointer: scroll or pinch, out as far as the whole journey
     // across. Drag pans; double-click goes back to the usual scale.
@@ -325,18 +346,21 @@ fn canvas(
                 panel.left = x - (across - width).min(across * 0.15);
             }
             let row = row as f32;
-            if row < panel.top_row || row > panel.top_row + visible_rows - 1.0 {
-                panel.top_row = row - (visible_rows / 3.0).floor();
+            if row >= 1.0 && (row < panel.top_row + 1.0 || row > panel.top_row + visible_rows) {
+                panel.top_row = row - 1.0 - (visible_rows / 3.0).floor();
             }
         }
     }
     panel.left = panel.left.clamp(0.0, (slots - across).max(0.0));
     panel.top_row = panel.top_row.clamp(0.0, max_top);
     let x_of = |x: f32| content.min.x + (x - panel.left) * scale;
-    let y_of = |row: f32| content.min.y + (row - panel.top_row) * pitch;
+    let y_of = |row: usize| {
+        let scrolled = if row == 0 { 0.0 } else { panel.top_row };
+        content.min.y + (row as f32 - scrolled) * pitch
+    };
 
     let map = explorer.map();
-    let current = explorer.current();
+    let aside = explorer.aside();
     let tile_of = |span: SpanId| track.tile(span, map);
 
     // A bar per span, in the journey's order, so a span's index finds its bar.
@@ -346,29 +370,32 @@ fn canvas(
             Some(&(left, slots, row)) => Bar {
                 span,
                 rect: egui::Rect::from_min_size(
-                    egui::pos2(x_of(left), y_of(row as f32)),
+                    egui::pos2(x_of(left), y_of(row)),
                     egui::vec2((slots * scale - BAR_GAP).max(3.0), ROW),
                 ),
+                clip: if row == 0 { content } else { deep },
                 shown: true,
             },
             None => Bar {
                 span,
                 rect: egui::Rect::NOTHING,
+                clip: egui::Rect::NOTHING,
                 shown: false,
             },
         })
         .collect();
     // A closure has no bar of its own: it is drawn as part of the function around it.
-    let rect_of = |span: SpanId| {
+    let bar_of = |span: SpanId| {
         let mut at = Some(span);
         while let Some(span) = at {
             if let Some(bar) = bars.get(span.index()).filter(|b| b.shown) {
-                return Some(bar.rect);
+                return Some(bar);
             }
             at = track.span(span).and_then(|s| s.parent);
         }
         None
     };
+    let rect_of = |span: SpanId| bar_of(span).map(|bar| bar.rect);
 
     // A node hovered in the graph lights its bars here.
     let graph_hover = explorer.hovered().filter(|_| !panel.lit_node);
@@ -387,6 +414,7 @@ fn canvas(
             continue;
         }
         let stroke = egui::Stroke::new(1.0, FAINT_LINE);
+        let painter = painter.with_clip_rect(deep);
         if is_conditional(span) {
             painter.extend(egui::Shape::dashed_line(&points, stroke, 3.0, 3.0));
         } else {
@@ -403,12 +431,13 @@ fn canvas(
         let Some(span) = track.span(bar.span) else {
             continue;
         };
-        if !bar.shown || !bar.rect.intersects(content) {
+        if !bar.shown || !bar.shows().is_positive() {
             continue;
         }
-        if mouse.is_some_and(|p| bar.rect.intersect(content).contains(p)) {
+        if mouse.is_some_and(|p| bar.shows().contains(p)) {
             hovered = Some(bar.span);
         }
+        let painter = painter.with_clip_rect(bar.clip);
         let tile = tile_of(bar.span);
         let fill = bar_fill(explorer, bar.span);
         let text = if guessed(explorer, bar.span) {
@@ -486,14 +515,16 @@ fn canvas(
         if graph_hover.is_some() && tile == graph_hover {
             outline(&painter, bar.rect, egui_color(HOVER), 1.0);
         }
+        // What it says starts where it shows, so a bar scrolled part out of view, as
+        // the start's is, still leads with its number and name.
         let free = badge.map_or(bar.rect, |badge| {
             egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x - 2.0, bar.rect.max.y))
         });
-        let painter = painter.with_clip_rect(free.intersect(content));
-        let named = bar_text(&painter, &says(explorer, bar.span), free.width() - 10.0);
+        let ink = painter.with_clip_rect(free.intersect(bar.clip));
+        let named = bar_text(&ink, &says(explorer, bar.span, &twins), free.width() - 10.0);
         if let Some((named, size)) = &named {
-            painter.text(
-                free.left_center() + egui::vec2(5.0, 0.0),
+            ink.text(
+                egui::pos2(free.min.x.max(bar.clip.min.x) + 5.0, free.center().y),
                 egui::Align2::LEFT_CENTER,
                 named,
                 egui::FontId::proportional(*size),
@@ -501,7 +532,8 @@ fn canvas(
             );
         }
         said.push((bar.span, named.map(|(named, _)| named).unwrap_or_default()));
-        if tile.is_some() && tile == current && Some(bar.span) != cursor {
+        // The function set aside, where the journey runs it, outlined white.
+        if tile.is_some() && tile == aside {
             outline(&painter, bar.rect, egui_color(SELECTED), 1.5);
         }
     }
@@ -511,7 +543,8 @@ fn canvas(
         |row| callers_row(ui, row, explorer, &callers, mouse, graph_hover),
     );
 
-    if let Some(rect) = cursor.and_then(rect_of) {
+    if let Some(bar) = cursor.and_then(bar_of) {
+        let rect = bar.rect;
         painter.line_segment(
             [
                 egui::pos2(rect.min.x, content.min.y),
@@ -519,7 +552,12 @@ fn canvas(
             ],
             egui::Stroke::new(1.0, CURSOR_LINE),
         );
-        outline(&painter, rect, egui_color(SELECTED), 2.0);
+        outline(
+            &painter.with_clip_rect(bar.clip.expand(3.0)),
+            rect,
+            egui_color(SELECTED),
+            2.0,
+        );
     }
     // Wider than the panel, a track along its foot shows which part is in view.
     let along = (slots > across + 1e-3).then(|| {
@@ -531,14 +569,37 @@ fn canvas(
         );
         foot
     });
-    // Deeper than the panel shows, a track down its right side shows which rows are
-    // in view.
-    let rows = disclosed.rows() as f32;
-    let down = (rows > visible_rows).then(|| {
-        let side = content.with_min_x(content.max.x - 3.0);
-        let shown = (panel.top_row / rows, (panel.top_row + visible_rows) / rows);
+    // Deeper than the panel shows, a track down its right side shows which rows below
+    // the start's are in view.
+    let down = (deep_rows > visible_rows).then(|| {
+        let side = deep.with_min_x(deep.max.x - 3.0);
+        let shown = (
+            panel.top_row / deep_rows,
+            (panel.top_row + visible_rows) / deep_rows,
+        );
         scroll_track(&painter, side, shown);
         side
+    });
+    // Bars past either side say how many, at that side; a click there scrolls on.
+    let past = |left: bool| {
+        bars.iter()
+            .filter(|bar| bar.shown)
+            .filter(|bar| {
+                if left {
+                    bar.rect.min.x < content.min.x - 0.5
+                } else {
+                    bar.rect.max.x > content.max.x + 0.5
+                }
+            })
+            .count()
+    };
+    let beside = [true, false].map(|left| {
+        let count = past(left);
+        (count > 0).then(|| (edge_mark(&painter, deep, left, count), count))
+    });
+    let edge_hit = beside.iter().zip([-1.0, 1.0]).find_map(|(mark, way)| {
+        mark.filter(|(r, _)| mouse.is_some_and(|p| r.contains(p)))
+            .map(|_| way)
     });
 
     if let Some((tile, _)) = caller_hovered {
@@ -556,8 +617,13 @@ fn canvas(
         ));
     }
     if let Some(span) = hovered {
-        if let Some(rect) = rect_of(span) {
-            outline(&painter, rect, egui_color(HOVER), 1.0);
+        if let Some(bar) = bar_of(span) {
+            outline(
+                &painter.with_clip_rect(bar.clip.expand(3.0)),
+                bar.rect,
+                egui_color(HOVER),
+                1.0,
+            );
         }
         let mut tip = explorer.label(span);
         let number = disclosed.bar_number(span).unwrap_or_default();
@@ -588,6 +654,7 @@ fn canvas(
                 (
                     bar.span,
                     bar.rect,
+                    bar.clip,
                     text.map(|(_, t)| t.clone()).unwrap_or_default(),
                 )
             })
@@ -595,10 +662,12 @@ fn canvas(
         chips,
         caller_bars,
         (down, along),
+        beside,
     );
     let hovered_rect = hovered
-        .and_then(rect_of)
-        .filter(|rect| content.intersects(*rect))
+        .and_then(bar_of)
+        .map(Bar::shows)
+        .filter(egui::Rect::is_positive)
         .or(caller_hovered.map(|(_, rect)| rect));
     // Hovering a bar lights its node in the graph.
     let bar_tile = hovered.and_then(tile_of);
@@ -622,8 +691,11 @@ fn canvas(
             } else {
                 explorer.pick_caller(tile);
             }
+        } else if let Some(way) = edge_hit {
+            panel.left += way * across * 0.8;
+            ui.ctx().request_repaint();
         } else if let Some(span) = fold_hit {
-            explorer.toggle_expanded(span);
+            explorer.unfold(span);
         } else if let Some(span) = hovered {
             // Shift opens its journey, as Shift-click does anywhere.
             match bar_tile {
@@ -771,6 +843,33 @@ fn scroll_track(painter: &egui::Painter, track: egui::Rect, (from, to): (f32, f3
     painter.rect_filled(thumb, 1.5, THUMB);
 }
 
+/// The mark at the left or right side of `area` saying how many bars lie past it.
+/// Returns where it is drawn.
+fn edge_mark(painter: &egui::Painter, area: egui::Rect, left: bool, count: usize) -> egui::Rect {
+    let text = if left {
+        format!("← {count}")
+    } else {
+        format!("{count} →")
+    };
+    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(BAR_TEXT_SMALL), TEXT);
+    let size = galley.size() + egui::vec2(12.0, 6.0);
+    let x = if left {
+        area.min.x
+    } else {
+        area.max.x - size.x - 4.0
+    };
+    let mark = egui::Rect::from_min_size(egui::pos2(x, area.center().y - size.y / 2.0), size);
+    painter.rect(
+        mark,
+        4.0,
+        SURFACE,
+        egui::Stroke::new(1.0, PANEL_EDGE),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(mark.min + egui::vec2(6.0, 3.0), galley, TEXT);
+    mark
+}
+
 /// A line round a bar, just outside it.
 fn outline(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, width: f32) {
     painter.rect_stroke(
@@ -803,7 +902,34 @@ impl Says {
     }
 }
 
-fn says(explorer: &Explorer, span: SpanId) -> Says {
+/// The ends of the names of the shown calls that two or more names share: `root` of
+/// `Track.root` and `Explorer.root`. A bar cut short keeps such a name whole.
+fn twins(explorer: &Explorer, disclosed: &Disclosed) -> HashSet<String> {
+    let mut names: HashMap<String, HashSet<String>> = HashMap::new();
+    for (span, _) in disclosed.numbered() {
+        let label = explorer.label(span);
+        names
+            .entry(tail(&label).to_owned())
+            .or_default()
+            .insert(label);
+    }
+    names
+        .into_iter()
+        .filter(|(_, labels)| labels.len() > 1)
+        .map(|(tail, _)| tail)
+        .collect()
+}
+
+/// A name without its type or module: `Track.unit_id` cut short says more as
+/// `unit_…` than as `Track.…`.
+fn tail(label: &str) -> &str {
+    match label.rsplit_once('.') {
+        Some((_, tail)) if !label.contains(char::is_whitespace) && !tail.is_empty() => tail,
+        _ => label,
+    }
+}
+
+fn says(explorer: &Explorer, span: SpanId, twins: &HashSet<String>) -> Says {
     let disclosed = explorer.disclosure();
     let number = disclosed.bar_number(span).unwrap_or_default().to_owned();
     let label = explorer.label(span);
@@ -823,10 +949,10 @@ fn says(explorer: &Explorer, span: SpanId) -> Says {
         };
         note.map_or_else(|| name.clone(), |note| format!("{name}  {note}"))
     };
-    // `Track.unit_id` cut short says more as `unit_…` than as `Track.…`.
-    let tail = match label.rsplit_once('.') {
-        Some((_, tail)) if !label.contains(char::is_whitespace) && !tail.is_empty() => tail,
-        _ => label.as_str(),
+    // Without its type, unless another call shown reads the same so.
+    let bare = match tail(&label) {
+        tail if twins.contains(tail) => label.as_str(),
+        tail => tail,
     };
     let when = explorer
         .span(span)
@@ -841,7 +967,7 @@ fn says(explorer: &Explorer, span: SpanId) -> Says {
     let mut says = Says {
         number,
         name: dress(&label),
-        bare: dress(tail),
+        bare: dress(bare),
         whole: String::new(),
     };
     says.whole = format!("{}{when}{fails}", says.numbered(&says.name));
@@ -1030,7 +1156,7 @@ mod tests {
     fn a_narrow_bar_keeps_its_number() {
         // main -> (a -> c), b
         let mut explorer = crate::explorer::tests::explorer();
-        explorer.set_disclose(Disclose(2));
+        explorer.set_disclose(crate::disclosure::Disclose(2));
         let journey = explorer.journey().unwrap();
         let a = journey.span(journey.root()).unwrap().children[0];
         let c = journey.span(a).unwrap().children[0];
@@ -1040,7 +1166,10 @@ mod tests {
             let painter = ui.painter();
             let number = text_width(painter, "1.1", BAR_TEXT_SMALL);
             said = [400.0, number + 1.0, number - 1.0]
-                .map(|room| bar_text(painter, &says(&explorer, c), room).map(|(text, _)| text))
+                .map(|room| {
+                    bar_text(painter, &says(&explorer, c, &HashSet::new()), room)
+                        .map(|(text, _)| text)
+                })
                 .to_vec();
         });
         output.textures_delta.clear();

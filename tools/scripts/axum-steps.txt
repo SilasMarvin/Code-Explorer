@@ -22,7 +22,7 @@ bar orders::place
 expect cursor orders::place
 snap start-bar
 chip 3.2
-expect depth 2
+expect depth 3
 snap unfolded
 button Fit
 expect check framed

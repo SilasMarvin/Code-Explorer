@@ -180,7 +180,7 @@ const BACK: &str = "Back or Forward put back the camera the place had, wherever 
 type Check = fn(&Snap, Option<&Snap>, &Since) -> Value;
 
 /// Every check, by the name testers read, in the order a snapshot lists them.
-const CHECKS: [(&str, Check); 32] = [
+const CHECKS: [(&str, Check); 33] = [
     ("dots-in-spheres", |s, _, _| dots_in_spheres(s)),
     ("dots-apart", |s, _, _| dots_apart(s)),
     ("dot-sizes", |s, _, _| dot_sizes(s)),
@@ -214,6 +214,7 @@ const CHECKS: [(&str, Check); 32] = [
     ("exits-named", |s, _, _| exits_named(s)),
     ("calls-drawn", |s, _, _| calls_drawn(s)),
     ("bars-in-view", |s, _, _| bars_in_view(s)),
+    ("fails-kept", |s, before, _| fails_kept(s, before)),
     ("outside-callers", |s, _, _| outside_callers(s)),
 ];
 
@@ -308,6 +309,8 @@ struct Snap {
 struct Content {
     selection: Option<String>,
     start: Option<String>,
+    /// Whether the journey's start can fail.
+    start_fails: bool,
     callers: Vec<String>,
     calls: Vec<ContentCall>,
 }
@@ -315,9 +318,12 @@ struct Content {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ContentCall {
+    number: Option<String>,
     name: String,
     /// The number of the call it is made from: empty for the start's own.
     parent: Option<String>,
+    /// Whether it can fail.
+    fails: bool,
 }
 
 /// Where a call leaves the free area, labelled with the function at its far end.
@@ -499,6 +505,7 @@ struct Bar {
     /// What the bar reads, as drawn.
     text: Option<String>,
     unit: Option<String>,
+    rect: [f32; 4],
     /// In the row of the start's callers.
     caller: bool,
     cursor: bool,
@@ -513,12 +520,23 @@ struct Panel {
     below: usize,
     /// Whether a track down its side shows which rows are in view.
     rows_track: bool,
-    /// Bars past its left or right edge, cut off or out of view.
+    /// Bars past its left or right edge, cut off or out of view, and past each.
     beside: usize,
+    left: usize,
+    right: usize,
     /// Whether a track along its foot shows which part is in view.
     across_track: bool,
+    /// The marks at its left and right sides saying how many bars lie past them.
+    left_mark: Option<EdgeMark>,
+    right_mark: Option<EdgeMark>,
     /// Whether the cursor's bar is cut off by its edge, or out of view.
     cursor_cut_off: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct EdgeMark {
+    count: usize,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1198,6 +1216,7 @@ fn panel_agrees(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         let offender = json!({ "depth": s.state.depth, "deepest": deepest, "why": why });
         offenders.push((3.0, offender));
     }
+    offenders.extend(panel_reads(s));
     for bar in &s.bars {
         let drawn = bar.unit.as_deref().and_then(|u| s.node(u));
         // Each numbered bar has its call on the graph: a call only guessed among
@@ -1281,6 +1300,49 @@ fn panel_agrees(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     verdict(offenders)
 }
 
+/// The panel's frame: its depth counter reads the deepest level shown, a branch opened
+/// alone too; and the start's bar shows under the row of its callers, so that row
+/// reads as calling it, not the calls below.
+fn panel_reads(s: &Snap) -> Found {
+    let mut offenders = Vec::new();
+    // It reads the deepest level shown, a branch opened alone too.
+    let shown = (s.content.calls.iter())
+        .filter_map(|c| c.number.as_deref())
+        .chain(s.bars.iter().filter_map(|b| b.number.as_deref()))
+        .map(|number| number_order(number).0)
+        .max();
+    if let Some(deepest) = shown.filter(|_| s.state.mode == "journey")
+        && usize::try_from(s.state.depth).is_ok_and(|depth| depth < deepest)
+    {
+        let why = "the depth counter reads less than the deepest level shown";
+        let offender = json!({ "depth": s.state.depth, "deepest_shown": deepest, "why": why });
+        offenders.push((3.0, offender));
+    }
+    if s.state.mode == "journey" {
+        let start = s
+            .bars
+            .iter()
+            .find(|b| !b.caller && b.number.as_deref() == Some(""));
+        let callers_foot = (s.bars.iter())
+            .filter(|b| b.caller)
+            .map(|b| b.rect[3])
+            .fold(f32::NEG_INFINITY, f32::max);
+        match start {
+            None => {
+                let why = "the start's bar is not in view";
+                offenders.push((2.0, json!({ "why": why })));
+            }
+            Some(bar) if bar.rect[1] < callers_foot => {
+                let why = "the start's bar lies under the row of its callers";
+                let offender = json!({ "start": bar.name, "rect": bar.rect, "callers_foot": callers_foot, "why": why });
+                offenders.push((2.0, offender));
+            }
+            Some(_) => {}
+        }
+    }
+    offenders
+}
+
 /// The cursor's name on the graph leads with `number`, its bar's, and each name on
 /// its path with a number on the way down to it.
 fn numbered_as_bar(s: &Snap, number: &str) -> Found {
@@ -1323,9 +1385,70 @@ fn bars_in_view(s: &Snap) -> Value {
         let why = "bars lie past the panel's side, and nothing says so";
         offenders.push((1.0, json!({ "beside": panel.beside, "why": why })));
     }
+    // Past either side, a mark at that side says how many.
+    for (side, past, mark) in [
+        ("left", panel.left, &panel.left_mark),
+        ("right", panel.right, &panel.right_mark),
+    ] {
+        let says = mark.as_ref().map_or(0, |m| m.count);
+        if says != past {
+            let why = "the mark at the panel's side does not say how many bars lie past it";
+            offenders.push((
+                1.0,
+                json!({ "side": side, "past": past, "mark_says": says, "why": why }),
+            ));
+        }
+    }
     if panel.cursor_cut_off {
         let why = "the cursor's bar is cut off by the panel's edge";
         offenders.push((2.0, json!({ "why": why })));
+    }
+    verdict(offenders)
+}
+
+/// In one journey, what can fail says so at every depth and on every step: each call
+/// shown in both views, the start, and each name that says all it says in both.
+fn fails_kept(s: &Snap, before: Option<&Snap>) -> Value {
+    let Some(before) = before.filter(|b| {
+        s.state.mode == "journey" && b.state.mode == "journey" && b.state.start == s.state.start
+    }) else {
+        return skip("not the same journey as the snap before");
+    };
+    let mut offenders = Vec::new();
+    if s.content.start_fails != before.content.start_fails {
+        let offender = json!({ "start": s.state.start, "can_fail": s.content.start_fails, "before": before.content.start_fails });
+        offenders.push((2.0, offender));
+    }
+    for call in &s.content.calls {
+        let was = before
+            .content
+            .calls
+            .iter()
+            .find(|c| c.number.is_some() && c.number == call.number && c.name == call.name);
+        if let Some(was) = was.filter(|was| was.fails != call.fails) {
+            let offender = json!({ "call": call.number, "name": call.name, "can_fail": call.fails, "before": was.fails });
+            offenders.push((1.0, offender));
+        }
+    }
+    let says = |n: &Node| {
+        n.label
+            .as_deref()
+            .filter(|label| label.contains(n.name.as_str()))
+            .map(|label| label.contains(labels::FAILS))
+    };
+    for node in &s.nodes {
+        let was = node
+            .unit
+            .as_deref()
+            .and_then(|u| before.node(u))
+            .and_then(says);
+        if let (Some(now), Some(was)) = (says(node), was)
+            && now != was
+        {
+            let offender =
+                json!({ "node": node.name, "label": node.label, "can_fail": now, "before": was });
+            offenders.push((1.0, offender));
+        }
     }
     verdict(offenders)
 }
@@ -5361,6 +5484,64 @@ mod tests {
     }
 
     #[test]
+    fn the_start_s_bar_shows_under_its_callers_and_the_depth_reads_the_deepest_shown() {
+        let mut s = journey();
+        s["bars"][0]["rect"] = json!([20.0, 830.0, 1500.0, 852.0]);
+        let bars = s["bars"].as_array_mut().unwrap();
+        bars.push(json!({ "caller": true, "name": "g", "rect": [20.0, 803.0, 200.0, 825.0] }));
+        assert!(
+            passes(&check(&s, "panel-agrees")),
+            "{}",
+            check(&s, "panel-agrees")
+        );
+        s["bars"][0]["rect"] = json!([20.0, 810.0, 1500.0, 832.0]);
+        let result = check(&s, "panel-agrees");
+        assert!(
+            result["offenders"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("start"),
+            "{result}"
+        );
+        s["bars"][0]["rect"] = json!([20.0, 830.0, 1500.0, 852.0]);
+        let bars = s["bars"].as_array_mut().unwrap();
+        bars.push(json!({ "number": "1.1", "name": "h", "unit": "x:b::h", "cursor": false }));
+        let result = check(&s, "panel-agrees");
+        assert_eq!(result["offenders"][0]["deepest_shown"], 2, "{result}");
+        let mut gone = journey();
+        gone["bars"].as_array_mut().unwrap().remove(0);
+        assert_eq!(
+            check(&gone, "panel-agrees")["count"],
+            1,
+            "the start's bar out of view"
+        );
+    }
+
+    #[test]
+    fn can_fail_is_said_alike_at_every_depth() {
+        let mut before = journey();
+        before["content"] = json!({ "start_fails": true, "calls": [{ "number": "1", "name": "h", "fails": true }] });
+        before["nodes"][2]["label"] = json!(" 1  h  can fail");
+        let mut now = before.clone();
+        assert!(passes(&after(&before, &now, &[Kind::Depth], "fails-kept")));
+        now["nodes"][2]["label"] = json!(" 1  h");
+        now["content"]["calls"][0]["fails"] = json!(false);
+        let result = after(&before, &now, &[Kind::Depth], "fails-kept");
+        assert_eq!(result["count"], 2, "{result}");
+        now["nodes"][2]["label"] = json!(" 1 ");
+        now["content"]["calls"][0]["fails"] = json!(true);
+        assert!(
+            passes(&after(&before, &now, &[Kind::Depth], "fails-kept")),
+            "a name cut to its number says nothing either way"
+        );
+        now["state"]["start"] = json!("g");
+        assert_eq!(
+            after(&before, &now, &[Kind::Depth], "fails-kept")["pass"],
+            Value::Null
+        );
+    }
+
+    #[test]
     fn expanded_in_a_journey_a_click_may_pan_but_moves_nothing_else() {
         let mut before = journey();
         before["state"]["nucleus"] = json!("expanded");
@@ -5571,10 +5752,13 @@ mod tests {
     #[test]
     fn bars_past_the_panel_s_side_are_said_to_be_there_and_the_cursor_s_shows() {
         let mut s = journey();
-        s["panel"] = json!({ "below": 0, "rows_track": false, "beside": 2, "across_track": false });
+        s["panel"] = json!({ "below": 0, "rows_track": false, "beside": 2, "right": 2, "across_track": false });
         let result = check(&s, "bars-in-view");
-        assert_eq!(result["offenders"][0]["beside"], 2, "{result}");
+        assert_eq!(result["count"], 2, "no track, no mark: {result}");
         s["panel"]["across_track"] = json!(true);
+        let result = check(&s, "bars-in-view");
+        assert_eq!(result["offenders"][0]["side"], "right", "{result}");
+        s["panel"]["right_mark"] = json!({ "count": 2 });
         assert!(passes(&check(&s, "bars-in-view")));
         s["panel"]["cursor_cut_off"] = json!(true);
         let result = check(&s, "bars-in-view");

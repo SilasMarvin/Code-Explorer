@@ -38,7 +38,7 @@ pub(crate) struct Awake(pub(crate) bool);
 type Watched = (
     Option<SpanId>,
     Option<usize>,
-    Disclose,
+    (Disclose, usize),
     Option<usize>,
     Option<usize>,
 );
@@ -56,7 +56,7 @@ fn keep_awake(
         (
             e.cursor_span(),
             e.under_pointer,
-            e.disclose(),
+            (e.disclose(), e.folds_opened()),
             e.aside(),
             e.nucleus().start(),
         )
