@@ -46,3 +46,13 @@ window 1100 560
 snap deep small
 expect check bars-in-view pass
 expect check panel-agrees pass
+# A caller I brings in that no line reaches is not drawn, and is counted.
+window 1600 1000
+key ,
+key ,
+key ,
+bar graph_focus
+key i
+expect outside_callers true
+snap i on graph_focus
+expect check outside-callers pass

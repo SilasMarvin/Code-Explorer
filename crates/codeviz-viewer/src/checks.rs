@@ -537,6 +537,7 @@ struct Panel {
 #[serde(default)]
 struct EdgeMark {
     count: usize,
+    rect: [f32; 4],
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1244,15 +1245,19 @@ fn panel_agrees(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
                 }
             }
         }
-        // The same name on the bar as on the graph, and drawn so: whole, or cut short
-        // of it (or of it less its type), never the number alone.
+        // The same name on the bar as on the graph, and drawn so: whole, or its type
+        // cut short, never the name, nor the number alone.
         if let Some(n) = drawn.filter(|n| !same_name(&bar.name, n)) {
             let says = n.label.as_deref().unwrap_or(&n.name);
             let offender = json!({ "bar": bar.number, "bar_says": bar.name, "graph_says": says });
             offenders.push((0.5, offender));
         }
-        if let Some(text) = bar.text.as_deref().filter(|t| !reads_as(t, bar)) {
-            let why = "the bar's drawn text is not its number and its name, whole or cut short";
+        if let Some(text) = (bar.text.as_deref()).filter(|t| {
+            !reads_as(t, bar)
+                && !(t.is_empty() && s.panel.as_ref().is_some_and(|p| under_mark(p, bar)))
+        }) {
+            let why =
+                "the bar's drawn text is not its number and its name, whole or its type cut short";
             let offender =
                 json!({ "bar": bar.number, "reads": text, "name": bar.name, "why": why });
             offenders.push((1.0, offender));
@@ -1453,9 +1458,10 @@ fn fails_kept(s: &Snap, before: Option<&Snap>) -> Value {
     verdict(offenders)
 }
 
-/// Whether a bar's drawn text is its number, then its name whole or cut short with an
-/// ellipsis (its type or module may be left off first); the start's bar and a
-/// caller's, with no number, the name alone so.
+/// Whether a bar's drawn text is its number, then its name: whole (its type or module
+/// may be left off first), its type cut short, or, but on the cursor's bar, its name
+/// less its type cut short with an ellipsis; the start's bar and a caller's, with no
+/// number, the name alone so.
 fn reads_as(text: &str, bar: &Bar) -> bool {
     let number = bar.number.as_deref().unwrap_or_default();
     let Some(rest) = text.strip_prefix(number) else {
@@ -1470,12 +1476,35 @@ fn reads_as(text: &str, bar: &Bar) -> bool {
         Some((_, tail)) if !name.contains(char::is_whitespace) => tail,
         _ => name,
     };
-    let cut = rest.strip_suffix('…');
-    [name, tail].iter().any(|whole| match cut {
-        Some(cut) => whole.starts_with(cut) || rest.starts_with(whole),
-        None => rest.starts_with(whole),
-    })
+    // Its name without its type, whole, its type whole or cut short (`T….root`); or,
+    // off the cursor, that name cut short, never its type alone (`Track…`).
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let whole = rest.match_indices(tail).any(|(at, _)| {
+        let (before, after) = (&rest[..at], &rest[at + tail.len()..]);
+        let typed = before.is_empty() || before.ends_with('.');
+        let kind = before.trim_end_matches('.').trim_end_matches('…');
+        typed && name.starts_with(kind) && !after.starts_with(word)
+    });
+    let cut = rest
+        .strip_suffix('…')
+        .is_some_and(|cut| !cut.is_empty() && tail.starts_with(cut));
+    whole || (cut && !bar.cursor)
 }
+
+/// Whether a bar runs under the mark at the panel's side on its row, leaving too
+/// little beside it to say even its number: such a bar may say nothing.
+fn under_mark(panel: &Panel, bar: &Bar) -> bool {
+    let [x0, y0, x1, y1] = bar.rect;
+    let level = |m: &[f32; 4]| m[1] < y1 && m[3] > y0;
+    let left = (panel.left_mark.as_ref())
+        .is_some_and(|m| level(&m.rect) && x0 < m.rect[2] && x1 - m.rect[2] < NUMBER_ROOM);
+    let right = (panel.right_mark.as_ref())
+        .is_some_and(|m| level(&m.rect) && x1 > m.rect[0] && m.rect[0] - x0 < NUMBER_ROOM);
+    left || right
+}
+
+/// Points a bar's text needs at the least: its number, inset.
+const NUMBER_ROOM: f32 = 40.0;
 
 /// Whether a bar's name is the one the graph gives its function: what the function's
 /// label leads with after its numbers, or with no label, its name.
@@ -3690,6 +3719,15 @@ fn outside_callers(s: &Snap) -> Value {
             }
         }
     }
+    // One drawn with no line reads as a function of its own: it is not drawn.
+    for n in &outside {
+        let has_line = (s.arrows.iter())
+            .any(|a| a.flow == "outside" && a.from_unit.is_some() && a.from_unit == n.unit);
+        if !has_line {
+            let why = "a caller I brings in drawn with no line to what it calls";
+            offenders.push((2.0, json!({ "outside": n.name, "why": why })));
+        }
+    }
     for n in &outside {
         for a in lines.iter().filter(|a| !a.ends_at(n.unit.as_deref())) {
             let by = (a.pieces().iter())
@@ -3866,7 +3904,8 @@ fn bar_colours(s: &Snap, offenders: &mut Found) {
 /// path down from the start are pink, and with the calls of the function set aside
 /// the only ones drawn stronger or wider than the rest; once two levels show, the
 /// journey's other calls but the cursor's own are drawn dimmer; a call off the
-/// journey among the expanded module's functions, and one only guessed, are faint.
+/// journey among the expanded module's functions, and one only guessed off the
+/// cursor's path, are faint: the path is pink all the way, guessed calls too.
 fn call_colours(s: &Snap, offenders: &mut Found) {
     let path = s.path_calls();
     let aside = s.aside().and_then(|n| n.unit.as_deref());
@@ -3904,8 +3943,9 @@ fn call_colours(s: &Snap, offenders: &mut Found) {
             continue;
         }
         // A call among the expanded module's functions that the journey does not make,
-        // out of the function set aside too, and a call only guessed, are faint.
-        if (a.flow == "inner" || a.guessed) && strength > FAINT {
+        // out of the function set aside too, and a call only guessed off the path, are
+        // faint.
+        if (a.flow == "inner" || a.guessed && !on_path) && strength > FAINT {
             let why = if a.guessed {
                 "a call only guessed drawn strong"
             } else {
@@ -3915,7 +3955,7 @@ fn call_colours(s: &Snap, offenders: &mut Found) {
             continue;
         }
         let pink = like(got, srgb(CURSOR));
-        if on_path && !pink && !a.guessed && !passing {
+        if on_path && !pink && !passing {
             let why = "on the cursor's path, but not pink";
             offenders.push((1.0, about(why)));
             continue;
@@ -4722,6 +4762,8 @@ mod tests {
     #[test]
     fn a_call_only_guessed_is_faint_on_the_graph_and_in_the_panel() {
         let mut s = journey();
+        // Off the cursor's path.
+        s["state"]["cursor"] = Value::Null;
         s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
             "flow": "journey", "level": 1, "color": "#4db8ffd9", "width": 1.5, "guessed": true }]);
         assert_eq!(check(&s, "colours")["count"], 1, "{}", check(&s, "colours"));
@@ -4730,6 +4772,24 @@ mod tests {
         s["bars"] = json!([{ "number": "1", "name": "h", "unit": "x:b::h", "color": "#4DB8FF", "guessed": true }]);
         assert_eq!(check(&s, "colours")["count"], 1, "{}", check(&s, "colours"));
         s["bars"][0]["color"] = json!("#4DB8FF38");
+        assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
+    }
+
+    #[test]
+    fn a_call_only_guessed_on_the_cursor_s_path_is_pink() {
+        let mut s = journey();
+        s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
+            "flow": "journey", "level": 1, "color": "#4db8ff4d", "width": 1.5, "guessed": true,
+            "path": [[100.0, 100.0], [200.0, 100.0]] }]);
+        let result = check(&s, "colours");
+        assert_eq!(result["count"], 1, "{result}");
+        assert!(
+            result["offenders"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("not pink")
+        );
+        s["arrows"][0]["color"] = json!(format!("{}ff", hex3(srgb(CURSOR))));
         assert!(passes(&check(&s, "colours")), "{}", check(&s, "colours"));
     }
 
@@ -5707,6 +5767,16 @@ mod tests {
         );
         s["arrows"][1]["from_unit"] = json!("x:a::gone");
         assert!(!passes(&check(&s, "outside-callers")));
+        // Drawn with no line of its own, it reads as a function of its own.
+        s["arrows"].as_array_mut().unwrap().pop();
+        let result = check(&s, "outside-callers");
+        assert_eq!(result["count"], 1, "{result}");
+        assert!(
+            result["offenders"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("no line")
+        );
     }
 
     #[test]
@@ -5772,22 +5842,56 @@ mod tests {
     }
 
     #[test]
-    fn a_bar_reads_its_number_and_its_name_never_the_number_alone() {
+    fn a_bar_reads_its_number_and_its_name_never_its_type_alone_nor_the_number_alone() {
         let mut s = journey();
         for (text, reads) in [
             ("1  h", true),
             ("1  h  can fail", true),
             ("1", false),
             ("1  q…", false),
+            ("", false),
         ] {
             s["bars"][1]["text"] = json!(text);
             assert_eq!(passes(&check(&s, "panel-agrees")), reads, "{text}");
         }
+        // Saying nothing only under the side mark, with no room left beside it.
+        s["bars"][1]["rect"] = json!([500.0, 926.0, 600.0, 948.0]);
+        s["panel"]["right_mark"] = json!({ "count": 2, "rect": [520.0, 915.0, 560.0, 933.0] });
+        assert!(
+            passes(&check(&s, "panel-agrees")),
+            "{}",
+            check(&s, "panel-agrees")
+        );
+        s["panel"]["right_mark"]["rect"] = json!([560.0, 915.0, 600.0, 933.0]);
+        assert!(!passes(&check(&s, "panel-agrees")));
+        s["panel"]["right_mark"] = Value::Null;
         s["bars"][1]["name"] = json!("Track.unit_id");
         s["nodes"][2]["label"] = json!(" 1  Track.unit_id");
-        for (text, reads) in [("1  Track.u…", true), ("1  unit…", true), ("1  Tra", false)] {
+        for (text, reads) in [
+            ("1  Track.unit_id", true),
+            ("1  unit_id", true),
+            ("1  T….unit_id", true),
+            ("1  unit…", false),
+            ("1  Track.u…", false),
+            ("1  Track…", false),
+            ("1  Tra", false),
+            ("1  unit_idx", false),
+        ] {
             s["bars"][1]["text"] = json!(text);
             assert_eq!(passes(&check(&s, "panel-agrees")), reads, "{text}");
+        }
+        // The cursor's bar, as that one is, keeps its name less its type whole;
+        // another may cut it short, never down to its type alone.
+        let other: Bar = serde_json::from_value(
+            json!({ "number": "1.2", "name": "Track.unit_id", "cursor": false }),
+        )
+        .unwrap();
+        for (text, reads) in [
+            ("1.2  unit…", true),
+            ("1.2  T….unit_id", true),
+            ("1.2  Track…", false),
+        ] {
+            assert_eq!(reads_as(text, &other), reads, "{text}");
         }
     }
 
@@ -5810,7 +5914,9 @@ mod tests {
         s["state"]["outside_callers"] = json!(true);
         s["nodes"][1]["roles"] = json!(["outside"]);
         s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
-            "flow": "journey", "level": 1, "path": [[380.0, 500.0], [1000.0, 500.0]] }]);
+            "flow": "journey", "level": 1, "path": [[380.0, 500.0], [1000.0, 500.0]] },
+            { "from": "g", "to": "h", "from_unit": "x:a::g", "to_unit": "x:b::h",
+            "flow": "outside", "path": [[440.0, 540.0], [1000.0, 560.0]] }]);
         let result = check(&s, "outside-callers");
         assert_eq!(result["offenders"][0]["outside"], "g", "{result}");
         // Off the line, unnamed: the bar along the top must count it.

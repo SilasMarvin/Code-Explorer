@@ -382,6 +382,18 @@ impl Routes {
         lines.sort_unstable_by_key(|l| (l.0, l.1));
         lines
     }
+
+    /// The outside callers shown whose call has no line: none runs clear of the
+    /// journey's lines, or the dots are too near for a head.
+    pub(crate) fn lineless(&self, nucleus: &Nucleus) -> HashSet<usize> {
+        nucleus
+            .links()
+            .iter()
+            .filter(|l| l.flow == Flow::Outside && nucleus.outside(l.from))
+            .filter(|l| !self.lines.contains_key(&(l.from, l.to)))
+            .map(|l| l.from)
+            .collect()
+    }
 }
 
 /// The last [`ARRIVAL`] points of the line through `path`, into its callee's dot:
@@ -1484,9 +1496,10 @@ fn weight(explorer: &Explorer, spine: &Spine, link: &Link) -> Weight {
     }
 }
 
-/// A call's color: its flow's, pink along the cursor's path; faint for a call only
-/// guessed, a call among the expanded module's functions, one from off the journey
-/// and a caller of the start folded into its module's count; dimmer for one of the
+/// A call's color: its flow's, pink along the cursor's path, guessed or not (the
+/// path never breaks; its bar says it is guessed); faint for a call only guessed
+/// off the path, a call among the expanded module's functions, one from off the
+/// journey and a caller of the start folded into its module's count; dimmer for one of the
 /// journey's off the path; the calls of a function set aside in their flow's color at
 /// full strength, grey ones a little stronger.
 fn link_color(explorer: &Explorer, link: &Link, weight: Weight) -> Color {
@@ -1496,11 +1509,11 @@ fn link_color(explorer: &Explorer, link: &Link, weight: Weight) -> Color {
         Flow::Outside if weight == Weight::Followed => color.with_alpha(PICKED_STRENGTH),
         Flow::Outside => color.with_alpha(OUTSIDE_STRENGTH),
         Flow::Inner => color.with_alpha(INNER_STRENGTH),
+        _ if weight >= Weight::Path => CURSOR,
         _ if nucleus.guessed(link) => color.with_alpha(GUESSED_STRENGTH),
         Flow::Into if weight < Weight::Followed && nucleus.folded(link.from) => {
             color.with_alpha(FOLDED_STRENGTH)
         }
-        _ if weight >= Weight::Path => CURSOR,
         _ if weight == Weight::Followed => color,
         _ if weight == Weight::Dimmed => color.with_alpha(DIMMED_STRENGTH),
         _ => color.with_alpha(CALL_STRENGTH),

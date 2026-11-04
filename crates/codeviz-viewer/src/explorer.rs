@@ -920,6 +920,12 @@ impl Explorer {
         self.nucleus.hover(tile)
     }
 
+    /// Leaves out the outside callers whose call has no line where the camera stands
+    /// ([`Nucleus::set_lineless`]). Returns whether that changed.
+    pub(crate) fn set_lineless(&mut self, tiles: HashSet<usize>) -> bool {
+        self.nucleus.set_lineless(tiles)
+    }
+
     /// The function hovered: the one the pointer has rested on, in the graph or as a
     /// bar, so passing over a function does not flash. Its name and ring show, and its
     /// bars light.

@@ -181,7 +181,7 @@ fn draw_ui(
     // the search box and the framing keep to the free area above the panel.
     graph_view.0 = Some(central);
     let (graph_area, panel_area) = areas(central, &explorer);
-    if let Ok((mut camera, transform, _)) = cameras.single_mut() {
+    if let Ok((mut camera, transform, orbit)) = cameras.single_mut() {
         fit_viewport(&mut camera, &window, central);
         let project = |position: Vec3| {
             camera
@@ -202,6 +202,22 @@ fn draw_ui(
             drawn.routes = arrows::route(&explorer, (&camera, transform));
             drawn.routes_for = Some(routes_for);
             drawn.names_for = None;
+        }
+        // A caller I brings in with no line is drawn nowhere: decided once what
+        // shows has changed and the view has come to rest, and kept however the
+        // camera then turns or zooms, so no caller comes and goes mid-gesture.
+        let lineless_for = lineless_key(&explorer);
+        if drawn.lineless_for != Some(lineless_for)
+            && explorer.nucleus().settled()
+            && !orbit.easing()
+        {
+            drawn.lineless_for = Some(lineless_for);
+            let lineless = drawn.routes.lineless(explorer.nucleus());
+            if explorer.bypass_change_detection().set_lineless(lineless) {
+                explorer.set_changed();
+                drawn.names_for = None;
+                awake.0 = true;
+            }
         }
         let names_for = names_key(ctx, &explorer, routes_for, graph_area);
         if drawn.names_for != Some(names_for) || drawn.names.is_none() {
@@ -270,6 +286,8 @@ struct Drawn {
     routes: arrows::Routes,
     names_for: Option<u64>,
     names: Option<GraphNames>,
+    /// What shows when the outside callers with no line were last decided.
+    lineless_for: Option<u64>,
     /// The calls as painted, and the labels where they leave the free area.
     calls: Vec<egui::Shape>,
 }
@@ -304,6 +322,25 @@ fn routes_key(
         (link.from, link.to, link.flow).hash(&mut hasher);
     }
     nucleus.every_call().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What shows, without where the camera stands: what the outside callers left
+/// out for want of a line are decided again on.
+fn lineless_key(explorer: &Explorer) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    let nucleus = explorer.nucleus();
+    (
+        nucleus.browsing(),
+        nucleus.expanded_module(),
+        nucleus.start(),
+        explorer.cursor(),
+    )
+        .hash(&mut hasher);
+    for link in nucleus.links() {
+        (link.from, link.to, link.flow).hash(&mut hasher);
+    }
     hasher.finish()
 }
 

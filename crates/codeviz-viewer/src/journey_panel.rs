@@ -50,8 +50,10 @@ const ROW_GAP: f32 = 5.0;
 const BAR_GAP: f32 = 5.0;
 /// How much of its name a bar keeps at the least, cut short: what a journey too wide
 /// for the panel squeezes every bar down to before it scrolls, following the cursor.
-/// And at the most, how wide a bar asks to be to say all it says.
+/// Not the cursor's bar, which keeps its name less its type whole, nor one whose name
+/// keeps its type, which cuts its type short first ([`Says::least`]).
 const LEAST_LETTERS: usize = 4;
+/// How wide a bar asks to be to say all it says, at the most.
 const FULLEST: f32 = 260.0;
 /// How far in the panel zooms by hand, against the bars as laid out.
 const MOST_ZOOM: f32 = 4.0;
@@ -422,6 +424,29 @@ fn canvas(
         }
     }
 
+    // Bars past either side say how many, at that side; a click there scrolls on.
+    // No bar's text runs under the mark.
+    let past = |left: bool| {
+        bars.iter()
+            .filter(|bar| bar.shown)
+            .filter(|bar| {
+                if left {
+                    bar.rect.min.x < content.min.x - 0.5
+                } else {
+                    bar.rect.max.x > content.max.x + 0.5
+                }
+            })
+            .count()
+    };
+    let marks = [true, false].map(|left| {
+        let count = past(left);
+        (count > 0).then(|| {
+            let (galley, rect) = edge_mark(&painter, deep, left, count);
+            (galley, rect, count)
+        })
+    });
+    let [left_mark, right_mark] = marks.each_ref().map(|m| m.as_ref().map(|m| m.1));
+
     let mouse = response.hover_pos();
     let mut hovered = None;
     let mut fold_hit = None;
@@ -517,14 +542,25 @@ fn canvas(
         }
         // What it says starts where it shows, so a bar scrolled part out of view, as
         // the start's is, still leads with its number and name.
-        let free = badge.map_or(bar.rect, |badge| {
+        let mut free = badge.map_or(bar.rect, |badge| {
             egui::Rect::from_min_max(bar.rect.min, egui::pos2(badge.min.x - 2.0, bar.rect.max.y))
         });
-        let ink = painter.with_clip_rect(free.intersect(bar.clip));
-        let named = bar_text(&ink, &says(explorer, bar.span, &twins), free.width() - 10.0);
+        let level = |mark: &egui::Rect| mark.y_range().intersects(bar.rect.y_range());
+        let mut from = free.min.x.max(bar.clip.min.x);
+        let mut room = free.width() - 10.0;
+        if let Some(mark) = left_mark.filter(|m| level(m) && from < m.max.x) {
+            from = mark.max.x + 2.0;
+            room = room.min(free.max.x - from - 5.0);
+        }
+        if let Some(mark) = right_mark.filter(|m| level(m) && free.max.x > m.min.x) {
+            room -= free.max.x - (mark.min.x - 2.0);
+            free.max.x = mark.min.x - 2.0;
+        }
+        let ink = painter.with_clip_rect(free.intersect(bar.clip).with_min_x(from));
+        let named = bar_text(&ink, &says(explorer, bar.span, &twins), room);
         if let Some((named, size)) = &named {
             ink.text(
-                egui::pos2(free.min.x.max(bar.clip.min.x) + 5.0, free.center().y),
+                egui::pos2(from + 5.0, free.center().y),
                 egui::Align2::LEFT_CENTER,
                 named,
                 egui::FontId::proportional(*size),
@@ -580,22 +616,11 @@ fn canvas(
         scroll_track(&painter, side, shown);
         side
     });
-    // Bars past either side say how many, at that side; a click there scrolls on.
-    let past = |left: bool| {
-        bars.iter()
-            .filter(|bar| bar.shown)
-            .filter(|bar| {
-                if left {
-                    bar.rect.min.x < content.min.x - 0.5
-                } else {
-                    bar.rect.max.x > content.max.x + 0.5
-                }
-            })
-            .count()
-    };
-    let beside = [true, false].map(|left| {
-        let count = past(left);
-        (count > 0).then(|| (edge_mark(&painter, deep, left, count), count))
+    let beside = marks.map(|mark| {
+        mark.map(|(galley, rect, count)| {
+            paint_edge_mark(&painter, (galley, rect));
+            (rect, count)
+        })
     });
     let edge_hit = beside.iter().zip([-1.0, 1.0]).find_map(|(mark, way)| {
         mark.filter(|(r, _)| mouse.is_some_and(|p| r.contains(p)))
@@ -843,9 +868,14 @@ fn scroll_track(painter: &egui::Painter, track: egui::Rect, (from, to): (f32, f3
     painter.rect_filled(thumb, 1.5, THUMB);
 }
 
-/// The mark at the left or right side of `area` saying how many bars lie past it.
-/// Returns where it is drawn.
-fn edge_mark(painter: &egui::Painter, area: egui::Rect, left: bool, count: usize) -> egui::Rect {
+/// The mark at the left or right side of `area` saying how many bars lie past it:
+/// what it says, and where it goes.
+fn edge_mark(
+    painter: &egui::Painter,
+    area: egui::Rect,
+    left: bool,
+    count: usize,
+) -> (std::sync::Arc<egui::Galley>, egui::Rect) {
     let text = if left {
         format!("← {count}")
     } else {
@@ -859,6 +889,14 @@ fn edge_mark(painter: &egui::Painter, area: egui::Rect, left: bool, count: usize
         area.max.x - size.x - 4.0
     };
     let mark = egui::Rect::from_min_size(egui::pos2(x, area.center().y - size.y / 2.0), size);
+    (galley, mark)
+}
+
+/// Paints the mark `edge_mark` laid out.
+fn paint_edge_mark(
+    painter: &egui::Painter,
+    (galley, mark): (std::sync::Arc<egui::Galley>, egui::Rect),
+) {
     painter.rect(
         mark,
         4.0,
@@ -867,7 +905,6 @@ fn edge_mark(painter: &egui::Painter, area: egui::Rect, left: bool, count: usize
         egui::StrokeKind::Inside,
     );
     painter.galley(mark.min + egui::vec2(6.0, 3.0), galley, TEXT);
-    mark
 }
 
 /// A line round a bar, just outside it.
@@ -882,13 +919,18 @@ fn outline(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, widt
 
 /// What a bar says: its number (none for the start's), its function's name as the
 /// graph has it, with why the journey stops there and what it says of calling round;
-/// the same with the name's type or module left off; and all of it, with when it runs
-/// and that it can fail.
+/// the same with the name's type or module left off; all of it, with when it runs
+/// and that it can fail; a name another call shown shares, by its type and the name,
+/// so a narrow bar cuts the type short first and never shows the type alone:
+/// `T….root`; and whether it is the cursor's, which never cuts its name.
 struct Says {
     number: String,
     name: String,
     bare: String,
     whole: String,
+    plain: String,
+    typed: Option<(String, String)>,
+    cursor: bool,
 }
 
 impl Says {
@@ -899,6 +941,27 @@ impl Says {
         } else {
             format!("{}  {name}", self.number)
         }
+    }
+
+    /// The least it says after its number with its name whole, the narrowest
+    /// first: where another call shown shares the name, its type cut down to a
+    /// letter, then longer a letter at a time; else, on the cursor's bar, the name
+    /// less its type. None for another bar, which may cut its name short.
+    fn least(&self) -> Vec<String> {
+        let letters: Vec<char> = self.typed.iter().flat_map(|t| t.0.chars()).collect();
+        let Some((_, name)) = self.typed.as_ref().filter(|_| letters.len() > 1) else {
+            return if self.cursor || self.typed.is_some() {
+                vec![self.numbered(&self.plain)]
+            } else {
+                Vec::new()
+            };
+        };
+        (1..letters.len())
+            .map(|keep| {
+                let kind: String = letters[..keep].iter().collect();
+                self.numbered(&format!("{kind}….{name}"))
+            })
+            .collect()
     }
 }
 
@@ -964,55 +1027,69 @@ fn says(explorer: &Explorer, span: SpanId, twins: &HashSet<String>) -> Says {
     } else {
         String::new()
     };
+    let typed = (bare == label)
+        .then(|| label.rsplit_once('.'))
+        .flatten()
+        .filter(|(kind, name)| !kind.is_empty() && *name == tail(&label))
+        .map(|(kind, name)| (kind.to_owned(), name.to_owned()));
     let mut says = Says {
         number,
         name: dress(&label),
         bare: dress(bare),
         whole: String::new(),
+        plain: bare.to_owned(),
+        typed,
+        cursor: explorer.cursor_span() == Some(span),
     };
     says.whole = format!("{}{when}{fails}", says.numbered(&says.name));
     says
 }
 
 /// How wide a bar needs to be, in points: at the least, for its number and a few
-/// letters of its name; at the most, for all it says; with its badge of calls folded
-/// under it, and room round its text.
+/// letters of its name, or its name whole with its type cut short ([`Says::least`]);
+/// at the most, for all it says; with its badge of calls folded under it, and room
+/// round its text.
 fn needs(painter: &egui::Painter, says: &Says, folded: usize) -> (f32, f32) {
     // Its text's inset and a point either side, the gap after it, its badge.
     let room = 12.0 + BAR_GAP + if folded > 0 { BADGE + 2.0 } else { 0.0 };
-    let least = says.numbered(&short(&says.bare, LEAST_LETTERS));
+    let least = (says.least().into_iter().next())
+        .unwrap_or_else(|| says.numbered(&short(&says.bare, LEAST_LETTERS)));
     let least = text_width(painter, &least, BAR_TEXT_SMALL) + room;
     let most = text_width(painter, &says.whole, BAR_TEXT) + room;
     (least, most.min(FULLEST).max(least))
 }
 
 /// What a bar says in `room` points, and at what size: all of it; then smaller; then
-/// without when it runs; then without its name's type or module; then cut short with
-/// an ellipsis, keeping the number and a letter at least; then the number alone,
-/// as a deep call's bar zoomed out by hand is narrow, so it still says which call it
-/// is; then, a bar with no number, its name cut short. `None` where not even that
-/// fits.
+/// without when it runs; then without its name's type or module; then a type it
+/// keeps cut short ([`Says::least`]); then, but on the cursor's bar or one whose name
+/// keeps its type, the name cut short with an ellipsis, keeping the number and a
+/// letter at least; then the number alone, as a deep call's bar zoomed out by hand
+/// is narrow, so it still says which call it is; then, a bar with no number, its
+/// name cut short. `None` where not even that fits.
 fn bar_text(painter: &egui::Painter, says: &Says, room: f32) -> Option<(String, f32)> {
     let named = says.numbered(&says.name);
     let bare = says.numbered(&says.bare);
+    let fits = |text: &str, size: f32| text_width(painter, text, size) <= room;
     let tries = [
         (says.whole.as_str(), BAR_TEXT),
         (says.whole.as_str(), BAR_TEXT_SMALL),
         (named.as_str(), BAR_TEXT_SMALL),
         (bare.as_str(), BAR_TEXT_SMALL),
     ];
-    if let Some((text, size)) = tries
-        .into_iter()
-        .find(|(text, size)| text_width(painter, text, *size) <= room)
-    {
+    if let Some((text, size)) = tries.into_iter().find(|(text, size)| fits(text, *size)) {
         return Some((text.to_owned(), size));
     }
     let number = says.number.as_str();
-    fit_text(painter, &bare, BAR_TEXT_SMALL, room)
-        .filter(|cut| cut.chars().count() > number.chars().count() + 3)
-        .or_else(|| {
-            (text_width(painter, number, BAR_TEXT_SMALL) <= room).then(|| number.to_owned())
-        })
+    let least = says.least();
+    let cut = || {
+        fit_text(painter, &bare, BAR_TEXT_SMALL, room)
+            .filter(|cut| least.is_empty() && cut.chars().count() > number.chars().count() + 3)
+    };
+    (least.iter().rev())
+        .find(|least| fits(least, BAR_TEXT_SMALL))
+        .cloned()
+        .or_else(cut)
+        .or_else(|| fits(number, BAR_TEXT_SMALL).then(|| number.to_owned()))
         .filter(|text| !text.is_empty())
         .or_else(|| {
             fit_text(painter, &says.bare, BAR_TEXT_SMALL, room)
@@ -1177,6 +1254,38 @@ mod tests {
             said,
             [Some("1.1  c".to_owned()), Some("1.1".to_owned()), None],
             "whole, then the number alone, then nothing where not even that fits"
+        );
+    }
+
+    #[test]
+    fn a_narrow_bar_cuts_a_shared_name_s_type_never_the_name() {
+        let says = Says {
+            number: "1.2".to_owned(),
+            name: "Track.root".to_owned(),
+            bare: "Track.root".to_owned(),
+            whole: "1.2  Track.root  can fail".to_owned(),
+            plain: "Track.root".to_owned(),
+            typed: Some(("Track".to_owned(), "root".to_owned())),
+            cursor: false,
+        };
+        assert_eq!(says.least()[0], "1.2  T….root");
+        let ctx = egui::Context::default();
+        let mut said = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter();
+            let width = |text: &str| text_width(painter, text, BAR_TEXT_SMALL);
+            said = [
+                width("1.2  Track.root") - 1.0,
+                width("1.2  Tr….root") + 1.0,
+                width("1.2  T….root") + 1.0,
+            ]
+            .map(|room| bar_text(painter, &says, room).map(|(text, _)| text))
+            .to_vec();
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            said,
+            ["1.2  Tr….root", "1.2  Tr….root", "1.2  T….root"].map(|t| Some(t.to_owned())),
         );
     }
 }

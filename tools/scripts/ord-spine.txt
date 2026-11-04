@@ -45,3 +45,27 @@ key x
 key esc
 snap browse after the journey
 expect check arrows-clear pass
+# A call only guessed on the cursor's path is pink, as the rest of the path.
+key /
+type Explorer::reroot
+key enter
+key enter
+expect start Explorer::reroot
+key .
+key .
+key .
+key .
+key ]
+key ]
+key ]
+key ]
+key ]
+key ]
+key ]
+key ]
+key ]
+key ]
+key ]
+key ]
+snap reroot guessed on the path
+expect check colours pass

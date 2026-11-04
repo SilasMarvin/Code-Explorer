@@ -285,6 +285,9 @@ pub(crate) struct Nucleus {
     atlas: Atlas,
     /// In a journey, whether every outside caller into it shows (I).
     outside: bool,
+    /// The outside callers shown whose call into the journey has no line where the
+    /// camera stands: drawn nowhere, as those with no room are not.
+    lineless: HashSet<usize>,
     /// Where the spheres and functions were when the last re-centering began.
     from: Option<(Vec<Ball>, Vec<Vec3>)>,
     /// How far along that re-centering is, 0 to 1.
@@ -356,6 +359,7 @@ impl Nucleus {
             browse,
             atlas,
             outside: false,
+            lineless: HashSet::new(),
             from: None,
             progress: 1.0,
             name_chars: Vec::new(),
@@ -491,9 +495,25 @@ impl Nucleus {
     }
 
     /// How many callers from off the journey of the function the cursor is on wait,
-    /// undrawn, for their module to be expanded (I).
+    /// undrawn, for their module to be expanded (I), or for a camera that sees their
+    /// call's line.
     pub(crate) fn outside_waiting(&self) -> usize {
-        self.now.waiting
+        self.now.waiting + self.now.outside.intersection(&self.lineless).count()
+    }
+
+    /// Leaves out the outside callers `tiles` whose call has no line where the camera
+    /// stands: a caller with no line reads as a function of its own. Returns whether
+    /// that changed.
+    pub(crate) fn set_lineless(&mut self, tiles: HashSet<usize>) -> bool {
+        if tiles == self.lineless {
+            return false;
+        }
+        self.lineless = tiles;
+        true
+    }
+
+    fn lineless(&self, tile: usize) -> bool {
+        self.lineless.contains(&tile) && self.outside(tile)
     }
 
     /// The outside callers into the journey shown (I).
@@ -580,16 +600,21 @@ impl Nucleus {
     }
 
     /// Whether a function is drawn at all: placed where it shows, and in a journey,
-    /// not a speck, which only browsing draws. The one test of what is drawn: what
-    /// is pointed at, clicked and named is drawn.
+    /// not a speck, which only browsing draws, nor an outside caller with no line.
+    /// The one test of what is drawn: what is pointed at, clicked and named is drawn.
     pub(crate) fn drawn(&self, tile: usize) -> bool {
-        self.placed(tile) && (self.browse || !self.speck(tile))
+        self.placed(tile) && (self.browse || !self.speck(tile) && !self.lineless(tile))
     }
 
     /// Whether a function placed where it shows is only a small, faint speck: not
     /// the start, and lit by nothing.
     pub(crate) fn speck(&self, tile: usize) -> bool {
         self.placed(tile) && !self.lit(tile) && self.now.start != Some(tile)
+    }
+
+    /// Whether no re-centering is under way.
+    pub(crate) fn settled(&self) -> bool {
+        self.progress >= 1.0
     }
 
     /// Moves a re-centering along by `dt` seconds. Returns whether anything moved.
