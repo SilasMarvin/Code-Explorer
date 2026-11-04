@@ -2,7 +2,8 @@
 # Expanded in a journey, the expansion follows the function set aside, and letting it
 # go takes the expansion back to the cursor's module: never a blank graph
 # (ux10-cons-3/21-22). X on the function set aside, then Esc, shrinks back to where
-# the camera stood (ux11-cons-2/58-59). Back within the journey puts back the module
+# the camera stood keeping the aside, and the next Esc lets it go (ux11-cons-2/58-59,
+# ux12-zoom-3/88-89). Back within the journey puts back the module
 # each place had expanded (ux10-journey-3/22-24); Esc from a journey puts back
 # Browse's expansion (ux10-cons-1/61-63).
 snap journey walk
@@ -17,10 +18,13 @@ expect check expanded-drawn
 expect check expanded-fill
 snap x with aside
 key esc
-expect aside none
+expect aside Explorer::spotlit
 expect expanded none
 expect camera-same-as aside set
-snap esc shrinks back with the aside
+snap esc shrinks back keeping the aside
+key esc
+expect aside none
+expect expanded none
 key x
 expect expanded scenario
 snap cursor's module expanded

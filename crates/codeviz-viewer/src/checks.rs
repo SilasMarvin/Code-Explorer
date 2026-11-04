@@ -28,7 +28,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    arrows,
+    arrows, camera,
     colors::{CALL_STRENGTH, CALLEE, CALLER, CURSOR, DEEPER, DIMMED_STRENGTH, FURTHER, GROUND},
     disclosure::number_order,
     framing,
@@ -75,6 +75,8 @@ const EXPANDED_SLACK: f32 = 0.04;
 /// Expanded below the band's top, how near, in points, two of its dots may show
 /// for a name to fit between them, and the share of its dots that may be nearer.
 const CROWDED_GAP: f32 = 18.0;
+/// How far an expanded module's middle may lie off the free area's, in points.
+const CENTRED: f32 = 4.0;
 const CROWDED_SHARE: f32 = 0.25;
 /// How far a framed sphere or dot may stick past the free area, in points.
 const EDGE: f32 = 2.0;
@@ -100,6 +102,9 @@ const ZOOM_IN_KEPT: f32 = 0.88;
 const MOVED_WORLD: f32 = 0.01;
 const MOVED_SCREEN: f32 = 0.5;
 const MOVED_ANGLE: f32 = 0.002;
+/// How far what shows in the free area's middle may move on a depth change that
+/// draws the camera back, in points: the panel grows a frame after the level does.
+const DRAWN_ABOUT: f32 = 8.0;
 /// How much nearer another dot may be to a function's name than its own, edge to
 /// edge, in points, before the name reads as the other's: the placer's, and half a
 /// point for where the text lands once rounded to pixels.
@@ -185,7 +190,7 @@ const CHECKS: [(&str, Check); 32] = [
     ("labels-clear", |s, _, _| labels_clear(s)),
     ("named-on-screen", |s, _, _| named_on_screen(s)),
     ("text-sizes", |s, _, _| text_sizes(s)),
-    ("panel-agrees", |s, _, _| panel_agrees(s)),
+    ("panel-agrees", panel_agrees),
     ("expanded-fill", expanded_fill),
     ("expanded-drawn", |s, _, _| expanded_drawn(s)),
     ("framed", framed),
@@ -227,6 +232,10 @@ pub(crate) const NAMES: [&str; CHECKS.len()] = {
 /// camera stands where the user's hands put it (a wheel turn, an orbit or a pan since
 /// the view last framed itself).
 #[derive(Debug, Default, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "what happened since, each a yes or no of its own"
+)]
 pub(crate) struct Since {
     pub(crate) kinds: Vec<Kind>,
     pub(crate) by_hand: bool,
@@ -235,6 +244,12 @@ pub(crate) struct Since {
     /// Nothing that moves the view has happened since the session opened: what is
     /// judged is the view as it opened.
     pub(crate) opening: bool,
+    /// R or F, when it framed the view last, nothing moving it since but a window
+    /// sized anew, which frames it again so.
+    pub(crate) framed_by: Option<Kind>,
+    /// A step since may pick something: anything but an expand (X, a double click)
+    /// and the steps that only look.
+    pub(crate) picks: bool,
 }
 
 impl Since {
@@ -1144,11 +1159,20 @@ fn text_sizes(s: &Snap) -> Value {
 
 // The journey panel against the graph.
 
-fn panel_agrees(s: &Snap) -> Value {
+fn panel_agrees(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if s.bars.is_empty() {
         return skip("no journey bars drawn");
     }
     let mut offenders = Vec::new();
+    // A journey opened anew (from browsing, or at another start), not put back by
+    // Back or Forward, shows its start's own calls only, but for levels shown since.
+    let opened =
+        before.is_some_and(|b| b.state.mode != "journey" || b.state.start != s.state.start);
+    let kept = since.opening || since.has(Kind::Back) || since.has(Kind::Depth);
+    if opened && !kept && s.state.depth != 1 {
+        let why = "a journey opened anew shows more than its start's own calls";
+        offenders.push((3.0, json!({ "depth": s.state.depth, "why": why })));
+    }
     // The depth the panel reads is one the journey has: from 1 to its deepest call.
     if let Some(deepest) = s.state.deepest
         && !(1..=deepest.max(1)).contains(&s.state.depth)
@@ -1364,6 +1388,16 @@ fn expanded_fill(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         let off = (fill - fill.clamp(least, most)).abs();
         offenders.push((off, about("outside the band")));
     }
+    // Wherever it is expanded, it sits in the middle of the free area.
+    let off = v2(m.at).distance(Vec2::new(free.center().x, free.center().y));
+    if off > CENTRED {
+        let offender = with(
+            about("off the middle of the free area"),
+            "off",
+            json!(r1(off)),
+        );
+        offenders.push((off, offender));
+    }
     // Below the band's top it has room to grow: its dots must have room for names.
     let dots: Vec<Vec2> = s
         .nodes
@@ -1436,9 +1470,14 @@ fn framed(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     if since.by_hand && since.has(Kind::Resize) && since.last_move().is_none() {
         return verdict(before.map_or_else(Vec::new, |b| hands_kept(b, s)));
     }
+    // A window sized anew frames again as the view was last framed, R or F before
+    // the snapshot before too.
+    let last = since
+        .last_move()
+        .or_else(|| since.framed_by.filter(|_| since.has(Kind::Resize)));
     let free = s.free();
     let mut offenders = Vec::new();
-    match since.last_move() {
+    match last {
         Some(Kind::FrameAll) => {
             offenders.extend(outside(free, EDGE, s.spheres().map(Module::disc)));
             if let Some(camera) = s.state.camera
@@ -1603,18 +1642,30 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
 
 fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // An expand or a shrink back picks nothing: browsing, the selection stays.
-    let only_expands = (since.kinds.iter()).all(|k| matches!(k, Kind::Still | Kind::Expand));
-    let browsed = before.filter(|b| {
-        since.has(Kind::Expand)
-            && only_expands
-            && b.state.mode == "browse"
-            && s.state.mode == "browse"
-    });
+    let only_expands = since.has(Kind::Expand)
+        && !since.picks
+        && (since.kinds.iter()).all(|k| matches!(k, Kind::Still | Kind::Expand));
+    let browsed =
+        before.filter(|b| only_expands && b.state.mode == "browse" && s.state.mode == "browse");
     if let Some(b) = browsed
         && b.state.selection != s.state.selection
     {
         let why = "an expand or shrink back changed the selection";
         let offender = json!({ "why": why, "was": b.state.selection, "now": s.state.selection });
+        return verdict(vec![(1.0, offender)]);
+    }
+    // Nor in a journey: the cursor and the function set aside stay.
+    let picked = |snap: &Snap| {
+        let cursor = snap.state.cursor.as_ref().map(|c| c.number.clone());
+        (cursor, snap.state.aside.clone())
+    };
+    let journeyed =
+        before.filter(|b| only_expands && b.state.mode == "journey" && s.state.mode == "journey");
+    if let Some(b) = journeyed
+        && picked(b) != picked(s)
+    {
+        let why = "an expand or shrink back moved the cursor or the function set aside";
+        let offender = json!({ "why": why, "was": picked(b), "now": picked(s) });
         return verdict(vec![(1.0, offender)]);
     }
     // Wherever the hands put the camera, a cursor that moves expanded in a journey is
@@ -1624,8 +1675,8 @@ fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         return skip(BY_HAND);
     }
     if since.has(Kind::Expand) && s.expanded() {
-        // What an expand must keep, the selection, it kept.
-        if browsed.is_some() {
+        // What an expand must keep, the selection, the cursor, it kept.
+        if browsed.is_some() || journeyed.is_some() {
             return verdict(Vec::new());
         }
         return skip("an expand frames the module, wherever the focus is");
@@ -1669,10 +1720,14 @@ fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
 }
 
 fn map_on_screen(s: &Snap, since: &Since) -> Value {
-    let out = (since.kinds.iter())
-        .any(|k| matches!(k, Kind::Zoom { out: true } | Kind::FrameAll | Kind::Pan));
+    let out = matches!(
+        since.last_move(),
+        Some(Kind::Zoom { out: true } | Kind::FrameAll | Kind::Pan)
+    );
     if !out {
-        return skip("no wheel turn out, pan or R since the last snapshot");
+        return skip(
+            "the last step since the last snapshot that moves the view is no wheel turn out, pan or R",
+        );
     }
     let Some(extent) = map_extent(s) else {
         return skip("no module spheres drawn");
@@ -1682,15 +1737,22 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
     let middle = pt([free.center().x, free.center().y]);
     let mut offenders = Vec::new();
     if extent.width() > free.width() || extent.height() > free.height() {
-        // Dragged, a map bigger than the free area keeps over its middle.
+        // Dragged, a map bigger than the free area keeps a sphere near its middle.
         if !since.has(Kind::Pan) {
             return skip("the map is bigger than the free area at this zoom");
         }
-        if !extent.contains(free.center()) {
-            let why = "dragged off the middle of the free area";
-            offenders.push((1.0, json!({ "why": why, "map": map, "middle": middle })));
+        let centre = v2([free.center().x, free.center().y]);
+        let near = free.width().min(free.height()) * camera::NEAR_MIDDLE;
+        let gap = (s.sized())
+            .map(|m| centre.distance(v2(m.at)) - m.radius)
+            .fold(f32::MAX, f32::min);
+        if gap > near + EDGE {
+            let why = "dragged so that no sphere lies near the middle of the free area";
+            let offender =
+                json!({ "why": why, "gap": r1(gap), "near": r1(near), "middle": middle });
+            offenders.push((gap - near, offender));
         }
-        return verdict(offenders);
+        return with(verdict(offenders), "map", map);
     }
     let area = |m: &&Module| m.radius * m.radius;
     let all: f32 = s.sized().map(|m| area(&m)).sum();
@@ -1758,6 +1820,9 @@ fn spheres_unclipped(s: &Snap, since: &Since) -> Value {
             continue;
         }
         let faint = m.body == "faint" && aside != Some(m.name.as_str());
+        // Expanded, the module's neighbours are left where they fall, the panel's top
+        // cutting them as the window's edges do.
+        let neighbour = s.expanded() && s.state.expanded.as_ref() != Some(&m.name);
         let c = v2(m.at);
         let across = c.x + m.radius > graph.min.x && c.x - m.radius < graph.max.x;
         let down = c.y + m.radius > graph.min.y && c.y - m.radius < graph.max.y;
@@ -1767,7 +1832,7 @@ fn spheres_unclipped(s: &Snap, since: &Since) -> Value {
                 "the graph's bottom edge, in open window",
             ),
             (
-                panel.is_some_and(|y| !faint && across && (c.y - y).abs() < m.radius),
+                panel.is_some_and(|y| !faint && !neighbour && across && (c.y - y).abs() < m.radius),
                 "the top of the panel",
             ),
             (
@@ -1808,12 +1873,13 @@ fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     }
     let opened = since.opening
         || before.is_none_or(|b| b.state.mode != "journey" || b.state.start != s.state.start);
-    let framed = matches!(
-        since.last_move(),
-        Some(Kind::FrameAll | Kind::FrameFocus | Kind::Depth)
-    );
-    if !opened && !framed {
-        return skip("no journey opened, depth change, R, F or Fit since the last snapshot");
+    // A depth change only draws the camera back about the free area's middle: it
+    // frames nothing afresh.
+    let framed = matches!(since.last_move(), Some(Kind::FrameAll | Kind::FrameFocus));
+    if !framed && (!opened || since.has(Kind::Depth)) {
+        return skip(
+            "no journey opened, R, F or Fit since the last snapshot, but for a depth change",
+        );
     }
     let lit: Vec<&Node> = s.nodes.iter().filter(|n| n.in_journey()).collect();
     if lit.len() < 2 {
@@ -1986,8 +2052,8 @@ fn journey_kept(before: &Snap, now: &Snap) -> Found {
 }
 
 /// How the camera moved on a depth change, when it should not have: anything but
-/// drawing back (and framing the journey afresh as it does), or drawing back when
-/// all that came in would have shown anyway.
+/// drawing back about the free area's middle, what shows there staying there, or
+/// drawing back when all that came in would have shown anyway.
 fn depth_camera(before: &Snap, now: &Snap) -> Found {
     let (Some(a), Some(b)) = (before.state.camera, now.state.camera) else {
         return Vec::new();
@@ -1999,18 +2065,25 @@ fn depth_camera(before: &Snap, now: &Snap) -> Found {
         return Vec::new();
     }
     let camera = json!({ "target_by": r3(by), "distance_by": r3(back), "turned": r3(turned) });
-    // Drawing back, it may frame the journey afresh, and so look somewhere else.
     if turned > MOVED_ANGLE || back < -MOVED_WORLD || back <= MOVED_WORLD && by > MOVED_WORLD {
         let why = "a depth change may only draw the camera back";
         return vec![(f32::MAX, json!({ "camera": camera, "why": why }))];
+    }
+    let graph = rect(now.graph_area);
+    // The free area as the depth change left it: a taller panel takes more of it.
+    let free = now.free();
+    // What showed in its middle shows there still: no slide.
+    let middle = Vec2::new(free.center().x, free.center().y);
+    let slid = shown_from(b, graph, seen_at(a, graph, middle)).map(|at| at.distance(middle));
+    if slid.is_none_or(|slid| slid > DRAWN_ABOUT) {
+        let why = "a depth change may only draw the camera back about the free area's middle";
+        let offender = json!({ "camera": camera, "slid": slid.map(r1), "why": why });
+        return vec![(f32::MAX, offender)];
     }
     let old: Vec<&str> = (before.nodes.iter())
         .filter_map(|n| n.unit.as_deref())
         .collect();
     let came_in = |n: &&Node| n.unit.as_deref().is_some_and(|u| !old.contains(&u));
-    let graph = rect(now.graph_area);
-    // The free area as the depth change left it: a taller panel takes more of it.
-    let free = now.free();
     let whole = free.shrink(framing::DOT_ROOM);
     // What came in, or anything of the journey's, as the camera from before would
     // have shown it: off the free area, or too near its edge to show whole, draws
@@ -2056,6 +2129,18 @@ fn depth_camera(before: &Snap, now: &Snap) -> Found {
         f32::MAX,
         json!({ "camera": camera, "why": why, "came_in": came }),
     )]
+}
+
+/// What shows at `at`, in window points, seen by `camera` filling `graph` with the
+/// viewer's field of view, as deep as what it looks at.
+fn seen_at(camera: Camera, graph: egui::Rect, at: Vec2) -> Vec3 {
+    let rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+    let eye = Vec3::from_array(camera.target) + rotation * Vec3::Z * camera.distance;
+    let up = (PerspectiveProjection::default().fov / 2.0).tan();
+    let across = up * graph.width() / graph.height().max(f32::EPSILON);
+    let x = (at.x - graph.center().x) / (graph.width() / 2.0).max(f32::EPSILON) * across;
+    let y = (graph.center().y - at.y) / (graph.height() / 2.0).max(f32::EPSILON) * up;
+    eye + rotation * Vec3::new(x, y, -1.0) * camera.distance
 }
 
 /// Where `world` shows, in window points, seen by `camera` filling `graph` with the
@@ -4576,7 +4661,10 @@ mod tests {
         s["free_area"] = json!([0.0, 24.0, 1600.0, 800.0]);
         let result = fill(&s);
         assert!(!passes(&result), "the panel takes the bottom: {result}");
-        assert_eq!(result["count"], 2, "too big, and under the panel");
+        assert_eq!(
+            result["count"], 3,
+            "too big, under the panel, off its middle"
+        );
         assert_eq!(
             check(&s, "expanded-fill")["pass"],
             Value::Null,
@@ -4797,6 +4885,17 @@ mod tests {
         assert!(shows(80.0).x > 1600.0);
         let needed = after(&before, &deeper(80.0), &[Kind::Depth], "nothing-moved");
         assert!(passes(&needed), "{needed}");
+        // Drawn back, but slid: what showed in the middle shows there no longer.
+        let mut slid = deeper(80.0);
+        slid["state"]["camera"]["target"] = json!([20.0, 0.0, 0.0]);
+        let result = after(&before, &slid, &[Kind::Depth], "nothing-moved");
+        assert!(
+            result["offenders"][0]["why"]
+                .as_str()
+                .unwrap()
+                .contains("about the free area's middle"),
+            "{result}"
+        );
         // Near the middle it would have shown anyway.
         assert!(shows(10.0).x < 1400.0);
         let result = after(&before, &deeper(10.0), &[Kind::Depth], "nothing-moved");
@@ -5075,6 +5174,7 @@ mod tests {
         s["nodes"][2]["numbers"] = json!(["1"]);
         s["nodes"][2]["label"] = json!(" 1  h");
         s["state"]["cursor"] = json!({ "number": "1", "name": "h" });
+        s["state"]["depth"] = json!(1);
         s["bars"] = json!([
             { "number": "", "name": "f", "unit": "x:a::f", "cursor": false },
             { "number": "1", "name": "h", "unit": "x:b::h", "cursor": true },
@@ -5404,7 +5504,7 @@ mod tests {
         s["state"]["nucleus"] = json!("expanded");
         s["state"]["expanded"] = json!("b");
         let result = after(&s, &s, &[Kind::Expand], "focus-on-screen");
-        assert_eq!(result["pass"], Value::Null, "{result}");
+        assert!(passes(&result), "the cursor kept: {result}");
         // Back puts back the camera a place had, wherever that shows things.
         s["state"]["nucleus"] = json!("modules");
         for name in ["focus-on-screen", "journey-fills"] {
@@ -5554,9 +5654,15 @@ mod tests {
         };
         assert!(passes(&run(&s, None, &by_hand)["spheres-unclipped"]));
         s["state"]["nucleus"] = json!("expanded");
-        assert!(
-            !passes(&check(&s, "spheres-unclipped")),
-            "zoomed into a module, the framing keeps those round it off the panel's edge"
+        s["state"]["expanded"] = json!("a");
+        let result = check(&s, "spheres-unclipped");
+        assert_eq!(
+            (
+                result["count"].clone(),
+                result["offenders"][0]["module"].clone()
+            ),
+            (json!(1), json!("a")),
+            "zoomed into a module, it is judged, those round it left where they fall: {result}"
         );
     }
 
@@ -5870,7 +5976,11 @@ mod tests {
             after(&s, &s, &[Kind::Click], "journey-fills")["pass"],
             Value::Null
         );
-        assert!(passes(&after(&s, &s, &[Kind::Depth], "journey-fills")));
+        assert_eq!(
+            after(&s, &s, &[Kind::Depth], "journey-fills")["pass"],
+            Value::Null,
+            "a depth change frames nothing afresh"
+        );
         // A sphere half under the panel.
         s["overlays"] = json!([{ "name": "journey panel", "rect": [0.0, 560.0, 1600.0, 1000.0] }]);
         s["free_area"] = json!([0.0, 24.0, 1600.0, 560.0]);
@@ -5974,5 +6084,92 @@ mod tests {
         assert_eq!(summary["dots-apart"]["passed"], 1);
         assert_eq!(summary["nothing-moved"]["not_applied"], 2);
         assert_eq!(summary["dots-apart"]["pass"], false);
+    }
+
+    #[test]
+    fn an_expanded_module_sits_in_the_middle_of_the_free_area() {
+        let fill = |s: &Value| after(s, s, &[Kind::Expand], "expanded-fill");
+        let mut s = expanded(scene(), 300.0, "f");
+        assert!(passes(&fill(&s)));
+        s["modules"][0]["at"] = json!([800.0, 620.0]);
+        let result = fill(&s);
+        assert_eq!(
+            result["offenders"][0]["why"], "off the middle of the free area",
+            "{result}"
+        );
+        assert_eq!(result["offenders"][0]["off"], 108.0);
+    }
+
+    #[test]
+    fn dragged_a_map_bigger_than_the_free_area_keeps_a_sphere_near_its_middle() {
+        let mut s = scene();
+        s["modules"][0]["at"] = json!([-500.0, 500.0]);
+        s["modules"][0]["radius"] = json!(900.0);
+        s["modules"][1]["at"] = json!([2000.0, 500.0]);
+        // The box round the spheres covers the middle; no sphere comes near it.
+        let result = after(&s, &s, &[Kind::Pan], "map-on-screen");
+        assert!(!passes(&result), "{result}");
+        s["modules"][0]["at"] = json!([-300.0, 500.0]);
+        assert!(passes(&after(&s, &s, &[Kind::Pan], "map-on-screen")));
+        // A wheel turn in after the pan leaves the camera to the hands.
+        let result = after(&s, &s, &[Kind::Pan, IN], "map-on-screen");
+        assert_eq!(result["pass"], Value::Null, "{result}");
+    }
+
+    #[test]
+    fn a_window_sized_anew_after_r_frames_again_a_snapshot_later() {
+        let mut s = scene();
+        s["modules"][1]["at"] = json!([1580.0, 500.0]);
+        let since = |framed_by| Since {
+            kinds: vec![Kind::Resize],
+            framed_by,
+            ..Since::default()
+        };
+        let result = run(&s, Some(&s), &since(Some(Kind::FrameAll)))["framed"].clone();
+        assert_eq!(result["count"], 1, "{result}");
+        let result = run(&s, Some(&s), &since(None))["framed"].clone();
+        assert_eq!(result["pass"], Value::Null, "{result}");
+    }
+
+    #[test]
+    fn a_journey_opened_anew_shows_one_level() {
+        let before = scene();
+        let mut now = journey();
+        assert!(passes(&after(
+            &before,
+            &now,
+            &[Kind::Moves],
+            "panel-agrees"
+        )));
+        now["state"]["depth"] = json!(3);
+        let result = after(&before, &now, &[Kind::Moves], "panel-agrees");
+        assert_eq!(
+            result["offenders"][0]["why"],
+            "a journey opened anew shows more than its start's own calls",
+            "{result}"
+        );
+        assert!(
+            passes(&after(&before, &now, &[Kind::Back], "panel-agrees")),
+            "Back puts back the depth it had"
+        );
+    }
+
+    #[test]
+    fn a_double_click_in_a_journey_keeps_the_cursor() {
+        let before = journey();
+        let mut now = journey();
+        assert!(passes(&after(
+            &before,
+            &now,
+            &[Kind::Expand],
+            "focus-on-screen"
+        )));
+        now["state"]["cursor"] = json!({ "number": "", "name": "f" });
+        let result = after(&before, &now, &[Kind::Expand], "focus-on-screen");
+        assert_eq!(
+            result["offenders"][0]["why"],
+            "an expand or shrink back moved the cursor or the function set aside",
+            "{result}"
+        );
     }
 }
