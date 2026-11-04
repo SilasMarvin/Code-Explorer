@@ -51,17 +51,16 @@ impl Dot {
 const ROW_HEIGHT: f32 = 22.0;
 const NAME_EXTRA: f32 = 26.0;
 
-/// The share of an expanded module's functions whose names must sit comfortably: a
-/// few long names crowding are named only under the pointer, rather than the module
-/// growing for them alone.
-const COMFORTABLE: f32 = 0.8;
+/// The share of an expanded module's functions whose names must sit comfortably as it
+/// expands: a few long names crowding are named only under the pointer, rather than
+/// the module growing for them alone. The wheel takes it on until all of them do.
+pub(crate) const COMFORTABLE: f32 = 0.8;
 
 /// How many times further apart `dots` (each where it shows, and how many characters
 /// its name has) must show for their names to sit comfortably beside them: each dot
 /// clear of every other by a row up, or across by the name of the one on the left,
-/// for [`COMFORTABLE`] of them. Below 1 they have room to spare; 0 with fewer than
-/// two.
-pub(crate) fn comfort(dots: &[(bevy::math::Vec2, usize)]) -> f32 {
+/// for `share` of them. Below 1 they have room to spare; 0 with fewer than two.
+pub(crate) fn comfort(dots: &[(bevy::math::Vec2, usize)], share: f32) -> f32 {
     let across = |chars: usize| crate::text::name_width(chars, crate::text::BODY) + NAME_EXTRA;
     let mut needs: Vec<f32> = dots
         .iter()
@@ -90,7 +89,7 @@ pub(crate) fn comfort(dots: &[(bevy::math::Vec2, usize)]) -> f32 {
         clippy::cast_precision_loss,
         reason = "an index into a short list"
     )]
-    let at = ((needs.len() as f32 * COMFORTABLE).ceil() as usize).clamp(1, needs.len()) - 1;
+    let at = ((needs.len() as f32 * share).ceil() as usize).clamp(1, needs.len()) - 1;
     needs[at]
 }
 
@@ -103,4 +102,23 @@ pub(crate) const EXPANDED_SHARE: (f32, f32) = (0.45, 0.85);
 /// showing at `share` now with its functions needing `comfort` ([`comfort`]).
 pub(crate) fn expanded_share(share: f32, comfort: f32) -> f32 {
     (share * comfort).clamp(EXPANDED_SHARE.0, EXPANDED_SHARE.1)
+}
+
+/// Zoomed in as far as the wheel goes, an expanded module's dots show at most this
+/// many times as far apart as expanding shows them.
+const NEAREST_SPREAD: f32 = 3.0;
+
+/// How much more room than [`comfort`] counts every name needs to be placed: each
+/// name nearer its own dot than any other, off the calls lit, with its pill's margin.
+const PLACED_ROOM: f32 = 1.5;
+
+/// The most of the free area's smaller side an expanded module's diameter takes as
+/// the wheel zooms in, expanded at `expanded` of it, showing at `share` now with every
+/// one of its functions needing `every` ([`comfort`] of them all) for its name to sit
+/// beside it: as near as all its names fit as placed ([`PLACED_ROOM`]), up to its
+/// dots [`NEAREST_SPREAD`] times as far apart, and never less than `least`, as any sphere may fill.
+pub(crate) fn nearest_share(expanded: f32, share: f32, every: f32, least: f32) -> f32 {
+    (share * every * PLACED_ROOM)
+        .min(expanded * NEAREST_SPREAD)
+        .max(least)
 }

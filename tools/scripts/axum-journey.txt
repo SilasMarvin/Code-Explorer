@@ -31,6 +31,20 @@ expect cursor orders::place
 expect nothing-moved
 snap cursor keys
 
+# Back retraces a walk a step at a time; Forward steps on again.
+key down
+key right
+expect cursor validation::check_quantity
+key backspace
+expect cursor users::find_user
+key backspace
+expect cursor orders::place
+expect mode journey
+key shift+backspace
+expect cursor users::find_user
+key up
+snap back a step at a time
+
 bar 3
 expect cursor pricing::quote
 expect nothing-moved
