@@ -23,7 +23,9 @@ axum = "0.8.9"
 blake3 = "1.8.7"
 # Only what the viewer uses: meshes, lights and gizmo rings in 3D, egui over them, the
 # window, and PNG snapshots. No gamepad, audio, scenes, glTF, Bevy UI or text, or
-# picking (each a thread or a build the viewer does not need).
+# picking (each a thread or a build the viewer does not need). bevy_post_process stays for
+# its MSAA writeback: without it egui's camera draws over a cleared texture and every
+# translucent stroke (the faint lines) comes out alpha-squared, far darker.
 bevy = { version = "0.20.0", default-features = false, features = [
     "std",
     "multi_threaded",
@@ -38,6 +40,7 @@ bevy = { version = "0.20.0", default-features = false, features = [
     "bevy_core_pipeline",
     "bevy_pbr",
     "bevy_gizmos_render",
+    "bevy_post_process",
     "tonemapping_luts",
     "zstd_rust",
     "png",
