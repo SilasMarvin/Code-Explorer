@@ -61,6 +61,10 @@ pub(crate) const NEARER: f32 = 1.5;
 /// How big a module's sphere must show across, in points, for its plain functions to
 /// be named, when it is not the module expanded: smaller, their names are a wall.
 pub(crate) const PLAIN_SPHERE: f32 = 130.0;
+/// Below how big a sphere shows across, in points, its plain names show all or none,
+/// never a part of a wreath; at or above it, as many as fit, so zooming in on a big
+/// module always names some of it.
+pub(crate) const WREATH_SPHERE: f32 = 400.0;
 /// What a name says of a call that can fail.
 pub(crate) const FAILS: &str = "can fail";
 
@@ -1927,7 +1931,8 @@ fn place(
     }
     // A module's plain names together, the biggest module's first, so that each shows
     // all of them or none: never a part of a wreath round its sphere. The expanded
-    // module's are named wherever they fit.
+    // module's, and those of a sphere showing [`WREATH_SPHERE`] across, are named
+    // wherever they fit.
     let graph = naming.explorer.graph();
     let mut order = naming.order(neutral);
     let plain = order.partition_point(|&((tier, ..), _)| tier < Tier::Plain);
@@ -1938,7 +1943,11 @@ fn place(
         Named::Group(_) => None,
     });
     let wreathed = |named: Named| match named {
-        Named::Node(tile) if !nucleus.opened_up(tile) => graph.cluster(tile),
+        Named::Node(tile) if !nucleus.opened_up(tile) => graph.cluster(tile).filter(|&c| {
+            naming
+                .sphere_on_screen(c)
+                .is_some_and(|(_, radius)| 2.0 * radius < WREATH_SPHERE)
+        }),
         _ => None,
     };
     // The module whose plain names are being placed: where its first went, in the

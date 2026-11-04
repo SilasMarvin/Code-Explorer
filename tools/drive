@@ -319,7 +319,8 @@ def shrink_pngs(out):
 # spheres 18-23, ground 18.7; without Bevy's MSAA writeback (bevy_post_process) the
 # lines came out alpha-squared, links 1-3 and calls 0-8.
 LOOK = {"ground": (16, 22), "faint links": (8, 30), "faint inner calls": (10, 40),
-        "faint spheres": (12, 30)}
+        # Faint spheres up to 33: name pills over big spheres used to darken the samples.
+        "faint spheres": (12, 33)}
 # The fewest samples a median is judged on.
 LOOK_SAMPLES = 5
 

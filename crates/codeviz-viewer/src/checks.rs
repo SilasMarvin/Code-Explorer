@@ -2923,8 +2923,9 @@ fn named_when_room(s: &Snap) -> Value {
 
 /// Plain functions are named only where their names read as their module's, not as
 /// a wall over the map: in the module expanded, or one whose sphere shows at least
-/// [`labels::PLAIN_SPHERE`] across; and there, each of its plain functions in the
-/// free area named, or none: no partial wreath round a sphere.
+/// [`labels::PLAIN_SPHERE`] across; and there, below [`labels::WREATH_SPHERE`]
+/// across, each of its plain functions in the free area named, or none: no partial
+/// wreath round a sphere.
 fn plain_names(s: &Snap) -> Value {
     let plain: Vec<&Node> = (s.nodes.iter())
         .filter(|n| n.is("plain") && n.label.is_some())
@@ -2947,6 +2948,9 @@ fn plain_names(s: &Snap) -> Value {
     let mut wreathed: Vec<&str> = (plain.iter())
         .filter_map(|n| n.module.as_deref())
         .filter(|&m| s.state.expanded.as_deref() != Some(m))
+        .filter(|&m| {
+            (s.spheres()).any(|sp| sp.name == m && 2.0 * sp.radius + EDGE < labels::WREATH_SPHERE)
+        })
         .collect();
     wreathed.sort_unstable();
     wreathed.dedup();
@@ -5159,6 +5163,18 @@ mod tests {
             passes(&check(&scene(), "plain-names")),
             "none named, none too many"
         );
+        // Some of a sphere's plain functions named, not all: only on a big one.
+        s["state"]["expanded"] = Value::Null;
+        s["modules"][0]["radius"] = json!(100.0);
+        s["nodes"].as_array_mut().unwrap().push(json!({
+            "name": "k", "unit": "x:a::k", "module": "a", "roles": ["speck"],
+            "at": [420.0, 560.0], "radius": 2.0, "world": [-9.0, -1.0, 0.0],
+            "world_radius": 0.1, "on_screen": true,
+        }));
+        let result = check(&s, "plain-names");
+        assert_eq!(result["offenders"][0]["module"], "a", "{result}");
+        s["modules"][0]["radius"] = json!(250.0);
+        assert!(passes(&check(&s, "plain-names")));
     }
 
     #[test]
