@@ -2709,11 +2709,13 @@ impl<'a> Room<'a> {
             kept + ROUNDING
         };
         // Over a dot judged by the pill, nearer one by the text, as labels-near does;
-        // its own as drawn, as small as the placer takes it lit.
+        // its own as drawn, as small as the placer takes it lit. Nearer leaning to
+        // less room too: the placer's bound less what rounding may have hidden.
         let text = r.shrink2(NAME_PILL);
         let mine = own.map_or(0.0, |n| n.gap(text, n.radius - ROUNDING));
+        let nearer = labels::NEARER - 2.0 * ROUNDING;
         let near = |n: &Node, radius: f32| {
-            n.gap(r, radius) < NAME_CLEAR || n.gap(text, radius) < mine - NEARER
+            n.gap(r, radius) < NAME_CLEAR || n.gap(text, radius) < mine - nearer
         };
         let unit = own.and_then(|n| n.unit.as_deref());
         // Names drawn leaning to less room, for where the snapshot rounds them.
