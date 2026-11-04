@@ -61,7 +61,8 @@ pub(crate) struct Track {
     /// Where each failing outcome splits off the happy path.
     divergences: Vec<SpanId>,
     cursor: Option<SpanId>,
-    /// Spans opened one level past the disclosed depth, by hand or by the cursor.
+    /// Spans opened one level past the disclosed depth: by ↓ or a badge, by `.` deeper
+    /// than the depth, or by the cursor going there.
     expanded: HashSet<SpanId>,
     /// Every function the journey runs, at any depth.
     units: HashSet<UnitId>,
@@ -854,7 +855,7 @@ impl Explorer {
             self.navigate(|explorer| explorer.selection = None);
         } else {
             self.say(
-                "Nothing to close: Esc steps back out of search, help, a journey or a selection",
+                "Nothing to close: Esc steps back out of search, help, a module or a selection",
             );
         }
     }
@@ -1110,31 +1111,55 @@ impl Explorer {
         self.disclose
     }
 
-    /// `.` and the panel's +: a level more of the journey, down to its deepest call.
+    /// `.` and the panel's +: every branch a level deeper, each call shown with calls
+    /// folded under it opening them, down to the journey's deepest call.
     pub(crate) fn deeper(&mut self) {
         if self.no_journey() {
             return;
         }
-        let Disclose(depth) = self.disclose;
-        if depth >= self.disclosed.deepest() {
+        let disclosed = Arc::clone(&self.disclosed);
+        let folding: Vec<SpanId> = disclosed
+            .numbered()
+            .map(|(span, _)| span)
+            .filter(|&span| disclosed.folded(span) > 0)
+            .collect();
+        if folding.is_empty() {
             self.say("No deeper calls: every level shows");
-        } else {
-            self.set_disclose(Disclose(depth + 1));
+            return;
         }
+        let Disclose(depth) = self.disclose;
+        let depth = depth + 1;
+        // What the depth opens anyway needs no opening by hand.
+        let expanded = &mut self.track.expanded;
+        expanded.extend(folding);
+        expanded.retain(|&span| disclosed.level(span).is_some_and(|level| level >= depth));
+        self.set_disclose(Disclose(depth));
     }
 
-    /// `,` and the panel's −: a level less of the journey, down to the start's own
-    /// calls.
+    /// `,` and the panel's −: every branch folded back to a level less than the deepest
+    /// shown, those opened by hand too, down to the start's own calls.
     pub(crate) fn shallower(&mut self) {
         if self.no_journey() {
             return;
         }
-        let Disclose(depth) = self.disclose;
-        if depth <= 1 {
+        let deepest = self.disclosed.deepest_shown();
+        if deepest <= 1 {
             self.say("Only the start's own calls show: no fewer levels");
-        } else {
-            self.set_disclose(Disclose(depth - 1));
+            return;
         }
+        let keep = deepest - 1;
+        let disclosed = Arc::clone(&self.disclosed);
+        self.track
+            .expanded
+            .retain(|&span| disclosed.level(span).is_some_and(|level| level < keep));
+        let Disclose(depth) = self.disclose;
+        self.set_disclose(Disclose(depth.min(keep)));
+    }
+
+    /// How many levels the journey shows: its deepest call shown, in a branch opened by
+    /// hand too.
+    pub(crate) fn depth(&self) -> u32 {
+        self.disclosed.deepest_shown()
     }
 
     /// Browsing, says that a journey key needs a journey open, and returns true.
@@ -1175,14 +1200,27 @@ impl Explorer {
             && self.disclosed.number(span).is_some()
     }
 
-    /// Opens or folds the calls under one span, past the disclosed depth.
-    pub(crate) fn toggle_expanded(&mut self, span: SpanId) {
-        let expanded = &mut self.track.expanded;
-        if !expanded.remove(&span) {
-            expanded.insert(span);
-        }
+    /// A click on the badge of the calls folded under a bar: opens them, that call's
+    /// alone, and steps in, as ↓ does, remembering where the view was.
+    pub(crate) fn unfold(&mut self, span: SpanId) {
+        self.navigate(|explorer| {
+            explorer.step_in(span);
+        });
+    }
+
+    /// Opens the calls folded under `span`, a level under that call alone, and puts
+    /// the cursor on the first of them drawn.
+    fn step_in(&mut self, span: SpanId) -> Option<SpanId> {
+        self.track.expanded.insert(span);
         self.disclose_again();
-        self.sync_nucleus();
+        let first = self
+            .disclosed
+            .children(span)
+            .iter()
+            .copied()
+            .find(|&call| self.drawn(call));
+        self.move_cursor(first.or(Some(span)));
+        first
     }
 
     /// Works out what the journey discloses again, after the journey, its depth or
@@ -1261,7 +1299,13 @@ impl Explorer {
     /// functions of that name in view, or in its own module, with its type or module
     /// before it (`Track.root`, `Explorer.root`).
     pub(crate) fn function_name(&self, id: &UnitId) -> String {
-        if let Some(entry) = self.system.entries().iter().find(|e| &e.unit == id) {
+        // A route is named by its route; a program's `main` as any function is.
+        if let Some(entry) = self
+            .system
+            .entries()
+            .iter()
+            .find(|e| &e.unit == id && e.kind != "main")
+        {
             return entry.label.clone();
         }
         let module = self.map.tile_of(id).and_then(|t| self.graph.cluster(t));
@@ -1335,8 +1379,8 @@ impl Explorer {
         // its own: the cursor never stops on one, and the calls made inside it are its
         // caller's.
         let closure = |span: SpanId| disclosure::is_closure(journey, &tile, span);
-        // The keys read the picture as it is: they stop only on a call drawn, so they
-        // never open a level or reach past the depth shown.
+        // The keys read the picture as it is: they stop only on a call drawn, and but
+        // for ↓ on a folded call, never open a level or reach past the depth shown.
         let disclosed = &self.disclosed;
         let drawn = |span: SpanId| self.drawn(span);
         let parent = |span: SpanId| {
@@ -1389,6 +1433,10 @@ impl Explorer {
                     .skip(current.index() + 1)
                     .any(|(span, _)| hidden(span)),
             };
+            // ↓ on a call whose calls are folded opens them, under it alone, and steps in.
+            if step == Step::Child && folded {
+                return self.step_in(current);
+            }
             let first = current == journey.root();
             self.say(stuck(step, first, folded));
         }
@@ -1481,7 +1529,6 @@ fn stuck(step: Step, first: bool, folded: bool) -> &'static str {
         Step::Back => "No earlier call is drawn",
         Step::Next => "No later call from the same caller",
         Step::Previous => "No earlier call from the same caller",
-        Step::Child if folded => "Its calls are folded: . shows a level more",
         Step::Child => "It makes no calls",
         Step::Into if folded => "The end of what is shown: . shows a level more",
         Step::Into => "The end of the journey",
@@ -1522,6 +1569,11 @@ pub(crate) mod tests {
 
     /// `main -> (a -> c), b`
     pub(crate) fn explorer() -> Explorer {
+        explorer_of(&[("main", &["a", "b"]), ("a", &["c"]), ("b", &[]), ("c", &[])])
+    }
+
+    /// The journey from the first of `units`, each a function and what it calls.
+    pub(crate) fn explorer_of(units: &[(&str, &[&str])]) -> Explorer {
         let unit = |name: &str, calls: &[&str]| {
             let calls: Vec<String> = calls
                 .iter()
@@ -1536,15 +1588,16 @@ pub(crate) mod tests {
                 calls.join(",")
             )
         };
+        let json: Vec<String> = units
+            .iter()
+            .map(|(name, calls)| unit(name, calls))
+            .collect();
         let json = format!(
-            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}, {}, {}, {}] }}"#,
-            unit("main", &["a", "b"]),
-            unit("a", &["c"]),
-            unit("b", &[]),
-            unit("c", &[])
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            json.join(",")
         );
         let system = System::new([Document::from_json(&json).unwrap()]);
-        opened(system, "x:main")
+        opened(system, &format!("x:{}", units[0].0))
     }
 
     /// An explorer with the journey from `start` open, as if it had opened there.
@@ -1555,6 +1608,18 @@ pub(crate) mod tests {
         explorer.forget_history();
         explorer.gather();
         explorer
+    }
+
+    /// Opens, or folds again, the calls under `span` past the depth, as the cursor
+    /// going there or a badge does.
+    fn open_by_hand(explorer: &mut Explorer, span: SpanId, open: bool) {
+        if open {
+            explorer.track.expanded.insert(span);
+        } else {
+            explorer.track.expanded.remove(&span);
+        }
+        explorer.disclose_again();
+        explorer.sync_nucleus();
     }
 
     /// What Enter does.
@@ -1603,19 +1668,8 @@ pub(crate) mod tests {
         assert_eq!(explorer.step(Step::Next), None, "b is main's last call");
         explorer.step(Step::Previous);
         assert_eq!(at(&explorer), "a");
-        assert_eq!(
-            explorer.step(Step::Child),
-            None,
-            "c is past the depth shown"
-        );
-        assert_eq!(
-            explorer.notice().map(|(_, text)| text),
-            Some("Its calls are folded: . shows a level more"),
-            "and it says so"
-        );
-        explorer.set_disclose(Disclose(2));
         explorer.step(Step::Child);
-        assert_eq!(at(&explorer), "c");
+        assert_eq!(at(&explorer), "c", "past the depth shown, a's calls open");
         assert_eq!(explorer.step(Step::Child), None);
         assert_eq!(explorer.notice().map(|(_, t)| t), Some("It makes no calls"));
         explorer.step(Step::Parent);
@@ -1657,7 +1711,7 @@ pub(crate) mod tests {
         let main = explorer.journey().unwrap().root();
         let a_span = explorer.journey().unwrap().span(main).unwrap().children[0];
         explorer.set_disclose(Disclose(2));
-        explorer.toggle_expanded(a_span);
+        open_by_hand(&mut explorer, a_span, true);
         explorer.step(Step::Into);
         explorer.step(Step::Into);
         let before = explorer.view();
@@ -1760,23 +1814,66 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_keys_never_open_what_is_folded() {
-        let mut explorer = explorer();
+    fn down_on_a_folded_call_opens_that_call_alone_and_steps_in() {
+        // main -> (a -> c -> d), b -> e
+        let mut explorer = explorer_of(&[
+            ("main", &["a", "b"]),
+            ("a", &["c"]),
+            ("b", &["e"]),
+            ("c", &["d"]),
+            ("d", &[]),
+            ("e", &[]),
+        ]);
+        let shows = |explorer: &Explorer, name: &str| {
+            let disclosed = explorer.disclosure();
+            let tile = tile(explorer, name);
+            disclosed.tiles().contains_key(&tile)
+        };
         explorer.step(Step::Into);
-        let a = explorer.cursor_span().unwrap();
-        assert_eq!(explorer.disclosure().folded(a), 1, "c is folded under a");
-        assert_eq!(explorer.step(Step::Child), None);
-        assert_eq!(at(&explorer), "a", "the cursor stays on what shows");
-        assert_eq!(explorer.disclosure().folded(a), 1, "and c stays folded");
-        explorer.toggle_expanded(a);
-        explorer.step(Step::Child);
-        assert_eq!(at(&explorer), "c", "opened by hand, it is there to step to");
+        assert!(explorer.step(Step::Child).is_some());
         assert_eq!(
-            explorer
-                .disclosure()
-                .number(explorer.cursor_span().unwrap()),
-            Some("1.1")
+            at(&explorer),
+            "c",
+            "a's calls open, the cursor on the first"
         );
+        assert!(!shows(&explorer, "e"), "b's stay folded");
+        assert_eq!(explorer.disclose(), Disclose(1), "no other branch deepens");
+        assert_eq!(explorer.depth(), 2, "the counter says the deepest shown");
+        assert!(explorer.notice().is_none());
+        explorer.step(Step::Child);
+        assert_eq!(at(&explorer), "d");
+        assert_eq!(explorer.depth(), 3);
+
+        // `.` deepens every branch a level: b's opens, a's has nothing more.
+        explorer.deeper();
+        assert!(shows(&explorer, "e"));
+        assert_eq!(explorer.depth(), 3);
+        // `,` folds every branch to a level less than the deepest shown.
+        explorer.shallower();
+        assert_eq!(explorer.depth(), 2);
+        assert_eq!(at(&explorer), "c", "d folds away, the cursor up to c");
+        assert!(shows(&explorer, "e"), "b's level 2 stays");
+        explorer.shallower();
+        assert_eq!(explorer.depth(), 1);
+        assert!(!shows(&explorer, "c") && !shows(&explorer, "e"));
+        explorer.shallower();
+        assert_eq!(
+            explorer.notice().map(|(_, text)| text),
+            Some("Only the start's own calls show: no fewer levels")
+        );
+
+        // A badge opens its call alone and steps in, as ↓ does.
+        let b = explorer
+            .disclosure()
+            .numbered()
+            .find(|(_, n)| *n == "2")
+            .unwrap()
+            .0;
+        explorer.unfold(b);
+        assert_eq!(at(&explorer), "e");
+        assert!(!shows(&explorer, "c"));
+        assert!(explorer.go_back());
+        assert_eq!(at(&explorer), "a", "Back puts the cursor back");
     }
 
     #[test]
@@ -2006,9 +2103,9 @@ pub(crate) mod tests {
             "c is folded"
         );
 
-        explorer.toggle_expanded(a_span.unwrap());
+        open_by_hand(&mut explorer, a_span.unwrap(), true);
         assert!(numbers(&explorer).contains(&(c, vec!["1.1".to_owned()])));
-        explorer.toggle_expanded(a_span.unwrap());
+        open_by_hand(&mut explorer, a_span.unwrap(), false);
         explorer.set_disclose(Disclose(2));
         assert!(numbers(&explorer).contains(&(c, vec!["1.1".to_owned()])));
 
@@ -2576,7 +2673,8 @@ pub(crate) mod tests {
             "the call clicked opens, as its bar does"
         );
         assert_eq!(explorer.nucleus().cursor(), Some(c), "and rings the cursor");
-        explorer.toggle_expanded(explorer.stack(explorer.cursor_span().unwrap())[1]);
+        let a = explorer.stack(explorer.cursor_span().unwrap())[1];
+        open_by_hand(&mut explorer, a, false);
         explorer.ease_nucleus(1.0);
         assert_eq!(
             names(&explorer),

@@ -777,8 +777,9 @@ pub(crate) struct DrawnBars {
     pass: u64,
     /// Where the bars show; one outside it is scrolled out of view.
     pub(crate) content: egui::Rect,
-    /// Each bar, where it is and what it says.
-    pub(crate) bars: Vec<(SpanId, egui::Rect, String)>,
+    /// Each bar, where it is, where it can show (the start's row stays put, the rows
+    /// below scroll under it) and what it says.
+    pub(crate) bars: Vec<(SpanId, egui::Rect, egui::Rect, String)>,
     /// The badges that unfold a bar's folded calls, by the bar's span.
     pub(crate) chips: Vec<(SpanId, egui::Rect)>,
     /// The bars of the start's callers, in the row above its bar, by function.
@@ -787,6 +788,8 @@ pub(crate) struct DrawnBars {
     /// one along its foot, when the journey is wider than it.
     pub(crate) rows_track: Option<egui::Rect>,
     pub(crate) across_track: Option<egui::Rect>,
+    /// The marks at its left and right sides saying how many bars lie past them.
+    pub(crate) beside: [Option<(egui::Rect, usize)>; 2],
 }
 
 fn bars_id() -> egui::Id {
@@ -794,15 +797,16 @@ fn bars_id() -> egui::Id {
 }
 
 /// Notes where the journey panel drew its bars this pass and what each says, the
-/// badges on them that unfold what is folded, the bars of the start's callers, and
-/// the tracks down its side and along its foot.
+/// badges on them that unfold what is folded, the bars of the start's callers, the
+/// tracks down its side and along its foot, and the marks at its sides.
 pub(crate) fn note_bars(
     ctx: &egui::Context,
     content: egui::Rect,
-    bars: Vec<(SpanId, egui::Rect, String)>,
+    bars: Vec<(SpanId, egui::Rect, egui::Rect, String)>,
     chips: Vec<(SpanId, egui::Rect)>,
     callers: Vec<(usize, egui::Rect, String)>,
     (rows_track, across_track): (Option<egui::Rect>, Option<egui::Rect>),
+    beside: [Option<(egui::Rect, usize)>; 2],
 ) {
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| {
@@ -816,6 +820,7 @@ pub(crate) fn note_bars(
                 callers,
                 rows_track,
                 across_track,
+                beside,
             },
         );
     });
@@ -1217,7 +1222,7 @@ impl View<'_, '_> {
                 e.cursor_span(),
                 e.under_pointer,
                 e.hovered(),
-                e.disclose(),
+                (e.disclose(), e.folds_opened()),
                 e.aside(),
                 e.nucleus().start(),
                 e.revision(),
@@ -2230,10 +2235,10 @@ fn bar_point(view: &View, span: SpanId, bar: &str) -> Result<Vec2, String> {
     let Some(drawn) = &view.screen.bars else {
         return Err("the journey panel is not showing: no journey is open".to_owned());
     };
-    let Some(&(_, rect, _)) = drawn.bars.iter().find(|(s, ..)| *s == span) else {
+    let Some(&(_, rect, clip, _)) = drawn.bars.iter().find(|(s, ..)| *s == span) else {
         return Err(format!("bar {bar} is not drawn"));
     };
-    let shown = rect.intersect(drawn.content);
+    let shown = rect.intersect(clip);
     if !shown.is_positive() {
         return Err(format!("bar {bar} is scrolled out of the journey panel"));
     }
@@ -2266,7 +2271,10 @@ fn chip_point(view: &View, span: SpanId, bar: &str) -> Result<Vec2, String> {
             format!("bar {bar} folds {folded} calls, but has no badge drawn (no room for one)")
         });
     };
-    let shown = chip.intersect(drawn.content);
+    let room = (drawn.bars.iter())
+        .find(|(s, ..)| *s == span)
+        .map_or(drawn.content, |&(_, _, room, _)| room);
+    let shown = chip.intersect(room);
     if !shown.is_positive() {
         return Err(format!(
             "bar {bar}'s badge is scrolled out of the journey panel"

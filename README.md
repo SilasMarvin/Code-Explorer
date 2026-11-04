@@ -68,18 +68,23 @@ start, and its calls down to the depth disclosed, every module they enter on a r
 round the middle, clockwise in the order the journey first enters them. In each sphere
 the journey's functions are spread out where no call runs through another's dot or
 name, laid out once for every depth. Zoomed into a module, a call that leaves the
-screen is labelled where it leaves with the function at its far end. `,` and `.`
-(or the panel's `−` and `+`) show a level less or more, from the start's own calls down
-to the journey's deepest, saying so at either end, and nothing else moves; a bar's
-triangle opens the calls folded under it. A closure counts as part of the function
-around it.
+screen is labelled where it leaves with the function at its far end. `.` (or the
+panel's `+`) shows every branch a level deeper, down to the journey's deepest; `↓` on a
+call whose calls are folded, or a click on its bar's triangle, opens that call's alone
+and steps in; `,` (or `−`) folds every branch back to a level less than the deepest
+shown, down to the start's own calls. Either end says so, nothing else moves, and the
+depth beside `−` and `+` is the deepest level shown. Whatever can fail says "can fail"
+at every depth, where it fails and every call it passes through. A closure counts as
+part of the function around it.
 
 The journey panel docks along the foot: a bar per call, left to right as they run, a
 row a level deeper, each filled like its node and numbered as the graph numbers it (`2`
 for the start's second call, `2.1` for that call's first). Dashed bars run only
 sometimes, and say when; pale ones were only guessed at, or are handed off to run later;
 a green end returns and a red one fails. Hovering a bar draws a line to its node. Above
-the start's bar, a row of violet bars lists the functions that call the start.
+the start's bar, a row of violet bars lists the functions that call the start; the two
+stay put while the rows below scroll. Bars past either side are counted at that side,
+and a click on the count scrolls on.
 
 The cursor is one call of the journey. `↓`/`↑` go into a call and out to its caller,
 `←`/`→` move between the calls one caller makes, `[`/`]` step through them in the order

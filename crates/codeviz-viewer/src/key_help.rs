@@ -112,7 +112,11 @@ const KEYS: [(&str, &str, When); 25] = [
         When::Journey,
     ),
     ("Shift click", "open a function's journey", When::Always),
-    ("↓  ↑", "into the call / out to its caller", When::Journey),
+    (
+        "↓  ↑",
+        "into the call, its calls opened / out to its caller",
+        When::Journey,
+    ),
     (
         "↑ at the start",
         "its callers' row: ← → pick one, Enter opens it, ↓ back",
@@ -128,7 +132,7 @@ const KEYS: [(&str, &str, When); 25] = [
         "the previous / next call as they run",
         When::Journey,
     ),
-    (",  .", "a level less / more", When::Journey),
+    (",  .", "every branch a level less / more", When::Journey),
     ("I", "who else calls the call you are on", When::Journey),
     (
         "/",
@@ -224,7 +228,7 @@ fn legend(browsing: bool) -> Vec<(&'static str, egui::Color32, &'static str)> {
             TEXT,
             "call 2's first call; +1, made once more later",
         ),
-        ("▼ 3", TEXT, "calls folded under a bar: click to show"),
+        ("▼ 3", TEXT, "calls folded under a bar: click to step in"),
         ("dashed bar", TEXT, "runs only sometimes"),
         ("green, red end", OK, "returns, can fail"),
         ("↺", TEXT, "calls itself, or calls the start again"),

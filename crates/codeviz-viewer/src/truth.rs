@@ -113,7 +113,7 @@ pub(crate) fn state(view: &View) -> Value {
         "aside": explorer.aside().map(name),
         "nucleus": if nucleus.expanded() { "expanded" } else { "modules" },
         "expanded": nucleus.expanded_module().map(|c| explorer.cluster_name(c)),
-        "depth": explorer.disclose().0,
+        "depth": explorer.depth(),
         // In a journey, how many levels below the start its deepest call is.
         "deepest": (!explorer.browsing()).then(|| disclosed.deepest()),
         "outside_callers": explorer.outside_shown(),
@@ -725,7 +725,7 @@ fn merge(into: &mut Value, more: Value) {
 /// How much of the journey the panel shows: how many of its bars lie below what it
 /// shows, cut off or out of view, and whether a track down its side says so; how many
 /// lie past its left or right edge, cut off or out of view, and whether a track
-/// along its foot says so.
+/// along its foot and a mark at each side say so.
 fn panel(view: &View) -> Value {
     let Some(drawn) = &view.screen.bars else {
         return Value::Null;
@@ -734,19 +734,28 @@ fn panel(view: &View) -> Value {
     let below = drawn
         .bars
         .iter()
-        .filter(|(_, r, _)| r.max.y > content.max.y + 0.5)
+        .filter(|(_, r, ..)| r.max.y > content.max.y + 0.5)
         .count();
-    let beside = drawn
-        .bars
-        .iter()
-        .filter(|(_, r, _)| r.min.x < content.min.x - 0.5 || r.max.x > content.max.x + 0.5)
-        .count();
+    let past = |left: bool| {
+        (drawn.bars.iter())
+            .filter(|(_, r, ..)| {
+                if left {
+                    r.min.x < content.min.x - 0.5
+                } else {
+                    r.max.x > content.max.x + 0.5
+                }
+            })
+            .count()
+    };
+    let marks = drawn
+        .beside
+        .map(|mark| mark.map(|(r, count)| json!({ "rect": rect(r), "count": count })));
     let cursor = view.explorer.cursor_span();
     // As much of the cursor's bar as the panel can show, shown: wholly, or a bar wider
     // than the panel, across it.
     let cursor_cut_off = cursor.is_some_and(|cursor| {
-        !(drawn.bars.iter()).any(|(span, r, _)| {
-            let shown = r.intersect(content);
+        !(drawn.bars.iter()).any(|(span, r, clip, _)| {
+            let shown = r.intersect(*clip);
             *span == cursor
                 && shown.height() >= r.height() - 0.5
                 && shown.width() >= r.width().min(content.width()) - 0.5
@@ -755,8 +764,12 @@ fn panel(view: &View) -> Value {
     json!({
         "below": below,
         "rows_track": drawn.rows_track.is_some(),
-        "beside": beside,
+        "beside": past(true) + past(false),
+        "left": past(true),
+        "right": past(false),
         "across_track": drawn.across_track.is_some(),
+        "left_mark": marks[0],
+        "right_mark": marks[1],
         "cursor_cut_off": cursor_cut_off,
     })
 }
@@ -774,9 +787,9 @@ fn bars(view: &View) -> Vec<Value> {
     drawn
         .bars
         .iter()
-        .filter(|(_, r, _)| r.intersects(drawn.content))
-        .map(|(span, r, text)| {
-            let (span, r) = (*span, *r);
+        .filter(|(_, r, room, _)| r.intersects(*room))
+        .map(|(span, r, room, text)| {
+            let (span, r, room) = (*span, *r, *room);
             let tile = track.tile(span, explorer.map());
             let chip = drawn
                 .chips
@@ -795,7 +808,7 @@ fn bars(view: &View) -> Vec<Value> {
                 "color": hex32(bar_fill(explorer, span)),
                 "guessed": guessed(explorer, span),
                 "lit": tile.is_some() && tile == explorer.hovered(),
-                "cut_off": !drawn.content.contains_rect(r),
+                "cut_off": !room.contains_rect(r),
             })
         })
         .chain(drawn.callers.iter().map(|(tile, r, text)| {
@@ -934,7 +947,7 @@ mod tests {
     }"#;
 
     #[test]
-    fn a_failure_marks_the_nearest_shown_call_and_conditions_mark_theirs() {
+    fn a_failure_marks_where_it_starts_and_every_call_it_passes_through() {
         let system = codeviz_core::System::new([codeviz_ir::Document::from_json(ORDERS).unwrap()]);
         let mut explorer = crate::explorer::tests::opened(system, "t:place");
         let marks = |explorer: &Explorer| -> Vec<(String, bool, bool)> {
@@ -968,11 +981,11 @@ mod tests {
             marks(&explorer),
             [
                 ("1 check".to_owned(), true, false),
-                ("2 quote".to_owned(), false, false),
+                ("2 quote".to_owned(), true, false),
                 ("2.1 price".to_owned(), true, false),
                 ("2.2 discount".to_owned(), false, true),
             ],
-            "once price shows, it carries its own failure"
+            "once price shows, it fails too, and quote still does"
         );
     }
 }

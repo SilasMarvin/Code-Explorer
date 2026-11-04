@@ -43,11 +43,11 @@ pub(crate) struct Disclosed {
     /// The nodes the journey runs at any depth, each with the numbers of its spans,
     /// shown or not.
     every: HashMap<usize, Vec<String>>,
-    /// Shown spans where another outcome splits off: where the failure happens, or the
-    /// nearest shown call it happens under.
+    /// Spans that can fail, shown or not: where another outcome splits off, and every
+    /// call it passes up through to the root.
     fails: HashSet<SpanId>,
-    /// Nodes that can fail, nodes every shown run of which is conditional, and nodes
-    /// every shown call to which is only guessed or handed off.
+    /// Nodes that can fail, at any depth; nodes every shown run of which is
+    /// conditional, and nodes every shown call to which is only guessed or handed off.
     failing_tiles: HashSet<usize>,
     sometimes_tiles: HashSet<usize>,
     guessed_tiles: HashSet<usize>,
@@ -119,14 +119,15 @@ impl Disclosed {
                 stack.push(child);
             }
         }
+        // What can fail does at every depth: where it fails and all it passes through.
         disclosed.fails = track
             .divergences()
             .iter()
-            .filter_map(|&divergence| {
+            .flat_map(|&divergence| {
                 std::iter::successors(Some(divergence), |&s| journey.span(s)?.parent)
-                    .find(|s| disclosed.levels.contains_key(s))
             })
             .collect();
+        disclosed.failing_tiles = disclosed.fails.iter().flat_map(|&s| ends(s)).collect();
         disclosed.mark_tiles(journey, &ends, root);
         let by_tile = |spans: &mut dyn Iterator<Item = (SpanId, &str)>| {
             let mut tiles: HashMap<usize, Vec<String>> = HashMap::new();
@@ -159,8 +160,8 @@ impl Disclosed {
         disclosed
     }
 
-    /// Marks each node shown that can fail, that runs only sometimes every time it
-    /// shows (and when), and that every shown call to is only guessed.
+    /// Marks each node shown that runs only sometimes every time it shows (and when),
+    /// and that every shown call to is only guessed.
     fn mark_tiles(
         &mut self,
         journey: &Journey,
@@ -179,9 +180,6 @@ impl Disclosed {
                     Some(_) => self.guessed_tiles.insert(tile),
                     None => sure.insert(tile),
                 };
-            }
-            if self.fails.contains(&span) {
-                self.failing_tiles.insert(tile);
             }
             if let Some(span) = journey.span(span).filter(|s| is_conditional(s)) {
                 self.sometimes_tiles.insert(tile);
@@ -300,6 +298,19 @@ impl Disclosed {
         u32::try_from(levels).unwrap_or(u32::MAX)
     }
 
+    /// How many levels below the root a call is, shown or not; the root's is 0.
+    pub(crate) fn level(&self, span: SpanId) -> Option<u32> {
+        let number = self.numbers.get(&span)?;
+        let dots = number.matches('.').count();
+        u32::try_from(if number.is_empty() { 0 } else { dots + 1 }).ok()
+    }
+
+    /// The deepest level shown: what the depth counter says, a branch opened by hand
+    /// included.
+    pub(crate) fn deepest_shown(&self) -> u32 {
+        self.levels.values().copied().max().unwrap_or(0)
+    }
+
     /// Whether a span shows.
     pub(crate) fn shows(&self, span: SpanId) -> bool {
         self.shown.contains(&span)
@@ -327,14 +338,14 @@ impl Disclosed {
             .filter_map(|&span| Some((span, self.numbers.get(&span)?.as_str())))
     }
 
-    /// Whether the function a call runs calls itself straight back.
-    /// Whether a shown span can fail: where another outcome splits off from it, or from
-    /// something folded under it.
+    /// Whether a call can fail: where another outcome splits off from it, or from
+    /// anything it calls at any depth, shown or not.
     pub(crate) fn fails(&self, span: SpanId) -> bool {
         self.fails.contains(&span)
     }
 
-    /// Whether a shown node can fail.
+    /// Whether a node can fail, by any call that runs it at any depth: the same
+    /// however deep the journey shows.
     pub(crate) fn tile_fails(&self, tile: usize) -> bool {
         self.failing_tiles.contains(&tile)
     }

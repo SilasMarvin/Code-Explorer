@@ -1278,8 +1278,8 @@ impl<'a> Naming<'a> {
     /// the neutral view, in the order tried, and the least it hides as. A function of
     /// the journey keeps room for what it leads with at the deepest, its longest
     /// number (the cursor's path may lead with any) and how many more calls run it,
-    /// and for saying it can fail, which one depth says and another not; failing that,
-    /// for its number and count alone. Its name
+    /// and for saying it can fail and when it runs, which one depth says and another
+    /// not; failing that, for its number and count alone. Its name
     /// as this depth has it never counts, and it hides only what its name hides at
     /// its least, its first number alone, so a level more or less leaves it where it
     /// is.

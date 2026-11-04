@@ -119,7 +119,8 @@ pub(crate) enum Kind {
     /// A click on a function or a bar: moves nothing, but expanded in a journey it may
     /// re-centre on what it clicks.
     Click,
-    /// `,` or `.`: shows or hides calls; the camera moves only to bring new ones on.
+    /// `,`, `.`, ↓ or a badge: shows or hides calls; the camera moves only to bring new
+    /// ones on.
     Depth,
     /// `x` or a double click on a module: expands or collapses.
     Expand,
@@ -553,7 +554,6 @@ impl Step {
             Step::Key(press) => match press.code() {
                 (
                     KeyCode::ArrowUp
-                    | KeyCode::ArrowDown
                     | KeyCode::ArrowLeft
                     | KeyCode::ArrowRight
                     | KeyCode::BracketLeft
@@ -561,7 +561,8 @@ impl Step {
                     | KeyCode::KeyI,
                     false,
                 ) => Kind::Still,
-                (KeyCode::Comma | KeyCode::Period, false) => Kind::Depth,
+                // ↓ on a call whose calls are folded opens them, as a badge does.
+                (KeyCode::Comma | KeyCode::Period | KeyCode::ArrowDown, false) => Kind::Depth,
                 (KeyCode::KeyX, false) => Kind::Expand,
                 (KeyCode::KeyF, false) => Kind::FrameFocus,
                 (KeyCode::KeyR, false) => Kind::FrameAll,
@@ -844,7 +845,8 @@ mod tests {
     #[test]
     fn says_what_each_step_may_move() {
         let kind = |line: &str| steps(line)[0].kind();
-        assert_eq!(kind("key down"), Kind::Still);
+        assert_eq!(kind("key down"), Kind::Depth);
+        assert_eq!(kind("key up"), Kind::Still);
         assert_eq!(kind("key ]"), Kind::Still);
         assert_eq!(kind("key i"), Kind::Still);
         assert_eq!(kind("key ."), Kind::Depth);
