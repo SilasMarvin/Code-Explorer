@@ -690,7 +690,7 @@ impl Arrow {
                     .flat_map(|(a, b)| {
                         [(a, b.min(g0)), (a.max(g1), b)]
                             .into_iter()
-                            .filter(|(a, b)| b - a > 0.01)
+                            .filter(|(a, b)| b - a > ROUNDING)
                     })
                     .collect();
             }
@@ -2483,7 +2483,7 @@ fn arrow_sizes(s: &Snap) -> Value {
 /// too) nor the ring round one, but its own ends' and the one pointed at, unless it
 /// breaks off round it, [`LINE_CLEAR`] clear; no lit one runs into its callee's name
 /// over its last [`arrows::ARRIVAL`] points, where the head is, nor, bent, through
-/// its own ends' names between its first and last such stretch; and no two lit calls
+/// that name before them; and no two lit calls
 /// from or into one function run along one line. A line may pass under any other
 /// name: the pill hides it there, and bending round names would loop past the bound
 /// (names prefer sides fewer lines cross).
@@ -2567,15 +2567,17 @@ fn into_own_name(a: &Arrow, names: &[&Label]) -> Found {
     offenders
 }
 
-/// The names of a bent call's own ends its line runs through, away from where it
-/// leaves its dot and where it comes into its callee's: between its first and its
-/// last [`arrows::ARRIVAL`] points.
+/// The name of a bent call's callee its line runs through before its last
+/// [`arrows::ARRIVAL`] points: a bow looping back past the name.
 fn through_names(a: &Arrow, names: &[&Label]) -> Found {
-    let middle = a.stretch(arrows::ARRIVAL, a.length() - arrows::ARRIVAL);
+    let before = a.stretch(0.0, a.length() - arrows::ARRIVAL);
     let mut offenders = Vec::new();
-    for l in names.iter().filter(|l| a.ends_at(l.unit.as_deref())) {
+    for l in names
+        .iter()
+        .filter(|l| l.unit.is_some() && l.unit == a.to_unit)
+    {
         let pill = rect(l.rect).shrink(ARROW_SLACK);
-        if middle.iter().any(|&(p, q)| crosses_rect(p, q, pill)) {
+        if before.iter().any(|&(p, q)| crosses_rect(p, q, pill)) {
             let offender = json!({ "arrow": [a.from, a.to], "through": "its own name", "label": l.text, "rect": rect_json(l.rect) });
             offenders.push((1.0, offender));
         }
@@ -2583,61 +2585,82 @@ fn through_names(a: &Arrow, names: &[&Label]) -> Found {
     offenders
 }
 
-/// Two lit calls from or into one function drawn along one line, reading as one
-/// call or as a chain through a dot: one within [`arrows::SHARED_NEAR`] of the
-/// other for more than [`arrows::SHARED_RUN`] points (and [`SHARED_SLACK`]) in the free area, away from its
-/// own ends. Both ways between the same two functions lie side by side apart, and
-/// the faint calls among an expanded module's functions are left out.
+/// Two lit calls from or into one function drawn along one line, reading as a
+/// chain through the other's far dot: one within [`arrows::SHARED_NEAR`] of the
+/// other for more than [`arrows::SHARED_RUN`] points (and [`SHARED_SLACK`]) within
+/// [`arrows::SHARED_FAR`] of where the other ends at its other function, in the free
+/// area, away from its own ends. Both ways between the same two functions lie side by
+/// side apart; calls whose other ends both lie off the free area come in together,
+/// carried by the labels where they leave; and the faint calls among an expanded
+/// module's functions are left out.
 fn along_one_line(calls: &[&Arrow], free: egui::Rect) -> Found {
     let lit: Vec<&Arrow> = calls
         .iter()
         .copied()
         .filter(|a| a.flow != "inner")
         .collect();
-    let bounds =
-        |a: &Arrow| egui::Rect::from_points(&a.path.iter().map(|&p| pos(p)).collect::<Vec<_>>());
     let mut offenders = Vec::new();
-    for (i, a) in lit.iter().enumerate() {
-        let (first, last) = (v2(a.path[0]), v2(a.path[a.path.len() - 1]));
-        for b in lit.iter().skip(i + 1) {
-            let near = bounds(b).expand(arrows::SHARED_NEAR).intersect(free);
-            if !a.shares_an_end_with(b) || a.both_ways_with(b) || !bounds(a).intersects(near) {
+    for a in &lit {
+        for b in lit.iter().filter(|b| !std::ptr::eq(**b, *a)) {
+            if !a.shares_an_end_with(b) || a.both_ways_with(b) {
                 continue;
             }
-            let other = b.pieces();
-            let mut run = 0.0;
-            for (p, q) in a.pieces() {
-                let long = p.distance(q);
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a few samples"
-                )]
-                let samples = (long / 2.0).ceil().max(1.0) as usize;
-                #[expect(clippy::cast_precision_loss, reason = "a few samples")]
-                let step = long / samples as f32;
-                for k in 0..samples {
-                    #[expect(clippy::cast_precision_loss, reason = "a few samples")]
-                    let at = p + (q - p) * (k as f32 / samples as f32);
-                    let away = at.distance(first) >= arrows::SHARED_ENDS
-                        && at.distance(last) >= arrows::SHARED_ENDS;
-                    if away
-                        && near.contains(egui::pos2(at.x, at.y))
-                        && (other.iter())
-                            .any(|&(c, d)| piece_distance(c, d, at) < arrows::SHARED_NEAR)
-                    {
-                        run += step;
-                    }
-                }
+            // Where each ends at the function they do not share.
+            let far = |x: &Arrow| {
+                let shared_from =
+                    a.ends_at(x.from_unit.as_deref()) && b.ends_at(x.from_unit.as_deref());
+                v2(if shared_from {
+                    x.path[x.path.len() - 1]
+                } else {
+                    x.path[0]
+                })
+            };
+            let (far_a, far_b) = (far(a), far(b));
+            let off = |p: Vec2| !free.contains(egui::pos2(p.x, p.y));
+            if off(far_a) && off(far_b) {
+                continue;
             }
+            let run = run_along(a, b, far_b, free);
             if run > arrows::SHARED_RUN + SHARED_SLACK {
-                let why = "runs along another call's line, so the two read as one";
+                let why = "runs along another call's line through where it ends, so the two read as a chain";
                 let offender = json!({ "arrow": [a.from, a.to], "along": [b.from, b.to], "why": why, "run": r1(run) });
                 offenders.push((run, offender));
             }
         }
     }
     offenders
+}
+
+/// How far `a`'s line runs within [`arrows::SHARED_NEAR`] of `b`'s, within
+/// [`arrows::SHARED_FAR`] of `far` and inside `free`, away from its own ends.
+fn run_along(a: &Arrow, b: &Arrow, far: Vec2, free: egui::Rect) -> f32 {
+    let (first, last) = (v2(a.path[0]), v2(a.path[a.path.len() - 1]));
+    let other = b.pieces();
+    let mut run = 0.0;
+    for (p, q) in a.pieces() {
+        let long = p.distance(q);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a few samples"
+        )]
+        let samples = (long / 2.0).ceil().max(1.0) as usize;
+        #[expect(clippy::cast_precision_loss, reason = "a few samples")]
+        let step = long / samples as f32;
+        for k in 0..samples {
+            #[expect(clippy::cast_precision_loss, reason = "a few samples")]
+            let at = p + (q - p) * (k as f32 / samples as f32);
+            if at.distance(far) < arrows::SHARED_FAR
+                && at.distance(first) >= arrows::SHARED_ENDS
+                && at.distance(last) >= arrows::SHARED_ENDS
+                && free.contains(egui::pos2(at.x, at.y))
+                && (other.iter()).any(|&(c, d)| piece_distance(c, d, at) < arrows::SHARED_NEAR)
+            {
+                run += step;
+            }
+        }
+    }
+    run
 }
 
 /// With a module expanded, every lit call drawn from a function in the free area to
@@ -3446,8 +3469,13 @@ mod tests {
             "path": [[386.0, 501.0], [1400.0, 501.0]], "gaps": [[600.0, 625.0]] }));
         let result = check(&s, "arrows-clear");
         assert_eq!(
-            result["offenders"][0]["along"],
+            result["offenders"][0]["arrow"],
             json!(["f", "k"]),
+            "{result}"
+        );
+        assert_eq!(
+            result["offenders"][0]["along"],
+            json!(["f", "h"]),
             "{result}"
         );
         // Bowed off it, the two read apart.

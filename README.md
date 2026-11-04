@@ -30,7 +30,8 @@ starts.
 
 Each color says one thing everywhere. White: the selection, or the journey's start.
 Violet: calls into it. Blue: its own calls. Amber, darker the deeper: the journey's
-calls further down. Pink: the journey's cursor. Everything else is grey, and each
+calls further down. Pink: the journey's cursor, and the one call along its path into
+it. Everything else is grey, and each
 module's sphere has a muted hue of its own, only to tell modules apart. Each role gets
 one treatment: the selection and the start a white ring, the cursor a pink fill and one
 pink ring. A call that also calls back into the start keeps its call's fill and gets a
@@ -39,8 +40,9 @@ keeps its own fill (grey off the journey, violet if it calls the start) with a w
 ring, and its calls their own colors. What the pointer rests on gets one grey treatment
 wherever it is: a thin ring round its dot, an outline round its bar, and from a bar a
 grey line to its dot; it never lights a call. A call only guessed at is faint on the
-graph as in the panel. Calls bend round dots and names they would otherwise pass
-through.
+graph as in the panel. Calls bow gently round dots they would otherwise pass
+through, or else break off round them, and two calls from or into one function never
+run along one line; a call crossing the view with neither end in it is faint.
 
 ### Browse
 

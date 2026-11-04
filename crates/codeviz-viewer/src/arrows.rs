@@ -59,15 +59,19 @@ const CROSSING: f32 = 0.3;
 const DOT_CLEAR: f32 = 3.0;
 /// What running along another call costs a line, and running over a lit dot,
 /// against a plain dot's 1: a line keeps off the calls beside it before all, since
-/// nothing else would tell the two apart, then off every lit dot it can, and off as
-/// many plain ones as it can; it breaks round those it still runs over.
+/// no gap would tell the two apart, then off every lit dot it can, and off as many
+/// plain ones as it can; it breaks round those it still runs over.
 const SHARED_COST: usize = 10_000;
 const LIT_COST: usize = 100;
-/// Two calls run along one line where one comes within this many points of the other
-/// for more than [`SHARED_RUN`] points, away from its own ends by [`SHARED_ENDS`].
+/// Two calls from or into one dot run along one line, reading as a chain through
+/// the other's far dot, where one comes within [`SHARED_NEAR`] points of the other
+/// for more than [`SHARED_RUN`] points within [`SHARED_FAR`] of that far dot, and
+/// [`SHARED_ENDS`] from its own ends. Calls fanning out from one dot to dots near
+/// each other run close by it, but apart where each ends.
 pub(crate) const SHARED_NEAR: f32 = 3.0;
 pub(crate) const SHARED_RUN: f32 = 16.0;
 pub(crate) const SHARED_ENDS: f32 = 20.0;
+pub(crate) const SHARED_FAR: f32 = 48.0;
 /// How many ways clear of everything a line keeps, the gentlest first and bowed no
 /// further than the first, for the one drawn to keep off its own ends' names.
 const CLEAR_WAYS: usize = 4;
@@ -120,6 +124,10 @@ type End = (egui::Pos2, f32);
 
 /// A bent line's two pulls: each where along it, and how far out, as shares.
 type Bow = [(f32, f32); 2];
+
+/// A call routed before that shares a dot with the one routed now: its line, and
+/// where it ends at its other dot.
+type Beside<'a> = (&'a [egui::Pos2], egui::Pos2);
 
 /// A call to route: its caller and callee, whether its line keeps off dots, whether
 /// names keep off it, and its ends.
@@ -338,8 +346,9 @@ fn graph_dot(explorer: &Explorer, tile: usize) -> Dot {
     crate::graph_view::dot(explorer, tile)
 }
 
-/// A call's line as worked out: the way it runs, and the other ways as clear of
-/// everything, gentlest first, should the first run through its own end's name.
+/// A call's line as worked out: the way it runs, and the other ways, should the
+/// first run through its own end's name: as clear of everything, gentlest first,
+/// then straight, broken round the dots in its way, where it runs along no call.
 #[derive(Debug, Clone)]
 struct Route {
     path: Vec<egui::Pos2>,
@@ -426,7 +435,7 @@ pub(crate) fn route(explorer: &Explorer, (camera, view): (&Camera, &GlobalTransf
             .then(a.0.cmp(&b.0))
     });
     let mut lines: HashMap<(usize, usize), Route> = HashMap::new();
-    let mut taken: Vec<(usize, usize)> = Vec::new();
+    let mut taken: Vec<((usize, usize), bool)> = Vec::new();
     for ((from, to), avoid, kept, ends) in todo {
         let side = if pairs.contains(&(to, from)) {
             BOTH_WAYS
@@ -447,12 +456,23 @@ pub(crate) fn route(explorer: &Explorer, (camera, view): (&Camera, &GlobalTransf
         } else {
             Vec::new()
         };
-        // The calls before it sharing one of its dots.
-        let beside: Vec<&[egui::Pos2]> = if avoid {
+        // The calls before it sharing one of its dots, and where each ends at its
+        // other: for one names keep off, only those like it, so what comes and goes
+        // bends none of them.
+        let beside: Vec<Beside> = if avoid {
             taken
                 .iter()
-                .filter(|&&pair| share_a_dot((from, to), pair))
-                .filter_map(|pair| lines.get(pair).map(|r: &Route| r.path.as_slice()))
+                .filter(|&&(pair, before)| (before || !kept) && share_a_dot((from, to), pair))
+                .filter_map(|(pair, _)| {
+                    let path = lines.get(pair)?.path.as_slice();
+                    // Its caller shared, it ends at its callee; else at its caller.
+                    let far = if [from, to].contains(&pair.0) {
+                        *path.last()?
+                    } else {
+                        *path.first()?
+                    };
+                    Some((path, far))
+                })
                 .collect()
         } else {
             Vec::new()
@@ -461,8 +481,8 @@ pub(crate) fn route(explorer: &Explorer, (camera, view): (&Camera, &GlobalTransf
             continue;
         };
         route.kept = kept;
-        if kept {
-            taken.push((from, to));
+        if avoid {
+            taken.push(((from, to), kept));
         }
         lines.insert((from, to), route);
     }
@@ -488,7 +508,7 @@ fn route_one(
     ends: [End; 2],
     side: f32,
     obstacles: &[Obstacle],
-    beside: &[&[egui::Pos2]],
+    beside: &[Beside],
 ) -> Option<Route> {
     let [(a, ra), (b, rb)] = ends;
     let along = (b - a).normalized();
@@ -552,26 +572,33 @@ fn route_one(
             }
         }
     }
+    // Straight is a way too where it runs along no call.
+    let fallback = (first < SHARED_COST).then(|| straight.clone());
     if !clear.is_empty() {
         let path = clear.remove(0);
-        return Some(routed(path, clear));
+        return Some(routed(path, clear.into_iter().chain(fallback).collect()));
     }
     // The least in the way, broken round what it still runs over; straight where
     // no bow does better.
-    Some(routed(best.1.unwrap_or(straight), Vec::new()))
+    Some(match best.1 {
+        Some(path) => routed(path, fallback.into_iter().collect()),
+        None => routed(straight, Vec::new()),
+    })
 }
 
-/// Whether the line through `path` runs along `other`: within [`SHARED_NEAR`] of it
-/// for more than [`SHARED_RUN`] points, away from its own ends. Each piece of it is
+/// Whether the line through `path` runs along `other`, which shares a dot with it
+/// and ends at `far` at its other: as [`SHARED_RUN`] says. Each piece of it is
 /// looked at only beside the pieces of `other` near enough.
-fn shares(path: &[egui::Pos2], other: &[egui::Pos2]) -> bool {
+fn shares(path: &[egui::Pos2], (other, far): Beside) -> bool {
     let (first, last) = (path[0], path[path.len() - 1]);
+    let there = egui::Rect::from_center_size(far, egui::Vec2::splat(2.0 * SHARED_FAR));
     let theirs: Vec<(egui::Pos2, egui::Pos2, egui::Rect)> = other
         .windows(2)
         .map(|o| {
             let bounds = egui::Rect::from_two_pos(o[0], o[1]).expand(SHARED_NEAR);
             (o[0], o[1], bounds)
         })
+        .filter(|o| o.2.intersects(there))
         .collect();
     let mut run = 0.0;
     for pair in path.windows(2) {
@@ -592,7 +619,8 @@ fn shares(path: &[egui::Pos2], other: &[egui::Pos2]) -> bool {
         for k in 0..samples {
             #[expect(clippy::cast_precision_loss, reason = "a few samples")]
             let at = pair[0] + (pair[1] - pair[0]) * (k as f32 / samples as f32);
-            if at.distance(first) >= SHARED_ENDS
+            if at.distance(far) < SHARED_FAR
+                && at.distance(first) >= SHARED_ENDS
                 && at.distance(last) >= SHARED_ENDS
                 && near.iter().any(|o| off_line(o.0, o.1, at) < SHARED_NEAR)
             {
@@ -864,10 +892,15 @@ pub(crate) fn draw(
             continue;
         };
         // A line through its own end's name goes another way as clear, if it has one.
+        // Into its callee's name: over its head, or, bowed, looping past it.
         let own_name = |path: &[egui::Pos2]| {
+            let line = if path.len() > 2 {
+                path.to_vec()
+            } else {
+                arrival(path)
+            };
             names.pills().any(|(pill, tile)| {
-                (tile == link.from || tile == link.to)
-                    && path.windows(2).any(|p| through(p[0], p[1], pill))
+                tile == link.to && line.windows(2).any(|p| through(p[0], p[1], pill))
             })
         };
         let path = std::iter::once(&route.path)
@@ -1358,7 +1391,10 @@ mod tests {
         assert!(route.path.len() > 2, "bent");
         assert_eq!(cost(&route.path, &obstacles, usize::MAX), 0);
         assert!(length(&route.path) <= 184.0 * DETOUR);
-        for other in &route.others {
+        // The other ways: as clear, bowed, then straight, which runs along no call.
+        let (straight, bowed) = route.others.split_last().expect("straight last");
+        assert_eq!(straight.len(), 2);
+        for other in bowed {
             assert_eq!(cost(other, &obstacles, usize::MAX), 0, "as clear");
         }
         assert!((route.path[0].distance(a) - 8.0).abs() < 0.5);
@@ -1409,12 +1445,20 @@ mod tests {
         let far_end = [(a, 8.0), (egui::pos2(1.0, -300.0), 8.0)];
         let alone = route_one(far_end, 0.0, &[], &[]).expect("long enough");
         assert!(
-            shares(&alone.path, &near.path),
-            "straight, it runs along it"
+            shares(&alone.path, (&near.path, near.path[1])),
+            "straight, it runs along it through its end"
         );
-        let beside = route_one(far_end, 0.0, &[], &[&near.path]).expect("long enough");
+        // Calls fanning out to two dots near each other run close only by their
+        // shared dot.
+        let fan = route_one([(a, 8.0), (egui::pos2(30.0, -300.0), 8.0)], 0.0, &[], &[])
+            .expect("long enough");
+        let other = route_one([(a, 8.0), (egui::pos2(20.0, -300.0), 8.0)], 0.0, &[], &[])
+            .expect("long enough");
+        assert!(!shares(&fan.path, (&other.path, other.path[1])));
+        let near_end = near.path[1];
+        let beside = route_one(far_end, 0.0, &[], &[(&near.path, near_end)]).expect("long enough");
         assert!(beside.path.len() > 2, "bowed");
-        assert!(!shares(&beside.path, &near.path));
+        assert!(!shares(&beside.path, (&near.path, near_end)));
         assert!(length(&beside.path) <= length(&alone.path) * DETOUR);
         // Only calls sharing a dot can, and not both ways between two.
         assert!(share_a_dot((0, 1), (0, 2)));
