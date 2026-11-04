@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use crate::{
+    arrows::Spine,
     camera::OrbitCamera,
     colors::{CALLER, CURSOR, FURTHER, HOVER, SELECTED},
     drive::{Marks, RingMark},
@@ -207,6 +208,7 @@ pub(crate) fn style_nodes(
         return;
     }
     let nucleus = explorer.nucleus();
+    let spine = Spine::of(&explorer);
     for (tile, mut material, mut visibility) in &mut nodes {
         let drawn = nucleus.drawn(tile.0);
         visibility.set_if_neq(if drawn {
@@ -218,20 +220,27 @@ pub(crate) fn style_nodes(
             continue;
         }
         let look = node_look(&explorer, tile.0);
-        // Brought in from outside the journey, a caller of the start folded into its
-        // module's count, a call only guessed, or an expanded module's function nothing
-        // lights: there, but quieter than the journey.
-        let outside = (nucleus.outside(tile.0)
-            || nucleus.folded(tile.0)
-            || guessed(&explorer, tile.0)
-            || plain_beside(&explorer, tile.0))
-            && explorer.aside() != Some(tile.0);
-        if let Some(wanted) = materials.0.get(&(look, outside))
+        if let Some(wanted) = materials.0.get(&(look, quiet(&explorer, &spine, tile.0)))
             && &material.0 != wanted
         {
             material.0 = wanted.clone();
         }
     }
+}
+
+/// Whether a function's dot is drawn dimmer: there, but quieter than the journey.
+/// Brought in from outside the journey, a caller of the start folded into its
+/// module's count, a call only guessed, an expanded module's function nothing
+/// lights, or a call off the cursor's path a journey two levels deep makes ([`Spine`]);
+/// never the function set aside.
+pub(crate) fn quiet(explorer: &Explorer, spine: &Spine, tile: usize) -> bool {
+    let nucleus = explorer.nucleus();
+    (nucleus.outside(tile)
+        || nucleus.folded(tile)
+        || guessed(explorer, tile)
+        || plain_beside(explorer, tile)
+        || spine.dims(nucleus, tile))
+        && explorer.aside() != Some(tile)
 }
 
 /// Whether a function is one of the expanded module's that nothing lights, while a

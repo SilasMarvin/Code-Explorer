@@ -29,7 +29,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     arrows,
-    colors::{CALL_STRENGTH, CALLEE, CALLER, CURSOR, DEEPER, FURTHER, GROUND},
+    colors::{CALL_STRENGTH, CALLEE, CALLER, CURSOR, DEEPER, DIMMED_STRENGTH, FURTHER, GROUND},
     disclosure::number_order,
     framing,
     labels::{self, CLEAR as NAME_CLEAR, GAP as NAME_GAP, PILL_PAD as NAME_PILL},
@@ -159,6 +159,9 @@ const LINE_CLEAR: f32 = 2.0;
 const ARROW_MOVED: f32 = 3.0;
 /// How far clear of a call's line, past its dot's edge, a caller I brings in sits.
 const OUTSIDE_CLEAR: f32 = 2.0;
+/// How much further than [`arrows::CHORD_OFF`] a collapsed line may stray off its
+/// straight line, in points: two lines both ways between two dots lie apart.
+const CHORD_SLACK: f32 = 5.0;
 /// Offenders listed per check; `count` says how many in all.
 const LISTED: usize = 12;
 
@@ -386,8 +389,10 @@ struct Arrow {
     guessed: bool,
     /// The points its line runs through, from its start to its tip.
     path: Vec<[f32; 2]>,
-    /// Where along it, from its start in points, its line breaks round a dot.
+    /// Where along it, from its start in points, its line does not show.
     gaps: Vec<[f32; 2]>,
+    /// The functions whose dots are drawn over its line, by unit.
+    under: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -634,7 +639,7 @@ impl Node {
     /// Where its name comes in the order names are placed, first first: the start or
     /// the selection, the cursor, the calls on the cursor's path down from the start,
     /// the function set aside, the journey's other calls in number order, the
-    /// callers, whatever else is lit, the callers I brings in, (the modules,) then
+    /// callers, the calls drawn dimmer off the cursor's path, whatever else is lit, the callers I brings in, (the modules,) then
     /// the rest. `cursor` is the number of the call the cursor is on.
     fn rank(&self, cursor: Option<&str>) -> Rank {
         let on_path = |n: &&String| cursor.is_some_and(|c| c.starts_with(&format!("{n}.")));
@@ -660,6 +665,14 @@ impl Node {
                 self.level(),
                 self.numbers.iter().map(|n| number_order(n)).min(),
             ) {
+                // Drawn dimmer off the cursor's path, after the callers.
+                (Some(_), Some((depth, parts))) if self.is("dimmed") => (
+                    5,
+                    [1, depth]
+                        .into_iter()
+                        .chain(parts.into_iter().map(|p| p as usize))
+                        .collect(),
+                ),
                 (Some(_), Some((depth, parts))) => (
                     4,
                     std::iter::once(depth)
@@ -804,22 +817,33 @@ impl Snap {
             .and_then(|n| n.unit.as_deref())
     }
 
-    /// The call on the cursor's path into the cursor, caller and callee: from the
-    /// function of the call the cursor's is made in (the start, for one of the
-    /// start's own) to the cursor's.
-    fn path_call(&self) -> Option<(&str, &str)> {
-        let number = self.state.cursor.as_ref()?.number.as_str();
-        if number.is_empty() {
-            return None;
-        }
-        let from = match number.rsplit_once('.') {
-            Some((parent, _)) => self
-                .nodes
-                .iter()
-                .find(|n| n.numbers.iter().any(|m| m == parent))?,
-            None => self.nodes.iter().find(|n| n.is("start"))?,
+    /// The calls on the cursor's path down from the start, caller and callee by
+    /// unit, the start's first and the one into the cursor last.
+    fn path_calls(&self) -> Vec<(&str, &str)> {
+        let Some(number) = self.state.cursor.as_ref().map(|c| c.number.as_str()) else {
+            return Vec::new();
         };
-        Some((from.unit.as_deref()?, self.cursor()?))
+        let by_number = |n: &str| {
+            (self.nodes.iter())
+                .find(|node| node.numbers.iter().any(|m| m == n))
+                .and_then(|node| node.unit.as_deref())
+        };
+        let Some(mut from) = (self.nodes.iter())
+            .find(|n| n.is("start"))
+            .and_then(|n| n.unit.as_deref())
+        else {
+            return Vec::new();
+        };
+        let mut calls = Vec::new();
+        let ends = number.match_indices('.').map(|(at, _)| at);
+        for end in ends.chain([number.len()]).filter(|_| !number.is_empty()) {
+            let Some(to) = by_number(&number[..end]) else {
+                break;
+            };
+            calls.push((from, to));
+            from = to;
+        }
+        calls
     }
 
     /// The function set aside, drawn.
@@ -1208,8 +1232,38 @@ fn panel_agrees(s: &Snap) -> Value {
             let offender = json!({ "cursor_bar": bar.number, "name": bar.name, "cursor_on_the_graph": marked });
             offenders.push((2.0, offender));
         }
+        offenders.extend(numbered_as_bar(
+            s,
+            bar.number.as_deref().unwrap_or_default(),
+        ));
     }
     verdict(offenders)
+}
+
+/// The cursor's name on the graph leads with `number`, its bar's, and each name on
+/// its path with a number on the way down to it.
+fn numbered_as_bar(s: &Snap, number: &str) -> Found {
+    let lead = |n: &Node| {
+        let first = n.label.as_deref()?.split_whitespace().next()?;
+        (first.chars().all(|c| c.is_ascii_digit() || c == '.')).then(|| first.to_owned())
+    };
+    let mut offenders = Vec::new();
+    for n in s.nodes.iter().filter(|n| n.is("cursor") || n.is("path")) {
+        let Some(lead) = lead(n) else {
+            continue;
+        };
+        let fits = if n.is("cursor") {
+            lead == number
+        } else {
+            number.starts_with(&format!("{lead}."))
+        };
+        if !fits {
+            let why = "the graph numbers the cursor or its path otherwise than its bar";
+            let offender = json!({ "cursor_bar": number, "function": n.name, "label": n.label, "roles": n.roles, "why": why });
+            offenders.push((2.0, offender));
+        }
+    }
+    offenders
 }
 
 /// Bars the panel cannot show for its height, below what it shows, or for its width,
@@ -2918,6 +2972,24 @@ fn arrows_clear(s: &Snap) -> Value {
             let offender = json!({ "arrow": [a.from, a.to], "detour": r2(detour), "run": r1(run), "straight": r1(chord) });
             offenders.push((detour, offender));
         }
+        // Collapsed, a line bowed far off its straight line reads as joining
+        // something else.
+        let strays = (a.path.iter())
+            .map(|&p| piece_distance(v2(a.path[0]), v2(a.path[a.path.len() - 1]), v2(p)))
+            .fold(0.0, f32::max);
+        if !s.expanded() && strays > arrows::CHORD_OFF + CHORD_SLACK {
+            let why = "bowed further off its straight line than a collapsed view allows";
+            let offender = json!({ "arrow": [a.from, a.to], "why": why, "off_straight": r1(strays), "most": arrows::CHORD_OFF });
+            offenders.push((strays - arrows::CHORD_OFF, offender));
+        }
+        // A line is whole: broken, it reads as dashed, as a call that runs only
+        // sometimes; faint across a sphere, it reads as gone.
+        if !a.gaps.is_empty() {
+            let why = "its line breaks off, or shows faint, along the way";
+            let offender = json!({ "arrow": [a.from, a.to], "why": why, "gaps": a.gaps });
+            offenders.push((a.gaps.len() as f32, offender));
+        }
+        offenders.extend(ends_drawn(s, a));
         offenders.extend(through_dots(a, &dots));
         // Names keep no side off a call I brings in, so I moves none: its line may
         // pass under its callee's name, as under any other.
@@ -2926,21 +2998,64 @@ fn arrows_clear(s: &Snap) -> Value {
         }
     }
     offenders.extend(along_one_line(&calls, s.free()));
-    verdict(offenders)
+    // How many lines run under a lit dot no gentle bow cleared, shown over them.
+    let under_lit = (calls.iter())
+        .flat_map(|a| a.under.iter())
+        .filter(|u| s.node(u).is_some_and(|n| n.lit() && !n.unlit()))
+        .count();
+    with(verdict(offenders), "under_lit", json!(under_lit))
 }
 
-/// The dots a call's line runs through where it is drawn, or the ring round one: but
-/// its own ends', and but under its head, which ends at its own dot however near
-/// another stands.
+/// A call's line ends at a dot drawn, or a caller folded away at its module's sphere.
+fn ends_drawn(s: &Snap, a: &Arrow) -> Found {
+    let ends = [
+        (&a.from_unit, &a.from, a.path[0]),
+        (&a.to_unit, &a.to, a.path[a.path.len() - 1]),
+    ];
+    let mut offenders = Vec::new();
+    for (unit, name, at) in ends {
+        if unit.as_deref().is_some_and(|u| s.node(u).is_some()) {
+            continue;
+        }
+        let at = v2(at);
+        let rim = s.spheres().any(|m| {
+            let gap = v2(m.at).distance(at) - m.radius;
+            (-ARROW_SLACK..=LINE_CLEAR + 2.0 * ARROW_SLACK + 2.5).contains(&gap)
+        });
+        if a.flow == "outside" || !rim {
+            let why = "a line from or to a function whose dot is not drawn";
+            let offender = json!({ "arrow": [a.from, a.to], "why": why, "undrawn": name });
+            offenders.push((2.0, offender));
+        }
+    }
+    offenders
+}
+
+/// The dots a call's line runs through, or the ring round one, but its own ends',
+/// one crowding where it starts or ends, and but under its head, which ends at its
+/// own dot however near another stands; and but one that shows over the line, which
+/// runs under it (`under`). Specks never stand in a line's way.
 fn through_dots(a: &Arrow, dots: &[&Node]) -> Found {
     let length = a.length();
-    let mut gaps = a.gaps.clone();
-    gaps.push([length - a.head.unwrap_or(0.0), f32::INFINITY]);
-    let drawn = a.cut(&gaps);
+    let drawn = a.cut(&[[length - a.head.unwrap_or(0.0), f32::INFINITY]]);
     let mut offenders = Vec::new();
-    for n in dots.iter().filter(|n| !a.ends_at(n.unit.as_deref())) {
+    for n in dots
+        .iter()
+        .filter(|n| n.lit() && !n.is("plain") && !a.ends_at(n.unit.as_deref()))
+    {
+        // Where no gentle bow clears it, a line runs straight under the dot, which
+        // shows over it.
+        if n.unit.as_ref().is_some_and(|u| a.under.contains(u)) {
+            continue;
+        }
         let ring = n.rings.iter().map(|r| r.radius).fold(0.0, f32::max);
         let reach = n.radius.max(ring) + LINE_CLEAR;
+        // One crowding where the line starts or ends no line between those dots
+        // could keep off.
+        let ends = [a.path[0], a.path[a.path.len() - 1]];
+        if ends.iter().any(|&e| v2(e).distance(v2(n.at)) < reach) {
+            continue;
+        }
         let near = (drawn.iter())
             .map(|&(p, q)| piece_distance(p, q, v2(n.at)))
             .fold(f32::INFINITY, f32::min);
@@ -3206,8 +3321,9 @@ fn calls_drawn(s: &Snap) -> Value {
 }
 
 /// The callers I brings in: each drawn clear of the calls' lines, but its own, so it
-/// reads as no one else's caller; and one left unnamed on screen, or undrawn for want
-/// of room, counted in the bar along the top, unless another notice speaks there.
+/// reads as no one else's caller, and its own line drawn from its dot and along none
+/// of the journey's; one left unnamed on screen, or undrawn for want of room, counted
+/// in the bar along the top, unless another notice speaks there.
 fn outside_callers(s: &Snap) -> Value {
     if !s.state.outside_callers {
         return skip("I is off");
@@ -3219,6 +3335,28 @@ fn outside_callers(s: &Snap) -> Value {
     let lines: Vec<&Arrow> = (s.arrows.iter())
         .filter(|a| matches!(a.flow.as_str(), "into" | "journey") && a.path.len() >= 2)
         .collect();
+    // Each one's own line comes from its dot and runs along no line of the
+    // journey's, which it would read as another of.
+    for a in s
+        .arrows
+        .iter()
+        .filter(|a| a.flow == "outside" && a.path.len() >= 2)
+    {
+        if !outside.iter().any(|n| n.unit == a.from_unit) {
+            let why = "a line from a caller I brings in whose dot is not drawn";
+            offenders.push((2.0, json!({ "arrow": [a.from, a.to], "why": why })));
+        }
+        let path: Vec<egui::Pos2> = a.path.iter().map(|&p| pos(p)).collect();
+        for b in &lines {
+            let other: Vec<egui::Pos2> = b.path.iter().map(|&p| pos(p)).collect();
+            if arrows::alongside(&path, &other) {
+                let why = "runs along a journey's line, so it reads as one of its calls";
+                let offender =
+                    json!({ "arrow": [a.from, a.to], "along": [b.from, b.to], "why": why });
+                offenders.push((1.0, offender));
+            }
+        }
+    }
     for n in &outside {
         for a in lines.iter().filter(|a| !a.ends_at(n.unit.as_deref())) {
             let by = (a.pieces().iter())
@@ -3325,6 +3463,16 @@ fn colours(s: &Snap) -> Value {
             offenders.push((1.0, json!({ "function": n.name, "why": why, "fill": n.color, "role_color": hex3(want) })));
         }
     }
+    // Two levels deep, a call off the cursor's path, nor one the cursor makes, is
+    // drawn dimmer than its role's color, as its line is.
+    for n in s.nodes.iter().filter(|n| n.is("dimmed")) {
+        if let (Some(got), Some(want)) = (fill(n), node_role_color(n))
+            && bright(got) > GUESSED_DOT * bright(want)
+        {
+            let why = "off the cursor's path, but drawn as bright as on it";
+            offenders.push((1.0, json!({ "function": n.name, "why": why, "fill": n.color, "role_color": hex3(want) })));
+        }
+    }
     // A call that calls the start back is ringed in the caller's violet.
     for n in s.nodes.iter().filter(|n| n.is("calls back") && !n.focus()) {
         if !ringed(n, &|c: [f32; 3]| like(c, srgb(CALLER))) {
@@ -3381,23 +3529,29 @@ fn bar_colours(s: &Snap, offenders: &mut Found) {
     }
 }
 
-/// Each call's color is its role's: none reads white; only the journey's call into
-/// the cursor along its path and the calls of the function set aside are drawn
-/// followed, and only the first pink; a call off the journey among the expanded
-/// module's functions, and one only guessed, are faint.
+/// Each call's color is its role's: none reads white; the calls along the cursor's
+/// path down from the start are pink, and with the calls of the function set aside
+/// the only ones drawn stronger or wider than the rest; once two levels show, the
+/// journey's other calls but the cursor's own are drawn dimmer; a call off the
+/// journey among the expanded module's functions, and one only guessed, are faint.
 fn call_colours(s: &Snap, offenders: &mut Found) {
-    let path_call = s.path_call();
+    let path = s.path_calls();
     let aside = s.aside().and_then(|n| n.unit.as_deref());
+    let cursor = s.cursor();
+    let free = s.free();
     for a in &s.arrows {
         let Some(got) = a.color.as_deref().and_then(rgb) else {
             continue;
         };
         let strength = a.color.as_deref().and_then(alpha).unwrap_or(1.0);
         let from_aside = aside.is_some() && a.from_unit.as_deref() == aside;
-        let into_cursor = a.flow == "journey"
-            && path_call.is_some_and(|(from, to)| {
+        let on_path = a.flow == "journey"
+            && path.iter().any(|&(from, to)| {
                 a.from_unit.as_deref() == Some(from) && a.to_unit.as_deref() == Some(to)
             });
+        // Crossing the view with neither end in it, it is faint whatever it is.
+        let off = |p: &[f32; 2]| !free.contains(pos(*p));
+        let passing = a.path.first().is_some_and(off) && a.path.last().is_some_and(off);
         let about = |why: &str| json!({ "arrow": [a.from, a.to], "flow": a.flow, "color": a.color, "why": why });
         // White is the selection's and the start's alone: no call reads white on the
         // ground, a grey one from off the journey followed least of all.
@@ -3407,14 +3561,12 @@ fn call_colours(s: &Snap, offenders: &mut Found) {
             offenders.push((1.0, with(about(why), "shows", json!(hex3(shown)))));
             continue;
         }
-        // Only the journey's call into the cursor and the calls of the function set
-        // aside are drawn stronger or wider than the rest: pointing at a function
-        // lights none.
+        // Only the calls on the cursor's path and of the function set aside are drawn
+        // stronger or wider than the rest: pointing at a function lights none.
         let followed =
             strength > CALL_STRENGTH + 0.05 || a.width.unwrap_or(0.0) > arrows::CALL_WIDTH + 0.25;
-        if followed && !from_aside && !into_cursor {
-            let why =
-                "drawn as followed, but neither into the cursor nor from the function set aside";
+        if followed && !from_aside && !on_path {
+            let why = "drawn as followed, but neither on the cursor's path nor from the function set aside";
             offenders.push((1.0, with(about(why), "width", json!(a.width))));
             continue;
         }
@@ -3429,9 +3581,27 @@ fn call_colours(s: &Snap, offenders: &mut Found) {
             offenders.push((1.0, with(about(why), "most_alpha", json!(FAINT))));
             continue;
         }
+        let pink = like(got, srgb(CURSOR));
+        if on_path && !pink && !a.guessed && !passing {
+            let why = "on the cursor's path, but not pink";
+            offenders.push((1.0, about(why)));
+            continue;
+        }
+        // Two levels deep or more, a call of the journey off the cursor's path, not
+        // the cursor's own, is dimmer than those.
+        let dimmed = s.state.depth >= 2
+            && a.flow == "journey"
+            && !on_path
+            && !from_aside
+            && cursor.is_some()
+            && a.from_unit.as_deref() != cursor;
+        if dimmed && strength > DIMMED_STRENGTH + 0.05 {
+            let why = "off the cursor's path two levels deep, but not drawn dimmer";
+            offenders.push((1.0, with(about(why), "most_alpha", json!(DIMMED_STRENGTH))));
+            continue;
+        }
         let want = flow_color(&a.flow, a.level);
-        let pink = into_cursor && like(got, srgb(CURSOR));
-        if !like(got, want) && !pink {
+        if !(like(got, want) || on_path && pink) {
             let offender = json!({ "arrow": [a.from, a.to], "flow": a.flow, "level": a.level, "color": a.color, "role_color": hex3(want) });
             offenders.push((1.0, offender));
         }
@@ -3783,25 +3953,26 @@ mod tests {
             "flow": "journey", "level": 1, "path": [[386.0, 500.0], [994.0, 500.0]] }]);
         let result = check(&s, "arrows-clear");
         assert_eq!(result["offenders"][0]["function"], "g", "{result}");
-        // A plain speck, browsing, too.
+        // Broken round it, it reads as dashed: a line is whole.
+        s["arrows"][0]["gaps"] = json!([[46.0, 62.0]]);
+        let result = check(&s, "arrows-clear");
+        assert_eq!(result["count"], 2, "{result}");
+        s["arrows"][0]["gaps"] = json!([]);
+        // A speck, browsing, is no one's way: the line runs over it.
         s["state"]["mode"] = json!("browse");
         s["nodes"][1]["roles"] = json!(["speck"]);
+        assert!(passes(&check(&s, "arrows-clear")));
+        // A dot no gentle bow clears only where it shows over the line, counted.
+        s["state"]["nucleus"] = json!("expanded");
+        s["nodes"][1]["roles"] = json!(["opened"]);
         assert_eq!(check(&s, "arrows-clear")["count"], 1);
-        // Broken round it, clear of it, it passes: g lies 54 points along.
-        s["arrows"][0]["gaps"] = json!([[46.0, 62.0]]);
-        assert!(
-            passes(&check(&s, "arrows-clear")),
-            "{}",
-            check(&s, "arrows-clear")
-        );
-        // A gap too short leaves the line touching it.
-        s["arrows"][0]["gaps"] = json!([[51.0, 57.0]]);
-        assert_eq!(check(&s, "arrows-clear")["count"], 1);
-        s["arrows"][0]["gaps"] = json!([[46.0, 62.0]]);
-        // Bent, but through g's dot.
+        s["arrows"][0]["under"] = json!(["x:a::g"]);
+        assert!(passes(&check(&s, "arrows-clear")));
         s["state"]["mode"] = json!("journey");
         s["nodes"][1]["roles"] = json!(["journey level 1"]);
-        s["arrows"][0]["gaps"] = json!([]);
+        assert_eq!(check(&s, "arrows-clear")["under_lit"], 1);
+        s["arrows"][0]["under"] = json!([]);
+        // Bent, but through g's dot.
         s["arrows"][0]["path"] = json!([
             [386.0, 500.0],
             [440.0, 500.0],
@@ -3865,6 +4036,39 @@ mod tests {
     }
 
     #[test]
+    fn a_collapsed_line_bowed_wide_or_from_a_dot_not_drawn_is_named() {
+        let mut s = scene();
+        s["state"]["mode"] = json!("journey");
+        s["nodes"][0]["roles"] = json!(["start"]);
+        s["nodes"][1]["at"] = json!([380.0, 200.0]);
+        s["nodes"][2]["roles"] = json!(["journey level 1"]);
+        s["arrows"] = json!([{ "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h",
+            "flow": "journey", "level": 1, "path": [[386.0, 500.0], [994.0, 500.0]] }]);
+        // Collapsed, a bow 30 points off its straight line reads as joining
+        // something else.
+        s["arrows"][0]["path"] = json!([
+            [386.0, 500.0],
+            [440.0, 530.0],
+            [710.0, 530.0],
+            [994.0, 500.0]
+        ]);
+        let result = check(&s, "arrows-clear");
+        assert_eq!(result["count"], 1, "{result}");
+        assert!(
+            result["offenders"][0]["off_straight"]
+                .as_f64()
+                .expect("off")
+                > 20.0
+        );
+        // And a line from or to a function not drawn.
+        s["arrows"][0]["path"] = json!([[386.0, 520.0], [994.0, 520.0]]);
+        assert!(passes(&check(&s, "arrows-clear")));
+        s["arrows"][0]["from_unit"] = json!("x:a::gone");
+        let result = check(&s, "arrows-clear");
+        assert_eq!(result["offenders"][0]["undrawn"], "f", "{result}");
+    }
+
+    #[test]
     fn a_call_nine_points_from_the_starts_dot_runs_through_its_ring() {
         let mut s = scene();
         s["state"]["mode"] = json!("journey");
@@ -3878,12 +4082,14 @@ mod tests {
             "flow": "journey", "level": 1, "path": [[389.0, 206.0], [389.0, 800.0]] }]);
         let result = check(&s, "arrows-clear");
         assert_eq!(result["offenders"][0]["function"], "f", "{result}");
-        // Broken round f's ring, it passes.
+        // Broken round f's ring, it reads as dashed instead.
         s["arrows"][0]["gaps"] = json!([[276.0, 312.0]]);
+        let result = check(&s, "arrows-clear");
         assert!(
-            passes(&check(&s, "arrows-clear")),
-            "{}",
-            check(&s, "arrows-clear")
+            (result["offenders"].as_array().expect("offenders"))
+                .iter()
+                .any(|o| o["gaps"].is_array()),
+            "{result}"
         );
     }
 
@@ -3919,12 +4125,13 @@ mod tests {
         s["arrows"][0]["path"] = json!([[386.0, 500.0], [994.0, 500.0]]);
         assert!(passes(&check(&s, "arrows-clear")));
         // A second call from f along the first, past it to a function beyond h.
+        s["nodes"][1]["at"] = json!([1408.0, 501.0]);
         s["arrows"]
             .as_array_mut()
             .expect("arrows")
             .push(json!({ "from": "f", "to": "k",
-            "from_unit": "x:a::f", "to_unit": "x:c::k", "flow": "journey", "level": 1,
-            "path": [[386.0, 501.0], [1400.0, 501.0]], "gaps": [[600.0, 625.0]] }));
+            "from_unit": "x:a::f", "to_unit": "x:a::g", "flow": "journey", "level": 1,
+            "path": [[386.0, 501.0], [1400.0, 501.0]] }));
         let result = check(&s, "arrows-clear");
         assert_eq!(
             result["offenders"][0]["arrow"],
@@ -3937,8 +4144,8 @@ mod tests {
             "{result}"
         );
         // Bowed off it, the two read apart.
+        s["state"]["nucleus"] = json!("expanded");
         s["arrows"][1]["path"] = json!([[386.0, 505.0], [700.0, 560.0], [1400.0, 505.0]]);
-        s["arrows"][1]["gaps"] = json!([]);
         assert!(
             passes(&check(&s, "arrows-clear")),
             "{}",
@@ -4947,6 +5154,95 @@ mod tests {
         assert_eq!(result["offenders"][0]["bar"], "2", "{result}");
         s["nodes"][1]["numbers"] = json!(["2"]);
         assert!(passes(&check(&s, "panel-agrees")));
+    }
+
+    #[test]
+    fn the_graph_numbers_the_cursor_and_its_path_as_its_bar() {
+        let mut s = journey();
+        s["nodes"][2]["label"] = json!(" 2  h");
+        let result = check(&s, "panel-agrees");
+        assert_eq!(result["offenders"][0]["function"], "h", "{result}");
+        // A call of the same function elsewhere keeps its own number off the path.
+        let mut s = journey();
+        s["state"]["cursor"]["number"] = json!("1.1");
+        s["bars"][1]["number"] = json!("1.1");
+        s["nodes"][2]["numbers"] = json!(["1.1"]);
+        s["nodes"][2]["label"] = json!(" 1.1  h");
+        s["nodes"][1]["roles"] = json!(["journey level 1", "path"]);
+        s["nodes"][1]["numbers"] = json!(["1", "2"]);
+        s["nodes"][1]["label"] = json!(" 1  g");
+        let numbered = |s: &Value| {
+            check(s, "panel-agrees")["offenders"]
+                .as_array()
+                .is_some_and(|o| o.iter().any(|o| o["function"] == "g"))
+        };
+        assert!(!numbered(&s));
+        s["nodes"][1]["label"] = json!(" 2  g");
+        assert!(numbered(&s), "its number off the cursor's path");
+    }
+
+    #[test]
+    fn the_cursor_s_path_is_pink_and_the_rest_of_a_deep_journey_dimmer() {
+        let mut s = journey();
+        s["state"]["depth"] = json!(2);
+        s["state"]["cursor"]["number"] = json!("1.1");
+        s["nodes"][1]["roles"] = json!(["journey level 1", "path"]);
+        s["nodes"][1]["numbers"] = json!(["1"]);
+        s["nodes"][2]["roles"] = json!(["journey level 2", "cursor"]);
+        s["nodes"][2]["numbers"] = json!(["1.1"]);
+        let call = |from: &str, to: &str, level: u32, color: &str, width: f32| {
+            json!({ "from": from, "to": to, "from_unit": format!("x:{}", if from == "h" { "b::h".to_owned() } else { format!("a::{from}") }),
+                "to_unit": format!("x:{}", if to == "h" { "b::h".to_owned() } else { format!("a::{to}") }),
+                "flow": "journey", "level": level, "color": color, "width": width,
+                "path": [[400.0, 520.0], [990.0, 520.0]] })
+        };
+        let pink = "#ff5cb8ff";
+        s["arrows"] = json!([call("f", "g", 1, pink, 2.0), call("g", "h", 2, pink, 2.5)]);
+        let offenders = |s: &Value| check(s, "colours")["count"].as_u64().unwrap_or(0);
+        assert_eq!(offenders(&s), 0, "{}", check(&s, "colours"));
+        // Every call on the path pink, not only the last.
+        s["arrows"][0]["color"] = json!("#4db8ffd9");
+        s["arrows"][0]["width"] = json!(1.5);
+        assert_eq!(offenders(&s), 1, "{}", check(&s, "colours"));
+        s["arrows"][0] = call("f", "g", 1, pink, 2.0);
+        // Off the path, two levels deep: dimmer than a call on it.
+        s["arrows"]
+            .as_array_mut()
+            .unwrap()
+            .push(call("f", "h", 1, "#4db8ffd9", 1.5));
+        assert_eq!(offenders(&s), 1, "{}", check(&s, "colours"));
+        s["arrows"][2]["color"] = json!("#4db8ff66");
+        assert_eq!(offenders(&s), 0, "{}", check(&s, "colours"));
+    }
+
+    #[test]
+    fn a_caller_brought_in_draws_its_line_from_its_dot_and_along_no_journey_line() {
+        let mut s = journey();
+        s["state"]["outside_callers"] = json!(true);
+        s["nodes"][1]["roles"] = json!(["outside"]);
+        s["nodes"][1]["at"] = json!([380.0, 200.0]);
+        s["nodes"][1]["label"] = json!("g");
+        s["arrows"] = json!([
+            { "from": "f", "to": "h", "from_unit": "x:a::f", "to_unit": "x:b::h", "flow": "journey",
+              "level": 1, "path": [[386.0, 500.0], [994.0, 500.0]] },
+            { "from": "g", "to": "h", "from_unit": "x:a::g", "to_unit": "x:b::h", "flow": "outside",
+              "path": [[386.0, 206.0], [400.0, 508.0], [994.0, 508.0]] },
+        ]);
+        let result = check(&s, "outside-callers");
+        assert!(
+            (result["offenders"].as_array().expect("offenders"))
+                .iter()
+                .any(|o| o["along"] == json!(["f", "h"])),
+            "{result}"
+        );
+        s["arrows"][1]["path"] = json!([[386.0, 206.0], [994.0, 494.0]]);
+        assert!(
+            passes(&check(&s, "outside-callers")),
+            "{}",
+            check(&s, "outside-callers")
+        );
+        s["arrows"][1]["from_unit"] = json!("x:a::gone");
+        assert!(!passes(&check(&s, "outside-callers")));
     }
 
     #[test]

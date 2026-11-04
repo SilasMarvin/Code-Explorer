@@ -873,9 +873,11 @@ pub(crate) struct ArrowShape {
     pub(crate) head_width: f32,
     pub(crate) tip: Vec2,
     pub(crate) path: Vec<Vec2>,
-    /// Where its line breaks round a dot it passes, as how far along it from its
-    /// start, in points.
+    /// Where its line does not show, as how far along it from its start, in points:
+    /// a line between modules, behind the spheres it passes.
     pub(crate) gaps: Vec<[f32; 2]>,
+    /// The dots it runs under, by tile, each drawn over it.
+    pub(crate) under: Vec<usize>,
 }
 
 /// A ring round a function, so big in the world, in a color.
