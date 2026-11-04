@@ -19,12 +19,23 @@ pub(crate) fn key_hint(ctx: &egui::Context, foot: egui::Rect, expanded: bool) {
         .with_clip_rect(foot);
     let galley = hint_galley(&painter, expanded);
     let at = hint_at(foot, galley.size());
-    painter.rect_filled(
-        egui::Rect::from_min_size(at, galley.size()).expand2(PILL_PAD),
-        4.0,
-        PILL,
-    );
+    let backing = egui::Rect::from_min_size(at, galley.size()).expand2(PILL_PAD);
+    painter.rect_filled(backing, 4.0, PILL);
     painter.galley(at, galley, MUTED);
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(hint_drawn_id(), (pass, backing)));
+}
+
+fn hint_drawn_id() -> egui::Id {
+    egui::Id::new("key_hint_drawn")
+}
+
+/// Where the hint at the keys was drawn in the egui pass before `pass`, if it was:
+/// what it covers on the graph a session reads as under it.
+pub(crate) fn hint_drawn(ctx: &egui::Context, pass: u64) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp::<(u64, egui::Rect)>(hint_drawn_id()))
+        .filter(|&(at, _)| at + 1 == pass)
+        .map(|(_, rect)| rect)
 }
 
 /// Where the browsing hint at the keys lies along `foot`, its backing included: names

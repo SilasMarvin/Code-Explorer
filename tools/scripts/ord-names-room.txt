@@ -4,9 +4,11 @@
 # name placed afresh, none kept out by a place it never had; the selection's module
 # and the modules holding anything lit named; a module's plain names all or none, and
 # none over a call lit. In a journey, the calls a deeper level shows keep out no name
-# shown; a caller folded into its module's count lies under no name, nor does the
-# start's name lie on its own incoming call. Expanded, a lit name lies over the plain
-# dots it must, and plain dots show smaller than lit ones.
+# shown; a caller folded into its module's count lies under no plain or module name,
+# and keeps no lit name out (graph_focus's root_tile named), nor does the start's name
+# lie on its own incoming call. Expanded, a lit name lies over the plain dots it must,
+# and plain dots show smaller than lit ones. Small, scenario expanded by a double click
+# names its lit functions over spotlit's faint calls passing through it.
 window 900 700
 key r
 expect check module-names pass
@@ -51,6 +53,8 @@ type graph_focus
 key enter
 key enter
 expect start Explorer::graph_focus
+expect named Explorer::root_tile
+expect check named-when-room pass
 expect check labels-clear pass
 expect check labels-near pass
 
@@ -71,3 +75,18 @@ expect check named-when-room pass
 expect check labels-clear pass
 expect check dot-sizes pass
 snap expanded depth 5
+
+key x
+key esc
+window 1000 600
+key r
+key /
+type spotlit
+search-pick Explorer::spotlit
+doubleclick Finder::walk
+expect expanded scenario
+expect named Finder::escapes
+expect named scenario::refined
+expect check named-when-room pass
+expect check plain-names pass
+snap scenario small

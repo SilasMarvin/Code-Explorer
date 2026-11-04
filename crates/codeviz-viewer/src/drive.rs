@@ -983,10 +983,12 @@ fn record(
             .filter_map(|&(id, name)| Some((name.to_owned(), m.area_rect(egui::Id::new(id))?)))
             .collect::<Vec<_>>()
     });
-    // The notice, a moment in the bar along the top: never over a name.
+    // The notice, a moment in the bar along the top, and the hint at the keys along
+    // the graph's foot: never over a name.
     let overlays = overlays
         .into_iter()
         .chain(crate::notice::drawn(&ctx, pass).map(|r| ("notice".to_owned(), r)))
+        .chain(crate::key_help::hint_drawn(&ctx, pass).map(|r| ("key hint".to_owned(), r)))
         .collect();
     let graph = cameras
         .single()
