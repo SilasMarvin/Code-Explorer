@@ -114,6 +114,8 @@ pub(crate) fn state(view: &View) -> Value {
         "nucleus": if nucleus.expanded() { "expanded" } else { "modules" },
         "expanded": nucleus.expanded_module().map(|c| explorer.cluster_name(c)),
         "depth": explorer.disclose().0,
+        // In a journey, how many levels below the start its deepest call is.
+        "deepest": (!explorer.browsing()).then(|| disclosed.deepest()),
         "outside_callers": explorer.outside_shown(),
         "outside_waiting": nucleus.outside_waiting(),
         "hovered": explorer.hovered().map(name),

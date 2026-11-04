@@ -136,6 +136,9 @@ pub(crate) enum Kind {
     /// `window`: the window sized anew, which frames the view again as it was last
     /// framed, unless the hands moved the camera since.
     Resize,
+    /// Back or Forward: a place put back, the camera as it stood there, perhaps where
+    /// the hands put it.
+    Back,
     /// Anything else, which may move the view.
     Moves,
 }
@@ -562,6 +565,7 @@ impl Step {
                 (KeyCode::KeyX, false) => Kind::Expand,
                 (KeyCode::KeyF, false) => Kind::FrameFocus,
                 (KeyCode::KeyR, false) => Kind::FrameAll,
+                (KeyCode::Backspace, _) => Kind::Back,
                 _ => Kind::Moves,
             },
             Step::Point { gesture, .. } => match gesture {
@@ -848,6 +852,8 @@ mod tests {
         assert_eq!(kind("key f"), Kind::FrameFocus);
         assert_eq!(kind("key r"), Kind::FrameAll);
         assert_eq!(kind("key esc"), Kind::Moves);
+        assert_eq!(kind("key backspace"), Kind::Back);
+        assert_eq!(kind("key shift+backspace"), Kind::Back);
         assert_eq!(kind("hover main"), Kind::Still);
         assert_eq!(kind("click main"), Kind::Click);
         assert_eq!(kind("bar 2"), Kind::Click);
