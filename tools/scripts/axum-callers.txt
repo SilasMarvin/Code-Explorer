@@ -1,8 +1,8 @@
 #: view demo/out/axum-server.json
 # The way up a journey: the start's callers in a row above its bar in the panel. Up
 # from the start sets the first of them aside, left and right walk the row, down comes
-# back to the start, and Enter opens the caller's journey; a click on a caller's bar
-# sets it aside too, and Shift-click on a caller opens its journey. `i` with nothing
+# back to the start, and Enter opens the caller's journey, Back returning past the row;
+# a click on a caller's bar sets it aside too, and Shift-click on a caller opens its journey. `i` with nothing
 # off the journey calling in leaves itself off. The top bar says which module is
 # expanded. Search lists a function whose own name holds the query before one whose
 # module's does.
@@ -40,6 +40,20 @@ expect nothing-moved
 key enter
 expect start POST /orders/{id}/reorder
 key backspace
+expect start orders::place
+
+# Moving along the row makes no place of its own: Back from the caller's journey
+# returns to the start's, and once more to before it.
+key up
+key right
+key enter
+expect start POST /orders/{id}/reorder
+key backspace
+expect start orders::place
+expect aside none
+key backspace
+expect mode browse
+key shift+backspace
 expect start orders::place
 
 shift+click POST /users/{id}/orders

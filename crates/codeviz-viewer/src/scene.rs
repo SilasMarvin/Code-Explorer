@@ -176,21 +176,14 @@ fn keyboard(
 }
 
 /// Escape steps out one level, closing whatever is on top: the search box, the key
-/// list, the function set aside, the expanded module, the journey, for browsing with
-/// its start selected, and then the selection.
+/// list, then what the explorer has open ([`Explorer::step_out`]).
 fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrome) {
     if chrome.search {
         chrome.search = false;
     } else if help.0 {
         help.0 = false;
-    } else if explorer.aside().is_some() {
-        explorer.clear_aside();
-    } else if explorer.nucleus().expanded() {
-        explorer.toggle_expand(None);
-    } else if !explorer.browsing() {
-        explorer.leave_journey();
     } else {
-        explorer.deselect();
+        explorer.step_out();
     }
 }
 

@@ -65,6 +65,18 @@ expect mode journey
 expect camera-same-as journey
 snap esc collapses
 
+# A double click on a call picks nothing: the cursor stays on the start.
+doubleclick pricing::quote
+expect expanded pricing
+expect cursor orders::place
+expect aside none
+expect check focus-on-screen
+snap doubleclick on a call
+key x
+expect expanded none
+expect cursor orders::place
+expect camera-same-as esc collapses
+
 drag 80 30
 key r
 expect check framed
@@ -108,8 +120,15 @@ expect check map-on-screen
 snap resized after r
 window 1600 1000
 snap resized back
+key r
+snap r again
+window 1100 720
+expect check framed
+snap resized a snapshot after r
+window 1600 1000
 
-# X on a caller set aside, then Esc: back to the journey as it was, collapsed.
+# X on a caller set aside, then Esc: back to the journey as it was, collapsed, the
+# caller still set aside; the next Esc lets it go.
 key esc
 key esc
 click orders::place
@@ -120,12 +139,22 @@ key x
 expect nucleus expanded
 key esc
 expect expanded none
-expect aside none
 expect camera-same-as caller set aside
+expect check focus-on-screen
+snap esc shrinks back
+key esc
+expect aside none
+expect nothing-moved
+
+# A pan begun just above the panel follows the hand over it.
+click 1123 858
+pan -120 60
+snap panned from above the panel
 
 # Expanded, zoomed all the way out, the whole map is held in the middle, turned and
 # panned too.
 key esc
+expect mode browse
 key r
 click pricing::quote
 key x
