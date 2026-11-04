@@ -34,7 +34,7 @@ expect notice Nothing selected: F
 snap f nothing selected
 key r
 scroll 5 at 1560 950
-pan -400 -200
+pan -600 -300
 expect notice The edge of the map
 expect check map-on-screen
 snap panned to the edge

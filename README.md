@@ -99,23 +99,27 @@ caller's bar selects it the same way. `I` brings in every function off the journ
 calls the cursor's, faint, without moving anything already there, and `I` again takes
 them out; with none, it says so. Every caller `I` could bring in, for any call of the
 journey, has its place worked out once, so moving the cursor with `I` on shows some and
-hides others and moves none. `Esc` steps out one level at a time: the function selected
-off the journey, then the module expanded, then the journey, for browsing with its start
-selected and the camera back where it stood before the journey. `Shift`-click on a
+hides others and moves none. `Esc` steps out one level at a time, the last opened first:
+the function selected off the journey (but after `X` on it, the module first, keeping
+it), then the module expanded, then the journey, for browsing with its start selected
+and the camera back where it stood before the journey. `Shift`-click on a
 journey's bar opens that function's journey, as anywhere.
 
 `Backspace` (or `← Back`) goes back to the view before: a selection, a journey, a
 cursor position, with the camera each had; `Shift+Backspace` (or `Forward →`) goes
 forward again. A walk with the arrows or brackets is remembered once, from where it
-began. Changing the depth is not a move of its own.
+began; moving along the row of the start's callers is no move of its own. Changing the
+depth is not a move of its own. A journey left and entered again opens at its first
+level.
 
 ### Expand
 
 `X` flies into a module (the top bar then reads `· inside` it): that of the selection,
 the cursor or the start, else the one in the middle of the view (`--expand` with
 `--focus` opens straight into the start's). A double click on a module, on one of its
-functions or anywhere on its sphere, does the same for that module. The camera saves where it is and comes in
-until the module fills the view. The module opens where it stands, browsing or in a
+functions or anywhere on its sphere, does the same for that module, and picks nothing:
+the selection, or the journey's cursor, stays. The camera saves where it is and comes in
+until the module fills the view, in the middle of it. The module opens where it stands, browsing or in a
 journey alike: every one of its functions drawn and named where they fit, with the
 calls among them, and nothing moves but the camera. In a journey, when the cursor
 moves to a function in another module, that module opens instead and the camera flies
@@ -129,7 +133,8 @@ between browsing and a journey, shrinks it back.
 The wheel or a pinch zooms towards the pointer, in until the module under it fills nine
 tenths of the view, drawn into it whole, out until the whole scene takes about half of
 it; a drag orbits within a range round the usual view; a right drag, or `Shift` with a
-drag, pans, no further than keeps the map in the view. `F` frames the focus: the
+drag, pans, no further than keeps the map in the view, or close in, a module near its
+middle; a drag begun on the graph goes on over the panel. `F` frames the focus: the
 selection and what it lights, the journey, or the module expanded. `R` turns back to the
 usual view and frames everything shown. A click on empty space clears the selection (in
 a journey, the function set aside) and never moves the camera. The camera moves only

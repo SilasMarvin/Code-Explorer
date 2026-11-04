@@ -7,7 +7,12 @@ use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_egui::{EguiContexts, input::EguiWantsInput};
 
 use crate::{
-    camera::OrbitCamera, explorer::Explorer, idle::Awake, labels, nucleus::Nucleus, scene::Tile,
+    camera::OrbitCamera,
+    explorer::{Explorer, Picked},
+    idle::Awake,
+    labels,
+    nucleus::Nucleus,
+    scene::Tile,
 };
 
 /// How far past a function's drawn edge, in points, the pointer still counts as on it.
@@ -205,20 +210,21 @@ const DOUBLE_CLICK: f32 = 0.4;
 
 /// A double click on a module expands it: anywhere on its sphere, or on one of its
 /// functions; on another module than the one expanded, expands that one instead. On
-/// the module expanded, off every function, it shrinks it back. Browsing, it picks
-/// nothing: the selection its first click changed, as any click does, is put back. A
-/// press that drags to orbit is no click.
+/// the module expanded, off every function, it shrinks it back. It picks nothing:
+/// what its first click changed, as any click does (the selection, the journey's
+/// cursor, the function set aside), is put back. A press that drags to orbit is no
+/// click.
 pub(crate) fn double_click(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut explorer: ResMut<Explorer>,
-    mut pressed: Local<Option<(Vec2, Option<usize>)>>,
-    mut last: Local<Option<(f32, Vec2, Option<usize>)>>,
+    mut pressed: Local<Option<(Vec2, Picked)>>,
+    mut last: Local<Option<(f32, Vec2, Picked)>>,
 ) {
     let cursor = window.cursor_position();
     if buttons.just_pressed(MouseButton::Left) {
-        *pressed = cursor.map(|at| (at, explorer.selection()));
+        *pressed = cursor.map(|at| (at, explorer.picked()));
     }
     if !buttons.just_released(MouseButton::Left) {
         return;
@@ -231,13 +237,13 @@ pub(crate) fn double_click(
         }
     };
     let now = time.elapsed_secs();
-    let Some((.., selected)) = last.take().filter(|&(then, was, _)| {
+    let Some((.., selected)) = last.take().filter(|(then, was, _)| {
         now - then <= DOUBLE_CLICK && was.distance(at) < 2.0 * CLICK_TRAVEL
     }) else {
         *last = Some((now, at, selected));
         return;
     };
-    explorer.keep_selection(selected);
+    explorer.keep_picked(selected);
     let expanded = explorer.nucleus().expanded_module();
     match explorer.module_pointed() {
         // Another module than the one expanded, or the first: expanded instead.

@@ -399,6 +399,12 @@ struct Drive {
     /// the view last framed itself; and what the view was on when it last did.
     by_hand: bool,
     framed_on: (bool, Option<usize>),
+    /// R or F, when it framed the view last and nothing but a window sized anew has
+    /// moved it since.
+    framed_by: Option<Kind>,
+    /// Whether a step since the last snapshot may pick something: anything but an
+    /// expand and the steps that only look.
+    picks: bool,
     /// The module expanded, and whether the camera stood where the hands put it, as
     /// the step under way began; and while a module is expanded, whether the camera
     /// was where the hands put it before the first expand, which shrinking back
@@ -1511,6 +1517,8 @@ fn since(drive: &Drive) -> Since {
         by_hand: drive.by_hand,
         playing: false,
         opening: drive.moves == 0,
+        framed_by: drive.framed_by,
+        picks: drive.picks,
     }
 }
 
@@ -1538,6 +1546,21 @@ fn begin_next(commands: &mut Commands, drive: &mut Drive, view: &View, now: Dura
             drive.said_before = view.explorer.notice().map(|(count, _)| count);
         }
         drive.kinds.push(step.kind());
+        drive.picks |= step.kind() != Kind::Expand
+            && !matches!(
+                step,
+                Step::Expect(_)
+                    | Step::Wait(_)
+                    | Step::Point {
+                        gesture: Gesture::Hover | Gesture::LabelHover,
+                        ..
+                    }
+            );
+        match step.kind() {
+            kind @ (Kind::FrameAll | Kind::FrameFocus) => drive.framed_by = Some(kind),
+            Kind::Still | Kind::Resize => {}
+            _ => drive.framed_by = None,
+        }
         drive.moves += usize::from(step.kind() != Kind::Still);
         drive.pan_from = match step {
             Step::Pan(_) => view.orbit_pose().and_then(|pose| {
@@ -1586,6 +1609,7 @@ fn snap(commands: &mut Commands, drive: &mut Drive, view: &View, label: Option<&
     }
     let checked = checks::run(&scene, drive.last_scene.as_ref(), &since(drive));
     drive.kinds.clear();
+    drive.picks = false;
     drive.checked.push((name.clone(), checked.clone()));
     drive
         .cameras

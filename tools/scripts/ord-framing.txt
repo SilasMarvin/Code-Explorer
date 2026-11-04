@@ -54,3 +54,14 @@ scroll 6 at 800 990
 pan -700 -400
 expect check map-on-screen
 snap zoomed in panned
+
+# Close in, a pan stops while a sphere is still near the free area's middle, however
+# far the box round the map goes on.
+key r
+scroll 14 at Explorer::spotlit
+pan 4000 0
+expect check map-on-screen
+snap close in panned right
+pan 0 4000
+expect check map-on-screen
+snap close in panned down
