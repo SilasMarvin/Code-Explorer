@@ -629,15 +629,19 @@ impl Node {
     }
 
     /// Whether `other`'s dot keeps this one's name off: any lit one, but a plain one
-    /// only from a plain name.
+    /// or a caller folded into its module's count only from a plain name.
     fn kept_off_by(&self, other: &Node) -> bool {
-        other.lit() && (self.plain() || !other.plain())
+        other.lit() && (self.plain() || !other.plain() && !other.folded())
     }
 
     /// Whether this one's name, lit, at `pill`, pays `other`'s dot no mind: one drawn
-    /// faded, or one nothing lights that the opaque pill covers, or some of it.
+    /// faded, a caller folded into its module's count, or one nothing lights that the
+    /// opaque pill covers, or some of it.
     fn overlooks(&self, other: &Node, pill: egui::Rect) -> bool {
-        !self.unlit() && (other.faded() || other.unlit() && other.gap(pill, other.radius) < 0.0)
+        !self.unlit()
+            && (other.faded()
+                || other.folded()
+                || other.unlit() && other.gap(pill, other.radius) < 0.0)
     }
 
     /// How far a name's text at `r` lies from the dot's edge, the dot taken `radius`
@@ -2686,6 +2690,18 @@ fn named_on_screen(s: &Snap) -> Value {
             offenders.push((1.0, with(about, "under", json!(under))));
         }
     }
+    // Nor is a function named whose dot lies under an overlay, the hint at the keys
+    // among them: its name would float by nothing.
+    for n in s.nodes.iter().filter(|n| n.on_screen && n.label.is_some()) {
+        let under: Vec<&str> = (s.overlays.iter())
+            .filter(|o| o.name != "search box" && rect(o.rect).contains(pos(n.at)))
+            .map(|o| o.name.as_str())
+            .collect();
+        if !under.is_empty() {
+            let offender = json!({ "function": n.name, "dot": n.at, "dot_under": under });
+            offenders.push((1.0, offender));
+        }
+    }
     verdict(offenders)
 }
 
@@ -3048,7 +3064,8 @@ fn named_when_room(s: &Snap) -> Value {
 /// a wall over the map: in the module expanded, or one whose sphere shows at least
 /// [`labels::PLAIN_SPHERE`] across; and there, below [`labels::WREATH_SPHERE`]
 /// across, each of its plain functions in the free area named, or none: no partial
-/// wreath round a sphere.
+/// wreath round a sphere. The module expanded names its plain functions wherever
+/// they fit, a part of them if need be.
 fn plain_names(s: &Snap) -> Value {
     let plain: Vec<&Node> = (s.nodes.iter())
         .filter(|n| n.is("plain") && n.label.is_some())
@@ -4845,6 +4862,13 @@ mod tests {
         let result = check(&s, "named-on-screen");
         assert_eq!(result["count"], 2);
         assert_eq!(result["offenders"][0]["why"], "cut off by the graph's edge");
+        // A dot named under the hint at the keys.
+        let mut s = scene();
+        s["overlays"] = json!([{ "name": "key hint", "rect": [12.0, 960.0, 700.0, 990.0] }]);
+        assert!(passes(&check(&s, "named-on-screen")));
+        s["nodes"][0]["at"] = json!([380.0, 975.0]);
+        let result = check(&s, "named-on-screen");
+        assert_eq!(result["offenders"][0]["function"], "f", "{result}");
     }
 
     #[test]
@@ -5297,6 +5321,10 @@ mod tests {
         let result = check(&s, "plain-names");
         assert_eq!(result["offenders"][0]["module"], "a", "{result}");
         s["modules"][0]["radius"] = json!(250.0);
+        assert!(passes(&check(&s, "plain-names")));
+        // The module expanded, small, may name a part of them.
+        s["modules"][0]["radius"] = json!(150.0);
+        s["state"]["expanded"] = json!("a");
         assert!(passes(&check(&s, "plain-names")));
     }
 
@@ -6180,6 +6208,37 @@ mod tests {
         s["labels"].as_array_mut().unwrap().remove(3);
         let result = check(&s, "module-names");
         assert_eq!(result["offenders"][0]["module"], "b", "{result}");
+    }
+
+    #[test]
+    fn a_caller_folded_away_keeps_no_lit_name_out() {
+        let mut s = journey();
+        s["nodes"][2]["label"] = Value::Null;
+        s["nodes"][2]["label_rect"] = Value::Null;
+        s["labels"].as_array_mut().unwrap().remove(2);
+        // Folded callers' dots on every side of h's.
+        for (x, y) in [
+            (1012.0, 500.0),
+            (988.0, 500.0),
+            (1000.0, 488.0),
+            (1000.0, 512.0),
+        ] {
+            s["nodes"].as_array_mut().unwrap().push(json!({
+                "name": format!("c{x}{y}"), "unit": format!("x:b::c{x}{y}"), "module": "b",
+                "roles": ["caller, folded into its module's count"], "at": [x, y], "radius": 2.4,
+                "world": [10.0, 0.0, 0.0], "world_radius": 0.1, "on_screen": true,
+            }));
+        }
+        let result = check(&s, "named-when-room");
+        assert_eq!(result["offenders"][0]["function"], "h", "{result}");
+        // Named over one, it is clear of it.
+        s["nodes"][2]["label"] = json!("h");
+        s["nodes"][2]["label_rect"] = json!([1006.0, 494.0, 1030.0, 506.0]);
+        assert!(
+            passes(&check(&s, "labels-clear")),
+            "{}",
+            check(&s, "labels-clear")
+        );
     }
 
     #[test]

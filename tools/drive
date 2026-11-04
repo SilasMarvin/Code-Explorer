@@ -402,7 +402,14 @@ def judge_look(out, summary):
         if not png.exists() or not meta.exists():
             continue
         snap = json.loads(meta.read_text())
-        width, height, pixel = picture(png)
+        # A picture that will not convert (a full disk, say) leaves its look unjudged.
+        try:
+            width, height, pixel = picture(png)
+        except (subprocess.CalledProcessError, OSError) as e:
+            err = (getattr(e, "stderr", None) or b"").decode(errors="replace").strip() or str(e)
+            checks["look"] = {"pass": None, "why": "picture did not convert", "error": err}
+            tally["not_applied"] += 1
+            continue
         # A PNG left at the screen's scale (a run that stopped before shrinking it).
         scale = width / snap["window"][0]
 

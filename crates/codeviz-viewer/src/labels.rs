@@ -1,25 +1,26 @@
-//! Names on the graph: who is named and in what order, what each name says and how
-//! it looks, and where it goes. Every function and module is named where its name
-//! fits, placed greedily in one fixed order of importance: the start (browsing, the
+//! Names on the graph: who is named and in what order, what each name says and how it
+//! looks, and where it goes. Every function and module is named where its name fits,
+//! placed greedily in one fixed order of importance: the start (browsing, the
 //! selection), the cursor, the calls on the cursor's path down from the start, the
-//! function set aside, the journey's other calls in number order, the callers (once
-//! two levels show, the cursor's own calls, the callers, then the calls off its path,
-//! drawn dimmer), what I brings in, the modules holding anything lit, the other modules biggest first,
-//! then plain functions. A name never loses its place to one later in that order. A
-//! name sits nearer its own dot than any other drawn and not covered, and never on
-//! the side its own calls come in from, or goes. A plain name stays where it was or
-//! goes, never moves: it keeps the side it takes in a neutral view, the view with
-//! nothing selected, or else a home its dot's neighbours alone decide, and dots keep
-//! names off as though each were the cursor's; it lies across no call lit, and a
-//! module's plain names show all or none. A lit name keeps the place it had while
-//! the selection, the journey and the camera stay; where a name placed before it
-//! took that place, it goes rather than moves. On a fresh selection or journey, or
-//! with the camera moved, it takes its side in the neutral view, else the first
-//! place round its dot with room, whatever came before, and may cover plain dots
-//! under its opaque pill. In a journey names would rather keep off the dots a deeper
-//! level shows, so a level more takes away no room, but those keep out no name
-//! shown. What the pointer is on is named over the rest, on its emptiest side,
-//! taking no room, so pointing never moves or hides another name.
+//! function set aside, the journey's other calls in number order, the callers (once two
+//! levels show, the cursor's own calls, the callers, then the calls off its path, drawn
+//! dimmer), what I brings in, the modules holding anything lit, the other modules
+//! biggest first, then plain functions. A name never loses its place to one later in
+//! that order. A name sits nearer its own dot than any other drawn and not covered, and
+//! never on the side its own calls come in from, or goes. A plain name stays where it
+//! was or goes, never moves: it keeps the side it takes in a neutral view, the view
+//! with nothing selected, or else a home its dot's neighbours alone decide, and dots
+//! keep names off as though each were the cursor's; it lies across no call lit (one
+//! passing faint, both ends off the graph, aside), and a module's plain names show all
+//! or none. A lit name keeps the place it had while the selection, the journey and the
+//! camera stay; where a name placed before it took that place, it goes rather than
+//! moves. On a fresh selection or journey, or with the camera moved, it takes its side
+//! in the neutral view, else the first place round its dot with room, whatever came
+//! before, and may cover plain dots and callers folded into their module's count under
+//! its opaque pill. In a journey names would rather keep off the dots a deeper level
+//! shows, so a level more takes away no room, but those keep out no name shown. What
+//! the pointer is on is named over the rest, on its emptiest side, taking no room, so
+//! pointing never moves or hides another name.
 
 use std::{
     cell::{Cell, RefCell},
@@ -277,9 +278,11 @@ struct Disc {
 /// How a dot shows beside what is lit, as names keep off it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shade {
-    /// Lit, the start or the cursor, or a caller of the start folded into its
-    /// module's count: no name ever covers it.
+    /// Lit, the start or the cursor: no name ever covers it.
     Lit,
+    /// A caller of the start folded into its module's count, named only under the
+    /// pointer: no lit name keeps off it, a plain one or a module's does.
+    Folded,
     /// Lit by nothing, an expanded module's plain function or a speck: a lit name may
     /// cover it with its pill.
     Plain,
@@ -405,12 +408,19 @@ impl Placer {
         self.lines = lines;
     }
 
-    /// How many calls not of `own` a name at `pill` would lie across.
+    /// How many calls not of `own` a name at `pill` would lie across; but those
+    /// passing the graph with both ends off it, drawn faint: a name may cover them.
     fn crossed(&self, own: usize, pill: egui::Rect) -> usize {
+        let passing = |line: &[egui::Pos2]| {
+            (line.first().into_iter().chain(line.last())).all(|end| !self.bounds.contains(*end))
+        };
         self.lines
             .iter()
             .filter(|(from, to, line)| {
-                *from != own && *to != own && line.windows(2).any(|p| crosses(p[0], p[1], pill))
+                *from != own
+                    && *to != own
+                    && !passing(line)
+                    && line.windows(2).any(|p| crosses(p[0], p[1], pill))
             })
             .count()
     }
@@ -491,7 +501,8 @@ impl Placer {
                 self.sees(d)
                     && d.tile != own
                     && !hider.is_some_and(|hider| {
-                        d.shade == Shade::Faded || d.shade == Shade::Plain && hides(hider, d)
+                        matches!(d.shade, Shade::Faded | Shade::Folded)
+                            || d.shade == Shade::Plain && hides(hider, d)
                     })
             })
             .fold((0, 0), |(over, near), d| {
@@ -679,7 +690,7 @@ impl Placer {
                 self.sees(&d)
                     && own_dots.contains(&d.tile)
                     && pill.distance_to_pos(d.at) < d.radius + CLEAR
-                    && (!within || d.shade == Shade::Lit)
+                    && (!within || matches!(d.shade, Shade::Lit | Shade::Folded))
             })
     }
 }
@@ -919,7 +930,7 @@ impl<'a> Naming<'a> {
         explorer: &'a Explorer,
         to_screen: &'a dyn Fn(Vec3) -> Option<egui::Pos2>,
         up: Vec3,
-        area: egui::Rect,
+        (area, hint): (egui::Rect, Option<egui::Rect>),
     ) -> Self {
         let nucleus = explorer.nucleus();
         let disclosed = explorer.disclosure();
@@ -967,7 +978,9 @@ impl<'a> Naming<'a> {
         naming.discs = (0..explorer.map().tiles.len())
             .map(|tile| {
                 let world = explorer.tile_point(tile).filter(|_| nucleus.drawn(tile))?;
-                let at = (naming.to_screen)(world).filter(|at| area.contains(*at))?;
+                // A dot under the hint at the keys is out of sight, and goes unnamed.
+                let at = (naming.to_screen)(world)
+                    .filter(|at| area.contains(*at) && !hint.is_some_and(|h| h.contains(*at)))?;
                 Some((at, naming.shows(tile, world, at, Dot::Focus) + GAP))
             })
             .collect();
@@ -1023,9 +1036,8 @@ impl<'a> Naming<'a> {
                     least,
                     shade: match graph_view::node_look(self.explorer, tile) {
                         _ if unselected => Shade::Plain,
-                        _ if (dot != Dot::Speck || journey) && !plain || nucleus.folded(tile) => {
-                            Shade::Lit
-                        }
+                        _ if nucleus.folded(tile) => Shade::Folded,
+                        _ if (dot != Dot::Speck || journey) && !plain => Shade::Lit,
                         graph_view::NodeLook::Faded => Shade::Faded,
                         _ => Shade::Plain,
                     },
@@ -1755,7 +1767,10 @@ pub(crate) fn graph_names(
     explorer: &Explorer,
     (up, lines): (Vec3, &[CallLine]),
 ) -> GraphNames {
-    let mut naming = Naming::new(explorer, project, up, painter.clip_rect());
+    let area = painter.clip_rect();
+    let hint = (explorer.browsing())
+        .then(|| key_help::hint_rect(painter, area, explorer.nucleus().expanded()));
+    let mut naming = Naming::new(explorer, project, up, (area, hint));
     let nucleus = naming.nucleus;
     // Lit names keep their places from the names placed last while the view is the
     // same: the same selection or journey, the camera where it was.
