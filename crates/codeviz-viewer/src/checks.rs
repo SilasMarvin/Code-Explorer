@@ -1757,12 +1757,13 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     // module's name its spot inside its sphere.
     let selected = before.state.selection != s.state.selection;
     if selected {
+        // Lit before or now: a lit name keeps off the side its calls come in from.
+        let unlit = |snap: &Snap, unit: &str| snap.node(unit).is_some_and(Node::unlit);
         offenders.retain(|(_, o)| {
             o["label"].is_null()
                 || o["unit"]
                     .as_str()
-                    .and_then(|u| s.node(u))
-                    .is_some_and(Node::unlit)
+                    .is_some_and(|u| unlit(s, u) && unlit(before, u))
         });
     }
     if depth {
@@ -4373,6 +4374,25 @@ mod tests {
         }));
         let result = after(&before, &moved, &[Kind::Still], "nothing-moved");
         assert_eq!(result["offenders"][0]["label"], "h", "{result}");
+    }
+
+    #[test]
+    fn a_name_lit_before_a_click_may_take_its_plain_side_after() {
+        let mut before = scene();
+        before["state"]["selection"] = json!("f");
+        before["nodes"][2]["roles"] = json!(["journey level 1"]);
+        let mut now = scene();
+        now["state"]["selection"] = json!("g");
+        now["nodes"][2]["roles"] = json!(["plain"]);
+        now["labels"][2]["rect"] = json!([984.0, 494.0, 992.0, 506.0]);
+        let result = after(&before, &now, &[Kind::Click], "nothing-moved");
+        assert!(passes(&result), "{result}");
+        before["nodes"][2]["roles"] = json!(["plain"]);
+        let result = after(&before, &now, &[Kind::Click], "nothing-moved");
+        assert_eq!(
+            result["offenders"][0]["label"], "h",
+            "plain both times: {result}"
+        );
     }
 
     #[test]

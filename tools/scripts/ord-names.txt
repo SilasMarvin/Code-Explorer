@@ -3,10 +3,11 @@
 # no name. Expanded in a journey, the journey's own calls are named before any
 # plain function of the module, which never takes the room a lit name needs. The
 # calls on the cursor's path down from the start are named come what may, and I
-# names the callers it brings in.
+# names the callers it brings in where there is room.
 key down
 key i
-expect named toggle_spotlight
+expect check named-when-room pass
+expect check outside-callers pass
 key i
 key up
 expect cursor Explorer::spotlit
