@@ -677,8 +677,8 @@ fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
     let found = ranked.len();
     ranked.truncate(LISTED);
     // Two rows of one name are told apart by their type or module, as two names alike
-    // on the graph are; and a row found by its path, not its name, says the type or
-    // module that holds what was asked for.
+    // on the graph are; a row found by its path, not its name, keeps the graph's name
+    // and says beside it the type that holds what was asked for, before its module.
     let bare: Vec<Option<&str>> = ranked
         .iter()
         .map(|(_, row)| system.unit(&row.unit).map(|u| u.name.as_str()))
@@ -690,8 +690,17 @@ fn find(explorer: &Explorer, query: &str) -> (Vec<Row>, usize) {
         .zip(&bare)
         .map(|((rank, row), &name)| {
             let mut row = row.clone();
-            if route(&row.unit).is_none() && (shared(name) || *rank >= 3) {
-                row.name = explorer.unit_name(&row.unit);
+            if route(&row.unit).is_some() {
+                return row;
+            }
+            let qualified = explorer.unit_name(&row.unit);
+            if shared(name) {
+                row.name = qualified;
+            } else if *rank >= 3
+                && let Some((holder, _)) = qualified.rsplit_once('.')
+                && !holder.eq_ignore_ascii_case(&row.module)
+            {
+                row.module = format!("{holder} · {}", row.module);
             }
             row
         })
@@ -896,9 +905,9 @@ mod tests {
         );
         assert_eq!(
             names("order")[..2],
-            ["POST /users/{id}/orders", "orders.place"],
-            "a function whose name holds the word before one whose module does, which \
-             says its module"
+            ["POST /users/{id}/orders", "place"],
+            "a function whose name holds the word before one whose module does, named as \
+             the graph names it"
         );
         let (rows, found) = find(&explorer, "helper");
         assert_eq!(
@@ -977,7 +986,8 @@ mod tests {
                 { "id": "x:track", "name": "track", "kind": "module", "role": "group" },
                 { "id": "x:journey::Journey::root", "name": "root", "kind": "fn", "role": "invocable", "parent": "x:journey" },
                 { "id": "x:track::Track::root", "name": "root", "kind": "fn", "role": "invocable", "parent": "x:track" },
-                { "id": "x:journey::SpanId::index", "name": "index", "kind": "fn", "role": "invocable", "parent": "x:journey" }
+                { "id": "x:journey::SpanId", "name": "SpanId", "kind": "struct", "role": "group", "parent": "x:journey" },
+                { "id": "x:journey::SpanId::index", "name": "index", "kind": "fn", "role": "invocable", "parent": "x:journey::SpanId" }
             ] }"#;
         let explorer = Explorer::new(System::new([Document::from_json(json).unwrap()]));
         let names = |query: &str| -> Vec<String> {
@@ -996,10 +1006,16 @@ mod tests {
         );
         assert_eq!(
             names("spanid"),
-            ["journey.index"],
-            "found by its path, it says what holds it"
+            ["index"],
+            "found by its path, named as the graph names it"
         );
         assert_eq!(names("index"), ["index"], "found by its own name, bare");
+        let rows = find(&explorer, "spanid").0;
+        assert_eq!(
+            rows[0].module,
+            format!("SpanId · {}", find(&explorer, "index").0[0].module),
+            "found by its path, it says what holds it beside its name"
+        );
     }
 
     #[test]
