@@ -315,21 +315,26 @@ the way down to it; a start with callers has their row above its bar, and the st
 
 Two checks are the runner's rather than the viewer's. One reads the picture rather than the JSON, in the runner (`tools/drive`) once the
 window closes: `look`, the mean RGB level above the ground of what is drawn faint, the
-median over each snap, within the ranges in `LOOK` at the top of `tools/drive`. A faint
-line's level is its brightest pixel near its middle over the darker side of it, sampled
-clear of dots and names; a faint sphere's, its fill at 0.6 of its radius; and a faint
-sphere's shading (one 24 points in radius or more), its fill at a quarter of its radius
-over its fill near its edge (0.85), so a sphere drawn flat, or lit from behind, shows. It applies on
-the whole map with nothing selected (the ground, the faint links between modules, the
-faint spheres) and expanded (the faint calls among the module's functions). A range
-missed means the picture as a whole is drawn differently (blending, colour space,
-tonemapping, lighting, Bevy features): a Bevy build without `bevy_post_process` drew
-every translucent stroke alpha-squared, links at 1-3 levels for 13-15.
-Known failing until re-measured: the ranges were measured on the flat discs. On the
-3D spheres, offscreen, the ground (18.7) and axum's faint links (13.3) read as before,
-but faint spheres read 35-60, and on ord, where lines run over stacked translucent
-spheres, faint links 2-6 and faint inner calls 3-9. `look` fails on those snaps until
-the ranges are measured again for 3D.
+median over each snap, within the ranges in `LOOK` at the top of `tools/drive`. The
+ground is the picture's level where no sphere covers it; a view zoomed in so far that
+spheres cover nearly all of it is no whole map, and is not judged as one. A faint
+line's level is its brightest pixel near the middle of each stretch of it that shows
+(a link between modules hides behind the spheres it passes) over the darker side of
+it, sampled clear of dots and names; a faint sphere's, its fill at 0.6 of its radius;
+and a faint sphere's shading (one 24 points in radius or more), its fill at a quarter
+of its radius over its fill near its edge (0.85), so a sphere drawn flat, or lit from
+behind, shows. A sphere is sampled only where no other sphere covers it, on screen and
+clear of dots: where spheres overlap the brightest shows. It applies on the whole map
+with nothing selected (the ground, the faint links between modules, the faint spheres)
+and expanded (the faint calls among the module's functions). A range missed means the
+picture as a whole is drawn differently (blending, colour space, tonemapping,
+lighting, Bevy features). Measured on the lit spheres that lighten what they cover:
+ground 18.7, faint links 13-14, faint inner calls 11-19, faint spheres 21-24, shading
+4-5. Each of these fails it: spheres blended by alpha, so stacks add up (faint spheres
+31-36, faint inner calls over them 1-9); the flat discs (shading 0-0.3); round 6's
+glass rims, glowing dots and bloom (faint spheres 29-32, lines 0-1); a Bevy build
+without `bevy_post_process`, which drew every translucent stroke alpha-squared (links
+1-3).
 
 Another reads the layout across runs: `layout-same`, every snap's `layout.digest` the
 same, and the same as the last session run with this build on this document (kept in
