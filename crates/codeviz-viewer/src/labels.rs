@@ -113,15 +113,18 @@ pub(crate) fn spot_takes(index: usize, size: egui::Vec2) -> bool {
 }
 
 /// How far a name slides along its side from level with its dot, in its height
-/// beside its dot or at a corner, or in halves of its width above or below: level,
-/// nudged half its height either way, then slid a whole height. A name a little off
+/// beside its dot or at a corner, or above or below ([`slid`]) as far as its end
+/// comes to its dot: level, nudged half its height either way, then slid a whole
+/// height. A name a little off
 /// level beside its dot reads better than one moved round it, so every spot is tried
 /// level or nudged before any is slid ([`NUDGED`]).
 pub(crate) const SLIDES: [f32; 5] = [0.0, 0.5, -0.5, 1.0, -1.0];
 const NUDGED: f32 = 0.5;
 
 /// Spot `index` slid `by` along its side: beside its dot or at a corner, by `by` of
-/// its height; above or below, by `by` of half its width.
+/// its height; above or below, so far that its end lies `2 - |by|` of `reach` past
+/// the dot's middle, never past centred: a name whose numbers grow or shrink stays
+/// put about that end.
 pub(crate) fn slid(
     index: usize,
     node: egui::Pos2,
@@ -131,7 +134,9 @@ pub(crate) fn slid(
 ) -> egui::Rect {
     let ((rx, _), _) = SPOTS[index];
     let along = if rx == 0.0 {
-        egui::vec2(by * size.x / 2.0, 0.0)
+        let past = reach * (2.0 - by.abs());
+        let by = if by == 0.0 { 0.0 } else { by.signum() };
+        egui::vec2(by * (size.x / 2.0 - past).max(0.0), 0.0)
     } else {
         egui::vec2(0.0, by * size.y)
     };
@@ -261,12 +266,9 @@ struct Disc {
     least: f32,
     /// How it shows beside what is lit.
     shade: Shade,
-    /// A caller from off the journey (I): only names of what I brings in keep off it,
-    /// so I moves no other name.
-    outside: bool,
-    /// Where a call a deeper level shows would be, not drawn at this depth: names
-    /// rather keep off it, so a level more takes away no room, but it keeps out no
-    /// name the view shows.
+    /// Where a call a deeper level shows would be, not drawn at this depth or drawn
+    /// plain: names rather keep off it, so a level more takes away no room, but it
+    /// keeps out no name the view shows.
     ghost: bool,
     /// Lit, or lit at another depth or by another selection: a name would rather not
     /// cover it, so that one more lit takes no name's side.
@@ -355,8 +357,6 @@ struct Placer {
     dot_grid: Grid,
     /// Every sphere shown: its cluster, middle and radius on screen.
     spheres: Vec<(usize, egui::Pos2, f32)>,
-    /// Whether the names placed now are of what I brings in, which keep off its dots.
-    outside: bool,
     /// The calls the view could draw at any depth, each caller and callee and the
     /// line it runs along: a name would rather not lie across one.
     lines: Vec<CallLine>,
@@ -383,7 +383,6 @@ impl Placer {
             ghosts: Cell::new(true),
             dot_grid,
             spheres,
-            outside: false,
             lines: Vec::new(),
             arrivals: HashMap::new(),
         }
@@ -430,7 +429,7 @@ impl Placer {
 
     /// Whether names placed now keep off `dot`.
     fn sees(&self, dot: &Disc) -> bool {
-        (self.outside || !dot.outside) && (self.ghosts.get() || !dot.ghost)
+        self.ghosts.get() || !dot.ghost
     }
 
     /// Takes `rect`, for what `kind` says.
@@ -621,9 +620,11 @@ impl Placer {
     }
 
     /// Where a name that must show goes when no place fits: the emptiest of `tries`
-    /// round its dot at `node`, on the graph, over the fewest dots, then the fewest
-    /// names, then across the fewest calls coming in, then nearer the fewest other
-    /// dots than its own; the first tried of those as empty.
+    /// round its dot at `node`, on the graph, over the fewest names, then the fewest
+    /// dots, then across the fewest calls coming in, then nearer the fewest other
+    /// dots than its own; the first tried of those as empty. A name over a name
+    /// placed before it would take that one's place, and two pills on one another
+    /// read as neither's.
     fn least_over(
         &self,
         own: usize,
@@ -638,13 +639,37 @@ impl Placer {
                 let (over, near) = self.dots_by(pill, own, Some(pill));
                 (
                     !self.bounds.contains_rect(pill),
-                    over,
                     self.over_names(pill),
+                    over,
                     self.arrivals_across(own, pill),
                     near,
                 )
             })
             .unwrap_or_else(|| ((0, 0.0), spot(0, node, reach, size)))
+    }
+
+    /// Where a name of `size` that must show goes when no place round its dot fits:
+    /// where it covers least ([`Placer::least_over`]); where that is over a name
+    /// placed before it, further out, as two pills on one another read as neither's.
+    fn anyway(
+        &self,
+        own: usize,
+        (node, reach): (egui::Pos2, f32),
+        (size, bare): (egui::Vec2, egui::Vec2),
+    ) -> ((usize, f32), egui::Rect) {
+        let out = |far: f32| {
+            let reach = far * reach;
+            let tries = self.tries(own, node, reach, (size, bare));
+            self.least_over(own, (node, reach), size, &tries)
+        };
+        let clear = |&(_, pill): &((usize, f32), egui::Rect)| {
+            self.bounds.contains_rect(pill) && self.over_names(pill) == 0
+        };
+        let near = out(1.0);
+        Some(near)
+            .filter(clear)
+            .or_else(|| [2.0, 3.0].into_iter().map(out).find(clear))
+            .unwrap_or(near)
     }
 
     /// Whether a module's name at `pill` has room, whatever functions' names lie
@@ -1035,10 +1060,10 @@ impl<'a> Naming<'a> {
                         graph_view::NodeLook::Faded => Shade::Faded,
                         _ => Shade::Plain,
                     },
-                    // One the journey runs deeper is kept off as its ghost is when
-                    // I does not bring it in, so I moves no name.
-                    outside: nucleus.outside(tile) && nucleus.journey_level(tile).is_none(),
-                    ghost: false,
+                    // One a deeper level lights, drawn plain in the module expanded:
+                    // kept off as a level more would light it, but keeping out no
+                    // name the view shows.
+                    ghost: journey && dot == Dot::Speck,
                     may_light: dot != Dot::Speck || nucleus.browsing() || journey || opened,
                 })
             })
@@ -1065,7 +1090,6 @@ impl<'a> Naming<'a> {
                     steady: radius,
                     least: self.shows(world, at, Dot::Lit),
                     shade: Shade::Lit,
-                    outside: false,
                     ghost: true,
                     may_light: true,
                 })
@@ -1502,10 +1526,10 @@ impl<'a> Naming<'a> {
         let (galley, size) = self.pill(painter, Named::Node(tile), job);
         // Where it goes, and as how big: the neutral view takes the room a journey's
         // function keeps at every depth.
-        let label = |((index, by), size): ((usize, f32), egui::Vec2), galley| Label {
+        let label = |side: (usize, f32), pill: egui::Rect, galley| Label {
             named: Named::Node(tile),
-            side: Some((index, by)),
-            pill: slid(index, node, reach, size, by),
+            side: Some(side),
+            pill,
             galley,
             stroke,
             number: number.clone(),
@@ -1557,19 +1581,15 @@ impl<'a> Naming<'a> {
                 })
             }
         };
-        let found = match found {
-            Some(place) => Some(place),
-            None if tier.always() => {
-                let tries = placer.tries(tile, node, reach, (size, bare()));
-                Some((placer.least_over(tile, (node, reach), size, &tries).0, size))
-            }
-            None => None,
+        let (place, pill) = match found {
+            Some(((i, by), size)) => ((i, by), slid(i, node, reach, size, by)),
+            None if tier.always() => placer.anyway(tile, (node, reach), (size, bare())),
+            None => return None,
         };
-        let (place, size) = found?;
         if sides.is_some() && lit {
             self.places.borrow_mut().insert(tile, place);
         }
-        Some(label((place, size), galley))
+        Some(label(place, pill, galley))
     }
 
     /// Where a lit function's name of `size` goes, as the view is, round its dot at
@@ -1753,7 +1773,6 @@ pub(crate) fn graph_names(
         nucleus.start(),
         nucleus.browsing(),
         [Vec3::ZERO, Vec3::X, Vec3::Y].map(|at| project(at * PROBE)),
-        painter.clip_rect(),
     );
     let ctx = painter.ctx();
     let last: Kept = ctx.data(|d| d.get_temp(kept_id())).unwrap_or_default();
@@ -1869,31 +1888,28 @@ fn paint<'a>(painter: &egui::Painter, labels: impl Iterator<Item = &'a Label>) {
 }
 
 /// What names are placed in, as far as lit names keep their places: the function
-/// drawn white, whether browsing, where three points of the world show, and the
-/// corners of the free area.
-type View = (Option<usize>, bool, [Option<egui::Pos2>; 3], egui::Rect);
+/// drawn white, whether browsing, and where three points of the world show. The
+/// free area is not of it: a level more or less grows or shrinks the panel under a
+/// camera that stays, and a name the panel now covers goes, or must show and moves.
+type View = (Option<usize>, bool, [Option<egui::Pos2>; 3]);
 
 /// How far from the world's middle, in its units, the points [`View`] watches lie.
 const PROBE: f32 = 10.0;
 
 /// Whether two views are the same as far as lit names keep their places: the camera
-/// and the free area moved less than half a point.
+/// moved less than half a point.
 fn same_view(a: View, b: View) -> bool {
     let near = |(a, b): (Option<egui::Pos2>, Option<egui::Pos2>)| match (a, b) {
         (Some(a), Some(b)) => a.distance(b) < 0.5,
         (a, b) => a.is_none() && b.is_none(),
     };
-    let corners = |r: egui::Rect| [Some(r.min), Some(r.max)];
-    a.0 == b.0
-        && a.1 == b.1
-        && (a.2.into_iter().zip(b.2)).all(near)
-        && (corners(a.3).into_iter().zip(corners(b.3))).all(near)
+    a.0 == b.0 && a.1 == b.1 && (a.2.into_iter().zip(b.2)).all(near)
 }
 
 /// Where lit functions' names went when names were last placed, and in what view
 /// ([`View`]): a name there keeps its place, or waits for it, while the view stays
-/// the same; on a fresh selection or journey, with the camera moved or the free area
-/// resized, names are placed afresh. While a hand turns the camera (`turning`), every
+/// the same; on a fresh selection or journey, or with the camera moved, names are
+/// placed afresh. While a hand turns the camera (`turning`), every
 /// name keeps its place: the sides names took in the neutral view, and where each
 /// module's name went, are kept too.
 #[derive(Clone, Default)]
@@ -1969,7 +1985,6 @@ fn place(
     let mut wreath: Option<(usize, usize, usize, bool)> = None;
     let mut labels: Vec<Label> = Vec::new();
     for ((tier, ..), named) in order {
-        placer.outside = tier >= Tier::Outside;
         let around = wreathed(named).filter(|_| tier == Tier::Plain);
         if let Some(cluster) = around {
             match &mut wreath {
@@ -2019,7 +2034,6 @@ mod tests {
             steady: 4.0,
             least: 4.0,
             shade: if lit { Shade::Lit } else { Shade::Plain },
-            outside: false,
             ghost: false,
             may_light: lit,
         }

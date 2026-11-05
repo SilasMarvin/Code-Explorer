@@ -643,9 +643,10 @@ impl Node {
     }
 
     /// One of the expanded module's functions that nothing else lights, or a speck
-    /// named: a lit name may hide it.
+    /// named: a lit name may hide it. A caller I brings in is lit by I, wherever it
+    /// sits.
     fn plain(&self) -> bool {
-        (self.is("opened") || self.is("plain")) && !self.focus()
+        (self.is("opened") || self.is("plain")) && !self.focus() && !self.is("outside")
     }
 
     /// Nothing lights it: a speck, or plain.
@@ -2259,7 +2260,9 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
 /// Leaves out of `offenders` the names that went or moved where a name placed before
 /// them took their place, as a step that names others first may (the cursor's path,
 /// a level more, I): their old place lies under a name that came or moved there, or
-/// a dot that came; or they were the cursor's, or on its path, and are no longer.
+/// a dot that came, or one came that reads nearer it than its own; or they were the
+/// cursor's, or on its path, and are no longer. A name that goes moves instead when
+/// it shows come what may: in 3D a dot that comes lands where it is, on a name or not.
 fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
     let was: HashMap<_, &Label> = (before.labels.iter())
         .filter_map(|l| Some((label_key(l)?, l)))
@@ -2317,14 +2320,25 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
         // Gone, not moved, but a lit module's.
         let gone = o["gone"] == json!(true)
             || o["unit"].is_null() && o["label"].as_str().is_some_and(lit_module);
-        let (Some(old), false, true) = (old, o["label"].is_null(), gone) else {
+        let unit = o["unit"].as_str();
+        let must_show = unit
+            .and_then(|u| now.node(u))
+            .is_some_and(Node::named_anyway);
+        let (Some(old), false, true) = (old, o["label"].is_null(), gone || must_show) else {
             return true;
         };
+        let text = rect(old);
+        let own = unit
+            .and_then(|u| before.node(u))
+            .map(|n| n.gap(text, n.radius));
+        let nearer = own.is_some_and(|own| {
+            (now.nodes.iter().filter(came)).any(|n| n.gap(text, n.radius) + NEARER < own)
+        });
         // As far as names keep from names and dots, leaning to more given way.
-        let old = rect(old).expand2(NAME_PILL).expand(NAME_CLEAR + ROUNDING);
-        let of = o["unit"].as_str().or_else(|| o["label"].as_str());
+        let old = text.expand2(NAME_PILL).expand(NAME_CLEAR + ROUNDING);
+        let of = unit.or_else(|| o["label"].as_str());
         let taken = (took.iter()).any(|&(t, by)| t.intersects(old) && (by.is_none() || by != of));
-        !(taken || o["unit"].as_str().is_some_and(fell))
+        !(taken || nearer || unit.is_some_and(fell))
     });
 }
 
