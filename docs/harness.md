@@ -195,9 +195,10 @@ scene's units.
   `crowded_by`,
   `color` (its fill, `#rrggbbaa`), `rings` (each ring drawn round it: `radius` on
   screen, `color`).
-- `modules`: each sphere: `name`, `body` (`nucleus`, `open`, `closed`, `faint`), `shown`,
-  `functions`, `named`, `at`, `radius`, `world`, `world_radius`, `on_screen`, `label`,
-  `label_rect`, `name_size`.
+- `modules`: each sphere: `name`, `body` (`nucleus`, the journey's start's; `open`;
+  `faint`), `shown`, `functions`, `named`, `at`, `radius`, `world`, `world_radius`,
+  `room` (the radius of the ball each of its functions keeps to itself in the world),
+  `on_screen`, `label`, `label_rect`, `name_size`.
 - `labels`: every name on the graph: `text`, `rect`, `names` (`function`, `module`,
   `other`) and `of`, `unit` (a function's), `overlaps` (indices), `cut_off`, `under`
   (overlays over it), `opacity`, `size` (font size). A function's name is the text the
@@ -243,6 +244,11 @@ scene's units.
 - `content`: what the view means to show: the `start` or the `selection`, its
   callers, its calls (in a journey the disclosed ones, with numbers and modules;
   browsing the selection's own, unnumbered).
+- `layout`: what the layout is, whatever the view lights: `digest` (of where every
+  module and function sits), and the mean length in the world of the calls between
+  modules' middles (`modules`), within a module and between two, function to function
+  (`inside`, `across`), each with `shuffled`, the same with the modules, or each
+  module's functions, shuffled among themselves, and `calls`.
 - `moved`: against the snap before: `since`, `camera`, `nodes` (`compared`,
   `moved_in_world`, `moved_on_screen`, `most_world`, `most_screen`, `examples`),
   `modules`, `labels` (`compared`, `moved`, `gone`: names gone whose dot or sphere
@@ -264,10 +270,11 @@ that put it there), names, and calls.
 | check | holds when | applies |
 |---|---|---|
 | `dots-in-spheres` | every dot lies inside its module's sphere, in the world (1% slack) | always |
-| `dots-apart` | no two dots on screen overlap: centres at least the radii plus 1 point apart (lit pairs listed first) | always |
+| `dots-apart` | no two functions of one module lie nearer, in the world, than twice the room each keeps (`room`): no two intersect, at any zoom and from any side (two of different modules lie in two spheres apart) | a module says its room |
 | `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius; expanded, the module's functions nothing lights (`opened`, not hovered) show smaller than its smallest lit one | always |
 | `spheres-apart` | no two spheres intersect, in the world | two spheres or more |
-| `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion (the expanded one aside) | always |
+| `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion | always |
+| `layout-affinity` | calls run at most 0.8 of the length they would with everything shuffled: between modules, and function to function within a module and between two (`layout`), each where there are 10 such calls or more | layout facts with 10 calls of a kind |
 | `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other dot drawn, lit, plain or a speck, is nearer it (by over 2 points), but for a lit name one drawn faded (alpha under 0.5) or one nothing lights that its opaque pill covers, or some of, and but for a name shown come what may (the start, the cursor and the calls on its path, the selection, the function set aside) with room nowhere round its dot, as `named-when-room` judges room, and the name of the function hovered, which takes its emptiest side; every module's name within 40 points of its sphere's rim | always |
 | `labels-clear` | no name overlaps another or lies under a notice, no exit label lies over a name, a function's name covers no other lit dot (a lit name may lie over a plain one, `opened`) and lies across none of the last 30 points of a call (`into` or `journey`) drawn into its own dot, the side its calls arrive from; but a name shown come what may with room nowhere round its dot; a plain function's name lies across no call lit (`into` or `journey`, not faint) | always |
 | `named-on-screen` | no name is cut off by the graph's edge or lies under an overlay (the journey panel; not the search box, which opens over the graph for a moment) | unless the key help is open |
@@ -297,9 +304,9 @@ the way down to it; a start with callers has their row above its bar, and the st
 | `calls-drawn` | each call into the selection (or the start) and each of its own, between two dots on screen apart by more than their radii, a head and its gaps, is drawn | a selection or a journey, a call between two dots on screen |
 | `bars-in-view` | bars below the journey panel's foot, or past its sides, cut off or out of view, have a track down its side, or along its foot, showing which part is in view, and those past each side a mark at that side saying how many; the cursor's bar shows wholly, or across the panel when wider | a journey panel |
 | `fails-kept` | what can fail says so at any depth and on any step: each call shown in both this snap and the one before (by number and name), the start, and each function whose name says all it says in both ("can fail" in its label or not) | the same journey as the snap before |
-| `outside-callers` | each caller I brings in lies clear of every call's line into the start or along the journey (2 points past its dot) but its own; its own line starts at its dot, drawn, and runs along none of the journey's (within 10 points for over 40, away from its ends); one drawn has a line of its own: one whose call no line takes is not drawn, decided when what shows changes and kept as the camera turns or zooms; one on screen unnamed, or one with no room or no line to be drawn (`outside_waiting`), is counted in the bar along the top, unless another notice speaks there | I on |
+| `outside-callers` | each caller I brings in has its own line start at its dot, drawn; one drawn has a line of its own: one whose call no line takes is not drawn, decided when what shows changes and kept as the camera turns or zooms; one on screen unnamed, or one with no room or no line to be drawn (`outside_waiting`), is counted in the bar along the top, unless another notice speaks there | I on |
 
-One check reads the picture rather than the JSON, in the runner (`tools/drive`) once the
+Two checks are the runner's rather than the viewer's. One reads the picture rather than the JSON, in the runner (`tools/drive`) once the
 window closes: `look`, the mean RGB level above the ground of what is drawn faint, the
 median over each snap, within the ranges in `LOOK` at the top of `tools/drive`. A faint
 line's level is its brightest pixel near its middle over the darker side of it, sampled
@@ -309,6 +316,10 @@ faint spheres) and expanded (the faint calls among the module's functions). A ra
 missed means the picture as a whole is drawn differently (blending, colour space,
 tonemapping, lighting, Bevy features): a Bevy build without `bevy_post_process` drew
 every translucent stroke alpha-squared, links at 1-3 levels for 13-15.
+
+Another reads the layout across runs: `layout-same`, every snap's `layout.digest` the
+same, and the same as the last session run with this build on this document (kept in
+`$CODEVIZ_SESSIONS/.layouts.json`): the layout is worked out alike every time.
 
 What a step may move decides which checks judge it:
 
@@ -361,7 +372,7 @@ such a camera alone.
 | `ord-names-room` | names where there is room: a narrow whole map naming its big modules, inside their spheres where the room above is taken; a fresh selection placing its names afresh, its modules named, plain names all or none and off the calls lit; the calls a deeper level shows keeping out no name; no name over a folded caller nor on the start's own incoming call; expanded, a lit name over the plain dots it must, and plain dots smaller than lit |
 | `ord-names-browse`, `axum-names` | names browsing: module names on a narrow and a wide whole map; no plain names at mid zoom; the function hovered standing out; a click inside an expanded module moving no plain name; no name nearer another dot than its own |
 | `axum-visual`, `ord-visual` | how a journey is drawn: no call through a lit dot or name, hovering lighting no call, the function set aside in its own color with a white ring, a guessed call faint; the whole map's links one width, module names above or inside their spheres; two functions alike told apart in the search; both calls of a function that calls the selection and is called by it, browsing |
-| `ord-outside` | I: every caller from off the journey of the cursor's call drawn apart from the journey's dots and off their lines, none moving as the cursor steps; X in a journey moving none of its dots; a click on a plain function expanded opening no bar; a deep journey in a small window, the panel's rows track; a caller no line reaches not drawn but counted |
+| `ord-outside` | I: every caller from off the journey of the cursor's call lit where it sits, none moving as the cursor steps; X in a journey moving none of its dots; a click on a plain function expanded opening no bar; a deep journey in a small window, the panel's rows track; a caller no line reaches not drawn but counted |
 | `ord-branch` | one branch at a time: ↓ on a folded call opening it alone and stepping in, `.` every branch deeper, `,` every branch a level back, a badge stepping in, the depth reading the deepest shown, graph and panel agreeing, "can fail" alike at every depth; the start's bar under its callers in a small window; bars past the panel's side counted there |
 | `ord-panel` | the panel on a crowded journey: bars keep their numbers and some of their names, five levels fitting across 1200 wide, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk); a name two calls share cutting its type, never down to it, at 1000 wide |
 

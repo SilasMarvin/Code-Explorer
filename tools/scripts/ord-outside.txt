@@ -1,10 +1,9 @@
 #: view $CODEVIZ_DATA/ord-ws-2.json --focus Explorer::spotlit --depth 2
 # I and expanding in a journey: every caller from off the journey of the call the
-# cursor is on is drawn in a place of its own, clear of the journey's dots, the
-# start's module's too, and none moves as the cursor steps; X keeps the journey's
-# dots where they were, and a click on a plain function there opens no bar; none sits
-# on a call's line, and one unnamed is counted. Then a deep journey in a small
-# window: the panel says rows lie below it.
+# cursor is on lights where it sits, and none moves as the cursor steps; X keeps the
+# journey's dots where they were, and a click on a plain function there opens no bar;
+# one unnamed is counted. Then a deep journey in a small window: the panel says rows
+# lie below it.
 snap open
 bar 2.2
 expect cursor CodebaseMap::tile_of
