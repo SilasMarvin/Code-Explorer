@@ -17,8 +17,17 @@ use crate::CallGraph;
 /// kept round it: the one rule that sizes every container. Two children fill a
 /// quarter of the least sphere that holds them, so it is less than that.
 const FILL: f32 = 0.2;
-/// Kept clear between two children, as a share of their mean radius.
-const GAP: f32 = 0.25;
+/// How a module keeps its functions: close, so its sphere stays small.
+pub const IN_MODULE: Spacing = Spacing {
+    gap: 0.25,
+    centre: 0.05,
+};
+/// How the world keeps its modules: a module's width apart, drawn only gently to
+/// the middle, so the gap between spheres is what the eye reads, not their rest.
+pub const IN_WORLD: Spacing = Spacing {
+    gap: 1.0,
+    centre: 0.02,
+};
 /// A function's ball: its dot, and room round it for its name.
 const FUNCTION: f32 = 2.1;
 /// The biggest module's sphere against the smallest's: past it, more functions pack
@@ -38,14 +47,21 @@ const SPRING: f32 = 1.0;
 /// How hard a child is drawn towards a module outside its container it calls or is
 /// called from, however far off.
 const ANCHOR: f32 = 1.0;
-/// How hard every child is drawn to the middle, at the container's wall.
-const CENTRE: f32 = 0.05;
 /// Seeding: how far out the seed reaches, as a share of the room in the container;
 /// and how many rounds work out the shape of the ties.
 const SEED: f32 = 0.6;
 const SPECTRAL_ROUNDS: usize = 80;
 /// After settling, at most this many rounds pushing apart children that still touch.
 const CLEARING_ROUNDS: usize = 500;
+
+/// How a container keeps its children: the gap kept clear between two, as a share
+/// of their mean radius, and how hard every child is drawn to the middle at the
+/// container's wall. The one thing a level sets for itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spacing {
+    pub gap: f32,
+    pub centre: f32,
+}
 
 /// A pull between two children, as strong as the calls between them.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -79,18 +95,18 @@ pub struct Layout {
 }
 
 /// The gap kept between children as big as `radii`.
-fn gap(radii: &[f32]) -> f32 {
+fn gap(radii: &[f32], spacing: Spacing) -> f32 {
     #[expect(clippy::cast_precision_loss, reason = "a child count")]
     let mean = radii.iter().sum::<f32>() / radii.len().max(1) as f32;
-    GAP * mean
+    spacing.gap * mean
 }
 
-/// The radius of a container holding children as big as `radii`: one in which they
-/// fill [`FILL`] of its volume, each with half the gap round it. So it grows with the
-/// cube root of what it holds.
+/// The radius of a container holding children as big as `radii`, kept as `spacing`
+/// says: one in which they fill [`FILL`] of its volume, each with half the gap round
+/// it. So it grows with the cube root of what it holds.
 #[must_use]
-pub fn container_radius(radii: &[f32]) -> f32 {
-    let half_gap = gap(radii) / 2.0;
+pub fn container_radius(radii: &[f32], spacing: Spacing) -> f32 {
+    let half_gap = gap(radii, spacing) / 2.0;
     let volume: f32 = radii.iter().map(|r| (r + half_gap).powi(3)).sum();
     (volume / FILL).cbrt()
 }
@@ -108,25 +124,30 @@ pub fn module_radius(count: usize) -> f32 {
 /// ball in it: the full [`FUNCTION`], or less in a module at the [`RATIO`] cap, so
 /// they still fill only their share of it.
 fn module_size(count: usize) -> (f32, f32) {
-    let free = container_radius(&vec![FUNCTION; count.max(1)]);
-    let most = RATIO * container_radius(&[FUNCTION]);
+    let free = container_radius(&vec![FUNCTION; count.max(1)], IN_MODULE);
+    let most = RATIO * container_radius(&[FUNCTION], IN_MODULE);
     (free.min(most), FUNCTION * (most / free).min(1.0))
 }
 
 /// Where `radii.len()` children, each a ball as big as `radii` has it, sit in a
-/// container of radius `bound`, about its middle: seeded from the shape of `ties`
-/// ([`seed`]), then settled over a fixed number of rounds, ties pulling, neighbours
-/// pushing apart, `anchors` drawing their children their way, every child drawn
-/// gently to the middle; after every round no two children nearer than their radii
-/// and the gap, and every one inside the container with half the gap to spare. The
-/// same every time for the same input.
+/// container of radius `bound`, about its middle, kept as `spacing` says: seeded from
+/// the shape of `ties` ([`seed`]), then settled over a fixed number of rounds, ties
+/// pulling, neighbours pushing apart, `anchors` drawing their children their way,
+/// every child drawn gently to the middle; after every round no two children nearer
+/// than their radii and the gap, and every one inside the container with half the
+/// gap to spare. The same every time for the same input.
 #[must_use]
-pub fn place(radii: &[f32], ties: &[Tie], anchors: &[Anchor], bound: f32) -> Vec<Vec3> {
+pub fn place(
+    radii: &[f32],
+    ties: &[Tie],
+    anchors: &[Anchor],
+    (bound, spacing): (f32, Spacing),
+) -> Vec<Vec3> {
     let count = radii.len();
     if count < 2 {
         return vec![Vec3::ZERO; count];
     }
-    let gap = gap(radii);
+    let gap = gap(radii, spacing);
     #[expect(clippy::cast_precision_loss, reason = "a child count")]
     let unit = radii.iter().sum::<f32>() / count as f32 + gap / 2.0;
     let room: Vec<f32> = radii
@@ -164,7 +185,7 @@ pub fn place(radii: &[f32], ties: &[Tie], anchors: &[Anchor], bound: f32) -> Vec
         }
         let most = FIRST_STEP * unit * cool;
         for (point, force) in at.iter_mut().zip(force) {
-            let force = force - *point / bound * CENTRE;
+            let force = force - *point / bound * spacing.centre;
             *point += (force * unit * GAIN).clamp_length_max(most);
         }
         clear(&mut at, radii, gap, &room);
@@ -376,7 +397,8 @@ pub fn layout(graph: &CallGraph) -> Layout {
         .into_iter()
         .map(|((a, b), weight)| Tie { a, b, weight })
         .collect();
-    let centres = place(&radii, &ties, &[], container_radius(&radii));
+    let world = container_radius(&radii, IN_WORLD);
+    let centres = place(&radii, &ties, &[], (world, IN_WORLD));
 
     let mut functions = vec![Vec3::ZERO; graph.len()];
     // Each tile's place among its module's members.
@@ -416,7 +438,12 @@ pub fn layout(graph: &CallGraph) -> Layout {
             })
             .collect();
         let ball = sizes[cluster].1;
-        let inside = place(&vec![ball; tiles.len()], &ties, &anchors, radii[cluster]);
+        let inside = place(
+            &vec![ball; tiles.len()],
+            &ties,
+            &anchors,
+            (radii[cluster], IN_MODULE),
+        );
         for (&tile, at) in tiles.iter().zip(inside) {
             functions[tile] = centres[cluster] + at;
         }
@@ -425,6 +452,27 @@ pub fn layout(graph: &CallGraph) -> Layout {
         modules: centres.into_iter().zip(radii).collect(),
         functions,
         rooms: sizes.into_iter().map(|(_, ball)| ball).collect(),
+    }
+}
+
+/// `layout` spread `factor` times as wide: every module's middle that many times as
+/// far from the world's, each of its functions moving with it, no sphere resized and
+/// nothing laid out again. Gaps between spheres grow; inside each nothing changes.
+#[must_use]
+pub fn spread(layout: &Layout, graph: &CallGraph, factor: f32) -> Layout {
+    let modules: Vec<(Vec3, f32)> = (layout.modules.iter())
+        .map(|&(centre, radius)| (centre * factor, radius))
+        .collect();
+    let functions = (layout.functions.iter().enumerate())
+        .map(|(tile, &at)| match graph.cluster(tile) {
+            Some(cluster) => at - layout.modules[cluster].0 + modules[cluster].0,
+            None => at,
+        })
+        .collect();
+    Layout {
+        modules,
+        functions,
+        rooms: layout.rooms.clone(),
     }
 }
 
@@ -466,8 +514,8 @@ mod tests {
 
     /// Every two of `at`, as big as `radii`, at least their radii and the gap apart,
     /// and every one inside `bound` with half the gap to spare.
-    fn assert_apart_and_inside(at: &[Vec3], radii: &[f32], bound: f32) {
-        let gap = gap(radii);
+    fn assert_apart_and_inside(at: &[Vec3], radii: &[f32], (bound, spacing): (f32, Spacing)) {
+        let gap = gap(radii, spacing);
         for (i, a) in at.iter().enumerate() {
             assert!(
                 a.length() + radii[i] + gap / 2.0 <= bound * 1.001,
@@ -512,15 +560,16 @@ mod tests {
     #[test]
     fn children_never_touch_and_stay_inside() {
         let radii = vec![FUNCTION; 20];
-        let bound = container_radius(&radii);
+        let bound = (container_radius(&radii, IN_MODULE), IN_MODULE);
         assert_apart_and_inside(&place(&radii, &rings(), &[], bound), &radii, bound);
         // Crowded at the cap, as a big module's functions are.
-        let (bound, ball) = module_size(300);
+        let (radius, ball) = module_size(300);
         let radii = vec![ball; 300];
+        let bound = (radius, IN_MODULE);
         assert_apart_and_inside(&place(&radii, &[], &[], bound), &radii, bound);
         // Children of many sizes, as modules in the world are.
         let radii: Vec<f32> = (0..40).map(|i| module_radius(1 + (i * 37) % 120)).collect();
-        let bound = container_radius(&radii);
+        let bound = (container_radius(&radii, IN_WORLD), IN_WORLD);
         assert_apart_and_inside(&place(&radii, &rings(), &[], bound), &radii, bound);
     }
 
@@ -532,7 +581,7 @@ mod tests {
             at: Vec3::X * 100.0,
             weight: 2.0,
         }];
-        let bound = container_radius(&radii);
+        let bound = (container_radius(&radii, IN_MODULE), IN_MODULE);
         assert_eq!(
             place(&radii, &rings(), &anchors, bound),
             place(&radii, &rings(), &anchors, bound)
@@ -542,7 +591,12 @@ mod tests {
     #[test]
     fn tied_children_sit_nearer_than_strangers() {
         let radii = vec![FUNCTION; 20];
-        let at = place(&radii, &rings(), &[], container_radius(&radii));
+        let at = place(
+            &radii,
+            &rings(),
+            &[],
+            (container_radius(&radii, IN_MODULE), IN_MODULE),
+        );
         let tied: f32 = rings()
             .iter()
             .map(|t| at[t.a].distance(at[t.b]))
@@ -572,7 +626,12 @@ mod tests {
                 weight: 1.0,
             })
             .collect();
-        let at = place(&radii, &rings(), &anchors, container_radius(&radii));
+        let at = place(
+            &radii,
+            &rings(),
+            &anchors,
+            (container_radius(&radii, IN_MODULE), IN_MODULE),
+        );
         let ring = |from: usize| at[from..from + 10].iter().sum::<Vec3>() / 10.0;
         assert!(
             ring(0).dot(toward) > ring(10).dot(toward) + FUNCTION,

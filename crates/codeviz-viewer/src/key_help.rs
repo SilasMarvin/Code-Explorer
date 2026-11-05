@@ -99,7 +99,7 @@ impl When {
 
 /// Every key, what it does, and in which view; H lists those that apply to the view
 /// open. One line each.
-const KEYS: [(&str, &str, When); 25] = [
+const KEYS: [(&str, &str, When); 26] = [
     ("click", "select a function; nothing moves", When::Browse),
     (
         "click",
@@ -162,6 +162,7 @@ const KEYS: [(&str, &str, When); 25] = [
     ),
     ("wheel", "zoom towards the pointer", When::Always),
     ("drag, right drag", "turn the view, move it", When::Always),
+    ("-  =", "spread the modules closer / wider", When::Always),
     ("F", "fit the selection on screen", When::Browse),
     ("F", "fit the journey on screen", When::Journey),
     ("R", "the whole map, from the front", When::Browse),

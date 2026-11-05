@@ -173,6 +173,12 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;
     }
+    // - and = spread the map closer or wider.
+    if keys.just_pressed(KeyCode::Minus) {
+        explorer.spread(false);
+    } else if keys.just_pressed(KeyCode::Equal) {
+        explorer.spread(true);
+    }
 }
 
 /// Escape steps out one level, closing whatever is on top: the search box, the key

@@ -211,7 +211,13 @@ struct Arrangement {
 /// said of the start below says it of the selection too.
 #[derive(Debug, Clone)]
 pub(crate) struct Nucleus {
-    /// Where every module and function sits: worked out once.
+    /// Where [`place`] put every module and function: worked out once.
+    placed: Layout,
+    /// How far the map is spread: every module's middle this many times as far from
+    /// the world's as `placed` has it.
+    spread: f32,
+    /// Where every module and function sits, the map spread: `placed`, every module
+    /// moved out from the world's middle with its functions, sizes as they were.
     layout: Layout,
     /// Functions in each module, by cluster.
     counts: Vec<usize>,
@@ -263,8 +269,11 @@ impl Nucleus {
                 *flows.entry((a, b)).or_insert(0) += 1;
             }
         }
+        let placed = place::layout(graph);
         let mut nucleus = Self {
-            layout: place::layout(graph),
+            layout: placed.clone(),
+            placed,
+            spread: 1.0,
             counts,
             module_of: (0..graph.len()).map(|t| graph.cluster(t)).collect(),
             flows,
@@ -317,6 +326,26 @@ impl Nucleus {
     /// drawn, those nothing lights plainly, as the module opens.
     pub(crate) fn opened_up(&self, tile: usize) -> bool {
         self.expanded.is_some() && self.module_of.get(tile).copied().flatten() == self.expanded
+    }
+
+    /// Spreads the map `spread` times as wide as [`place`] laid it: every module's
+    /// middle that many times as far from the world's, each function moving with its
+    /// module, nothing laid out again and no sphere resized.
+    pub(crate) fn set_spread(&mut self, graph: &CallGraph, spread: f32) {
+        self.spread = spread;
+        self.layout = place::spread(&self.placed, graph, spread);
+        self.recenter(graph, self.now.start);
+    }
+
+    /// How far the map is spread: 1 as [`place`] laid it.
+    pub(crate) fn spread(&self) -> f32 {
+        self.spread
+    }
+
+    /// Where [`place`] put everything, the map not spread: what is the same every
+    /// time for the same document.
+    pub(crate) fn unspread(&self) -> &Layout {
+        &self.placed
     }
 
     /// Lights what `start` touches instead.

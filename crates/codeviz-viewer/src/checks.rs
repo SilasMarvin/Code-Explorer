@@ -67,6 +67,9 @@ const MOST_DOT: f32 = 16.0;
 /// How far two spheres may overlap, in the world, before they count as intersecting:
 /// rounding again.
 const SPHERE_OVERLAP: f32 = 0.002;
+/// Least gap between two spheres, surface to surface in the world, against the mean
+/// sphere's radius: the map's modules apart enough to tell, not clumped.
+const SPHERE_GAP: f32 = 0.5;
 /// Largest sphere's radius against the smallest's (CORE: "no more than ~4×").
 const SPHERE_RATIO: f32 = 4.0;
 /// Farthest a function's name may sit from its dot, and a module's from its sphere's
@@ -1150,6 +1153,9 @@ fn spheres_apart(s: &Snap) -> Value {
     if spheres.len() < 2 {
         return skip("fewer than two module spheres drawn");
     }
+    // Of every module, shown or not: the map's typical sphere.
+    let mean = s.modules.iter().map(|m| m.world_radius).sum::<f32>() / s.modules.len() as f32;
+    let least = SPHERE_GAP * mean;
     let mut offenders = Vec::new();
     for (i, a) in spheres.iter().enumerate() {
         for b in &spheres[i + 1..] {
@@ -1158,7 +1164,11 @@ fn spheres_apart(s: &Snap) -> Value {
             let share = overlap / a.world_radius.min(b.world_radius).max(f32::EPSILON);
             if overlap > SPHERE_OVERLAP {
                 let offender = json!({ "modules": [a.name, b.name], "overlap": r3(overlap), "share_of_smaller": r2(share) });
-                offenders.push((share, offender));
+                offenders.push((1.0 + share, offender));
+            } else if -overlap < least * 0.999 {
+                let offender =
+                    json!({ "modules": [a.name, b.name], "gap": r3(-overlap), "least": r3(least) });
+                offenders.push((1.0 + overlap / least, offender));
             }
         }
     }
@@ -4868,6 +4878,12 @@ mod tests {
         let result = check(&s, "spheres-apart");
         assert_eq!(result["offenders"][0]["modules"], json!(["a", "b"]));
         assert_eq!(result["offenders"][0]["overlap"], 1.0);
+        // Apart, but nearer than half the mean sphere's radius.
+        s["modules"][1]["world"] = json!([0.0, 0.0, 0.0]);
+        let result = check(&s, "spheres-apart");
+        assert_eq!(result["offenders"][0]["gap"], 1.0, "{result}");
+        s["modules"][1]["world"] = json!([1.25, 0.0, 0.0]);
+        assert!(passes(&check(&s, "spheres-apart")));
 
         s["modules"][1]["world_radius"] = json!(25.0);
         let result = check(&s, "sphere-sizes");

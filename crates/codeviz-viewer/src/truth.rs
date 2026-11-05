@@ -115,6 +115,8 @@ pub(crate) fn state(view: &View) -> Value {
         // In a journey, how many levels below the start its deepest call is.
         "deepest": (!explorer.browsing()).then(|| disclosed.deepest()),
         "outside_callers": explorer.outside_shown(),
+        // How far `-` and `=` have spread the map: 1 as laid out.
+        "spread": nucleus.spread(),
         "outside_waiting": nucleus.outside_waiting(),
         "hovered": explorer.hovered().map(name),
         "under_pointer": explorer.under_pointer.map(name),
@@ -249,17 +251,21 @@ pub(crate) fn scene(view: &View) -> Value {
 /// How many shuffles of the layout calls are measured against.
 const SHUFFLES: u64 = 8;
 
-/// What the layout is, whatever the view lights: a `digest` of where every module
-/// and function sits, the same for the same layout; and how long calls run in it
-/// against the same positions shuffled (`modules`: between modules' middles, their
-/// spheres shuffled among themselves; `inside` and `across`: function to function,
-/// calls within a module and between two, functions shuffled within their modules),
-/// each the mean length in the world: what tells that what calls what sits near it.
+/// What the layout is, whatever the view lights and however far `-` and `=` spread
+/// it: a `digest` of where every module and function sits, the same for the same
+/// layout; and how long calls run in it against the same positions shuffled
+/// (`modules`: between modules' middles, their spheres shuffled among themselves;
+/// `inside` and `across`: function to function, calls within a module and between
+/// two, functions shuffled within their modules), each the mean length in the world:
+/// what tells that what calls what sits near it.
 fn layout(explorer: &Explorer) -> Value {
     let nucleus = explorer.nucleus();
     let graph = explorer.graph();
-    let balls: Vec<(Vec3, f32)> = nucleus.balls().map(|(_, b)| (b.center, b.radius)).collect();
-    let points: Vec<Option<Vec3>> = (0..graph.len()).map(|t| nucleus.point(t)).collect();
+    let placed = nucleus.unspread();
+    let balls = &placed.modules;
+    let points: Vec<Option<Vec3>> = (0..graph.len())
+        .map(|t| nucleus.placed(t).then(|| placed.functions[t]))
+        .collect();
     // FNV-1a over every position's bits.
     let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
     let floats = (balls.iter())

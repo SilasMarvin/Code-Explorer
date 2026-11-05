@@ -381,7 +381,7 @@ pub(crate) fn create_node_materials(
 type TheCamera = (With<OrbitCamera>, Without<Tile>);
 
 /// Sizes every function drawn as [`drawn_radius`] has it, whenever the view or the
-/// camera changes.
+/// camera changes, and puts it where the map, spread as `-` and `=` have it, has it.
 pub(crate) fn size_nodes(
     explorer: Res<Explorer>,
     cameras: Query<(Ref<Camera>, Ref<Transform>), TheCamera>,
@@ -396,6 +396,11 @@ pub(crate) fn size_nodes(
     // Where the camera is this frame: it moves before its transform reaches the rest.
     let view = GlobalTransform::from(*placed);
     for (tile, mut transform) in &mut nodes {
+        if let Some(at) = explorer.tile_point(tile.0)
+            && transform.translation != at
+        {
+            transform.translation = at;
+        }
         // The mesh is one unit across.
         let size = 2.0 * drawn_radius(&explorer, tile.0, &camera, &view);
         if (transform.scale.x - size).abs() > size * 1e-3 {

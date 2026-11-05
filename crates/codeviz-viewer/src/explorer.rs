@@ -31,6 +31,10 @@ use crate::{
     nucleus::{Nucleus, Trail},
 };
 
+/// How far `-` and `=` spread the map, step by step: every module's middle this many
+/// times as far from the world's as the layout put it.
+const SPREADS: [f32; 4] = [1.0, 1.5, 2.0, 3.0];
+
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Confidence {
@@ -219,6 +223,8 @@ pub(crate) struct Explorer {
     /// The graph gathered into module spheres: browsing, the whole codebase; in a
     /// journey, round its start's module.
     nucleus: Nucleus,
+    /// How far `-` and `=` have spread the map, by step in [`SPREADS`].
+    spread: usize,
     /// Whether a journey is open, or the view browses.
     mode: ViewMode,
     /// Browsing, the function last clicked: what the view lights, and what Enter opens
@@ -312,6 +318,7 @@ impl Explorer {
             moved: 0,
             history: History::default(),
             aim: 0,
+            spread: 0,
             disclose: Disclose::default(),
             disclosed: Arc::default(),
             under_pointer: None,
@@ -873,6 +880,31 @@ impl Explorer {
                 explorer.clear_aside();
             });
         }
+    }
+
+    /// `-` and `=`: spreads the map a step closer or wider ([`SPREADS`]), every module
+    /// moving out from the world's middle with its functions, sizes kept; at once,
+    /// whatever the view shows, which then frames itself again as it was pointed.
+    /// Says the step, or that it is at the end.
+    pub(crate) fn spread(&mut self, wider: bool) {
+        let next = if wider {
+            Some(self.spread + 1).filter(|&at| at < SPREADS.len())
+        } else {
+            self.spread.checked_sub(1)
+        };
+        let Some(next) = next else {
+            self.say(if wider {
+                "Spread as wide as it goes: - brings the modules closer"
+            } else {
+                "Spread as close as it goes: = spreads the modules wider"
+            });
+            return;
+        };
+        self.spread = next;
+        self.nucleus.set_spread(&self.graph, SPREADS[next]);
+        self.moved += 1;
+        self.aim += 1;
+        self.say(&format!("Spread {}×: - closer, = wider", SPREADS[next]));
     }
 
     /// Tells the nucleus which function the pointer has rested on. Returns whether
@@ -2831,6 +2863,47 @@ pub(crate) mod tests {
             Disclose(2),
             "browsing, none of them do more"
         );
+    }
+
+    #[test]
+    fn the_spread_keys_move_modules_out_with_their_functions_and_keep_the_journey() {
+        let mut explorer = explorer();
+        let said = |explorer: &Explorer| explorer.notice().map(|(_, text)| text.to_owned());
+        let start = explorer.start();
+        let main = tile(&explorer, "main");
+        let module = explorer.graph.cluster(main).expect("a module");
+        let ball = |e: &Explorer| e.nucleus().ball(module).expect("a sphere");
+        let (before, at) = (ball(&explorer), explorer.nucleus().point(main));
+        explorer.spread(false);
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Spread as close as it goes: = spreads the modules wider")
+        );
+        for _ in 0..3 {
+            explorer.spread(true);
+        }
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Spread 3×: - closer, = wider")
+        );
+        let after = ball(&explorer);
+        assert_eq!(after.center, before.center * 3.0);
+        assert_eq!(after.radius, before.radius, "no sphere resized");
+        let moved = explorer.nucleus().point(main).zip(at).map(|(a, b)| a - b);
+        assert!(
+            moved.is_some_and(|by| by.distance(after.center - before.center) < 1e-4),
+            "its functions move with it"
+        );
+        assert_eq!(explorer.start(), start, "the journey stays");
+        explorer.spread(true);
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Spread as wide as it goes: - brings the modules closer")
+        );
+        for _ in 0..3 {
+            explorer.spread(false);
+        }
+        assert_eq!(ball(&explorer), before, "back as laid out");
     }
 
     #[test]
