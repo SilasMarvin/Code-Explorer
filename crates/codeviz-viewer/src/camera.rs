@@ -857,7 +857,7 @@ impl OrbitCamera {
 /// The sphere the wheel zooms towards, by index into the reach's spheres.
 #[derive(Debug, Clone, Copy)]
 enum Aim {
-    /// Under the pointer (of several, the nearest the camera): the wheel stops once
+    /// Under the pointer (of several, the biggest on screen): the wheel stops once
     /// it fills the view.
     Under(usize),
     /// With the pointer over none, the one whose disc on screen is nearest it: the
@@ -884,13 +884,14 @@ fn aimed_sphere(reach: &Reach, rotation: Quat, eye: Vec3, pointer: Vec2) -> Opti
     let mut under: Option<(usize, f32)> = None;
     let mut near: Option<(usize, f32)> = None;
     for (index, &sphere) in reach.spheres.iter().enumerate() {
-        let Some((at, depth, size)) = disc(&reach.lens, rotation, eye, sphere) else {
+        let Some((at, _, size)) = disc(&reach.lens, rotation, eye, sphere) else {
             continue;
         };
         // How far off its rim the pointer is, as a share of its radius on screen.
         let off = ((pointer - at) / size).length() - 1.0;
         let (best, by) = if off <= 0.0 {
-            (&mut under, depth)
+            // Of several, the biggest on screen: the one filling the view first.
+            (&mut under, -size.y)
         } else {
             (&mut near, off)
         };
