@@ -2,7 +2,8 @@
 # Full orbit (FIX15): a drag turns the map any way round, a whole turn in yaw and
 # over the pole in pitch, with no stop and nothing laid out again; every call's line
 # stays straight between its dots, the lit dots show over everything unlit whatever
-# lies nearer, names stay by their dots; R turns back to the usual view.
+# lies nearer, names stay by their dots; a whole turn round puts the camera back as it
+# was, an orbit moving nothing it looks at; R turns back to the usual view.
 click orders::place
 key enter
 key .
@@ -22,6 +23,7 @@ drag 314.159 0
 expect check lit-over pass
 snap yaw 270
 drag 314.159 0
+expect camera-same-as journey
 snap yaw 360
 drag 0 314.159
 expect check lit-over pass
