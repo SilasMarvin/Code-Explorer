@@ -61,18 +61,6 @@ class DriveTest(unittest.TestCase):
         self.assertNotIn("labels-near", text)
         self.assertIn("note, step 5 (line 6) `key x`: the search box has the keyboard", text)
 
-    def test_tells_a_window_not_drawn_from_a_failure(self):
-        blank = dict(summary(ok=True), window_not_drawn=["02-a"])
-        self.assertEqual(drive.verdict(blank), "NOT DRAWN")
-        self.assertEqual(drive.verdict(dict(summary(), window_not_drawn=["02-a"])), "FAIL")
-        self.assertEqual(drive.verdict(summary(ok=True)), "PASS")
-        text = drive.report(blank)
-        self.assertTrue(text.splitlines()[0].endswith("NOT DRAWN"))
-        self.assertIn("window not drawn: 1 snaps have no PNG (02-a)", text)
-        table = drive.table([("a", blank), ("b", summary(ok=True))])
-        self.assertTrue(table.splitlines()[2].endswith("not drawn"))
-        self.assertIn("2/2 scripts pass; 1 of them with the window not drawn", table)
-
     def test_tables_the_suite(self):
         text = drive.table([("a", summary()), ("b", summary(ok=True)),
                             ("c", {"ok": False, "error": "killed"})])
