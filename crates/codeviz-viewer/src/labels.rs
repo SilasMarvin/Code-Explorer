@@ -649,25 +649,26 @@ impl Placer {
 
     /// Where a name of `size` that must show goes when no place round its dot fits:
     /// where it covers least ([`Placer::least_over`]); where that is over a name
-    /// placed before it, further out, as two pills on one another read as neither's.
+    /// placed before it, further out by up to [`FURTHER`], as two pills on one
+    /// another read as neither's.
     fn anyway(
         &self,
         own: usize,
         (node, reach): (egui::Pos2, f32),
         (size, bare): (egui::Vec2, egui::Vec2),
     ) -> ((usize, f32), egui::Rect) {
-        let out = |far: f32| {
-            let reach = far * reach;
+        let out = |further: f32| {
+            let reach = reach + further;
             let tries = self.tries(own, node, reach, (size, bare));
             self.least_over(own, (node, reach), size, &tries)
         };
         let clear = |&(_, pill): &((usize, f32), egui::Rect)| {
             self.bounds.contains_rect(pill) && self.over_names(pill) == 0
         };
-        let near = out(1.0);
+        let near = out(0.0);
         Some(near)
             .filter(clear)
-            .or_else(|| [2.0, 3.0].into_iter().map(out).find(clear))
+            .or_else(|| FURTHER.into_iter().map(out).find(clear))
             .unwrap_or(near)
     }
 
@@ -699,6 +700,10 @@ impl Placer {
             })
     }
 }
+
+/// How much further from its dot, in points, a name that must show looks for a
+/// place clear of the names placed before it: never so far it reads as no one's.
+const FURTHER: [f32; 3] = [10.0, 20.0, 30.0];
 
 /// A name ready to paint: its pill, its text and border.
 struct Label {

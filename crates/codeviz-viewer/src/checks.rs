@@ -2332,7 +2332,8 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
             .and_then(|u| before.node(u))
             .map(|n| n.gap(text, n.radius));
         let nearer = own.is_some_and(|own| {
-            (now.nodes.iter().filter(came)).any(|n| n.gap(text, n.radius) + NEARER < own)
+            (now.nodes.iter().filter(came))
+                .any(|n| n.gap(text, n.kept_off.unwrap_or(n.radius)) < own)
         });
         // As far as names keep from names and dots, leaning to more given way.
         let old = text.expand2(NAME_PILL).expand(NAME_CLEAR + ROUNDING);
