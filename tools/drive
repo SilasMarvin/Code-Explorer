@@ -340,13 +340,14 @@ def shrink_pngs(out):
 # picture, and the window's ground itself. Faint lines are egui strokes blended over the
 # 3D picture, spheres 3D meshes lightening what they cover: a range missed means
 # something global changed in how the picture is drawn (blending, colour space,
-# tonemapping, lighting, Bevy features). Measured on the lit spheres (look3d): ground
-# 18.7, faint links 12.7-13.7, faint inner calls 11.3-19.3, faint spheres 21-23.7,
-# shading 3.7-5.3. Outside them: spheres blended by alpha so stacks add up (faint
-# spheres 31-36, inner calls over them 0.7-9), the flat discs (shading 0), lines
-# alpha-squared without bevy_post_process (links 1-3), round 6's glowing rims and dots.
+# tonemapping, lighting, Bevy features). Measured on ord and axum (lkr-a2-*): ground
+# 18.7, faint links 12.7-13.3, faint inner calls 13.7-14, faint spheres 24-26.8,
+# shading 4-5.3, spheres behind a journey 7.7-21.3. Outside them: spheres blended by
+# alpha so stacks add up (faint spheres 32.5-35.3, behind a journey 34, inner calls over
+# them 4.3), the flat discs (shading 0), emissive spheres under bloom (faint spheres
+# 37.3, behind 25), lines alpha-squared without bevy_post_process (links 1-3).
 LOOK = {"ground": (16, 22), "faint links": (8, 30), "faint inner calls": (10, 30),
-        "faint spheres": (16, 28),
+        "faint spheres": (16, 30), "spheres behind": (5, 24),
         # A sphere shaded as a ball: its middle brighter than near its edge.
         "sphere shading": (2, 12)}
 # The fewest samples a median is judged on.
@@ -402,8 +403,14 @@ def look_of(snap, level, size):
 
     # The ground where no sphere covers it; zoomed in so far that spheres cover all but
     # a few spots, the view is no whole map to judge.
+    # Only the free area: a journey's panel covers the rest.
+    left, top, right, bottom = snap.get("free_area") or (0, 0, width, height)
+
+    def free(x, y):
+        return max(8, left + 4) < x < min(width - 8, right - 4) and max(30, top + 4) < y < min(height - 30, bottom - 4)
+
     bare = [level(x, y) for x in range(5, width, 41) for y in range(35, height - 30, 43)
-            if not any(inside(x, y, m, 1.05) for m in spheres)]
+            if free(x, y) and not any(inside(x, y, m, 1.05) for m in spheres)]
     ground = statistics.median(bare) if bare else None
     whole_map = (snap["state"]["mode"] == "browse" and not snap["state"].get("expanded")
                  and not snap["content"].get("selection") and len(bare) >= 40)
@@ -433,18 +440,19 @@ def look_of(snap, level, size):
                     side = min(level(x + s * across[0], y + s * across[1]) for s in (-1, 1))
                     samples.setdefault(what, []).append(peak - side)
 
-    if whole_map:
-        samples["ground"] = [ground]
-        line_samples("faint links", snap.get("module_arrows", []))
+    def sphere_samples(what, shading):
         for m in snap.get("modules", []):
             if m.get("body") != "faint" or not m.get("on_screen") or m.get("radius", 0) < 12:
                 continue
             # Clear of dots, and of every other sphere: where spheres overlap the
-            # brightest shows, which is no longer this one's own shade.
+            # brightest shows, which is no longer this one's own shade. A big sphere
+            # near the camera shows wider than its radius says (perspective): keep off
+            # its edge by a margin.
             def clear(x, y):
-                return (8 < x < width - 8 and 30 < y < height - 30) and not (
+                return free(x, y) and not (
                     any((x - d[0]) ** 2 + (y - d[1]) ** 2 < 49 for d in dots)
-                    or any(inside(x, y, o) for o in spheres if o is not m))
+                    or any(r[0] - 4 < x < r[2] + 4 and r[1] - 4 < y < r[3] + 4 for r in rects)
+                    or any(inside(x, y, o, 1.15) for o in spheres if o is not m))
 
             def at(share, k):
                 return (m["at"][0] + share * m["radius"] * math.cos(k * math.pi / 8),
@@ -453,11 +461,19 @@ def look_of(snap, level, size):
             for k in range(16):
                 x, y = at(0.6, k)
                 if clear(x, y):
-                    samples.setdefault("faint spheres", []).append(level(x, y) - ground)
+                    samples.setdefault(what, []).append(level(x, y) - ground)
                 # Shaded as a ball: brighter towards its middle than near its edge.
                 inner, outer = at(0.25, k), at(0.85, k)
-                if m["radius"] >= 24 and clear(*inner) and clear(*outer):
+                if shading and m["radius"] >= 24 and clear(*inner) and clear(*outer):
                     samples.setdefault("sphere shading", []).append(level(*inner) - level(*outer))
+
+    if whole_map:
+        samples["ground"] = [ground]
+        line_samples("faint links", snap.get("module_arrows", []))
+        sphere_samples("faint spheres", True)
+    # Behind a journey the map it passes through recedes, quieter than browsing's.
+    if snap["state"]["mode"] == "journey" and len(bare) >= 40:
+        sphere_samples("spheres behind", False)
     line_samples("faint inner calls", [a for a in snap.get("arrows", [])
                                        if a.get("flow") == "inner" and "(faint)" in a.get("role", "")])
     return samples

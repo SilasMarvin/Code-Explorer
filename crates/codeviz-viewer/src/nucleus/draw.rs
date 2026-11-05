@@ -70,10 +70,12 @@ impl MaterialExtension for Lighten {
 pub(crate) struct Looks {
     ball: Handle<Mesh>,
     /// By module color: the nucleus, an open module, and browsing, so faint the
-    /// module only just reads as one.
+    /// module only just reads as one; and fainter still behind a journey, so the
+    /// map it passes through stays quiet and its lines and names stand out.
     nucleus: Vec<Handle<SphereMaterial>>,
     open: Vec<Handle<SphereMaterial>>,
     faint: Vec<Handle<SphereMaterial>>,
+    behind: Vec<Handle<SphereMaterial>>,
 }
 
 /// How much dimmer, towards the ground, the furthest of the map shows than the
@@ -109,6 +111,7 @@ pub(crate) fn create_looks(
         nucleus: tinted(0.15, &mut materials),
         open: tinted(0.11, &mut materials),
         faint: tinted(0.075, &mut materials),
+        behind: tinted(0.045, &mut materials),
     };
     commands.insert_resource(looks);
 }
@@ -127,6 +130,7 @@ pub(crate) fn place_bodies(
     )>,
 ) {
     let nucleus = explorer.nucleus();
+    let behind = !nucleus.browsing();
     let clusters = explorer.graph().cluster_count();
     if spheres.is_empty() {
         for cluster in 0..clusters {
@@ -148,6 +152,7 @@ pub(crate) fn place_bodies(
             let wanted = match ball.body {
                 Body::Nucleus => &looks.nucleus[color],
                 Body::Open => &looks.open[color],
+                Body::Faint if behind => &looks.behind[color],
                 Body::Faint => &looks.faint[color],
             };
             if &material.0 != wanted {
@@ -212,11 +217,13 @@ pub(crate) fn draw(
     let Some(span) = depth_span(nucleus, eye) else {
         return;
     };
+    let behind = !nucleus.browsing();
     for (cluster, ball) in nucleus.balls() {
         let alpha = match ball.body {
             Body::Nucleus => 0.6,
             Body::Open => 0.5,
-            Body::Faint => 0.22,
+            Body::Faint if behind => 0.1,
+            Body::Faint => 0.15,
         };
         let Some((middle, radius, facing)) = silhouette(ball.center, ball.radius, eye) else {
             continue;
