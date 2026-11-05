@@ -624,8 +624,9 @@ pub(crate) struct Screen {
     pub(crate) names: egui::Rect,
     /// How big each name on the graph was laid out, room found for it or not.
     pub(crate) name_sizes: Arc<HashMap<crate::labels::Named, egui::Vec2>>,
-    /// Every dot names keep off, and how far: the function, where, how far.
-    pub(crate) kept_off: Arc<Vec<(usize, egui::Pos2, f32)>>,
+    /// Every dot names keep off, and how far: the function, where, how far, and how
+    /// small its own name takes it.
+    pub(crate) kept_off: Arc<Vec<(usize, egui::Pos2, f32, f32)>>,
     /// Where names keep off the calls coming into each dot: the function, the line's
     /// last stretch from the dot back.
     pub(crate) arrivals: Arc<Vec<(usize, Vec<egui::Pos2>)>>,

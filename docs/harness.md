@@ -197,6 +197,8 @@ scene's units.
   dot back, that its name keeps off), `home` (left out, the place its name had when
   names were last placed in this view, which a name placed before it took), `kept_off` (how far from
   its middle names keep: a dot drawn bigger than a speck as far as the cursor's),
+  `least` (how small its own name takes it, judging whether another dot reads nearer
+  than its own: the start, the cursor or the selection as small as a lit dot),
   `crowded_by`,
   `color` (its fill, `#rrggbbaa`), `over` (drawn over everything else in the scene,
   whatever lies nearer: a lit dot), `rings` (each ring drawn round it: `radius` on
@@ -332,12 +334,14 @@ ground, the faint links between modules, the faint spheres), in a journey (the f
 spheres behind it, which recede), and expanded (the faint calls among the module's
 functions). A range missed means the picture as a whole is drawn differently
 (blending, colour space, tonemapping, lighting, Bevy features). Measured on ord and
-axum: ground 18.7, faint links 13-13.3, faint inner calls 13.7-14, faint spheres 24-27,
-shading 4-5.3, spheres behind a journey 7.7-21.3. Each of these fails it: spheres
-blended by alpha, so stacks add up (faint spheres 32.5-35, behind a journey 34, faint
-inner calls over them 4.3); the flat discs (shading 0); emissive spheres under bloom,
-glowing (faint spheres 37, behind 25); a Bevy build without `bevy_post_process`, which
-drew every translucent stroke alpha-squared (links 1-3).
+axum: ground 18.7, faint links 13-13.3, faint inner calls 8.7-18 (lowest over the
+journey's own module, whose fill is lightest), faint spheres 24-27, shading 4-5.3,
+spheres behind a journey 7.7-21.3. Each of these fails it: spheres blended by alpha, so
+stacks add up (faint spheres 32.5-35, behind a journey 34, faint inner calls over them
+3.3-5.3); the flat discs (shading 0); emissive spheres under bloom, glowing (faint
+spheres 37, behind 25); a Bevy build without `bevy_post_process`, which drew every
+translucent stroke alpha-squared (links 1-3); inner calls drawn as strong as lit ones
+(81-109).
 
 Another reads the layout across runs: `layout-same`, every snap's `layout.digest` the
 same, and the same as the last session run with this build on this document (kept in

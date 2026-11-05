@@ -491,6 +491,8 @@ struct Node {
     name_size: Option<[f32; 2]>,
     /// How far from its middle names keep, in points.
     kept_off: Option<f32>,
+    /// How small its own name takes it, judging whether another dot reads nearer.
+    least: Option<f32>,
     /// Left out, the place its name had in this view, which a name placed before it
     /// took.
     home: Option<[f32; 4]>,
@@ -3161,10 +3163,11 @@ impl<'a> Room<'a> {
             kept + ROUNDING
         };
         // Over a dot judged by the pill, nearer one by the text, as labels-near does;
-        // its own as drawn, as small as the placer takes it lit. Nearer leaning to
-        // less room too: the placer's bound less what rounding may have hidden.
+        // its own as small as the placer takes it (`least`: the start, drawn big, as
+        // small as a lit dot). Nearer leaning to less room too: the placer's bound
+        // less what rounding may have hidden.
         let text = r.shrink2(NAME_PILL);
-        let mine = own.map_or(0.0, |n| n.gap(text, n.radius - ROUNDING));
+        let mine = own.map_or(0.0, |n| n.gap(text, n.least.unwrap_or(n.radius) - ROUNDING));
         let nearer = labels::NEARER - 2.0 * ROUNDING;
         let near = |n: &Node, radius: f32| {
             n.gap(r, radius) < NAME_CLEAR || n.gap(text, radius) < mine - nearer
@@ -4800,6 +4803,33 @@ mod tests {
                 .is_none_or(|o| o.iter().all(|o| o["arrow"].is_null())),
             "{result}"
         );
+    }
+
+    #[test]
+    fn a_name_shown_come_what_may_goes_home_from_where_it_lay_for_want_of_room() {
+        // The start, drawn big, named up and left of its dot for want of room; a call
+        // beside it reads nearer that place than the start does, taken as small as a
+        // lit dot, as the placer takes it: room comes back at home and it goes there.
+        let mut before = journey();
+        before["nodes"][0]["radius"] = json!(4.3);
+        before["nodes"][0]["kept_off"] = json!(4.3);
+        before["nodes"][1]["roles"] = json!(["journey level 1"]);
+        before["nodes"][1]["at"] = json!([371.4, 499.6]);
+        before["nodes"][1]["radius"] = json!(3.1);
+        before["nodes"][1]["kept_off"] = json!(4.4);
+        let place = |s: &mut Value, r: [f32; 4]| {
+            s["nodes"][0]["label_rect"] = json!(r);
+            s["labels"][1]["rect"] = json!(r);
+        };
+        place(&mut before, [296.4, 475.5, 387.2, 489.5]);
+        let mut now = before.clone();
+        place(&mut now, [393.4, 484.0, 484.2, 498.0]);
+        let result = after(&before, &now, &[Kind::Still], "nothing-moved");
+        assert_eq!(result["count"], 1, "its own taken as drawn: {result}");
+        before["nodes"][0]["least"] = json!(3.1);
+        now["nodes"][0]["least"] = json!(3.1);
+        let result = after(&before, &now, &[Kind::Still], "nothing-moved");
+        assert!(passes(&result), "{result}");
     }
 
     #[test]

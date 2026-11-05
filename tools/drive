@@ -341,12 +341,14 @@ def shrink_pngs(out):
 # 3D picture, spheres 3D meshes lightening what they cover: a range missed means
 # something global changed in how the picture is drawn (blending, colour space,
 # tonemapping, lighting, Bevy features). Measured on ord and axum (lkr-a2-*): ground
-# 18.7, faint links 12.7-13.3, faint inner calls 13.7-14, faint spheres 24-26.8,
-# shading 4-5.3, spheres behind a journey 7.7-21.3. Outside them: spheres blended by
-# alpha so stacks add up (faint spheres 32.5-35.3, behind a journey 34, inner calls over
-# them 4.3), the flat discs (shading 0), emissive spheres under bloom (faint spheres
-# 37.3, behind 25), lines alpha-squared without bevy_post_process (links 1-3).
-LOOK = {"ground": (16, 22), "faint links": (8, 30), "faint inner calls": (10, 30),
+# 18.7, faint links 12.7-13.3, faint spheres 24-26.8, shading 4-5.3, spheres behind a
+# journey 7.7-21.3; faint inner calls 8.7-18 (n8-end-*, spread 2x: lowest over the
+# journey's own module, its fill the lightest, highest over the dark olive of a big one).
+# Outside them: spheres blended by alpha so stacks add up (faint spheres 32.5-35.3,
+# behind a journey 34, inner calls over them 3.3-5.3), the flat discs (shading 0),
+# emissive spheres under bloom (faint spheres 37.3, behind 25), lines alpha-squared
+# without bevy_post_process (links 1-3), inner calls drawn as lit ones (81-109).
+LOOK = {"ground": (16, 22), "faint links": (8, 30), "faint inner calls": (7, 30),
         "faint spheres": (16, 30), "spheres behind": (5, 24),
         # A sphere shaded as a ball: its middle brighter than near its edge.
         "sphere shading": (2, 12)}

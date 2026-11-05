@@ -179,7 +179,7 @@ pub(crate) fn scene(view: &View) -> Value {
                 "label": label.map(|i| labels[i].text.clone()),
                 "label_rect": label.map(|i| rect(labels[i].rect)),
                 "name_size": name_size(screen, Named::Node(d.tile)),
-                "kept_off": screen.kept_off.iter().find(|k| k.0 == d.tile).map(|k| round(k.2)),
+                "kept_off": kept_off(screen, d.tile, |k| k.2), "least": kept_off(screen, d.tile, |k| k.3),
                 "arrivals": arrivals(screen, d.tile),
                 "home": screen.homes.get(&d.tile).map(|r| rect(*r)),
                 "crowded_by": crowding(explorer, &drawn, d),
@@ -373,6 +373,18 @@ fn camera(view: &View) -> Value {
         // Where what the camera looks at shows: a dolly in or out leaves it there.
         "target_at": target.and_then(|t| view.to_screen(t)).map(point),
     })
+}
+
+/// Of the dot `tile` as names keep off it, `what`: how far they keep, or how small its
+/// own name takes it.
+fn kept_off(
+    screen: &Screen,
+    tile: usize,
+    what: impl Fn(&(usize, egui::Pos2, f32, f32)) -> f32,
+) -> Option<f64> {
+    (screen.kept_off.iter())
+        .find(|k| k.0 == tile)
+        .map(|k| round(what(k)))
 }
 
 /// How big the name of `what` was laid out, room found for it or not.

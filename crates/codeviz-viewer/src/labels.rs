@@ -823,8 +823,9 @@ pub(crate) fn arrivals(ctx: &egui::Context) -> Arc<Vec<(usize, Vec<egui::Pos2>)>
 }
 
 /// Every dot names were last kept off, drawn or held for a deeper level: the
-/// function, where it is and how far from its middle names were kept, in points.
-pub(crate) fn kept_off(ctx: &egui::Context) -> Arc<Vec<(usize, egui::Pos2, f32)>> {
+/// function, where it is, how far from its middle names were kept, and how small its
+/// own name took it to be ([`Disc::least`]), in points.
+pub(crate) fn kept_off(ctx: &egui::Context) -> Arc<Vec<(usize, egui::Pos2, f32, f32)>> {
     ctx.data(|d| d.get_temp(kept_off_id())).unwrap_or_default()
 }
 
@@ -1895,10 +1896,10 @@ pub(crate) fn graph_names(
         sides,
         modules: Arc::new(naming.modules_placed.take()),
     };
-    let kept_off: Vec<(usize, egui::Pos2, f32)> = placer
+    let kept_off: Vec<(usize, egui::Pos2, f32, f32)> = placer
         .dots
         .iter()
-        .map(|d| (d.tile, d.at, d.radius))
+        .map(|d| (d.tile, d.at, d.radius, d.least))
         .collect();
     let arrivals: Vec<(usize, Vec<egui::Pos2>)> = (placer.arrivals.iter())
         .flat_map(|(&tile, tails)| tails.iter().map(move |tail| (tile, tail.clone())))
