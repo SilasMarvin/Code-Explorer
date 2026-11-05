@@ -32,7 +32,7 @@ use codeviz_layout::{
     place::{self, Layout},
 };
 
-pub(crate) use draw::{create_looks, depth_fog, draw, place_bodies};
+pub(crate) use draw::{SphereMaterial, create_looks, depth_fog, draw, place_bodies};
 pub(crate) use journey::rank_callers;
 
 use crate::{

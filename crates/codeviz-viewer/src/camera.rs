@@ -1108,7 +1108,7 @@ fn spawn_camera(
         ))
         .with_child((
             DirectionalLight {
-                illuminance: 5_000.0,
+                illuminance: 8_000.0,
                 ..default()
             },
             Transform::default().looking_to(Vec3::new(0.35, -0.45, -1.0), Vec3::Y),
@@ -1131,7 +1131,7 @@ fn spawn_camera(
         },
     ));
     commands.insert_resource(GlobalAmbientLight {
-        brightness: 900.0,
+        brightness: 300.0,
         ..default()
     });
 }
