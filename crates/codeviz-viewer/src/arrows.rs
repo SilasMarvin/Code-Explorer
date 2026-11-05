@@ -187,12 +187,13 @@ impl<'a> Screen<'a> {
 
     /// Where a call's line runs between, and how far short of each end it stops: its
     /// caller's dot and its callee's, a function the journey lays out as big as the
-    /// cursor's, or its module's sphere where the function there is folded away.
-    fn ends(&self, (from, to): (usize, usize)) -> Option<[End; 2]> {
+    /// cursor's where `steady` (else as drawn), or its module's sphere where the
+    /// function there is folded away.
+    fn ends(&self, (from, to): (usize, usize), steady: bool) -> Option<[End; 2]> {
         let nucleus = self.explorer.nucleus();
         let graph = self.explorer.graph();
         let end = |tile: usize| {
-            let (at, radius) = if self.laid_out(tile) && !nucleus.browsing() {
+            let (at, radius) = if steady && self.laid_out(tile) && !nucleus.browsing() {
                 self.dot_as(tile, Dot::Focus)?
             } else if nucleus.placed(tile) {
                 self.dot_as(tile, graph_dot(self.explorer, tile))?
@@ -322,7 +323,9 @@ pub(crate) fn route(explorer: &Explorer, (camera, view): (&Camera, &GlobalTransf
     let lines = calls
         .into_iter()
         .filter_map(|(pair, kept)| {
-            let path = straight(screen.ends(pair)?)?;
+            // Two dots too near for that take their line from the dots as drawn.
+            let path = straight(screen.ends(pair, true)?)
+                .or_else(|| straight(screen.ends(pair, false)?))?;
             Some((pair, Route { path, kept }))
         })
         .collect();
