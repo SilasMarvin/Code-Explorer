@@ -312,8 +312,11 @@ struct Disc {
     shade: Shade,
     /// Where a call a deeper level shows would be, not drawn at this depth or drawn
     /// plain: names rather keep off it, so a level more takes away no room, but it
-    /// keeps out no name the view shows.
+    /// keeps out no name the view shows; drawn plain, a name keeps off it as off any
+    /// plain dot.
     ghost: bool,
+    /// Drawn on the graph at this depth.
+    drawn: bool,
     /// Lit, or lit at another depth or by another selection: a name would rather not
     /// cover it, so that one more lit takes no name's side.
     may_light: bool,
@@ -334,11 +337,15 @@ enum Shade {
     Faded,
 }
 
-/// Whether `pill`, opaque, covers `dot`, or some of it: a lit name lies over a dot
-/// nothing lights rather than go, and that dot, under it, reads as no one's.
+/// Whether `pill`, opaque, covers `dot`, or [`HIDDEN`] of it at least: a lit name
+/// lies over a dot nothing lights rather than go, and that dot, under it, reads as no
+/// one's. One the pill only grazes still shows beside the name, and counts as near.
 fn hides(pill: egui::Rect, dot: &Disc) -> bool {
-    pill.distance_to_pos(dot.at) < dot.least
+    pill.distance_to_pos(dot.at) < dot.least - HIDDEN
 }
+
+/// How far into a dot, in points, an opaque pill reaches to hide it.
+const HIDDEN: f32 = 1.0;
 
 /// What a name placed takes room from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -476,6 +483,16 @@ impl Placer {
         self.ghosts.get() || !dot.ghost
     }
 
+    /// How a function's name placed now keeps off `dot`, if at all: a ghost drawn
+    /// plain, while ghosts keep no name off, as a plain dot.
+    fn shade(&self, dot: &Disc) -> Option<Shade> {
+        if self.sees(dot) {
+            Some(dot.shade)
+        } else {
+            dot.drawn.then_some(Shade::Plain)
+        }
+    }
+
     /// Takes `rect`, for what `kind` says.
     fn take(&mut self, rect: egui::Rect, kind: Taken) {
         self.taken_grid.insert(rect, self.taken.len());
@@ -532,19 +549,18 @@ impl Placer {
         self.dot_grid
             .near(pill.expand(mine.max(0.0) + CLEAR))
             .into_iter()
-            .map(|i| self.dots[i])
-            .filter(|d| {
-                self.sees(d)
-                    && d.tile != own
+            .filter_map(|i| Some((self.dots[i], self.shade(&self.dots[i])?)))
+            .filter(|(d, shade)| {
+                d.tile != own
                     && !hider.is_some_and(|hider| {
-                        matches!(d.shade, Shade::Faded | Shade::Folded)
-                            || d.shade == Shade::Plain && hides(hider, d)
+                        matches!(shade, Shade::Faded | Shade::Folded)
+                            || *shade == Shade::Plain && hides(hider, d)
                     })
             })
-            .fold((0, 0), |(over, near), d| {
+            .fold((0, 0), |(over, near), (d, shade)| {
                 // A lit name keeps off a dot nothing lights as drawn, not as big as
                 // it would show lit.
-                let radius = if hider.is_some() && d.shade == Shade::Plain {
+                let radius = if hider.is_some() && shade == Shade::Plain {
                     d.least
                 } else {
                     d.radius
@@ -982,6 +998,9 @@ struct Naming<'a> {
     /// While a hand turns the camera, which of its places ([`Naming::module_places`])
     /// each module's name took when names were last placed: it stays there or goes.
     modules_kept: Option<HashMap<usize, usize>>,
+    /// Which of its places each module's name took when names were last placed, in
+    /// this view: it stays there while it has room.
+    modules_were: HashMap<usize, usize>,
     /// Which of its places each module's name takes now: the next [`Kept`].
     modules_placed: RefCell<HashMap<usize, usize>>,
     /// By cluster, whether the view is near enough to name its plain functions:
@@ -1038,6 +1057,7 @@ impl<'a> Naming<'a> {
             kept: HashMap::new(),
             places: RefCell::default(),
             modules_kept: None,
+            modules_were: HashMap::new(),
             modules_placed: RefCell::default(),
             roomy: RefCell::default(),
         };
@@ -1110,6 +1130,8 @@ impl<'a> Naming<'a> {
                         _ if unselected => Shade::Plain,
                         _ if nucleus.folded(tile) => Shade::Folded,
                         _ if (dot != Dot::Speck || journey) && !plain => Shade::Lit,
+                        // The module expanded draws its functions plain, faded or not.
+                        _ if plain => Shade::Plain,
                         graph_view::NodeLook::Faded => Shade::Faded,
                         _ => Shade::Plain,
                     },
@@ -1117,6 +1139,7 @@ impl<'a> Naming<'a> {
                     // kept off as a level more would light it, but keeping out no
                     // name the view shows.
                     ghost: journey && dot == Dot::Speck,
+                    drawn: true,
                     may_light: dot != Dot::Speck || nucleus.browsing() || journey || opened,
                 })
             })
@@ -1144,6 +1167,7 @@ impl<'a> Naming<'a> {
                     least: self.shows(world, at, Dot::Lit),
                     shade: Shade::Lit,
                     ghost: true,
+                    drawn: false,
                     may_light: true,
                 })
             })
@@ -1458,7 +1482,10 @@ impl<'a> Naming<'a> {
     /// room: off other spheres and modules' names, over none of its dots, but inside
     /// its sphere its opaque pill hiding those nothing lights; where a function's name
     /// placed before it lies there, none, but for a module holding anything lit
-    /// (`tier`), which takes the next place with room.
+    /// (`tier`), which takes the next place with room. Clear of the calls a deeper
+    /// level shows where it can be; those keep it from no place. In the view names
+    /// were last placed in, where it went then while that has room, so a step that
+    /// only reads (a panel shrinking back) moves none.
     fn module_name(
         &self,
         painter: &egui::Painter,
@@ -1470,17 +1497,32 @@ impl<'a> Naming<'a> {
         // those, placed before it, took that place, it goes rather than moves. While a
         // hand turns the camera, the place it had, or none.
         let held = self.modules_kept.as_ref().map(|kept| kept.get(&cluster));
-        let mut spots = (self.module_places(painter, cluster).into_iter().enumerate())
-            .filter(|&(index, _)| held.is_none_or(|kept| kept == Some(&index)))
-            .filter(|(_, (pill, _, within))| placer.module_room(cluster, &own, *pill, *within));
-        let free = |(_, (pill, ..)): &(usize, (egui::Rect, Arc<egui::Galley>, bool))| {
-            placer.over_names(*pill) == 0
+        let tried = self.module_places(painter, cluster);
+        let pick = || {
+            let mut spots = (tried.iter().enumerate())
+                .filter(|&(index, _)| held.is_none_or(|kept| kept == Some(&index)))
+                .filter(|(_, (pill, _, within))| placer.module_room(cluster, &own, *pill, *within));
+            let free = |(_, (pill, ..)): &(usize, &(egui::Rect, Arc<egui::Galley>, bool))| {
+                placer.over_names(*pill) == 0
+            };
+            if tier == Tier::Module {
+                spots.find(free)
+            } else {
+                spots.next().filter(free)
+            }
+            .map(|(index, (pill, galley, _))| (index, *pill, galley.clone()))
         };
-        let (index, (pill, galley, _)) = if tier == Tier::Module {
-            spots.find(free)?
-        } else {
-            spots.next().filter(free)?
-        };
+        // Where it went last in this view, while that has room.
+        let stays = (self.modules_were.get(&cluster))
+            .filter(|_| held.is_none())
+            .and_then(|&index| Some((index, tried.get(index)?)))
+            .filter(|(_, (pill, _, within))| {
+                placer.module_room(cluster, &own, *pill, *within) && placer.over_names(*pill) == 0
+            })
+            .map(|(index, (pill, galley, _))| (index, *pill, galley.clone()));
+        let (index, pill, galley) = stays
+            .or_else(pick)
+            .or_else(|| placer.without_ghosts(pick))?;
         self.modules_placed.borrow_mut().insert(cluster, index);
         Some(Label {
             named: Named::Group(cluster),
@@ -1838,6 +1880,7 @@ pub(crate) fn graph_names(
     let holding = turning && last.view.is_some() && last.start == nucleus.start();
     if holding || !last.turning && last.view.is_some_and(|last| same_view(last, view)) {
         naming.kept.clone_from(&*last.places);
+        naming.modules_were.clone_from(&*last.modules);
     }
     if holding {
         naming.modules_kept = Some((*last.modules).clone());
@@ -2091,6 +2134,7 @@ mod tests {
             least: 4.0,
             shade: if lit { Shade::Lit } else { Shade::Plain },
             ghost: false,
+            drawn: true,
             may_light: lit,
         }
     }
@@ -2175,6 +2219,18 @@ mod tests {
             Vec::new(),
         );
         assert!(edge.fits(right, 0, Some(right)), "nor half of one");
+        let grazed = Placer::new(
+            bounds(),
+            vec![
+                disc(0, 100.0, 100.0, true),
+                disc(1, right.center().x, right.max.y + 3.5, false),
+            ],
+            Vec::new(),
+        );
+        assert!(
+            !grazed.fits(right, 0, Some(right)),
+            "one it only grazes shows beside it"
+        );
         let beside = Placer::new(
             bounds(),
             vec![

@@ -14,7 +14,9 @@ expect check arrow-sizes pass
 expect check labels-clear pass
 expect check labels-near pass
 expect named Explorer::spotlight
-expect named Track::root
+# A plain name in the crowded middle (Track::root there has every place across a
+# call lit since the map spread, so goes).
+expect named Explorer::track
 snap explorer expanded
 
 key x

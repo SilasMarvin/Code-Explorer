@@ -354,6 +354,8 @@ struct Content {
 struct ContentCall {
     number: Option<String>,
     name: String,
+    /// The module of the function it calls.
+    module: Option<String>,
     /// The number of the call it is made from: empty for the start's own.
     parent: Option<String>,
     /// Whether it can fail.
@@ -2304,7 +2306,8 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
 /// a level more, I): their old place lies under a name that came or moved there, or
 /// a dot that came, or one came that reads nearer it than its own; or they were the
 /// cursor's, or on its path, and are no longer. A name that goes moves instead when
-/// it shows come what may: in 3D a dot that comes lands where it is, on a name or not.
+/// it shows come what may: in 3D a dot that comes lands where it is, on a name or not;
+/// and one such moves from a place that has no room now.
 fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
     let was: HashMap<_, &Label> = (before.labels.iter())
         .filter_map(|l| Some((label_key(l)?, l)))
@@ -2366,6 +2369,16 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
         let must_show = unit
             .and_then(|u| now.node(u))
             .is_some_and(Node::named_anyway);
+        // A call of the journey that only I brings back, as a caller from outside, a
+        // level less took its name away on the way: it is named afresh.
+        let outside = unit.is_some_and(|u| {
+            let call = |n: &Node| n.roles.iter().any(|r| r.starts_with("journey level"));
+            before.node(u).is_some_and(call)
+                && now.node(u).is_some_and(|n| n.is("outside") && !call(n))
+        });
+        if outside {
+            return false;
+        }
         let (Some(old), false, true) = (old, o["label"].is_null(), gone || must_show) else {
             return true;
         };
@@ -2377,11 +2390,20 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
             (now.nodes.iter().filter(came))
                 .any(|n| n.gap(text, n.kept_off.unwrap_or(n.radius)) < own)
         });
+        // One shown come what may whose place has no room now (it lay there for want
+        // of any, and what it covered still shows) moves.
+        let crowded = must_show
+            && unit.and_then(|u| now.node(u)).is_some_and(|n| {
+                let room = Room::new(now);
+                let pill = text.expand2(NAME_PILL);
+                room.blocked(pill, &n.rank(room.cursor), Some(n), None)
+                    .is_some()
+            });
         // As far as names keep from names and dots, leaning to more given way.
         let old = text.expand2(NAME_PILL).expand(NAME_CLEAR + ROUNDING);
         let of = unit.or_else(|| o["label"].as_str());
         let taken = (took.iter()).any(|&(t, by)| t.intersects(old) && (by.is_none() || by != of));
-        !(taken || nearer || unit.is_some_and(fell) || outgrew(before, now, unit, text))
+        !(taken || nearer || crowded || unit.is_some_and(fell) || outgrew(before, now, unit, text))
     });
 }
 
@@ -2544,14 +2566,17 @@ fn shown_from(camera: Camera, graph: egui::Rect, world: Vec3) -> Option<Vec2> {
 }
 
 /// Names that went while what they name is still drawn on screen: a step that only
-/// reads takes no name away.
+/// reads takes no name away. One whose place the free area no longer holds (a level
+/// more grew the panel over it) had to go.
 fn gone_labels(before: &Snap, now: &Snap) -> Found {
     let named: Vec<(String, Option<String>)> = now.labels.iter().filter_map(label_key).collect();
+    let free = now.free();
     before
         .labels
         .iter()
         .filter_map(|l| Some((label_key(l)?, l)))
         .filter(|(key, _)| !named.contains(key))
+        .filter(|(_, l)| free.contains_rect(rect(l.rect)))
         .filter(|((kind, of), _)| {
             let Some(of) = of else {
                 return false;
@@ -3178,8 +3203,12 @@ impl<'a> Room<'a> {
         let size = (self.s.sized())
             .find(|m| m.name == module)
             .map_or(0.0, |m| m.radius);
+        // As big as rounded, or reached into by no more than rounding hides, it may be
+        // as big, or reached into, as the placer measures it: leaning to less room.
         if let Some(m) = (self.s.sized()).find(|m| {
-            m.name != module && m.radius > size && r.distance_to_pos(pos(m.at)) < m.radius - 0.5
+            m.name != module
+                && m.radius + ROUNDING >= size
+                && r.distance_to_pos(pos(m.at)) < m.radius - 0.5 + ROUNDING
         }) {
             return Some(format!("the sphere of {}", m.name));
         }
@@ -3831,22 +3860,30 @@ fn calls_drawn(s: &Snap) -> Value {
     let Some(centre) = s.content.start.as_ref().or(s.content.selection.as_ref()) else {
         return skip("nothing selected and no journey");
     };
-    let node = |name: &str| s.nodes.iter().find(|n| n.name == name && n.on_screen);
-    if node(centre).is_none() {
+    // By name, of that module where it says, the one lit where several share it
+    // (`new`).
+    let node = |name: &str, module: Option<&str>| {
+        (s.nodes.iter())
+            .filter(|n| n.name == name && n.on_screen)
+            .filter(|n| module.is_none_or(|m| n.module.as_deref() == Some(m)))
+            .min_by_key(|n| n.unlit())
+    };
+    if node(centre, None).is_none() {
         return skip("the selection or the start is not on screen");
     }
     let own = (s.content.calls.iter())
         .filter(|c| c.parent.as_deref().is_none_or(str::is_empty))
-        .map(|c| (centre.as_str(), c.name.as_str()));
-    let into = s
-        .content
-        .callers
-        .iter()
-        .map(|c| (c.as_str(), centre.as_str()));
+        .map(|c| {
+            (
+                (centre.as_str(), None),
+                (c.name.as_str(), c.module.as_deref()),
+            )
+        });
+    let into = (s.content.callers.iter()).map(|c| ((c.as_str(), None), (centre.as_str(), None)));
     let mut offenders = Vec::new();
     let mut judged = 0;
-    for (from, to) in own.chain(into).filter(|(from, to)| from != to) {
-        let (Some(a), Some(b)) = (node(from), node(to)) else {
+    for ((from, of), (to, at)) in own.chain(into).filter(|((from, _), (to, _))| from != to) {
+        let (Some(a), Some(b)) = (node(from, of), node(to, at)) else {
             continue;
         };
         // Two dots touching leave no room for a line, its gaps and its head.
@@ -4771,6 +4808,13 @@ mod tests {
         before["nodes"][2]["roles"] = json!(["callee"]);
         let result = after(&before, &now, &[Kind::Still], "nothing-moved");
         assert_eq!(result["offenders"][0]["gone"], true, "{result}");
+        // A level more that grows the panel over where it was takes it away.
+        now["free_area"] = json!([0.0, 24.0, 1600.0, 480.0]);
+        let result = after(&before, &now, &[Kind::Depth], "nothing-moved");
+        assert!(
+            (result["offenders"].as_array()).is_none_or(|o| o.iter().all(|o| o["gone"].is_null())),
+            "{result}"
+        );
     }
 
     #[test]
