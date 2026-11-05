@@ -3222,7 +3222,8 @@ fn plain_names(s: &Snap) -> Value {
     for module in wreathed {
         let unnamed: Vec<&str> = (s.nodes.iter())
             .filter(|n| n.module.as_deref() == Some(module) && n.roles == ["speck"])
-            .filter(|n| n.on_screen && free.contains(pos(n.at)))
+            // One on the free area's very edge, as rounded, may lie just past it.
+            .filter(|n| n.on_screen && free.shrink(2.0 * ROUNDING).contains(pos(n.at)))
             // A dot under the hint at the keys is out of sight, named or not.
             .filter(|n| {
                 !(s.overlays.iter())
