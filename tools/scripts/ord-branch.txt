@@ -28,8 +28,10 @@ expect check panel-agrees pass
 snap every branch deeper
 key ,
 expect depth 3
+snap folded to 3
 key ,
 expect depth 2
+snap folded to 2
 key ,
 expect depth 1
 expect cursor Explorer::step

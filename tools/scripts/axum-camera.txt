@@ -148,6 +148,7 @@ expect nothing-moved
 
 # A pan begun just above the panel follows the hand over it.
 click 1123 858
+snap above the panel
 pan -120 60
 snap panned from above the panel
 

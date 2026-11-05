@@ -687,21 +687,14 @@ impl Nucleus {
             .unwrap_or_default()
     }
 
-    /// Points round every sphere, the whole codebase, seen turned to `rotation`: the
-    /// corners of the square about each one's middle, brought its radius nearer the
-    /// camera, as a sphere near it shows bigger than its middle's depth says.
+    /// Points round every sphere, the whole codebase, seen turned to `rotation`: each
+    /// one's sides, top and foot at its middle's depth, where its disc shows.
     pub(crate) fn atlas_points(&self, rotation: Quat) -> Vec<Vec3> {
-        let (right, up, back) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
+        let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
         self.now
             .balls
             .iter()
-            .flat_map(|b| {
-                let near = b.center + back * b.radius;
-                [
-                    near + (right + up) * b.radius,
-                    near - (right + up) * b.radius,
-                ]
-            })
+            .flat_map(|b| [right, -right, up, -up].map(|towards| b.center + towards * b.radius))
             .collect()
     }
 

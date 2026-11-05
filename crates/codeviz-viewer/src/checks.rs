@@ -35,7 +35,7 @@ use crate::{
     labels::{self, CLEAR as NAME_CLEAR, GAP as NAME_GAP, PILL_PAD as NAME_PILL},
     nucleus::VIEW,
     script::Kind,
-    sizes::EXPANDED_SHARE,
+    sizes::{self, EXPANDED_SHARE},
     text,
 };
 
@@ -104,6 +104,9 @@ const FRONT_SLACK: f32 = 0.05;
 const ZOOM_DRIFT: (f32, f32) = (4.0, 0.05);
 /// Zoomed out, the least share of the free area's smaller side the whole map spans.
 const ZOOM_OUT_LEAST: f32 = 0.4;
+/// After R, the least share of the free area the whole map spans across or down,
+/// whichever it comes nearer filling: framed snugly, room left for names.
+const R_FILLS: f32 = 0.65;
 /// Zoomed in, the most share of the free area's smaller side the diameter of the
 /// sphere under the pointer spans; and the share past which it lies inside the free
 /// area, as it does at the near bound. The wheel stops at nine tenths framed by the
@@ -111,9 +114,10 @@ const ZOOM_OUT_LEAST: f32 = 0.4;
 const ZOOM_IN_MOST: f32 = 0.95;
 const ZOOM_IN_KEPT: f32 = 0.88;
 /// The module expanded may be zoomed past [`ZOOM_IN_MOST`], until its names fit: the
-/// wheel may stop on it short of this share of the free area's smaller side only
-/// with at least [`NAMES_FIT`] of its functions in the free area named.
-const ZOOM_IN_NAMES: f32 = 2.0;
+/// wheel may stop on it short of this share of the free area's smaller side
+/// ([`sizes::NEAREST_MOST`], less rounding) only with at least [`NAMES_FIT`] of its
+/// functions in the free area named.
+const ZOOM_IN_NAMES: f32 = sizes::NEAREST_MOST - 0.01;
 const NAMES_FIT: f32 = 0.9;
 /// Least a function or sphere moves in the world, or a dot or name on screen in
 /// points, or the camera turns in radians, to count as moved.
@@ -207,7 +211,7 @@ const CHECKS: [(&str, Check); 36] = [
     ("nothing-moved", nothing_moved),
     ("focus-on-screen", focus_on_screen),
     ("camera-outside", |s, _, _| camera_outside(s)),
-    ("map-on-screen", |s, _, since| map_on_screen(s, since)),
+    ("map-on-screen", map_on_screen),
     ("spheres-unclipped", |s, _, since| {
         spheres_unclipped(s, since)
     }),
@@ -646,9 +650,10 @@ impl Node {
     }
 
     /// One of the expanded module's functions that nothing else lights, or a speck
-    /// named: a lit name may hide it.
+    /// named: a lit name may hide it. A caller I brings in is lit by I, wherever it
+    /// sits.
     fn plain(&self) -> bool {
-        (self.is("opened") || self.is("plain")) && !self.focus()
+        (self.is("opened") || self.is("plain")) && !self.focus() && !self.is("outside")
     }
 
     /// Nothing lights it: a speck, or plain.
@@ -1293,9 +1298,11 @@ fn panel_agrees(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         let drawn = bar.unit.as_deref().and_then(|u| s.node(u));
         // Each numbered bar has its call on the graph: a call only guessed among
         // several functions, with no one function of its own, on each of them. The
-        // start's bar carries no number.
+        // start's bar carries no number. A bar's own function behind the camera has
+        // no place on the screen, so the snap lists no node to carry it.
+        let behind = bar.unit.is_some() && drawn.is_none();
         if let Some(number) = bar.number.as_ref().filter(|n| !n.is_empty()) {
-            if !s.nodes.iter().any(|n| n.numbers.contains(number)) {
+            if !behind && !s.nodes.iter().any(|n| n.numbers.contains(number)) {
                 let why = "numbered in the panel, but no function on the graph carries the number";
                 offenders.push((2.0, json!({ "bar": number, "name": bar.name, "why": why })));
             }
@@ -1720,6 +1727,15 @@ fn framed(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     match last {
         Some(Kind::FrameAll) => {
             offenders.extend(outside(free, EDGE, s.spheres().map(Module::disc)));
+            // Snugly: the map spans most of the free area across or down.
+            if let Some(map) = map_extent(s) {
+                let fills = (map.width() / free.width()).max(map.height() / free.height());
+                if fills < R_FILLS {
+                    let why = "R leaves the map small in the free area";
+                    let offender = json!({ "why": why, "fills": r2(fills), "least": R_FILLS });
+                    offenders.push((R_FILLS - fills, offender));
+                }
+            }
             if let Some(camera) = s.state.camera
                 && ((camera.yaw - VIEW.0).abs() > FRONT_SLACK
                     || (camera.pitch - VIEW.1).abs() > FRONT_SLACK)
@@ -2008,7 +2024,7 @@ fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     verdict(outside(s.free(), EDGE, focus.into_iter().map(Node::disc)))
 }
 
-fn map_on_screen(s: &Snap, since: &Since) -> Value {
+fn map_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     let out = matches!(
         since.last_move(),
         Some(Kind::Zoom { out: true } | Kind::FrameAll | Kind::Pan)
@@ -2042,15 +2058,19 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
         }
         return with(verdict(offenders), "map", map);
     }
-    let area = |m: &&Module| m.radius * m.radius;
-    let all: f32 = s.sized().map(|m| area(&m)).sum();
-    let out: Vec<&Module> = s
-        .sized()
-        .filter(|m| circle_out(free, v2(m.at), m.radius) > EDGE)
-        .collect();
-    let share = 1.0 - out.iter().map(area).sum::<f32>() / all.max(f32::EPSILON);
-    // Dragged, a map that fits stays in the free area whole.
-    let least = if since.has(Kind::Pan) { 1.0 } else { MAP_SHOWN };
+    let (share, out) = map_inside(s);
+    // Dragged, a map that fits stays in the free area whole, or where the view left
+    // some of it out, no less of it than before the drag: a pan never pulls the map
+    // against the hand.
+    let only_dragged = (since.kinds.iter()).all(|k| matches!(k, Kind::Pan | Kind::Still));
+    let was = before
+        .filter(|b| only_dragged && b.free_area == s.free_area)
+        .map_or(1.0, |b| map_inside(b).0);
+    let least = if since.has(Kind::Pan) {
+        was.min(1.0)
+    } else {
+        MAP_SHOWN
+    };
     // Zoomed all the way out, the map is held over the free area's middle, however
     // it was dragged.
     if s.state.camera.is_some_and(|c| c.farthest) && !extent.contains(free.center()) {
@@ -2067,6 +2087,19 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
         offenders.push((least - share, offender));
     }
     with(verdict(offenders), "inside", json!(r2(share)))
+}
+
+/// The share of the map (by sphere area) in the free area, and the spheres not.
+fn map_inside(s: &Snap) -> (f32, Vec<&Module>) {
+    let free = s.free();
+    let area = |m: &&Module| m.radius * m.radius;
+    let all: f32 = s.sized().map(|m| area(&m)).sum();
+    let out: Vec<&Module> = s
+        .sized()
+        .filter(|m| circle_out(free, v2(m.at), m.radius) > EDGE)
+        .collect();
+    let share = 1.0 - out.iter().map(area).sum::<f32>() / all.max(f32::EPSILON);
+    (share, out)
 }
 
 /// Where every sphere shown lies on screen, together.
@@ -2269,7 +2302,9 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
 /// Leaves out of `offenders` the names that went or moved where a name placed before
 /// them took their place, as a step that names others first may (the cursor's path,
 /// a level more, I): their old place lies under a name that came or moved there, or
-/// a dot that came; or they were the cursor's, or on its path, and are no longer.
+/// a dot that came, or one came that reads nearer it than its own; or they were the
+/// cursor's, or on its path, and are no longer. A name that goes moves instead when
+/// it shows come what may: in 3D a dot that comes lands where it is, on a name or not.
 fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
     let was: HashMap<_, &Label> = (before.labels.iter())
         .filter_map(|l| Some((label_key(l)?, l)))
@@ -2327,15 +2362,56 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
         // Gone, not moved, but a lit module's.
         let gone = o["gone"] == json!(true)
             || o["unit"].is_null() && o["label"].as_str().is_some_and(lit_module);
-        let (Some(old), false, true) = (old, o["label"].is_null(), gone) else {
+        let unit = o["unit"].as_str();
+        let must_show = unit
+            .and_then(|u| now.node(u))
+            .is_some_and(Node::named_anyway);
+        let (Some(old), false, true) = (old, o["label"].is_null(), gone || must_show) else {
             return true;
         };
+        let text = rect(old);
+        let own = unit
+            .and_then(|u| before.node(u))
+            .map(|n| n.gap(text, n.radius));
+        let nearer = own.is_some_and(|own| {
+            (now.nodes.iter().filter(came))
+                .any(|n| n.gap(text, n.kept_off.unwrap_or(n.radius)) < own)
+        });
         // As far as names keep from names and dots, leaning to more given way.
-        let old = rect(old).expand2(NAME_PILL).expand(NAME_CLEAR + ROUNDING);
-        let of = o["unit"].as_str().or_else(|| o["label"].as_str());
+        let old = text.expand2(NAME_PILL).expand(NAME_CLEAR + ROUNDING);
+        let of = unit.or_else(|| o["label"].as_str());
         let taken = (took.iter()).any(|&(t, by)| t.intersects(old) && (by.is_none() || by != of));
-        !(taken || o["unit"].as_str().is_some_and(fell))
+        !(taken || nearer || unit.is_some_and(fell) || outgrew(before, now, unit, text))
     });
+}
+
+/// Whether the function `unit`'s name, at `text` before, grew since (a level more adds
+/// to its badge's count, "2.1.1" to "2.1.1 +3") and the width it grew by, away from
+/// its dot, now runs into another's dot or name: no room where it was, so it waits.
+fn outgrew(before: &Snap, now: &Snap, unit: Option<&str>, text: egui::Rect) -> bool {
+    let Some((then, node)) = unit.and_then(|u| before.node(u).zip(now.node(u))) else {
+        return false;
+    };
+    let Some([width, _]) = node.name_size else {
+        return false;
+    };
+    let grew = width - text.width();
+    if grew <= ROUNDING {
+        return false;
+    }
+    let strip = if then.at[0] <= text.center().x {
+        egui::Rect::from_x_y_ranges(text.max.x..=text.max.x + grew, text.y_range())
+    } else {
+        egui::Rect::from_x_y_ranges(text.min.x - grew..=text.min.x, text.y_range())
+    }
+    .expand2(NAME_PILL);
+    let dots = (now.nodes.iter())
+        .filter(|n| n.on_screen && n.unit.as_deref() != unit)
+        .any(|n| strip.intersects(disc(n.at, n.kept_off.unwrap_or(n.radius))));
+    let names = (now.labels.iter())
+        .filter(|l| naming(l) && l.unit.as_deref() != unit)
+        .any(|l| strip.intersects(rect(l.rect).expand2(NAME_PILL)));
+    dots || names
 }
 
 /// Each of the journey's dots drawn before and now that moved in the world.
@@ -5090,7 +5166,14 @@ mod tests {
     fn r_shows_every_sphere_from_the_front() {
         let mut s = scene();
         let framed = |s: &Value| after(s, s, &[Kind::FrameAll, Kind::Still], "framed");
-        assert!(passes(&framed(&s)));
+        let small = framed(&s);
+        assert_eq!(
+            small["offenders"][0]["why"],
+            "R leaves the map small in the free area"
+        );
+        s["modules"][0]["at"] = json!([200.0, 500.0]);
+        s["modules"][1]["at"] = json!([1400.0, 500.0]);
+        assert!(passes(&framed(&s)), "snugly");
         s["modules"][1]["at"] = json!([1580.0, 500.0]);
         s["state"]["camera"]["yaw"] = json!(-0.35);
         assert_eq!(VIEW.0, -0.45, "the scene's camera is at the usual view");
@@ -6126,10 +6209,16 @@ mod tests {
         s["modules"][1]["at"] = json!([1580.0, 500.0]);
         let result = after(&s, &s, &[OUT], "map-on-screen");
         assert!(!passes(&result), "{result}");
+        let whole = scene();
         assert!(
-            !passes(&after(&s, &s, &[Kind::Pan], "map-on-screen")),
+            !passes(&after(&whole, &s, &[Kind::Pan], "map-on-screen")),
             "nor dragged out"
         );
+        // Where the view left some of it out, a drag keeps no less of it in.
+        assert!(passes(&after(&s, &s, &[Kind::Pan], "map-on-screen")));
+        let mut further = s.clone();
+        further["modules"][0]["at"] = json!([1580.0, 500.0]);
+        assert!(!passes(&after(&s, &further, &[Kind::Pan], "map-on-screen")));
         // Bigger than the free area, it cannot all be there.
         s["modules"][0]["radius"] = json!(900.0);
         assert_eq!(after(&s, &s, &[OUT], "map-on-screen")["pass"], Value::Null);
