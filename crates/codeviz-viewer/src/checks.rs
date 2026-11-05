@@ -2307,7 +2307,8 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
 /// a dot that came, or one came that reads nearer it than its own; or they were the
 /// cursor's, or on its path, and are no longer. A name that goes moves instead when
 /// it shows come what may: in 3D a dot that comes lands where it is, on a name or not;
-/// and one such moves from a place that has no room now.
+/// and one such moves from a place that has no room now. A name may move into room a
+/// shrinking panel gave back.
 fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
     let was: HashMap<_, &Label> = (before.labels.iter())
         .filter_map(|l| Some((label_key(l)?, l)))
@@ -2376,7 +2377,11 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
             before.node(u).is_some_and(call)
                 && now.node(u).is_some_and(|n| n.is("outside") && !call(n))
         });
-        if outside {
+        // A level less shrank the panel: a name may take the room it gave back.
+        let into_room = (o.get("to"))
+            .and_then(|r| serde_json::from_value::<[f32; 4]>(r.clone()).ok())
+            .is_some_and(|to| !before.free().contains_rect(rect(to)));
+        if outside || into_room {
             return false;
         }
         let (Some(old), false, true) = (old, o["label"].is_null(), gone || must_show) else {

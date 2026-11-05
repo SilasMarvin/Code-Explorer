@@ -998,9 +998,6 @@ struct Naming<'a> {
     /// While a hand turns the camera, which of its places ([`Naming::module_places`])
     /// each module's name took when names were last placed: it stays there or goes.
     modules_kept: Option<HashMap<usize, usize>>,
-    /// Which of its places each module's name took when names were last placed, in
-    /// this view: it stays there while it has room.
-    modules_were: HashMap<usize, usize>,
     /// Which of its places each module's name takes now: the next [`Kept`].
     modules_placed: RefCell<HashMap<usize, usize>>,
     /// By cluster, whether the view is near enough to name its plain functions:
@@ -1057,7 +1054,6 @@ impl<'a> Naming<'a> {
             kept: HashMap::new(),
             places: RefCell::default(),
             modules_kept: None,
-            modules_were: HashMap::new(),
             modules_placed: RefCell::default(),
             roomy: RefCell::default(),
         };
@@ -1483,9 +1479,7 @@ impl<'a> Naming<'a> {
     /// its sphere its opaque pill hiding those nothing lights; where a function's name
     /// placed before it lies there, none, but for a module holding anything lit
     /// (`tier`), which takes the next place with room. Clear of the calls a deeper
-    /// level shows where it can be; those keep it from no place. In the view names
-    /// were last placed in, where it went then while that has room, so a step that
-    /// only reads (a panel shrinking back) moves none.
+    /// level shows where it can be; those keep it from no place.
     fn module_name(
         &self,
         painter: &egui::Painter,
@@ -1512,17 +1506,7 @@ impl<'a> Naming<'a> {
             }
             .map(|(index, (pill, galley, _))| (index, *pill, galley.clone()))
         };
-        // Where it went last in this view, while that has room.
-        let stays = (self.modules_were.get(&cluster))
-            .filter(|_| held.is_none())
-            .and_then(|&index| Some((index, tried.get(index)?)))
-            .filter(|(_, (pill, _, within))| {
-                placer.module_room(cluster, &own, *pill, *within) && placer.over_names(*pill) == 0
-            })
-            .map(|(index, (pill, galley, _))| (index, *pill, galley.clone()));
-        let (index, pill, galley) = stays
-            .or_else(pick)
-            .or_else(|| placer.without_ghosts(pick))?;
+        let (index, pill, galley) = pick().or_else(|| placer.without_ghosts(pick))?;
         self.modules_placed.borrow_mut().insert(cluster, index);
         Some(Label {
             named: Named::Group(cluster),
@@ -1880,7 +1864,6 @@ pub(crate) fn graph_names(
     let holding = turning && last.view.is_some() && last.start == nucleus.start();
     if holding || !last.turning && last.view.is_some_and(|last| same_view(last, view)) {
         naming.kept.clone_from(&*last.places);
-        naming.modules_were.clone_from(&*last.modules);
     }
     if holding {
         naming.modules_kept = Some((*last.modules).clone());
