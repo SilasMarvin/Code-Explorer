@@ -9,7 +9,7 @@ use bevy_egui::{EguiContexts, input::EguiWantsInput};
 use crate::{
     camera::OrbitCamera,
     explorer::{Explorer, Picked},
-    graph_view::{self, NodeLook},
+    graph_view,
     idle::Awake,
     labels,
     nucleus::Nucleus,
@@ -141,10 +141,7 @@ fn spot(
         radius: at.distance(edge),
         depth: (middle - view.translation()).dot(*view.forward()),
         speck: explorer.nucleus().speck(tile),
-        over: !matches!(
-            graph_view::node_look(explorer, tile),
-            NodeLook::Plain | NodeLook::Faded
-        ),
+        over: graph_view::drawn_over(explorer, tile),
     })
 }
 

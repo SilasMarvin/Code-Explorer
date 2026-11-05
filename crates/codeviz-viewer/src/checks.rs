@@ -3501,7 +3501,14 @@ fn lit_over(s: &Snap) -> Value {
     if shown.is_empty() {
         return skip("no dot on screen");
     }
-    let lit = |n: &Node| n.lit() && !n.unlit();
+    // What the view lights: not one only pointed at, nor a caller I brings in, drawn
+    // quiet among the rest.
+    let lit = |n: &Node| {
+        n.focus()
+            || n.is("path")
+            || n.level().is_some()
+            || n.roles.iter().any(|r| r.starts_with("caller"))
+    };
     let mut offenders = Vec::new();
     for n in &shown {
         if n.over != lit(n) {
@@ -4476,6 +4483,8 @@ mod tests {
     fn a_lit_dot_is_drawn_over_whatever_lies_nearer() {
         let mut s = scene();
         s["camera"] = json!({ "at": [0.0, 0.0, 50.0] });
+        s["nodes"][0]["roles"] = json!(["selection"]);
+        s["nodes"][2]["roles"] = json!(["journey level 1"]);
         s["nodes"][0]["over"] = json!(true);
         s["nodes"][2]["over"] = json!(true);
         assert!(passes(&check(&s, "lit-over")), "{}", check(&s, "lit-over"));
@@ -4490,6 +4499,14 @@ mod tests {
         // Nothing unlit is drawn over the rest.
         s["nodes"][0]["over"] = json!(true);
         s["nodes"][1]["over"] = json!(true);
+        assert_eq!(check(&s, "lit-over")["offenders"][0]["function"], "g");
+        // Pointed at, or brought in by I, it is not lit; set aside, it is.
+        s["nodes"][1]["over"] = json!(false);
+        for roles in [json!(["hovered"]), json!(["outside"])] {
+            s["nodes"][1]["roles"] = roles;
+            assert!(passes(&check(&s, "lit-over")));
+        }
+        s["nodes"][1]["roles"] = json!(["aside", "opened"]);
         assert_eq!(check(&s, "lit-over")["offenders"][0]["function"], "g");
     }
 

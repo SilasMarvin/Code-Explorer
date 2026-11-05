@@ -97,23 +97,42 @@ impl MaterialExtension for Over {
 /// things are drawn back to front: past anything in the scene, so it comes last.
 const OVER_SORT: f32 = 1.0e6;
 
-/// Every look, in full and dimmed.
+/// Every look, in full and dimmed, drawn among the rest or over them: a dot drawn
+/// over is drawn among the see-through things, after all of them.
 pub(crate) fn node_materials(
     materials: &mut Assets<DotMaterial>,
-) -> HashMap<(NodeLook, bool), Handle<DotMaterial>> {
+) -> HashMap<(NodeLook, bool, bool), Handle<DotMaterial>> {
     let mut table = HashMap::new();
     for (look, material) in node_looks() {
-        let over = !matches!(look, NodeLook::Plain | NodeLook::Faded);
-        let mut add = |base: StandardMaterial| {
-            materials.add(DotMaterial {
-                base,
-                extension: Over { over },
-            })
-        };
-        table.insert((look, false), add(material.clone()));
-        table.insert((look, true), add(dimmed(&material, DIM)));
+        for over in [false, true] {
+            let mut add = |base: StandardMaterial| {
+                let base = if over {
+                    StandardMaterial {
+                        alpha_mode: AlphaMode::Blend,
+                        depth_bias: OVER_SORT,
+                        ..base
+                    }
+                } else {
+                    base
+                };
+                materials.add(DotMaterial {
+                    base,
+                    extension: Over { over },
+                })
+            };
+            table.insert((look, false, over), add(material.clone()));
+            table.insert((look, true, over), add(dimmed(&material, DIM)));
+        }
     }
     table
+}
+
+/// Whether a function's dot is drawn over everything else, whatever lies nearer: the
+/// start or the selection, the cursor, the journey's calls and callers, and the
+/// function set aside; not one nothing lights.
+pub(crate) fn drawn_over(explorer: &Explorer, tile: usize) -> bool {
+    explorer.aside() == Some(tile)
+        || !matches!(node_look(explorer, tile), NodeLook::Plain | NodeLook::Faded)
 }
 
 /// `material` at `share` of its brightness: darker, and fainter where it is see-through.
@@ -138,7 +157,7 @@ fn dimmed(material: &StandardMaterial, share: f32) -> StandardMaterial {
 
 /// How each look is drawn at full brightness: a matte ball shaded by the light, with
 /// only enough light of its own to keep its color on its dark side, no highlight and
-/// no glow. A lit one is drawn among the see-through things, after all of them.
+/// no glow.
 fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
     let matte = |color: Color| StandardMaterial {
         base_color: color,
@@ -147,20 +166,15 @@ fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
         reflectance: 0.0,
         ..default()
     };
-    let lit = |color: Color| StandardMaterial {
-        alpha_mode: AlphaMode::Blend,
-        depth_bias: OVER_SORT,
-        ..matte(color)
-    };
     let grey = FURTHER.mix(&Color::BLACK, 0.35);
     let mut table = HashMap::new();
-    table.insert(NodeLook::Start, lit(SELECTED));
-    table.insert(NodeLook::Cursor, lit(CURSOR));
+    table.insert(NodeLook::Start, matte(SELECTED));
+    table.insert(NodeLook::Cursor, matte(CURSOR));
     for flow in [Flow::Into]
         .into_iter()
         .chain((1..=SHADES).map(Flow::journey))
     {
-        table.insert(NodeLook::Role(flow), lit(flow.color()));
+        table.insert(NodeLook::Role(flow), matte(flow.color()));
     }
     table.insert(NodeLook::Plain, matte(grey));
     table.insert(
@@ -305,7 +319,12 @@ pub(crate) fn style_nodes(
             continue;
         }
         let look = node_look(&explorer, tile.0);
-        if let Some(wanted) = materials.0.get(&(look, quiet(&explorer, &spine, tile.0)))
+        let key = (
+            look,
+            quiet(&explorer, &spine, tile.0),
+            drawn_over(&explorer, tile.0),
+        );
+        if let Some(wanted) = materials.0.get(&key)
             && &material.0 != wanted
         {
             material.0 = wanted.clone();
@@ -349,7 +368,7 @@ pub(crate) fn guessed(explorer: &Explorer, tile: usize) -> bool {
 }
 
 #[derive(Resource, Debug)]
-pub(crate) struct NodeMaterials(pub(crate) HashMap<(NodeLook, bool), Handle<DotMaterial>>);
+pub(crate) struct NodeMaterials(pub(crate) HashMap<(NodeLook, bool, bool), Handle<DotMaterial>>);
 
 pub(crate) fn create_node_materials(
     mut commands: Commands,
