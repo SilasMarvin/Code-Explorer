@@ -31,8 +31,8 @@ snap i off at start
 key x
 expect nothing-moved
 snap expanded
-click-label Explorer::root
-expect aside Explorer::root
+click-label Explorer::journey_lane
+expect aside Explorer::journey_lane
 expect cursor Explorer::spotlit
 expect depth 2
 snap plain click
