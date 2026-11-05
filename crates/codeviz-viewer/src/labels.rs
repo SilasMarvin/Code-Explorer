@@ -237,6 +237,51 @@ pub(crate) fn inside(
     })
 }
 
+/// Every place inside its sphere a module's name may go, from the highest
+/// ([`inside`]) down, [`INSIDE_STEP`] apart, as low as [`inside`] lets it: a lower
+/// one keeps clear of a smaller sphere drawn over its sphere's top.
+pub(crate) fn inside_spots(
+    middle: egui::Pos2,
+    radius: f32,
+    size: egui::Vec2,
+    big: bool,
+) -> Vec<egui::Rect> {
+    let Some(highest) = inside(middle, radius, size, big) else {
+        return Vec::new();
+    };
+    let text = size - 2.0 * PILL_PAD;
+    let (rim, half) = (radius - INSIDE, text.x / 2.0);
+    let within = |y: f32| (y - middle.y).hypot(half) <= rim;
+    // How far its text's corner farthest out lies from the rim.
+    let off_rim = |pill: egui::Rect| {
+        let text = pill.shrink2(PILL_PAD);
+        let corner = (text.min.y - middle.y)
+            .abs()
+            .max((text.max.y - middle.y).abs())
+            .hypot(text.width() / 2.0);
+        radius - corner
+    };
+    let mut spots = vec![highest];
+    loop {
+        let pill = spots[spots.len() - 1].translate(egui::vec2(0.0, INSIDE_STEP));
+        let (top, bottom) = (pill.min.y + PILL_PAD.y, pill.min.y + PILL_PAD.y + text.y);
+        let high = (big && top <= middle.y)
+            || bottom <= middle.y
+            || top - (middle.y - radius) <= INSIDE_DOWN * radius;
+        if !(within(top) && within(bottom) && high) || off_rim(pill) > RIM_REACH {
+            return spots;
+        }
+        spots.push(pill);
+    }
+}
+
+/// How far, in points, from its sphere's rim a module's name inside it may lie at
+/// most, so it still reads as that sphere's.
+pub(crate) const RIM_REACH: f32 = 40.0;
+
+/// How far apart, in points, the places a module's name tries inside its sphere lie.
+pub(crate) const INSIDE_STEP: f32 = 4.0;
+
 /// How far below its sphere's top a module's name inside it may start, as a share of
 /// the radius, where it reaches below the middle.
 pub(crate) const INSIDE_DOWN: f32 = 0.4;
@@ -1374,7 +1419,7 @@ impl<'a> Naming<'a> {
     /// laid out and whether it lies inside its sphere: above its sphere, centred, then
     /// slid either way ([`ABOVE_SLIDES`]) as far as its middle stays over the sphere;
     /// shown, smaller inside its sphere where it fits the sphere's width there
-    /// ([`inside`]); smaller above it, centred, then slid.
+    /// ([`inside_spots`]); smaller above it, centred, then slid.
     fn module_places(
         &self,
         painter: &egui::Painter,
@@ -1396,8 +1441,11 @@ impl<'a> Naming<'a> {
                 .map(move |by| (pill.translate(egui::vec2(by, 0.0)), galley.clone(), false))
         };
         let big = self.nucleus.count(cluster) >= BIG_MODULE;
+        let within: Vec<_> = (inside_spots(middle, edge, small_size, big).into_iter())
+            .map(|pill| (pill, small.clone(), true))
+            .collect();
         over(size, galley)
-            .chain(inside(middle, edge, small_size, big).map(|pill| (pill, small.clone(), true)))
+            .chain(within)
             .chain(over(small_size, small))
             .collect()
     }
@@ -2244,6 +2292,22 @@ mod tests {
             inside(middle, 20.0, SIZE, true).is_none(),
             "wider than the sphere"
         );
+        let spots = inside_spots(middle, 30.0, SIZE, true);
+        assert_eq!(spots.first(), Some(&low), "the highest first");
+        let lowest = spots.last().expect("one at least").shrink2(PILL_PAD);
+        assert!(lowest.min.y <= middle.y, "a big one's down to its middle");
+        let spots = inside_spots(middle, 50.0, SIZE, false);
+        assert!(spots.len() > 1, "lower ones too");
+        for spot in &spots {
+            let text = spot.shrink2(PILL_PAD);
+            for corner in [text.left_top(), text.left_bottom()] {
+                assert!(corner.distance(middle) <= 50.0 - INSIDE + 0.01);
+            }
+            assert!(
+                text.max.y <= middle.y || text.min.y - (middle.y - 50.0) <= INSIDE_DOWN * 50.0,
+                "a small one's near its top"
+            );
+        }
         // A short one on a small sphere may reach below its middle, near enough its
         // top.
         let short = egui::vec2(24.0, 19.0);

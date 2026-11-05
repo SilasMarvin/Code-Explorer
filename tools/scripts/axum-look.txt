@@ -9,8 +9,8 @@ expect check arrow-sizes pass
 expect check module-names pass
 expect check named-when-room pass
 expect check plain-names pass
+# USERS shows under 130 pt across with the map spread, too small for plain names.
 expect named pricing::unit_price
-expect named users::register
 
 click orders::place
 expect check arrow-sizes pass

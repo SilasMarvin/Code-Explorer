@@ -485,7 +485,7 @@ fn match_labels(
                 .map(|&(_, tile)| Labelled::Node(tile))
         })
         .collect();
-    let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
+    let mut pairs: Vec<(bool, f32, usize, usize)> = Vec::new();
     for &(cluster, at, radius) in balls {
         let name = explorer.cluster_name(cluster).to_uppercase();
         for (i, label) in labels.iter().enumerate() {
@@ -494,13 +494,16 @@ fn match_labels(
             }
             let distance = label.rect.distance_to_pos(egui::pos2(at.x, at.y));
             if distance <= radius + REACH {
-                pairs.push((distance, i, cluster));
+                // A label that is the module's whole name goes to it before one whose
+                // name only leads it (`CODEVIZ` in `CODEVIZ::DIFF`).
+                let partly = label.text.trim() != name;
+                pairs.push((partly, distance, i, cluster));
             }
         }
     }
-    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    pairs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let mut taken = Vec::new();
-    for (_, label, cluster) in pairs {
+    for (_, _, label, cluster) in pairs {
         if named[label].is_none() && !taken.contains(&cluster) {
             named[label] = Some(Labelled::Module(cluster));
             taken.push(cluster);

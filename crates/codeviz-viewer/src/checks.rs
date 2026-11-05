@@ -3345,7 +3345,7 @@ fn plain_names(s: &Snap) -> Value {
 
 /// Where a module's name of `size` (its text, at the size above its sphere) would go,
 /// in the order tried, and whether inside its sphere: just above its sphere, centred
-/// then slid along, its middle over the sphere; smaller inside it, where it fits the
+/// then slid along, its middle over the sphere; smaller inside it, from high to low, where it fits the
 /// sphere's width there; smaller above it, centred then slid.
 fn module_spots(m: &Module, size: egui::Vec2) -> Vec<(Option<egui::Rect>, bool)> {
     let above = |size: egui::Vec2| {
@@ -3360,10 +3360,9 @@ fn module_spots(m: &Module, size: egui::Vec2) -> Vec<(Option<egui::Rect>, bool)>
     };
     let small = size * (text::SMALL / text::TITLE);
     let big = m.functions >= labels::BIG_MODULE;
-    let inside =
-        labels::inside(pos(m.at), m.radius, small + 2.0 * NAME_PILL, big).filter(|_| m.shown);
+    let inside = labels::inside_spots(pos(m.at), m.radius, small + 2.0 * NAME_PILL, big);
     above(size)
-        .chain([(inside, true)])
+        .chain((inside.into_iter().filter(|_| m.shown)).map(|spot| (Some(spot), true)))
         .chain(above(small))
         .collect()
 }
@@ -5594,9 +5593,10 @@ mod tests {
         s["modules"][0]["label_rect"] = Value::Null;
         s["modules"][0]["name_size"] = json!([20.0, 15.0]);
         s["labels"].as_array_mut().unwrap().remove(0);
-        // b's name, b smaller, over all a's room: no excuse.
-        s["labels"][2]["rect"] = json!([370.0, 375.0, 430.0, 425.0]);
-        s["modules"][1]["label_rect"] = json!([370.0, 375.0, 430.0, 425.0]);
+        // b's name, b smaller, over all a's room, above it and inside down to its
+        // middle: no excuse.
+        s["labels"][2]["rect"] = json!([370.0, 375.0, 430.0, 505.0]);
+        s["modules"][1]["label_rect"] = json!([370.0, 375.0, 430.0, 505.0]);
         let result = check(&s, "module-names");
         assert!(
             (result["offenders"].as_array().unwrap())
