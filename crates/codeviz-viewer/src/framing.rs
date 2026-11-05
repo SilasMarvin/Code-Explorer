@@ -95,6 +95,18 @@ const REVEAL_SLACK: f32 = 0.005;
 /// pans to it.
 const CURSOR_ROOM: f32 = 0.85;
 
+/// Expanding a module that shows as big as its functions need, or bigger, comes in
+/// until it shows this many times as big, within the band: X always visibly zooms
+/// in.
+const VISIBLY: f32 = 1.3;
+
+/// A framing that would stand the camera inside a sphere stands it further back, a
+/// step at a time, at most so many, until it is clear of every sphere by a share of
+/// that sphere's radius.
+const OUTSIDE_STEPS: usize = 64;
+const OUTSIDE_STEP: f32 = 1.05;
+const OUTSIDE_ROOM: f32 = 1.05;
+
 /// Sends the camera where the view asks, into the free area (the graph's view less
 /// the journey panel), in this order, each having the last word over the one before:
 ///
@@ -336,7 +348,7 @@ fn take(
                 let mut points = journey_points(nucleus, &[current], view_rotation(), views);
                 let spheres = nucleus.atlas_points(view_rotation());
                 points.extend(spheres.into_iter().map(|p| (p, Vec2::ONE)));
-                glide(&points, camera, view_rotation(), lens);
+                glide(nucleus, &points, camera, view_rotation(), lens);
             }
         }
         // Entering or leaving a journey, expanding or shrinking back, keeps the
@@ -347,7 +359,13 @@ fn take(
                 // Expanding blows the module up as its functions need; shrinking back
                 // returns to where the camera stood before (the explorer's pose).
                 let current = current.filter(|_| !opening);
-                fill(nucleus, current, camera, rotation, (views, chars));
+                fill(
+                    nucleus,
+                    (current, opening),
+                    camera,
+                    rotation,
+                    (views, chars),
+                );
             } else {
                 fit(nucleus, current, camera, rotation, views);
             }
@@ -481,7 +499,7 @@ fn reveal(
     }
     let lens = views.free;
     let middle = camera.target + lens.shift(rotation) * camera.goal_distance();
-    camera.glide_to(middle - lens.shift(rotation) * distance, distance);
+    glide_outside(nucleus, (middle, distance), camera, rotation, lens);
 }
 
 /// How far back the camera, turned and looking past what it frames now, must be for
@@ -524,10 +542,16 @@ fn fit(
             points = nucleus.atlas_points(rotation);
         }
         points.extend(also);
-        glide(&within(&points, ROOM), camera, rotation, views.free);
+        glide(
+            nucleus,
+            &within(&points, ROOM),
+            camera,
+            rotation,
+            views.free,
+        );
     } else {
         let points = journey_points(nucleus, &[also], rotation, views);
-        glide(&points, camera, rotation, views.free);
+        glide(nucleus, &points, camera, rotation, views.free);
     }
 }
 
@@ -567,7 +591,7 @@ fn journey_points(
 /// alike wherever it is, and it sits in the middle of the free area wherever it is.
 fn fill(
     nucleus: &Nucleus,
-    also: Option<Vec3>,
+    (also, opening): (Option<Vec3>, bool),
     camera: &mut OrbitCamera,
     rotation: Quat,
     (views, chars): (Views, &dyn Fn(usize) -> usize),
@@ -575,12 +599,37 @@ fn fill(
     let Some((share, _)) = expanded_shares(nucleus, (views, chars), rotation) else {
         return;
     };
+    // Expanding from where the module shows that big already still visibly zooms in.
+    let shows = (nucleus.expanded_module())
+        .and_then(|m| nucleus.ball(m))
+        .map_or(0.0, |ball| shown_share(ball, camera, views));
+    let share = if opening && shows * VISIBLY > share {
+        (shows * VISIBLY).min(sizes::EXPANDED_SHARE.1).max(share)
+    } else {
+        share
+    };
     let share = Vec2::splat(share * views.size.min_element()) / views.size;
     let alone: Vec<(Vec3, Vec2)> = (nucleus.nucleus_points(rotation).into_iter())
         .chain(also)
         .map(|p| (p, share))
         .collect();
-    glide(&alone, camera, rotation, views.free);
+    glide(nucleus, &alone, camera, rotation, views.free);
+}
+
+/// The share of the free area's smaller side `ball`'s diameter shows at from where
+/// the camera stands.
+fn shown_share(ball: Ball, camera: &OrbitCamera, views: Views) -> f32 {
+    let (target, distance, angles) = camera.pose().parts();
+    let rotation = Quat::from_euler(EulerRot::YXZ, angles.0, angles.1, 0.0);
+    let eye = target + rotation * Vec3::Z * distance;
+    let depth = (ball.center - eye).dot(rotation * -Vec3::Z);
+    if depth <= ball.radius {
+        return f32::INFINITY;
+    }
+    let lens = views.free;
+    // Points per unit of the view's height, at the ball's depth.
+    let per_unit = views.size.y / (2.0 * lens.half.y) / (depth * lens.tan.y);
+    2.0 * ball.radius * per_unit / views.size.min_element()
 }
 
 /// The shares of the free area's smaller side the module expanded takes, seen turned
@@ -612,7 +661,7 @@ fn expanded_shares(
 /// Glides to take in everything shown from where the camera turns to.
 fn fit_all(nucleus: &Nucleus, camera: &mut OrbitCamera, rotation: Quat, lens: Lens) {
     let points = within(&nucleus.atlas_points(rotation), ROOM);
-    glide(&points, camera, rotation, lens);
+    glide(nucleus, &points, camera, rotation, lens);
 }
 
 /// `points`, each to show within `share` of the free area about its middle.
@@ -621,11 +670,39 @@ fn within(points: &[Vec3], share: f32) -> Vec<(Vec3, Vec2)> {
 }
 
 /// Glides to show every one of `points` within its share of the free area, turned
-/// to `rotation`, centred in it.
-fn glide(points: &[(Vec3, Vec2)], camera: &mut OrbitCamera, rotation: Quat, lens: Lens) {
+/// to `rotation`, centred in it, from outside every sphere.
+fn glide(
+    nucleus: &Nucleus,
+    points: &[(Vec3, Vec2)],
+    camera: &mut OrbitCamera,
+    rotation: Quat,
+    lens: Lens,
+) {
     if let Some((middle, distance)) = place(points, rotation, lens) {
-        camera.glide_to(middle - lens.shift(rotation) * distance, distance);
+        glide_outside(nucleus, (middle, distance), camera, rotation, lens);
     }
+}
+
+/// Glides to look past `middle` from `distance` back, turned to `rotation`, or as
+/// much further back as stands the camera outside every sphere: the map is laid out
+/// in depth, and a sphere between the camera and what it frames would hold it.
+fn glide_outside(
+    nucleus: &Nucleus,
+    (middle, distance): (Vec3, f32),
+    camera: &mut OrbitCamera,
+    rotation: Quat,
+    lens: Lens,
+) {
+    let (shift, back) = (lens.shift(rotation), rotation * Vec3::Z);
+    let mut distance = distance;
+    for _ in 0..OUTSIDE_STEPS {
+        let eye = middle + (back - shift) * distance;
+        if (nucleus.balls()).all(|(_, b)| eye.distance(b.center) >= b.radius * OUTSIDE_ROOM) {
+            break;
+        }
+        distance *= OUTSIDE_STEP;
+    }
+    camera.glide_to(middle - shift * distance, distance);
 }
 
 /// How near and far the wheel may take the camera, and what it keeps out of and in

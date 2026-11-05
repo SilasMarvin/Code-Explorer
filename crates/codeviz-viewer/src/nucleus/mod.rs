@@ -461,11 +461,12 @@ impl Nucleus {
             || self.opened_up(tile)
     }
 
-    /// Whether a function is drawn at all: it has a module, and is not an outside
-    /// caller with no line. The one test of what is drawn: what is pointed at,
-    /// clicked and named is drawn.
+    /// Whether a function is drawn at all: it has a module, and in a journey is not a
+    /// speck, which only browsing draws (the journey dims the rest of the map to its
+    /// spheres), nor an outside caller with no line. The one test of what is drawn:
+    /// what is pointed at, clicked and named is drawn.
     pub(crate) fn drawn(&self, tile: usize) -> bool {
-        self.placed(tile) && !self.lineless(tile)
+        self.placed(tile) && (self.browse || !self.speck(tile) && !self.lineless(tile))
     }
 
     /// Whether a function placed where it shows is only a small, faint speck: not
@@ -668,16 +669,19 @@ impl Nucleus {
             .unwrap_or_default()
     }
 
-    /// Points round every sphere: the whole codebase.
+    /// Points round every sphere, the whole codebase, seen turned to `rotation`: the
+    /// corners of the square about each one's middle, brought its radius nearer the
+    /// camera, as a sphere near it shows bigger than its middle's depth says.
     pub(crate) fn atlas_points(&self, rotation: Quat) -> Vec<Vec3> {
-        let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+        let (right, up, back) = (rotation * Vec3::X, rotation * Vec3::Y, rotation * Vec3::Z);
         self.now
             .balls
             .iter()
             .flat_map(|b| {
+                let near = b.center + back * b.radius;
                 [
-                    b.center + (right + up) * b.radius,
-                    b.center - (right + up) * b.radius,
+                    near + (right + up) * b.radius,
+                    near - (right + up) * b.radius,
                 ]
             })
             .collect()

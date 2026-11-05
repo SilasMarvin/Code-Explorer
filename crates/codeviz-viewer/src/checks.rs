@@ -51,8 +51,12 @@ const SPHERE_SLACK: f32 = 0.01;
 const ROOM_SLACK: f32 = 0.002;
 /// Of how far calls would run with every module, and every module's functions,
 /// shuffled among themselves, the most they may run as laid out: what calls what
-/// sits near it. Counted where there are at least [`LEAST_CALLS`] such calls.
+/// sits near it. Counted where there are at least [`LEAST_CALLS`] such calls. A call
+/// between two modules runs mostly between their spheres, which a shuffle within
+/// each leaves where they are: its functions sitting on the near sides can only take
+/// a sphere's width or so off it.
 const AFFINITY: f32 = 0.8;
+const AFFINITY_ACROSS: f32 = 0.9;
 const LEAST_CALLS: usize = 10;
 /// Least radius of a lit dot on screen: three points across.
 const LEAST_LIT_DOT: f32 = 1.5;
@@ -1093,10 +1097,10 @@ fn layout_affinity(s: &Snap) -> Value {
     };
     let mut measured = Map::new();
     let mut offenders = Vec::new();
-    for (what, lengths) in [
-        ("modules", &facts.modules),
-        ("inside", &facts.inside),
-        ("across", &facts.across),
+    for (what, lengths, most) in [
+        ("modules", &facts.modules, AFFINITY),
+        ("inside", &facts.inside, AFFINITY),
+        ("across", &facts.across, AFFINITY_ACROSS),
     ] {
         let (Some(mean), Some(shuffled)) = (lengths.mean, lengths.shuffled) else {
             continue;
@@ -1106,10 +1110,10 @@ fn layout_affinity(s: &Snap) -> Value {
         }
         let share = mean / shuffled;
         measured.insert(what.to_owned(), json!(r2(share)));
-        if share > AFFINITY {
+        if share > most {
             let offender = json!({
                 "calls": what, "mean": r2(mean), "shuffled": r2(shuffled),
-                "share": r2(share), "most": AFFINITY,
+                "share": r2(share), "most": most,
                 "why": "calls run nearly as long as with everything shuffled",
             });
             offenders.push((share, offender));
@@ -2160,8 +2164,11 @@ fn journey_fills(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     let opened = since.opening
         || before.is_none_or(|b| b.state.mode != "journey" || b.state.start != s.state.start);
     // A depth change only draws the camera back about the free area's middle: it
-    // frames nothing afresh.
-    let framed = matches!(since.last_move(), Some(Kind::FrameAll | Kind::FrameFocus));
+    // frames nothing afresh. R frames the whole map, the journey dimmed in it.
+    if since.last_move() == Some(Kind::FrameAll) {
+        return skip("R frames the whole map");
+    }
+    let framed = since.last_move() == Some(Kind::FrameFocus);
     if !framed && (!opened || since.has(Kind::Depth)) {
         return skip(
             "no journey opened, R, F or Fit since the last snapshot, but for a depth change",
@@ -4940,7 +4947,7 @@ mod tests {
         let result = check(&s, "layout-affinity");
         assert!(passes(&result), "{result}");
         assert_eq!(result["shares"], json!({ "modules": 0.5, "across": 0.67 }));
-        s["layout"]["across"]["mean"] = json!(29.0);
+        s["layout"]["across"]["mean"] = json!(28.0);
         let result = check(&s, "layout-affinity");
         assert_eq!(result["offenders"][0]["calls"], "across", "{result}");
     }
