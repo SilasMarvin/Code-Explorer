@@ -269,10 +269,6 @@ struct Disc {
     /// Lit, or lit at another depth or by another selection: a name would rather not
     /// cover it, so that one more lit takes no name's side.
     may_light: bool,
-    /// The spot its name tries first where others are as free: its left (1) where
-    /// the journey laid its functions out so, clear of the calls drawn, else its
-    /// right (0).
-    first: usize,
 }
 
 /// How a dot shows beside what is lit, as names keep off it.
@@ -303,9 +299,6 @@ enum Taken {
     Function,
     /// A module's name, or what was there before any: the search box, the hint.
     Other,
-    /// The room a module round the journey keeps for its name at a depth that does
-    /// not show it: only modules' names keep off it.
-    Held,
 }
 
 /// Rectangles and dots by where they are on screen, so a name looks only at what is
@@ -457,11 +450,9 @@ impl Placer {
         self.kinds.truncate(len);
     }
 
-    /// How many names placed `pill` lies over, but rooms [`Taken::Held`].
+    /// How many names placed `pill` lies over.
     fn over_names(&self, pill: egui::Rect) -> usize {
-        self.names_under(pill)
-            .filter(|&i| self.kinds[i] != Taken::Held)
-            .count()
+        self.names_under(pill).count()
     }
 
     /// The names placed `pill` lies over, by index.
@@ -558,8 +549,7 @@ impl Placer {
     /// `reach` from its middle, as a spot of [`SPOTS`] slid along by one of
     /// [`SLIDES`], in the order it tries them: level or nudged before slid; then
     /// where a pill of `bare`, the name alone, covers fewest dots, every dot as big as
-    /// the cursor's whatever is selected; crosses fewest calls; on its first side; in
-    /// [`SPOTS`]' order. The order hangs only on where the dots are and the calls
+    /// the cursor's whatever is selected; crosses fewest calls; in [`SPOTS`]' order. The order hangs only on where the dots are and the calls
     /// could be, not on what is lit or the numbers a depth gives the name, so those
     /// move a name only where they take its place.
     fn tries(
@@ -569,7 +559,6 @@ impl Placer {
         reach: f32,
         (size, bare): (egui::Vec2, egui::Vec2),
     ) -> Vec<(usize, f32)> {
-        let first = self.first_side(own);
         let mut tries: Vec<(_, (usize, f32))> = (0..SPOTS.len())
             .filter(|&i| spot_takes(i, size))
             .flat_map(|i| SLIDES.iter().enumerate().map(move |(n, &by)| (i, n, by)))
@@ -578,7 +567,6 @@ impl Placer {
                     by.abs() > NUDGED,
                     self.covered(own, reach, slid(i, node, reach, bare, by)),
                     self.crossed(own, slid(i, node, reach, size, by)),
-                    i != first,
                     i,
                     n,
                 );
@@ -628,15 +616,6 @@ impl Placer {
             })
             .collect();
         (under.iter().filter(|d| d.may_light).count(), under.len())
-    }
-
-    /// The spot `own`'s name tries first where others are as free: its left where the
-    /// journey laid it out so, else its right.
-    fn first_side(&self, own: usize) -> usize {
-        self.dots
-            .iter()
-            .find(|d| d.tile == own)
-            .map_or(0, |d| d.first)
     }
 
     /// Where a name that must show goes when no place fits: the emptiest of `tries`
@@ -981,16 +960,16 @@ impl<'a> Naming<'a> {
                 // A dot under the hint at the keys is out of sight, and goes unnamed.
                 let at = (naming.to_screen)(world)
                     .filter(|at| area.contains(*at) && !hint.is_some_and(|h| h.contains(*at)))?;
-                Some((at, naming.shows(tile, world, at, Dot::Focus) + GAP))
+                Some((at, naming.shows(world, at, Dot::Focus) + GAP))
             })
             .collect();
         naming
     }
 
-    /// How big `tile`'s dot shows in `dot`'s role, at `world` in the world and `at`
-    /// on screen.
-    fn shows(&self, tile: usize, world: Vec3, at: egui::Pos2, dot: Dot) -> f32 {
-        let radius = dot.radius() * self.nucleus.dot_scale(tile);
+    /// How big a dot shows in `dot`'s role, at `world` in the world and `at` on
+    /// screen.
+    fn shows(&self, world: Vec3, at: egui::Pos2, dot: Dot) -> f32 {
+        let radius = dot.radius();
         dot.clamp((self.to_screen)(world + self.up * radius).map_or(2.0, |p| p.distance(at)))
     }
 
@@ -1010,23 +989,23 @@ impl<'a> Naming<'a> {
                 let (at, _) = (*disc)?;
                 let dot = graph_view::dot(self.explorer, tile);
                 let world = self.explorer.tile_point(tile)?;
-                let steady = self.shows(tile, world, at, Dot::Focus);
+                let steady = self.shows(world, at, Dot::Focus);
                 let journey = nucleus.journey_level(tile).is_some();
                 // An expanded module's function, drawn small while nothing lights it,
                 // is kept off as big as any, so lighting it moves no name.
                 let opened = nucleus.opened_up(tile);
                 let radius = match dot {
                     _ if unselected || journey || opened => steady,
-                    Dot::Speck if neutral => self.shows(tile, world, at, Dot::Lit),
-                    Dot::Speck => self.shows(tile, world, at, Dot::Speck),
+                    Dot::Speck if neutral => self.shows(world, at, Dot::Lit),
+                    Dot::Speck => self.shows(world, at, Dot::Speck),
                     _ => steady,
                 };
                 // An expanded module's function that nothing else lights.
                 let plain = opened && dot == Dot::Speck && !journey;
                 let least = match dot {
-                    _ if unselected => self.shows(tile, world, at, Dot::Speck),
-                    Dot::Speck if !journey => self.shows(tile, world, at, Dot::Speck),
-                    _ => self.shows(tile, world, at, Dot::Lit),
+                    _ if unselected => self.shows(world, at, Dot::Speck),
+                    Dot::Speck if !journey => self.shows(world, at, Dot::Speck),
+                    _ => self.shows(world, at, Dot::Lit),
                 };
                 Some(Disc {
                     tile,
@@ -1046,7 +1025,6 @@ impl<'a> Naming<'a> {
                     outside: nucleus.outside(tile) && nucleus.journey_level(tile).is_none(),
                     ghost: false,
                     may_light: dot != Dot::Speck || nucleus.browsing() || journey || opened,
-                    first: usize::from(nucleus.name_left(tile)),
                 })
             })
             .chain(self.ghosts())
@@ -1064,18 +1042,17 @@ impl<'a> Naming<'a> {
             .filter_map(move |tile| {
                 let world = self.explorer.tile_point(tile)?;
                 let at = (self.to_screen)(world)?;
-                let radius = self.shows(tile, world, at, Dot::Focus);
+                let radius = self.shows(world, at, Dot::Focus);
                 Some(Disc {
                     tile,
                     at,
                     radius,
                     steady: radius,
-                    least: self.shows(tile, world, at, Dot::Lit),
+                    least: self.shows(world, at, Dot::Lit),
                     shade: Shade::Lit,
                     outside: false,
                     ghost: true,
                     may_light: true,
-                    first: usize::from(nucleus.name_left(tile)),
                 })
             })
     }
@@ -1103,7 +1080,6 @@ impl<'a> Naming<'a> {
     fn spheres(&self) -> Vec<(usize, egui::Pos2, f32)> {
         self.nucleus
             .balls()
-            .filter(|(_, ball)| self.nucleus.shows_body(ball.body))
             .filter_map(|(cluster, _)| {
                 let (middle, edge) = self.sphere_on_screen(cluster)?;
                 Some((cluster, middle, edge))
@@ -1180,10 +1156,7 @@ impl<'a> Naming<'a> {
             let tier = match ball.body {
                 _ if neutral && nucleus.browsing() => Tier::Beyond,
                 Body::Faint => Tier::Beyond,
-                _ if nucleus.shows_body(ball.body) || nucleus.ring().contains(&cluster) => {
-                    Tier::Module
-                }
-                _ => continue,
+                _ => Tier::Module,
             };
             let within = usize::MAX - nucleus.count(cluster);
             order.push(((tier, within, cluster), Named::Group(cluster)));
@@ -1373,10 +1346,6 @@ impl<'a> Naming<'a> {
             self.module_label(cluster, text::TITLE),
         );
         let (small, small_size) = pill_of(painter, self.module_label(cluster, text::SMALL));
-        let shown = self
-            .nucleus
-            .ball(cluster)
-            .is_some_and(|b| self.nucleus.shows_body(b.body));
         let over = |size: egui::Vec2, galley: Arc<egui::Galley>| {
             let pill = above(middle, edge, size);
             above_slides(size.x, edge)
@@ -1385,11 +1354,7 @@ impl<'a> Naming<'a> {
         };
         let big = self.nucleus.count(cluster) >= BIG_MODULE;
         over(size, galley)
-            .chain(
-                inside(middle, edge, small_size, big)
-                    .filter(|_| shown)
-                    .map(|pill| (pill, small.clone(), true)),
-            )
+            .chain(inside(middle, edge, small_size, big).map(|pill| (pill, small.clone(), true)))
             .chain(over(small_size, small))
             .collect()
     }
@@ -1994,23 +1959,12 @@ fn place(
             }
             continue;
         };
-        // A module on the ring not shown at this depth keeps its name's room, from
-        // other modules' names alone.
         let kind = match named {
-            Named::Group(cluster)
-                if nucleus
-                    .ball(cluster)
-                    .is_some_and(|b| nucleus.shows_body(b.body)) =>
-            {
-                Taken::Other
-            }
-            Named::Group(_) => Taken::Held,
+            Named::Group(_) => Taken::Other,
             Named::Node(_) => Taken::Function,
         };
         placer.take(label.pill, kind);
-        if kind != Taken::Held {
-            labels.push(label);
-        }
+        labels.push(label);
     }
     (labels, placer)
 }
@@ -2034,7 +1988,6 @@ mod tests {
             outside: false,
             ghost: false,
             may_light: lit,
-            first: 0,
         }
     }
 

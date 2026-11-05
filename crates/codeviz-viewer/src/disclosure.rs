@@ -202,8 +202,8 @@ impl Disclosed {
 
     /// The journey from `start` as the nucleus draws it: each call shown, from the
     /// node it runs in (`tile`) to each it is drawn to (`ends`); and every function
-    /// below the start at any depth and every call it makes, by node, what the
-    /// layout is for, which a guess never changes.
+    /// below the start at any depth and every call it makes, by node, which a guess
+    /// never changes.
     fn trace(
         &self,
         (tile, ends): (
@@ -214,8 +214,7 @@ impl Disclosed {
         start: SpanId,
     ) -> Trail {
         let mut trail = Trail::default();
-        // Everything below the start at any depth, each at the fewest calls from it, so
-        // the modules round the start are laid out once for every depth.
+        // Everything below the start at any depth, each at the fewest calls from it.
         let mut wave = vec![start];
         let mut seen = HashSet::from([start]);
         for level in 1.. {
@@ -235,16 +234,9 @@ impl Disclosed {
             }
             wave = next;
         }
-        // Every function below the start in the order the journey first runs it, and
-        // every call it makes, at any depth.
+        // Every call the journey makes, at any depth.
         let mut stack = vec![start];
         while let Some(span) = stack.pop() {
-            if span != start
-                && let Some(to) = tile(span)
-                && !trail.order.contains(&to)
-            {
-                trail.order.push(to);
-            }
             if let Some(from) = tile(span) {
                 for &child in self.children(span) {
                     if let Some(to) = tile(child)

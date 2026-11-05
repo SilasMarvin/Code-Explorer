@@ -1,22 +1,15 @@
 //! The nucleus in the scene: a sphere per module, drawn as a flat tinted disc facing
-//! the camera with one rim on its edge, where the nucleus has it, eased. The calls
+//! the camera with one rim on its edge, where the nucleus has it. The calls
 //! are [`crate::arrows`]'s.
 
 use bevy::prelude::*;
 
 use super::{Body, Nucleus};
 use crate::{
-    camera::{OrbitCamera, frame_time},
+    camera::OrbitCamera,
     colors::{MODULE_SHADES, module_color, module_shade},
     explorer::Explorer,
 };
-
-/// Eases the spheres and the functions to where the nucleus now has them.
-pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>) {
-    explorer
-        .bypass_change_detection()
-        .ease_nucleus(frame_time(&time));
-}
 
 /// A module's sphere in the scene: a disc facing the camera, as big as the sphere,
 /// so it and its rim are one circle on one centre however near the view.
@@ -137,7 +130,6 @@ pub(crate) fn place_bodies(
         .map(|camera| depths(nucleus, camera));
     for (sphere, mut transform, mut visibility, mut material) in &mut spheres {
         if let Some(ball) = nucleus.ball(sphere.0) {
-            let shown = nucleus.shows_body(ball.body);
             let placed = Transform::from_translation(ball.center)
                 .with_rotation(facing)
                 .with_scale(Vec3::splat(ball.radius));
@@ -147,12 +139,7 @@ pub(crate) fn place_bodies(
                 .and_then(|d| d.get(sphere.0).copied())
                 .unwrap_or(0.0);
             dress(&looks, sphere.0, ball.body, depth, &mut material);
-            // A journey shows the modules it runs through, and nothing else.
-            visibility.set_if_neq(if shown {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            });
+            visibility.set_if_neq(Visibility::Inherited);
         }
     }
 }
@@ -177,8 +164,7 @@ fn dress(
     let wanted = match body {
         Body::Nucleus => &looks.nucleus[color],
         Body::Open => &looks.open[color],
-        // A closed sphere is hidden.
-        Body::Faint | Body::Closed => &looks.faint[shade][color],
+        Body::Faint => &looks.faint[shade][color],
     };
     if &material.0 != wanted {
         material.0 = wanted.clone();
@@ -207,7 +193,6 @@ pub(crate) fn draw(
             Body::Nucleus => 0.85,
             Body::Open => 0.7,
             Body::Faint => 0.35,
-            Body::Closed => continue,
         };
         gizmos
             .circle(

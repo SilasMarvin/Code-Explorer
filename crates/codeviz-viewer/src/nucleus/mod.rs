@@ -1,64 +1,53 @@
-//! The graph gathered into module spheres, in one of two modes. Browsing, with no
-//! journey open, every module is a sphere at its place in one layout of the whole
-//! codebase, worked out once per document, with every one of its functions inside; a
-//! click lights the selection, white, its callers, violet, and its calls, blue, where
-//! they sit, and moves nothing. In a journey, the start's module is a large glass
-//! sphere in the middle and the modules the journey enters stand round it clockwise in
-//! the order it first enters them; shown are the start, what calls it, and the
-//! journey's calls down to the disclosed depth, the same depth the journey panel
-//! shows, and nothing else. Calls into the start are violet; its own calls out blue,
-//! and every journey call further down amber, darker the deeper, function to function
-//! along thin arrows between modules. Space says only where things are: no axis
-//! stands for order, rank or distance in calls.
+//! The graph as module spheres, every function inside its module's, all where
+//! [`codeviz_layout::place`] puts them once per document: browsing, in a journey and
+//! with a module expanded alike, nothing is laid out again. Browsing, with no journey
+//! open, a click lights the selection, white, its callers, violet, and its calls,
+//! blue, where they sit, and moves nothing. In a journey, the start, what calls it
+//! and the journey's calls down to the disclosed depth, the same depth the journey
+//! panel shows, light where they sit, and the rest dims. Calls into the start are
+//! violet; its own calls out blue, and every journey call further down amber, darker
+//! the deeper, function to function. Space says only where things are: what calls
+//! what sits near it, and no axis stands for order, rank or distance in calls.
 //!
 //! Expanded (`X`, a double click on a module, or `--expand`), a module opens where it
-//! stands, browsing or in a journey alike: every one of its functions drawn, spread in
-//! rows inside its sphere, with the calls among them. Nothing else moves; the camera
-//! comes in until it is as big as its functions need to sit comfortably.
+//! stands, browsing or in a journey alike: every one of its functions drawn, with the
+//! calls among them. Nothing moves; the camera comes in until it is as big as its
+//! functions need to sit comfortably.
 //!
 //! This file holds what the nucleus is and answers; [`browse`], [`journey`] and
-//! [`inside`] arrange it for each mode, and [`draw`] puts it in the scene. The browsing map itself is [`codeviz_layout::atlas`]'s.
+//! [`inside`] light it for each mode, and [`draw`] puts it in the scene.
 
 mod browse;
 mod draw;
 mod inside;
 mod journey;
-mod places;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use codeviz_layout::{
-    ForceGraph,
-    atlas::{self, module_homes, pack, turned},
+    CallGraph,
+    place::{self, Layout},
 };
 
-pub(crate) use draw::{create_looks, draw, follow, place_bodies};
+pub(crate) use draw::{create_looks, draw, place_bodies};
 pub(crate) use journey::rank_callers;
 
 use crate::{
-    camera::{ease, transition_step},
     colors::{CALLEE, CALLER, FURTHER, deeper},
     disclosure::number_order,
-    sizes::module_radius,
 };
 
 /// How a module shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Body {
-    /// The start's module, in the middle, with every function inside it.
+    /// In a journey, the start's module.
     Nucleus,
-    /// Holds functions near the start: opened to show those alone, by name.
+    /// Holds functions the view lights, or the selection's.
     Open,
-    /// In a journey, a module it does not run through: left out, where the map has
-    /// it.
-    Closed,
-    /// Browsing, a module nothing named lives in: faint glass, its functions specks.
+    /// A module nothing lit lives in: faint glass, its functions specks.
     Faint,
 }
 
@@ -122,15 +111,10 @@ pub(crate) struct Call {
 pub(crate) struct Trail {
     pub(crate) calls: Vec<Call>,
     /// Every function below the start at any depth, with the fewest calls it is
-    /// from it: what the modules round the start are laid out for, so a new depth
-    /// moves nothing.
+    /// from it: what folds the start's callers, so a new depth folds none anew.
     pub(crate) whole: HashMap<usize, u32>,
-    /// Every function below the start at any depth, in the order the journey first
-    /// runs it, which orders the modules round the nucleus.
-    pub(crate) order: Vec<usize>,
-    /// Every call the journey makes at any depth, caller to callee, once: what its
-    /// functions are spread out in their spheres to keep clear of, so a new depth
-    /// moves nothing.
+    /// Every call the journey makes at any depth, caller to callee, once: what names
+    /// keep off at every depth alike.
     pub(crate) reach: Vec<(usize, usize)>,
 }
 
@@ -193,78 +177,48 @@ pub(crate) struct Link {
     pub(crate) flow: Flow,
 }
 
-/// The angle the camera turns to when the nucleus opens.
-pub(crate) const VIEW: atlas::View = (-0.45, -0.38);
-/// Browsing, how far the camera may turn off [`VIEW`], in yaw and in pitch: the map
-/// is kept apart for views up to an eighth of a turn either side, and is flattened
-/// along the view, so further round it would turn edge-on; turned both ways at once,
-/// names crowd well before that.
+/// The angle the camera turns to when the view opens, and R.
+pub(crate) const VIEW: (f32, f32) = (-0.45, -0.38);
+/// Browsing, how far the camera may turn off [`VIEW`], in yaw and in pitch.
 pub(crate) const BROWSE_REACH: (f32, f32) = (0.6, 0.3);
 
-/// Where everything is, for one start.
+/// What the view lights, for one start.
 #[derive(Debug, Clone, Default)]
 struct Arrangement {
-    /// The function gathered round: the journey's start, or browsing, the selection.
+    /// The function lit round: the journey's start, or browsing, the selection.
     start: Option<usize>,
-    /// The module in the middle: the start's.
+    /// The start's module.
     middle: usize,
     /// By cluster.
     balls: Vec<Ball>,
-    /// By tile.
-    points: Vec<Vec3>,
-    /// Functions drawn, by tile: the nucleus's and those opened around it.
-    shown: Vec<bool>,
     /// The functions lit for what they are to the start: its callers and the
     /// journey's calls, each with how many calls it is from the start, -1 for a caller.
     named: HashMap<usize, i32>,
-    /// By cluster: the functions an open module names, in the order it lists them.
+    /// By cluster: the functions it holds that the view names, in the order it
+    /// reaches them.
     columns: Vec<Vec<usize>>,
-    /// The modules round the nucleus, clockwise from the top.
-    ring: Vec<usize>,
-    /// In a journey with I on, every function off it that calls one on it.
+    /// In a journey with I on, every function off it that calls the one the cursor
+    /// is on.
     outside: HashSet<usize>,
-    /// In a journey, the function set aside, when it is drawn only for that: picked
-    /// by a search where the journey draws nothing of it.
-    aside: Option<usize>,
-    /// In a journey with I on, how many callers from off it of the function the
-    /// cursor is on have no room clear of the names round their place, undrawn until
-    /// their module is expanded.
-    waiting: usize,
     /// In a journey, the start's callers beyond the few nearest it: drawn quietly and
     /// named only under the pointer, counted on their module's name instead.
     folded: HashSet<usize>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
-    /// By cluster, how big its dots are drawn against their role's size, where its
-    /// functions sit closer than the biggest two need: 1 where it is not listed.
-    dots: HashMap<usize, f32>,
 }
 
-/// Browsing, where every module and function sits: one layout of the whole codebase,
-/// worked out once, whatever is clicked.
-#[derive(Debug, Clone)]
-struct Atlas {
-    /// By cluster.
-    balls: Vec<Ball>,
-    /// By tile.
-    points: Vec<Vec3>,
-}
-
-/// The graph gathered into module spheres: in a journey, round the start's module;
-/// browsing, the whole codebase, lighting what the selection touches. Browsing has no
-/// journey, so the selection stands where a start would: what is said of the start
-/// below says it of the selection too.
+/// The graph as module spheres where the layout has them, lighting what the view is
+/// on: in a journey, its start and calls; browsing, what the selection touches.
+/// Browsing has no journey, so the selection stands where a start would: what is
+/// said of the start below says it of the selection too.
 #[derive(Debug, Clone)]
 pub(crate) struct Nucleus {
-    /// Each module's place in a stable 3D layout of modules, by cluster.
-    homes: Vec<Vec3>,
+    /// Where every module and function sits: worked out once.
+    layout: Layout,
     /// Functions in each module, by cluster.
     counts: Vec<usize>,
     /// Each function's module, by tile.
     module_of: Vec<Option<usize>>,
-    /// Where each function sits in its module's sphere, from its middle, by tile:
-    /// the same in every view that shows it there, browsing or in a journey.
-    offsets: Vec<Vec3>,
     /// Calls from one module to another, by `(from, to)` cluster.
     flows: HashMap<(usize, usize), usize>,
     /// The module expanded, if any: it opens where it is, and only the camera moves.
@@ -276,47 +230,29 @@ pub(crate) struct Nucleus {
     trail: Trail,
     /// The journey's cursor: marked where it sits.
     cursor: Option<usize>,
-    /// In a journey, the function set aside: drawn, wherever it is.
+    /// In a journey, the function set aside: lit where it is.
     aside: Option<usize>,
-    /// Whether the graph is browsed, laid out as the atlas has it, rather than
-    /// gathered round a journey.
+    /// Whether the graph is browsed rather than lit round a journey.
     browse: bool,
-    /// Where everything is browsing: one layout of the whole codebase.
-    atlas: Atlas,
     /// In a journey, whether every outside caller into it shows (I).
     outside: bool,
     /// The outside callers shown whose call into the journey has no line where the
-    /// camera stands: drawn nowhere, as those with no room are not.
+    /// camera stands: drawn nowhere.
     lineless: HashSet<usize>,
-    /// Where the spheres and functions were when the last re-centering began.
-    from: Option<(Vec<Ball>, Vec<Vec3>)>,
-    /// How far along that re-centering is, 0 to 1.
-    progress: f32,
-    /// How many characters each function's name has, by tile: how much room its name
-    /// takes beside its dot.
-    name_chars: Vec<usize>,
-    /// Where the open journey's functions were last spread out in their spheres, for
-    /// its start and calls, so a step that lays nothing out again moves nothing.
-    spread: Option<(SpreadKey, Arc<places::Placed>)>,
 }
 
-/// What a journey's functions are spread out for: its start and every call it names.
-type SpreadKey = (Option<usize>, Vec<(usize, usize)>);
-
 impl Nucleus {
-    /// Gathers the graph round `start`'s module, naming its callers and `trail`, the
-    /// open journey from it; or, to `browse`,
-    /// lays every module out where the atlas has it, lighting what `start` touches.
+    /// Lays the graph out, once, and lights what `start` touches: browsing (`browse`)
+    /// its callers and calls, else `trail`, the open journey from it.
     pub(crate) fn gather(
-        graph: &ForceGraph,
+        graph: &CallGraph,
         start: Option<usize>,
         trail: Trail,
         browse: bool,
     ) -> Self {
         let clusters = graph.cluster_count();
-        let tiles = graph.positions.len();
         let mut counts = vec![0; clusters];
-        for tile in 0..tiles {
+        for tile in 0..graph.len() {
             if let Some(cluster) = graph.cluster(tile) {
                 counts[cluster] += 1;
             }
@@ -329,26 +265,10 @@ impl Nucleus {
                 *flows.entry((a, b)).or_insert(0) += 1;
             }
         }
-        let homes = module_homes(clusters, flows.iter().map(|(&pair, &calls)| (pair, calls)));
-        let mut members: Vec<Vec<usize>> = vec![Vec::new(); clusters];
-        for tile in 0..tiles {
-            if let Some(cluster) = graph.cluster(tile) {
-                members[cluster].push(tile);
-            }
-        }
-        let mut offsets = vec![Vec3::ZERO; tiles];
-        for (cluster, members) in members.iter().enumerate() {
-            for (tile, at) in pack(graph, members, module_radius(counts[cluster]), VIEW) {
-                offsets[tile] = at;
-            }
-        }
-        let module_of: Vec<Option<usize>> = (0..tiles).map(|t| graph.cluster(t)).collect();
-        let atlas = browse::atlas(&homes, &counts, &offsets, &module_of);
         let mut nucleus = Self {
-            homes,
+            layout: place::layout(graph),
             counts,
-            module_of,
-            offsets,
+            module_of: (0..graph.len()).map(|t| graph.cluster(t)).collect(),
             flows,
             expanded: None,
             now: Arrangement::default(),
@@ -357,32 +277,20 @@ impl Nucleus {
             cursor: None,
             aside: None,
             browse,
-            atlas,
             outside: false,
             lineless: HashSet::new(),
-            from: None,
-            progress: 1.0,
-            name_chars: Vec::new(),
-            spread: None,
         };
         nucleus.now = nucleus.arrange(graph, start);
         nucleus
     }
 
-    /// Says how many characters each function's name has, by tile, for the room a
-    /// journey keeps for names beside their dots.
-    pub(crate) fn name_chars(&mut self, chars: Vec<usize>) {
-        self.name_chars = chars;
-        self.spread = None;
-    }
-
-    /// The function the nucleus is gathered round, drawn white: the journey's start,
+    /// The function lit round, drawn white: the journey's start,
     /// or browsing, the selection.
     pub(crate) fn start(&self) -> Option<usize> {
         self.now.start
     }
 
-    /// The module in the middle: the start's.
+    /// The start's module.
     #[cfg(test)]
     pub(crate) fn middle(&self) -> usize {
         self.now.middle
@@ -398,25 +306,13 @@ impl Nucleus {
         self.expanded
     }
 
-    /// Expands `cluster`, or with none shrinks back what is expanded, easing there.
-    pub(crate) fn expand(&mut self, graph: &ForceGraph, cluster: Option<usize>) {
+    /// Expands `cluster`, or with none shrinks back what is expanded.
+    pub(crate) fn expand(&mut self, graph: &CallGraph, cluster: Option<usize>) {
         if cluster == self.expanded {
             return;
         }
         self.expanded = cluster;
         self.recenter(graph, self.now.start);
-    }
-
-    /// How big a function's dot is drawn against its role's size: smaller in a
-    /// module whose functions sit too close for their dots at full size.
-    pub(crate) fn dot_scale(&self, tile: usize) -> f32 {
-        self.module_of
-            .get(tile)
-            .copied()
-            .flatten()
-            .and_then(|cluster| self.now.dots.get(&cluster))
-            .copied()
-            .unwrap_or(1.0)
     }
 
     /// Whether a function is one of the module expanded's: every one of them is
@@ -425,36 +321,14 @@ impl Nucleus {
         self.expanded.is_some() && self.module_of.get(tile).copied().flatten() == self.expanded
     }
 
-    /// Arranges everything around `start` instead, easing there from wherever things
-    /// are now.
-    pub(crate) fn recenter(&mut self, graph: &ForceGraph, start: Option<usize>) {
-        let mut balls: Vec<Ball> = (0..self.now.balls.len())
-            .filter_map(|c| self.ball(c))
-            .collect();
-        let mut points: Vec<Vec3> = (0..self.now.points.len())
-            .filter_map(|t| self.point(t))
-            .collect();
-        let placed: Vec<bool> = (0..points.len()).map(|t| self.placed(t)).collect();
-        let shown: Vec<bool> = balls.iter().map(|b| self.shows_body(b.body)).collect();
-        self.progress = 0.0;
+    /// Lights what `start` touches instead.
+    pub(crate) fn recenter(&mut self, graph: &CallGraph, start: Option<usize>) {
         self.now = self.arrange(graph, start);
-        // What was not drawn before shows where it goes, rather than flying in.
-        for (tile, point) in points.iter_mut().enumerate() {
-            if !placed[tile] {
-                *point = self.now.points.get(tile).copied().unwrap_or(*point);
-            }
-        }
-        for (cluster, ball) in balls.iter_mut().enumerate() {
-            if !shown[cluster] {
-                *ball = self.now.balls.get(cluster).copied().unwrap_or(*ball);
-            }
-        }
-        self.from = Some((balls, points));
     }
 
-    /// Names the open journey from the start instead, easing there. Returns whether
-    /// that changed anything.
-    pub(crate) fn retrace(&mut self, graph: &ForceGraph, trail: &Trail) -> bool {
+    /// Lights the open journey from the start instead. Returns whether that changed
+    /// anything.
+    pub(crate) fn retrace(&mut self, graph: &CallGraph, trail: &Trail) -> bool {
         if *trail == self.trail {
             return false;
         }
@@ -468,9 +342,8 @@ impl Nucleus {
         self.browse
     }
 
-    /// Browses the graph, laid out as the atlas has it, or gathers it round a
-    /// journey, easing there. Returns whether that changed.
-    pub(crate) fn set_browse(&mut self, graph: &ForceGraph, browse: bool) -> bool {
+    /// Browses the graph, or lights a journey in it. Returns whether that changed.
+    pub(crate) fn set_browse(&mut self, graph: &CallGraph, browse: bool) -> bool {
         if browse == self.browse {
             return false;
         }
@@ -480,9 +353,8 @@ impl Nucleus {
         true
     }
 
-    /// Shows every outside caller into the journey, or leaves them out, without
-    /// moving anything already there.
-    pub(crate) fn set_outside(&mut self, graph: &ForceGraph, on: bool) {
+    /// Lights every outside caller into the journey where it is, or no longer.
+    pub(crate) fn set_outside(&mut self, graph: &CallGraph, on: bool) {
         if on != self.outside {
             self.outside = on;
             self.recenter(graph, self.now.start);
@@ -494,11 +366,10 @@ impl Nucleus {
         self.now.outside.contains(&tile)
     }
 
-    /// How many callers from off the journey of the function the cursor is on wait,
-    /// undrawn, for their module to be expanded (I), or for a camera that sees their
-    /// call's line.
+    /// How many callers from off the journey of the function the cursor is on (I)
+    /// wait, undrawn, for a camera that sees their call's line.
     pub(crate) fn outside_waiting(&self) -> usize {
-        self.now.waiting + self.now.outside.intersection(&self.lineless).count()
+        self.now.outside.intersection(&self.lineless).count()
     }
 
     /// Leaves out the outside callers `tiles` whose call has no line where the camera
@@ -527,10 +398,10 @@ impl Nucleus {
         self.now.folded.contains(&tile)
     }
 
-    /// Marks the journey's cursor where it sits, without moving anything else; with
-    /// I on, brings in the callers from off the journey of the function it is on
-    /// instead. Returns whether that changed.
-    pub(crate) fn set_cursor(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
+    /// Marks the journey's cursor where it sits; with I on, lights the callers from
+    /// off the journey of the function it is on instead. Returns whether that
+    /// changed.
+    pub(crate) fn set_cursor(&mut self, graph: &CallGraph, tile: Option<usize>) -> bool {
         if tile == self.cursor {
             return false;
         }
@@ -541,22 +412,13 @@ impl Nucleus {
         true
     }
 
-    /// Sets a function aside in a journey: drawn where it is, or where the journey
-    /// draws nothing of it, put where it shows moving nothing else. Returns whether
-    /// that changed.
-    pub(crate) fn set_aside(&mut self, graph: &ForceGraph, tile: Option<usize>) -> bool {
+    /// Sets a function aside in a journey: lit where it is. Returns whether that
+    /// changed.
+    pub(crate) fn set_aside(&mut self, tile: Option<usize>) -> bool {
         if tile == self.aside {
             return false;
         }
         self.aside = tile;
-        // Outside the journey, the start's module's functions sit where the map has
-        // them, undrawn: set aside, one takes a place kept free.
-        let placing = tile
-            .is_some_and(|t| !self.placed(t) || self.module_of(t) == Some(self.now.middle))
-            || self.now.aside.is_some();
-        if placing && !self.browse {
-            self.recenter(graph, self.now.start);
-        }
         true
     }
 
@@ -599,11 +461,11 @@ impl Nucleus {
             || self.opened_up(tile)
     }
 
-    /// Whether a function is drawn at all: placed where it shows, and in a journey,
-    /// not a speck, which only browsing draws, nor an outside caller with no line.
-    /// The one test of what is drawn: what is pointed at, clicked and named is drawn.
+    /// Whether a function is drawn at all: it has a module, and is not an outside
+    /// caller with no line. The one test of what is drawn: what is pointed at,
+    /// clicked and named is drawn.
     pub(crate) fn drawn(&self, tile: usize) -> bool {
-        self.placed(tile) && (self.browse || !self.speck(tile) && !self.lineless(tile))
+        self.placed(tile) && !self.lineless(tile)
     }
 
     /// Whether a function placed where it shows is only a small, faint speck: not
@@ -612,41 +474,13 @@ impl Nucleus {
         self.placed(tile) && !self.lit(tile) && self.now.start != Some(tile)
     }
 
-    /// Whether no re-centering is under way.
-    pub(crate) fn settled(&self) -> bool {
-        self.progress >= 1.0
-    }
-
-    /// Moves a re-centering along by `dt` seconds. Returns whether anything moved.
-    pub(crate) fn advance(&mut self, dt: f32) -> bool {
-        if self.progress >= 1.0 {
-            return false;
-        }
-        self.progress = (self.progress + transition_step(dt)).min(1.0);
-        if self.progress >= 1.0 {
-            self.from = None;
-        }
-        true
-    }
-
-    /// The share of the way to where things are going, eased in and out.
-    fn eased(&self) -> f32 {
-        ease(self.progress)
-    }
-
-    /// Where a function is drawn: inside its module's sphere, or at its middle when
-    /// it is folded away. The cursor only ever rests on a call drawn.
+    /// Where a function sits: inside its module's sphere.
     pub(crate) fn point(&self, tile: usize) -> Option<Vec3> {
-        let to = *self.now.points.get(tile)?;
-        Some(match &self.from {
-            Some((_, points)) => points.get(tile).map_or(to, |&p| p.lerp(to, self.eased())),
-            None => to,
-        })
+        self.placed(tile).then(|| self.layout.functions[tile])
     }
 
     /// In a journey, where its start, its cursor and every function it lights but
-    /// the callers folded into their module's count are going to rest: what framing
-    /// it takes in.
+    /// the callers folded into their module's count sit: what framing takes in.
     pub(crate) fn journey_points(&self) -> Vec<Vec3> {
         let lit = self.now.named.keys().copied().filter(|&t| !self.folded(t));
         self.now
@@ -654,27 +488,19 @@ impl Nucleus {
             .into_iter()
             .chain(self.cursor)
             .chain(lit)
-            .filter_map(|tile| self.resting_point(tile))
+            .filter_map(|tile| self.point(tile))
             .collect()
     }
 
-    /// Where a function is going to be drawn once a re-centering ends: what the
-    /// camera frames, rather than where it passes on the way.
-    pub(crate) fn resting_point(&self, tile: usize) -> Option<Vec3> {
-        self.now.points.get(tile).copied()
+    /// A module's sphere.
+    pub(crate) fn ball(&self, cluster: usize) -> Option<Ball> {
+        self.now.balls.get(cluster).copied()
     }
 
-    /// A module's sphere as drawn now.
-    pub(crate) fn ball(&self, cluster: usize) -> Option<Ball> {
-        let to = *self.now.balls.get(cluster)?;
-        Some(match self.from.as_ref().and_then(|(b, _)| b.get(cluster)) {
-            Some(from) => Ball {
-                center: from.center.lerp(to.center, self.eased()),
-                radius: from.radius + (to.radius - from.radius) * self.eased(),
-                body: to.body,
-            },
-            None => to,
-        })
+    /// The radius of the ball each of a module's functions keeps to itself: no two
+    /// come nearer than twice it.
+    pub(crate) fn room(&self, cluster: usize) -> Option<f32> {
+        self.layout.rooms.get(cluster).copied()
     }
 
     /// Every module's sphere as drawn now, by cluster.
@@ -682,16 +508,9 @@ impl Nucleus {
         (0..self.now.balls.len()).filter_map(|c| self.ball(c).map(|b| (c, b)))
     }
 
-    /// Whether a module sphere of this body is drawn: in a journey, only those it
-    /// runs through.
-    pub(crate) fn shows_body(&self, body: Body) -> bool {
-        self.browse || body != Body::Closed
-    }
-
-    /// Whether a function is placed where it shows, rather than folded away inside
-    /// its module.
+    /// Whether a function has a place: inside its module's sphere.
     pub(crate) fn placed(&self, tile: usize) -> bool {
-        self.now.shown.get(tile).copied().unwrap_or(false)
+        self.module_of(tile).is_some()
     }
 
     /// Every function the open journey could light at some depth: what it runs below
@@ -752,16 +571,6 @@ impl Nucleus {
             .collect()
     }
 
-    /// Whether a journey function's name goes on its dot's left, where both sides are
-    /// as free, as its functions were spread out: clear of the calls drawn.
-    pub(crate) fn name_left(&self, tile: usize) -> bool {
-        !self.browse
-            && self
-                .spread
-                .as_ref()
-                .is_some_and(|(_, placed)| placed.left.contains(&tile))
-    }
-
     /// How many functions a module holds.
     pub(crate) fn count(&self, cluster: usize) -> usize {
         self.counts.get(cluster).copied().unwrap_or(0)
@@ -770,12 +579,6 @@ impl Nucleus {
     /// How many functions an open module names.
     pub(crate) fn opened(&self, cluster: usize) -> usize {
         self.now.columns.get(cluster).map_or(0, Vec::len)
-    }
-
-    /// In a journey, the modules round the nucleus at any depth, clockwise from the
-    /// top.
-    pub(crate) fn ring(&self) -> &[usize] {
-        &self.now.ring
     }
 
     pub(crate) fn tubes(&self) -> &[Tube] {
@@ -787,7 +590,7 @@ impl Nucleus {
     }
 
     /// Points around every sphere that should be on screen, the nucleus and the open
-    /// modules, as they will be once a re-centering ends.
+    /// modules.
     pub(crate) fn frame_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
         self.now
@@ -805,9 +608,8 @@ impl Nucleus {
             .collect()
     }
 
-    /// The modules a journey runs through, by cluster, once a re-centering ends, and
-    /// the one holding the function set aside, wherever it is drawn: what framing it
-    /// shows whole.
+    /// The modules a journey runs through, by cluster, and the one holding the
+    /// function set aside: what framing it shows whole.
     pub(crate) fn open_modules(&self) -> Vec<usize> {
         let aside = self
             .aside
@@ -820,8 +622,7 @@ impl Nucleus {
             .collect()
     }
 
-    /// The top of each of `modules`' spheres, as it will be once a re-centering
-    /// ends: where the module's name sits above it.
+    /// The top of each of `modules`' spheres: where the module's name sits above it.
     pub(crate) fn tops(&self, rotation: Quat, modules: &[usize]) -> Vec<Vec3> {
         let up = rotation * Vec3::Y;
         self.balls_of(modules)
@@ -829,8 +630,8 @@ impl Nucleus {
             .collect()
     }
 
-    /// The sides and foot of each of `modules`' spheres, as it will be once a
-    /// re-centering ends: with [`Self::tops`], what shows it whole.
+    /// The sides and foot of each of `modules`' spheres: with [`Self::tops`], what
+    /// shows it whole.
     pub(crate) fn rims(&self, rotation: Quat, modules: &[usize]) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
         self.balls_of(modules)
@@ -844,13 +645,13 @@ impl Nucleus {
             .collect()
     }
 
-    /// `modules`' spheres, as they will be once a re-centering ends.
+    /// `modules`' spheres.
     pub(crate) fn balls_of<'a>(&'a self, modules: &'a [usize]) -> impl Iterator<Item = &'a Ball> {
         modules.iter().filter_map(|&c| self.now.balls.get(c))
     }
 
-    /// Points round the expanded module alone, as it will be once a re-centering
-    /// ends: what the view takes in to fill itself with it.
+    /// Points round the expanded module alone: what the view takes in to fill
+    /// itself with it.
     pub(crate) fn nucleus_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
         self.now
@@ -867,14 +668,12 @@ impl Nucleus {
             .unwrap_or_default()
     }
 
-    /// Points round every sphere shown, as it will be once a re-centering ends:
-    /// browsing, the whole codebase.
+    /// Points round every sphere: the whole codebase.
     pub(crate) fn atlas_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
         self.now
             .balls
             .iter()
-            .filter(|b| self.shows_body(b.body))
             .flat_map(|b| {
                 [
                     b.center + (right + up) * b.radius,
@@ -884,22 +683,33 @@ impl Nucleus {
             .collect()
     }
 
-    /// Everything placed around `start`, browsing or in a journey, and the module
+    /// What the view lights round `start`, browsing or in a journey, and the module
     /// expanded opened out where it is.
-    fn arrange(&mut self, graph: &ForceGraph, start: Option<usize>) -> Arrangement {
+    fn arrange(&self, graph: &CallGraph, start: Option<usize>) -> Arrangement {
         let mut now = if self.browse {
             self.arrange_browse(graph, start)
         } else {
-            self.arrange_modules(graph, start)
+            self.arrange_journey(graph, start)
         };
         if let Some(cluster) = self.expanded {
-            self.open_out(graph, cluster, &mut now);
+            Self::open_out(graph, cluster, &mut now);
         }
         now
+    }
+
+    /// Every module's sphere where the layout has it, faint.
+    fn faint_balls(&self) -> Vec<Ball> {
+        (self.layout.modules.iter())
+            .map(|&(center, radius)| Ball {
+                center,
+                radius,
+                body: Body::Faint,
+            })
+            .collect()
     }
 }
 
 /// The usual view's rotation.
 pub(crate) fn view_rotation() -> Quat {
-    turned(VIEW, 0.0)
+    Quat::from_euler(EulerRot::YXZ, VIEW.0, VIEW.1, 0.0)
 }

@@ -46,8 +46,14 @@ use crate::{
 /// How far a dot may poke out of its sphere, as a share of the sphere's radius,
 /// before it counts as outside: rounding in the positions, not leeway.
 const SPHERE_SLACK: f32 = 0.01;
-/// Least clear space between two dots on screen, edge to edge, in points.
-const DOT_GAP: f32 = 1.0;
+/// How much nearer two functions of a module may lie in the world than the room
+/// each keeps ([`Module::room`]) allows, as a share of it: rounding, not leeway.
+const ROOM_SLACK: f32 = 0.002;
+/// Of how far calls would run with every module, and every module's functions,
+/// shuffled among themselves, the most they may run as laid out: what calls what
+/// sits near it. Counted where there are at least [`LEAST_CALLS`] such calls.
+const AFFINITY: f32 = 0.8;
+const LEAST_CALLS: usize = 10;
 /// Least radius of a lit dot on screen: three points across.
 const LEAST_LIT_DOT: f32 = 1.5;
 /// Least radius of the dot hovered on screen: as big as a lit one at its least.
@@ -167,8 +173,6 @@ const LINE_CLEAR: f32 = 2.0;
 /// How far a call drawn in two snapshots may run elsewhere before it counts as moved,
 /// in points: a dot growing as the cursor lands on it shortens its line by less.
 const ARROW_MOVED: f32 = 3.0;
-/// How far clear of a call's line, past its dot's edge, a caller I brings in sits.
-const OUTSIDE_CLEAR: f32 = 2.0;
 /// How much further than [`arrows::CHORD_OFF`] a collapsed line may stray off its
 /// straight line, in points: two lines both ways between two dots lie apart.
 const CHORD_SLACK: f32 = 5.0;
@@ -185,11 +189,12 @@ const BACK: &str = "Back or Forward put back the camera the place had, wherever 
 type Check = fn(&Snap, Option<&Snap>, &Since) -> Value;
 
 /// Every check, by the name testers read, in the order a snapshot lists them.
-const CHECKS: [(&str, Check); 33] = [
+const CHECKS: [(&str, Check); 34] = [
     ("dots-in-spheres", |s, _, _| dots_in_spheres(s)),
     ("dots-apart", |s, _, _| dots_apart(s)),
     ("dot-sizes", |s, _, _| dot_sizes(s)),
     ("spheres-apart", |s, _, _| spheres_apart(s)),
+    ("layout-affinity", |s, _, _| layout_affinity(s)),
     ("sphere-sizes", |s, _, _| sphere_sizes(s)),
     ("labels-near", |s, _, _| labels_near(s)),
     ("labels-clear", |s, _, _| labels_clear(s)),
@@ -306,6 +311,26 @@ struct Snap {
     search_rows: Option<Vec<SearchRow>>,
     overlays: Vec<Overlay>,
     text: Vec<Text>,
+    layout: Option<Facts>,
+}
+
+/// What the layout is, whatever the view lights: how long calls run in it against
+/// the same places shuffled.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Facts {
+    modules: Lengths,
+    inside: Lengths,
+    across: Lengths,
+}
+
+/// The mean length of some calls in the world, as laid out and shuffled.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Lengths {
+    mean: Option<f32>,
+    shuffled: Option<f32>,
+    calls: usize,
 }
 
 /// What the view means to show: the selection or the start, its callers, its calls.
@@ -481,6 +506,8 @@ struct Module {
     radius: f32,
     world: [f32; 3],
     world_radius: f32,
+    /// The radius of the ball each of its functions keeps to itself, in the world.
+    room: Option<f32>,
     on_screen: bool,
     label: Option<String>,
     label_rect: Option<[f32; 4]>,
@@ -664,11 +691,6 @@ impl Node {
                 .as_deref()
                 .and_then(alpha)
                 .is_some_and(|a| a < FAINT)
-    }
-
-    /// A faint dot with no name: nothing a reader tells apart.
-    fn faint(&self) -> bool {
-        !self.lit() && self.label.is_none()
     }
 
     /// Where its name comes in the order names are placed, first first: the start or
@@ -1026,29 +1048,77 @@ fn dots_in_spheres(s: &Snap) -> Value {
 }
 
 fn dots_apart(s: &Snap) -> Value {
-    // A faint dot with no name is nothing a reader tells apart.
-    let dots: Vec<&Node> = s
-        .nodes
-        .iter()
-        .filter(|n| n.on_screen && n.radius > 0.0 && !n.faint())
+    let rooms: HashMap<&str, f32> = (s.modules.iter())
+        .filter_map(|m| Some((m.name.as_str(), m.room?)))
         .collect();
+    if rooms.is_empty() {
+        return skip("no module says the room its functions keep");
+    }
+    // In the world, as laid out: two dots of one module show near each other on
+    // screen when one lies behind the other, which says nothing of the layout.
+    let mut by_module: BTreeMap<&str, Vec<(&Node, Vec3)>> = BTreeMap::new();
+    for n in &s.nodes {
+        if let (Some(module), Some(world)) = (n.module.as_deref(), n.world) {
+            by_module
+                .entry(module)
+                .or_default()
+                .push((n, Vec3::from_array(world)));
+        }
+    }
     let mut offenders = Vec::new();
-    for (i, a) in dots.iter().enumerate() {
-        for b in &dots[i + 1..] {
-            let apart = v2(a.at).distance(v2(b.at));
-            let short = a.radius + b.radius + DOT_GAP - apart;
-            if short > 0.0 {
-                let lit = a.lit() || b.lit();
-                let offender = json!({
-                    "functions": [a.name, b.name], "lit": lit, "at": [pt(a.at), pt(b.at)],
-                    "apart": r1(apart), "radii": [r1(a.radius), r1(b.radius)], "short_by": r1(short),
-                });
-                // Lit pairs first: those are the ones a reader is meant to tell apart.
-                offenders.push((short + if lit { 1e4 } else { 0.0 }, offender));
+    for (module, dots) in by_module {
+        let Some(&room) = rooms.get(module) else {
+            continue;
+        };
+        for (i, (a, at)) in dots.iter().enumerate() {
+            for (b, other) in &dots[i + 1..] {
+                let apart = at.distance(*other);
+                let short = 2.0 * room * (1.0 - ROOM_SLACK) - apart;
+                if short > 0.0 {
+                    let offender = json!({
+                        "functions": [a.name, b.name], "module": module,
+                        "apart": r3(apart), "room": r3(room), "short_by": r3(short),
+                    });
+                    offenders.push((short / room, offender));
+                }
             }
         }
     }
     verdict(offenders)
+}
+
+fn layout_affinity(s: &Snap) -> Value {
+    let Some(facts) = &s.layout else {
+        return skip("no layout facts");
+    };
+    let mut measured = Map::new();
+    let mut offenders = Vec::new();
+    for (what, lengths) in [
+        ("modules", &facts.modules),
+        ("inside", &facts.inside),
+        ("across", &facts.across),
+    ] {
+        let (Some(mean), Some(shuffled)) = (lengths.mean, lengths.shuffled) else {
+            continue;
+        };
+        if lengths.calls < LEAST_CALLS || shuffled <= 0.0 {
+            continue;
+        }
+        let share = mean / shuffled;
+        measured.insert(what.to_owned(), json!(r2(share)));
+        if share > AFFINITY {
+            let offender = json!({
+                "calls": what, "mean": r2(mean), "shuffled": r2(shuffled),
+                "share": r2(share), "most": AFFINITY,
+                "why": "calls run nearly as long as with everything shuffled",
+            });
+            offenders.push((share, offender));
+        }
+    }
+    if measured.is_empty() {
+        return skip("too few calls to measure");
+    }
+    with(verdict(offenders), "shares", Value::Object(measured))
 }
 
 fn dot_sizes(s: &Snap) -> Value {
@@ -1110,11 +1180,7 @@ fn spheres_apart(s: &Snap) -> Value {
 }
 
 fn sphere_sizes(s: &Snap) -> Value {
-    // Expanded, the module in the middle is meant to be bigger than the rest.
-    let sized: Vec<&Module> = s
-        .spheres()
-        .filter(|m| !(s.expanded() && m.body == "nucleus") && m.world_radius > 0.0)
-        .collect();
+    let sized: Vec<&Module> = s.spheres().filter(|m| m.world_radius > 0.0).collect();
     let by_size = |a: &&&Module, b: &&&Module| a.world_radius.total_cmp(&b.world_radius);
     let (Some(small), Some(big)) = (sized.iter().min_by(by_size), sized.iter().max_by(by_size))
     else {
@@ -3758,11 +3824,7 @@ fn outside_callers(s: &Snap) -> Value {
         .filter(|n| n.is("outside") && n.on_screen)
         .collect();
     let mut offenders = Vec::new();
-    let lines: Vec<&Arrow> = (s.arrows.iter())
-        .filter(|a| matches!(a.flow.as_str(), "into" | "journey") && a.path.len() >= 2)
-        .collect();
-    // Each one's own line comes from its dot and runs along no line of the
-    // journey's, which it would read as another of.
+    // Each one's own line comes from its dot.
     for a in s
         .arrows
         .iter()
@@ -3777,16 +3839,6 @@ fn outside_callers(s: &Snap) -> Value {
             let why = "a line from a caller I brings in whose dot is not drawn";
             offenders.push((2.0, json!({ "arrow": [a.from, a.to], "why": why })));
         }
-        let path: Vec<egui::Pos2> = a.path.iter().map(|&p| pos(p)).collect();
-        for b in &lines {
-            let other: Vec<egui::Pos2> = b.path.iter().map(|&p| pos(p)).collect();
-            if arrows::alongside(&path, &other) {
-                let why = "runs along a journey's line, so it reads as one of its calls";
-                let offender =
-                    json!({ "arrow": [a.from, a.to], "along": [b.from, b.to], "why": why });
-                offenders.push((1.0, offender));
-            }
-        }
     }
     // One drawn with no line reads as a function of its own: it is not drawn.
     for n in &outside {
@@ -3795,18 +3847,6 @@ fn outside_callers(s: &Snap) -> Value {
         if !has_line {
             let why = "a caller I brings in drawn with no line to what it calls";
             offenders.push((2.0, json!({ "outside": n.name, "why": why })));
-        }
-    }
-    for n in &outside {
-        for a in lines.iter().filter(|a| !a.ends_at(n.unit.as_deref())) {
-            let by = (a.pieces().iter())
-                .map(|&(p, q)| piece_distance(p, q, v2(n.at)))
-                .fold(f32::INFINITY, f32::min);
-            if by < n.radius + OUTSIDE_CLEAR {
-                let offender =
-                    json!({ "outside": n.name, "on": [a.from, a.to], "points_off": r1(by) });
-                offenders.push((OUTSIDE_CLEAR + n.radius - by, offender));
-            }
         }
     }
     let free = s.free();
@@ -4311,11 +4351,11 @@ mod tests {
             },
             "modules": [
                 { "name": "a", "body": "open", "shown": true, "functions": 2, "at": [400.0, 500.0],
-                  "radius": 100.0, "world": [-10.0, 0.0, 0.0], "world_radius": 5.0, "on_screen": true,
-                  "label": "A", "label_rect": [380.0, 390.0, 420.0, 402.0] },
+                  "radius": 100.0, "world": [-10.0, 0.0, 0.0], "world_radius": 5.0, "room": 1.0,
+                  "on_screen": true, "label": "A", "label_rect": [380.0, 390.0, 420.0, 402.0] },
                 { "name": "b", "body": "open", "shown": true, "functions": 1, "at": [1000.0, 500.0],
-                  "radius": 80.0, "world": [10.0, 0.0, 0.0], "world_radius": 4.0, "on_screen": true,
-                  "label": "B", "label_rect": [992.0, 405.0, 1008.0, 417.0] },
+                  "radius": 80.0, "world": [10.0, 0.0, 0.0], "world_radius": 4.0, "room": 1.0,
+                  "on_screen": true, "label": "B", "label_rect": [992.0, 405.0, 1008.0, 417.0] },
             ],
             "nodes": [
                 { "name": "f", "unit": "x:a::f", "module": "a", "roles": ["centre"], "at": [380.0, 500.0],
@@ -4873,20 +4913,36 @@ mod tests {
     }
 
     #[test]
-    fn dots_too_close_are_named_in_pairs_lit_first() {
+    fn dots_too_close_in_the_world_are_named_in_pairs() {
         let mut s = scene();
-        s["nodes"][1]["at"] = json!([385.0, 500.0]);
-        s["nodes"][2]["at"] = json!([443.0, 500.0]);
-        s["nodes"][2]["module"] = json!("a");
-        assert!(
-            passes(&check(&s, "dots-apart")),
-            "a faint dot with no name may sit under another"
-        );
-        s["nodes"][1]["roles"] = json!(["caller"]);
+        // One behind the other shows on top of it, which is no fault of the layout.
+        s["nodes"][1]["at"] = json!([381.0, 500.0]);
+        assert!(passes(&check(&s, "dots-apart")));
+        s["nodes"][1]["world"] = json!([-10.0, 0.0, 0.0]);
         let result = check(&s, "dots-apart");
         assert_eq!(result["count"], 1);
         assert_eq!(result["offenders"][0]["functions"], json!(["f", "g"]));
-        assert_eq!(result["offenders"][0]["short_by"], 3.0);
+        assert_eq!(result["offenders"][0]["short_by"], 0.996);
+        // Functions of two modules lie in two spheres, apart already.
+        s["nodes"][1]["module"] = json!("b");
+        assert!(passes(&check(&s, "dots-apart")));
+    }
+
+    #[test]
+    fn calls_run_shorter_than_with_everything_shuffled() {
+        let mut s = scene();
+        assert_eq!(check(&s, "layout-affinity")["pass"], Value::Null);
+        s["layout"] = json!({
+            "modules": { "mean": 30.0, "shuffled": 60.0, "calls": 900 },
+            "inside": { "mean": 6.0, "shuffled": 12.0, "calls": 9 },
+            "across": { "mean": 20.0, "shuffled": 30.0, "calls": 900 },
+        });
+        let result = check(&s, "layout-affinity");
+        assert!(passes(&result), "{result}");
+        assert_eq!(result["shares"], json!({ "modules": 0.5, "across": 0.67 }));
+        s["layout"]["across"]["mean"] = json!(29.0);
+        let result = check(&s, "layout-affinity");
+        assert_eq!(result["offenders"][0]["calls"], "across", "{result}");
     }
 
     #[test]
@@ -5859,7 +5915,7 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_brought_in_draws_its_line_from_its_dot_and_along_no_journey_line() {
+    fn a_caller_brought_in_draws_its_line_from_its_dot() {
         let mut s = journey();
         s["state"]["outside_callers"] = json!(true);
         s["nodes"][1]["roles"] = json!(["outside"]);
@@ -5871,14 +5927,6 @@ mod tests {
             { "from": "g", "to": "h", "from_unit": "x:a::g", "to_unit": "x:b::h", "flow": "outside",
               "path": [[386.0, 206.0], [400.0, 508.0], [994.0, 508.0]] },
         ]);
-        let result = check(&s, "outside-callers");
-        assert!(
-            (result["offenders"].as_array().expect("offenders"))
-                .iter()
-                .any(|o| o["along"] == json!(["f", "h"])),
-            "{result}"
-        );
-        s["arrows"][1]["path"] = json!([[386.0, 206.0], [994.0, 494.0]]);
         assert!(
             passes(&check(&s, "outside-callers")),
             "{}",
@@ -6028,7 +6076,7 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_i_brings_in_sits_off_the_lines_and_is_named_or_counted() {
+    fn a_caller_i_brings_in_is_named_or_counted() {
         let mut s = journey();
         s["state"]["outside_callers"] = json!(true);
         s["nodes"][1]["roles"] = json!(["outside"]);
@@ -6036,9 +6084,7 @@ mod tests {
             "flow": "journey", "level": 1, "path": [[380.0, 500.0], [1000.0, 500.0]] },
             { "from": "g", "to": "h", "from_unit": "x:a::g", "to_unit": "x:b::h",
             "flow": "outside", "path": [[440.0, 540.0], [1000.0, 560.0]] }]);
-        let result = check(&s, "outside-callers");
-        assert_eq!(result["offenders"][0]["outside"], "g", "{result}");
-        // Off the line, unnamed: the bar along the top must count it.
+        // Unnamed: the bar along the top must count it.
         s["nodes"][1]["at"] = json!([440.0, 540.0]);
         let result = check(&s, "outside-callers");
         assert_eq!(result["offenders"][0]["unnamed"][0], "g", "{result}");

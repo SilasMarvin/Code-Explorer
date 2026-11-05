@@ -258,6 +258,7 @@ def run_session(name, script, wt=REPO, view_args=None, quiet=False, into=None):
     if summary_file.exists():
         summary = json.loads(summary_file.read_text())
         judge_look(out, summary)
+        judge_layout(out, summary, exe, view_args)
         summary_file.write_text(json.dumps(summary, indent=2) + "\n")
     else:
         summary = older_summary(out)
@@ -440,6 +441,53 @@ def judge_look(out, summary):
         else:
             tally["passed"] += 1
     summary.setdefault("checks", {})["look"] = tally
+
+
+# The layout: the same for the same document, every run.
+
+def judge_layout(out, summary, exe, view_args):
+    """Adds the check `layout-same` to a session's summary: every snap's layout digest
+    the same, and the same as the last session run with this build on this document
+    (kept in $CODEVIZ_SESSIONS/.layouts.json): the layout is worked out alike every
+    time."""
+    digests = {}
+    for name in summary.get("snaps", {}):
+        meta = out / f"{name}.json"
+        if meta.exists():
+            digest = (json.loads(meta.read_text()).get("layout") or {}).get("digest")
+            if digest:
+                digests[name] = digest
+    if not digests:
+        return
+    built = Path(exe).stat()
+    key = f"{Path(exe).resolve()}|{built.st_mtime_ns}|{built.st_size}|{view_args[1] if len(view_args) > 1 else ''}"
+    record = Path(SESSIONS) / ".layouts.json"
+    try:
+        known = json.loads(record.read_text())
+    except (OSError, ValueError):
+        known = {}
+    first = next(iter(digests.values()))
+    before = known.get(key, first)
+    tally = {"failed": 0, "failed_in": [], "not_applied": 0, "pass": True, "passed": 0}
+    for name, digest in digests.items():
+        ok = digest == first == before
+        check = {"pass": ok, "digest": digest}
+        if not ok:
+            check.update(count=1, offenders=[{"digest": digest, "first_this_run": first,
+                                              "last_run": before, "why": "laid out differently"}])
+            tally["failed"] += 1
+            tally["failed_in"].append(name)
+            tally["pass"] = False
+            summary["ok"] = False
+        else:
+            tally["passed"] += 1
+        summary["snaps"][name]["layout-same"] = check
+    summary.setdefault("checks", {})["layout-same"] = tally
+    known[key] = first
+    try:
+        record.write_text(json.dumps(known, indent=1) + "\n")
+    except OSError:
+        pass
 
 
 # Reading a session.

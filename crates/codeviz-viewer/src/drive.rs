@@ -2110,7 +2110,6 @@ fn module_point(view: &View, cluster: usize) -> Result<(Vec2, bool), String> {
     let nucleus = view.explorer.nucleus();
     let ball = nucleus
         .ball(cluster)
-        .filter(|ball| nucleus.shows_body(ball.body))
         .ok_or_else(|| format!("module {module} has no sphere drawn"))?;
     let centre = view
         .to_screen(ball.center)
@@ -2146,7 +2145,6 @@ fn empty_point(view: &View) -> Result<Vec2, String> {
     let n = view.explorer.nucleus();
     let spheres: Vec<(Vec2, f32)> = n
         .balls()
-        .filter(|(_, ball)| n.shows_body(ball.body))
         .filter_map(|(_, ball)| {
             Some((
                 view.to_screen(ball.center)?,

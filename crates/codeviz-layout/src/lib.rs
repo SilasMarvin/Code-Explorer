@@ -1,11 +1,10 @@
 //! The codebase as codeviz lays it out: [`map()`] gives every function a tile, grouped
-//! by container; [`ForceGraph`] settles them in 3D as a graph of calls, once, to seed
-//! where each module's functions sit inside its sphere; and [`atlas`] places every
-//! module and its functions for browsing, once per document.
+//! by container; [`CallGraph`] holds the calls between them; and [`place`] puts every
+//! module and every function somewhere in 3D, once per document.
 
-pub mod atlas;
 mod graph;
 mod map;
+pub mod place;
 
-pub use graph::{ForceConfig, ForceGraph};
+pub use graph::CallGraph;
 pub use map::{CodebaseMap, map};
