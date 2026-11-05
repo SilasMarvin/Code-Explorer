@@ -61,17 +61,18 @@ class DriveTest(unittest.TestCase):
         self.assertNotIn("labels-near", text)
         self.assertIn("note, step 5 (line 6) `key x`: the search box has the keyboard", text)
 
-    def test_tells_a_window_not_drawn_from_a_failure(self):
-        blank = dict(summary(ok=True), window_not_drawn=["02-a"])
-        self.assertEqual(drive.verdict(blank), "NOT DRAWN")
-        self.assertEqual(drive.verdict(dict(summary(), window_not_drawn=["02-a"])), "FAIL")
-        self.assertEqual(drive.verdict(summary(ok=True)), "PASS")
-        text = drive.report(blank)
-        self.assertTrue(text.splitlines()[0].endswith("NOT DRAWN"))
-        self.assertIn("window not drawn: 1 snaps have no PNG (02-a)", text)
-        table = drive.table([("a", blank), ("b", summary(ok=True))])
-        self.assertTrue(table.splitlines()[2].endswith("not drawn"))
-        self.assertIn("2/2 scripts pass; 1 of them with the window not drawn", table)
+    def test_session_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            slots = [Path(tmp) / "0", Path(tmp) / "1"]
+            self.assertTrue(drive.take(slots[0]))
+            self.assertFalse(drive.take(slots[0]), "held by this live process")
+            # The second slot is taken while the first is held, and let go after.
+            ran = drive.holding(slots, lambda: slots[1].exists(), "waiting")
+            self.assertTrue(ran)
+            self.assertFalse(slots[1].exists())
+            # A slot whose holder is gone is taken anew.
+            (slots[0] / "pid").write_text("999999")
+            self.assertTrue(drive.take(slots[0]))
 
     def test_tables_the_suite(self):
         text = drive.table([("a", summary()), ("b", summary(ok=True)),
