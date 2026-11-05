@@ -1113,8 +1113,8 @@ fn dot_sizes(s: &Snap) -> Value {
             Some((off, json!({ "function": n.name, "roles": n.roles, "radius": r1(n.radius), "allowed": bound })))
         })
         .collect::<Found>();
-    // One size per role: the expanded module's functions nothing lights are smaller
-    // than what is lit there, as big in the world, where perspective shows a nearer
+    // One size per role: the expanded module's functions nothing lights (not a caller
+    // I brings in) are smaller than what is lit there, as big in the world, where perspective shows a nearer
     // one bigger on screen.
     let expanded = |n: &&Node| n.on_screen && n.module == s.state.expanded && s.expanded();
     let least_lit = (s.nodes.iter())
@@ -1126,7 +1126,12 @@ fn dot_sizes(s: &Snap) -> Value {
         offenders.extend(
             (s.nodes.iter())
                 .filter(expanded)
-                .filter(|n| n.plain() && !n.is("hovered") && n.world_radius >= least * 0.99)
+                .filter(|n| {
+                    n.plain()
+                        && !n.is("hovered")
+                        && !n.is("outside")
+                        && n.world_radius >= least * 0.99
+                })
                 .map(|n| {
                     let offender = json!({ "function": n.name, "roles": n.roles, "world_radius": r3(n.world_radius), "least_lit": r3(least), "why": "drawn as big as what is lit" });
                     (n.world_radius / least, offender)

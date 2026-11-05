@@ -304,11 +304,21 @@ impl OrbitCamera {
         }
         let trip = match self.trip {
             Some(trip) if trip.to == goal => trip,
-            _ => Trip {
-                from: now,
-                to: goal,
-                progress: 0.0,
-            },
+            _ => {
+                // Where it is sent, it stands outside every sphere.
+                let goal = Stand {
+                    distance: self.clear_of_spheres(goal.looking_at, goal.angles, goal.distance),
+                    ..goal
+                };
+                if goal.distance > self.goal_distance() {
+                    self.goal_distance = Some(goal.distance);
+                }
+                Trip {
+                    from: now,
+                    to: goal,
+                    progress: 0.0,
+                }
+            }
         };
         let progress = (trip.progress + step).min(1.0);
         let t = ease(progress);
@@ -598,27 +608,43 @@ impl OrbitCamera {
     /// Backs away from what it looks at until it is outside every sphere: an orbit
     /// or a pan may have swung it into one.
     fn back_out(&mut self) {
-        let Some(reach) = &self.reach else {
-            return;
-        };
-        let back = self.rotation() * Vec3::Z;
-        let mut distance = self.distance;
-        for &(middle, radius) in &reach.spheres {
-            // Where along `back` from what it looks at the camera leaves the sphere.
-            let to = self.looking_at - middle;
-            let along = to.dot(back);
-            let room = along * along - (to.length_squared() - (radius * OUTSIDE).powi(2));
-            if room >= 0.0 {
-                let (enter, leave) = (-along - room.sqrt(), -along + room.sqrt());
-                if distance > enter && distance < leave {
-                    distance = leave;
-                }
-            }
-        }
+        let distance =
+            self.clear_of_spheres(self.looking_at, (self.yaw, self.pitch), self.distance);
         if distance > self.distance {
             self.distance = distance;
             self.goal_distance = None;
         }
+    }
+
+    /// The least distance from `looking_at`, turned to `angles`, no nearer than
+    /// `distance`, at which the camera stands outside every sphere.
+    fn clear_of_spheres(&self, looking_at: Vec3, (yaw, pitch): (f32, f32), distance: f32) -> f32 {
+        let Some(reach) = &self.reach else {
+            return distance;
+        };
+        let back = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0) * Vec3::Z;
+        // Leaving one sphere may take it into another further back: as many times
+        // over as there are spheres, at most.
+        let mut distance = distance;
+        for _ in 0..reach.spheres.len() {
+            let before = distance;
+            for &(middle, radius) in &reach.spheres {
+                // Where along `back` from what it looks at the camera leaves the sphere.
+                let to = looking_at - middle;
+                let along = to.dot(back);
+                let room = along * along - (to.length_squared() - (radius * OUTSIDE).powi(2));
+                if room >= 0.0 {
+                    let (enter, leave) = (-along - room.sqrt(), -along + room.sqrt());
+                    if distance > enter && distance < leave {
+                        distance = leave;
+                    }
+                }
+            }
+            if distance <= before {
+                break;
+            }
+        }
+        distance
     }
 
     /// Zooms by `factor` (below 1 is nearer), towards `toward` when given: the whole
@@ -1440,6 +1466,17 @@ mod tests {
             module && at.x.abs() <= size.x + 1e-3,
             "it covers the middle: {at} {size}"
         );
+    }
+
+    #[test]
+    fn a_glide_into_a_sphere_stops_outside_it() {
+        let sphere = (Vec3::new(0.0, 0.0, 19.0), 3.0);
+        let mut camera = head_on(Vec3::ZERO, 60.0, reach(0.1, 100.0, vec![sphere]));
+        camera.glide_to(Vec3::ZERO, 20.0);
+        while camera.easing() {
+            camera.advance(0.1);
+        }
+        assert!(camera.eye().distance(sphere.0) >= sphere.1 * OUTSIDE - 1e-3);
     }
 
     #[test]
