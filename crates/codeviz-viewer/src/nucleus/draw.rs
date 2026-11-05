@@ -1,12 +1,22 @@
 //! The nucleus in the scene: a sphere per module, where the nucleus has it: a lit, matte, see-through ball in the module's hue, shaded darker towards its
 //! silhouette so it reads as round, with one faint rim on that silhouette; nothing
-//! shines off it and nothing glows. The light rides with the camera, so every side
-//! looks alike however the map turns, and what lies further back shows a little
-//! dimmer ([`depth_fog`]). The calls are [`crate::arrows`]'s.
+//! shines off it and nothing glows. Where spheres stack, the brightest shows and
+//! they do not add up ([`Lighten`]), so a crowded map is no brighter than one ball
+//! and the lines and names over it keep their contrast. The light rides with the
+//! camera, so every side looks alike however the map turns, and what lies further
+//! back shows a little dimmer ([`depth_fog`]). The calls are [`crate::arrows`]'s.
 
 use bevy::{
-    pbr::{DistanceFog, FogFalloff},
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{
+        DistanceFog, ExtendedMaterial, FogFalloff, MaterialExtension, MaterialExtensionKey,
+        MaterialExtensionPipeline,
+    },
     prelude::*,
+    render::render_resource::{
+        AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState,
+        RenderPipelineDescriptor, SpecializedMeshPipelineError,
+    },
 };
 
 use super::{Body, Nucleus};
@@ -20,15 +30,50 @@ use crate::{
 #[derive(Component, Debug)]
 pub(crate) struct ModuleSphere(usize);
 
+/// What a sphere is drawn with: a matte ball, lightening what lies behind it.
+pub(crate) type SphereMaterial = ExtendedMaterial<StandardMaterial, Lighten>;
+
+/// Spheres lighten what they cover: each pixel keeps the brightest of the spheres
+/// over it (and of what was drawn before them), so however many stack it shows as
+/// one ball would. The ball's own shade is drawn as if over black, which the ground
+/// all but is; dots inside, brighter than any sphere, show through unchanged.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+pub(crate) struct Lighten {}
+
+impl MaterialExtension for Lighten {
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        // Max ignores the factors; they must be One.
+        let max = BlendComponent {
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::One,
+            operation: BlendOperation::Max,
+        };
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            for target in fragment.targets.iter_mut().flatten() {
+                target.blend = Some(BlendState {
+                    color: max,
+                    alpha: max,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 /// What spheres are drawn with.
 #[derive(Resource, Debug)]
 pub(crate) struct Looks {
     ball: Handle<Mesh>,
     /// By module color: the nucleus, an open module, and browsing, so faint the
     /// module only just reads as one.
-    nucleus: Vec<Handle<StandardMaterial>>,
-    open: Vec<Handle<StandardMaterial>>,
-    faint: Vec<Handle<StandardMaterial>>,
+    nucleus: Vec<Handle<SphereMaterial>>,
+    open: Vec<Handle<SphereMaterial>>,
+    faint: Vec<Handle<SphereMaterial>>,
 }
 
 /// How much dimmer, towards the ground, the furthest of the map shows than the
@@ -38,27 +83,32 @@ const FURTHEST_DIM: f32 = 0.3;
 pub(crate) fn create_looks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<SphereMaterial>>,
 ) {
-    // Lit and matte: shaded by the light, with no highlight to shine off it.
-    let matte = |color: Color, alpha: f32| StandardMaterial {
-        base_color: color.with_alpha(alpha),
-        perceptual_roughness: 1.0,
-        reflectance: 0.0,
-        alpha_mode: AlphaMode::Blend,
-        ..default()
+    // Lit and matte: shaded by the light, with no highlight to shine off it. Drawn
+    // as its shade times `alpha` (`Add` hands the blend that, and alpha none), then
+    // lightening ([`Lighten`]).
+    let matte = |color: Color, alpha: f32| SphereMaterial {
+        base: StandardMaterial {
+            base_color: color.with_alpha(alpha),
+            perceptual_roughness: 1.0,
+            reflectance: 0.0,
+            alpha_mode: AlphaMode::Add,
+            ..default()
+        },
+        extension: Lighten {},
     };
     let colors: Vec<Color> = (0..MODULE_SHADES).map(module_color).collect();
-    let tinted = |alpha: f32, materials: &mut Assets<StandardMaterial>| {
+    let tinted = |alpha: f32, materials: &mut Assets<SphereMaterial>| {
         (colors.iter())
             .map(|&c| materials.add(matte(c, alpha)))
             .collect()
     };
     let looks = Looks {
         ball: meshes.add(Sphere::new(1.0).mesh().uv(64, 40)),
-        nucleus: tinted(0.16, &mut materials),
-        open: tinted(0.18, &mut materials),
-        faint: tinted(0.1, &mut materials),
+        nucleus: tinted(0.15, &mut materials),
+        open: tinted(0.11, &mut materials),
+        faint: tinted(0.075, &mut materials),
     };
     commands.insert_resource(looks);
 }
@@ -73,7 +123,7 @@ pub(crate) fn place_bodies(
         &ModuleSphere,
         &mut Transform,
         &mut Visibility,
-        &mut MeshMaterial3d<StandardMaterial>,
+        &mut MeshMaterial3d<SphereMaterial>,
     )>,
 ) {
     let nucleus = explorer.nucleus();
@@ -166,7 +216,7 @@ pub(crate) fn draw(
         let alpha = match ball.body {
             Body::Nucleus => 0.6,
             Body::Open => 0.5,
-            Body::Faint => 0.3,
+            Body::Faint => 0.22,
         };
         let Some((middle, radius, facing)) = silhouette(ball.center, ball.radius, eye) else {
             continue;

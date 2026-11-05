@@ -374,6 +374,21 @@ def picture(png):
     return width, abs(height), level
 
 
+def shown_middles(start, length, gaps):
+    """Where to sample a straight piece `length` long, `start` along its line, as shares
+    of the piece: near the middle of each stretch of 30 points or more that `gaps`
+    (stretches along the line, in points from its start) leave showing."""
+    stretches, at = [], start
+    for g0, g1 in sorted(gaps):
+        if g0 > at:
+            stretches.append((at, min(g0, start + length)))
+        at = max(at, g1)
+    if at < start + length:
+        stretches.append((at, start + length))
+    return [(s0 + (s1 - s0) * t - start) / length
+            for s0, s1 in stretches if s1 - s0 >= 30 for t in (0.4, 0.5, 0.6)]
+
+
 def look_of(snap, level, size):
     """Each faint thing's samples, in levels above the ground."""
     width, height = size
@@ -388,13 +403,17 @@ def look_of(snap, level, size):
         for a in arrows:
             if not a.get("on_screen") or a.get("drawn") is False:
                 continue
+            run = 0
             for (x0, y0), (x1, y1) in zip(a["path"], a["path"][1:]):
                 length = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+                start, run = run, run + length
                 if length < 30:
                     continue
-                # The line's brightest pixel near its middle, over the darker side of it.
+                # The line's brightest pixel near the middle of each stretch of it that
+                # shows (a link between modules hides behind the spheres it passes),
+                # over the darker side of it.
                 across = (-(y1 - y0) / length * 6, (x1 - x0) / length * 6)
-                for t in (0.4, 0.5, 0.6):
+                for t in shown_middles(start, length, a.get("gaps", [])):
                     x, y = x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
                     if (not (8 < x < width - 8 and 30 < y < height - 30)
                             or any((x - d[0]) ** 2 + (y - d[1]) ** 2 < 100 for d in dots)
