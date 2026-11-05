@@ -28,10 +28,11 @@ impl Nucleus {
         let mut links = start.map_or_else(Vec::new, |f| self.named_calls(graph, f));
         let named = distances(&links, start);
         let folded = start.map_or_else(HashSet::new, |f| self.fold_callers(graph, f, &cluster_of));
+        // The callers I lights leave their modules dim: they are not the journey's.
+        let columns = open_up(&links, start, self.counts.len(), &cluster_of);
         let calls_in = self.outside_calls(graph, &links, start);
         let outside = calls_in.iter().map(|l| l.from).collect();
         links.extend(calls_in);
-        let columns = open_up(&links, start, self.counts.len(), &cluster_of);
         let mut balls = self.faint_balls();
         for (cluster, ball) in balls.iter_mut().enumerate() {
             if cluster == middle && start.is_some() {

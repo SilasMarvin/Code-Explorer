@@ -325,7 +325,10 @@ fn a_journey_lights_its_modules_where_they_are_and_dims_the_rest() {
     assert_eq!(far.map(|b| b.body), Some(Body::Faint), "the rest dims");
     for id in ["db::other", "far::alone"] {
         let tile = tile(&map, id);
-        assert!(nucleus.drawn(tile) && nucleus.speck(tile), "{id} a speck");
+        assert!(
+            nucleus.speck(tile) && !nucleus.drawn(tile),
+            "{id} left to its sphere"
+        );
     }
 }
 

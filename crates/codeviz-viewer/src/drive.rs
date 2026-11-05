@@ -1118,6 +1118,13 @@ impl View<'_, '_> {
             .map_or(0.0, |(a, b)| a.distance(b))
     }
 
+    /// The module whose sphere a click at `at` lands on: the nearest the camera.
+    pub(crate) fn module_at(&self, at: Vec2) -> Option<usize> {
+        let (camera, transform, _) = self.cameras.single().ok()?;
+        let ray = camera.viewport_to_world(transform, at).ok()?;
+        crate::pick::module_at(self.explorer.nucleus(), ray)
+    }
+
     pub(crate) fn on_screen(&self, at: Vec2) -> bool {
         self.screen.graph.contains(egui::pos2(at.x, at.y))
     }
@@ -2116,9 +2123,10 @@ fn open_ground(view: &View, at: Vec2) -> bool {
     view.on_screen(at) && view.screen.overlay_at(at).is_none()
 }
 
-/// Where to double-click a module's sphere: the spot inside it farthest from its
-/// functions and names, and whether it is clear of them; where none is, the spot
-/// farthest from the names alone, which may be on a function.
+/// Where to double-click a module's sphere: of the spots where no sphere lies in
+/// front of it, the one farthest from its functions and names, and whether it is
+/// clear of them; where none is, the spot farthest from the names alone, which may be
+/// on a function.
 fn module_point(view: &View, cluster: usize) -> Result<(Vec2, bool), String> {
     let module = view.explorer.cluster_name(cluster);
     let nucleus = view.explorer.nucleus();
@@ -2136,7 +2144,9 @@ fn module_point(view: &View, cluster: usize) -> Result<(Vec2, bool), String> {
             centre + Vec2::from_angle(angle) * radius * share
         })
     });
-    let spots: Vec<Vec2> = spots.filter(|&at| open_ground(view, at)).collect();
+    let spots: Vec<Vec2> = spots
+        .filter(|&at| open_ground(view, at) && view.module_at(at) == Some(cluster))
+        .collect();
     let best = |drawn: &[Drawn]| {
         spots
             .iter()

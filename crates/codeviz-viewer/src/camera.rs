@@ -889,8 +889,9 @@ fn aimed_sphere(reach: &Reach, rotation: Quat, eye: Vec3, pointer: Vec2) -> Opti
         };
         // How far off its rim the pointer is, as a share of its radius on screen.
         let off = ((pointer - at) / size).length() - 1.0;
+        // Under it, the biggest on screen: in depth, a sphere nearer the camera than
+        // another's middle may still show smaller.
         let (best, by) = if off <= 0.0 {
-            // Of several, the biggest on screen: the one filling the view first.
             (&mut under, -size.y)
         } else {
             (&mut near, off)

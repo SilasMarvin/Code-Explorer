@@ -145,20 +145,19 @@ fn spot(
     })
 }
 
-/// The module whose drawn sphere `ray` enters first.
-fn module_at(nucleus: &Nucleus, ray: Ray3d) -> Option<usize> {
+/// The module whose drawn sphere `ray` runs through nearest its middle, against its
+/// radius: the spheres show through each other, so a small one seen over or through
+/// a big one is picked where it shows, however deep.
+pub(crate) fn module_at(nucleus: &Nucleus, ray: Ray3d) -> Option<usize> {
     nucleus
         .balls()
         .filter_map(|(cluster, ball)| {
             let to_middle = ball.center - ray.origin;
             let along = to_middle.dot(*ray.direction);
-            let off = to_middle.length_squared() - along * along;
-            let reach = ball.radius * ball.radius - off;
-            // From inside a sphere, it counts as entered where the ray starts.
-            (reach >= 0.0).then(|| (cluster, (along - reach.sqrt()).max(0.0)))
+            let off = (to_middle.length_squared() - along * along).max(0.0).sqrt();
+            (along > -ball.radius && off <= ball.radius).then(|| (cluster, off / ball.radius))
         })
-        .filter(|&(_, enters)| enters.is_finite())
-        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
         .map(|(cluster, _)| cluster)
 }
 
