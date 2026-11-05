@@ -27,7 +27,10 @@ module's sphere; a sphere is as big as the functions it holds. A sphere is a lit
 matte, see-through ball, shaded towards its edge; a dot is a small shaded ball, and
 what lies further back shows a little dimmer. A lit dot and its name show over
 everything else, whatever lies in front, so a journey reads from any side. The layout is worked out
-once per document and never changes because of a click. The view is always in one of
+once per document, in 3D, by one rule for the modules in the world and the functions in
+each module: what calls what sits near it, and a function sits on the side of its sphere
+towards the modules it calls or is called from. Browsing, in a journey and with a module
+expanded, everything stays where the layout puts it, whatever is clicked. The view is always in one of
 two modes, and the top bar says which: `Browsing`, or `Journey ·` and where the journey
 starts.
 
@@ -65,12 +68,9 @@ before them, wherever their names show, the search's rows too.
 ### Journey
 
 A journey is the call tree from one start function, shown to a disclosed depth. Opening
-it is the one time the view moves for you: it gathers round the journey and frames it.
-Only the journey shows: its start in the middle of its module's sphere, what calls the
-start, and its calls down to the depth disclosed, every module they enter on a ring
-round the middle, clockwise in the order the journey first enters them. In each sphere
-the journey's functions are spread out where no call runs through another's dot or
-name, laid out once for every depth. Zoomed into a module, a call that leaves the
+it is the one time the view moves for you: the camera frames it. Nothing is laid out
+again: its start, what calls the start, and its calls down to the depth disclosed light
+where they sit, their modules open, and everything else dims. Zoomed into a module, a call that leaves the
 screen is labelled where it leaves with the function at its far end. `.` (or the
 panel's `+`) shows every branch a level deeper, down to the journey's deepest; `↓` on a
 call whose calls are folded, or a click on its bar's triangle, opens that call's alone
@@ -98,11 +98,9 @@ with `not on this journey · Enter starts one here` in the top bar; an arrow or 
 back to the cursor. `↑` from the start goes up into the row of its callers, selecting
 the first in place (`calls … · Enter starts a journey here`); `←`/`→` move along the
 row, `Enter` opens that caller's journey and `↓` comes back to the start. A click on a
-caller's bar selects it the same way. `I` brings in every function off the journey that
-calls the cursor's, faint, without moving anything already there, and `I` again takes
-them out; with none, it says so. Every caller `I` could bring in, for any call of the
-journey, has its place worked out once, so moving the cursor with `I` on shows some and
-hides others and moves none. `Esc` steps out one level at a time, the last opened first:
+caller's bar selects it the same way. `I` lights every function off the journey that
+calls the cursor's, where it sits, and `I` again lets them go; with none, it says so.
+Moving the cursor with `I` on lights some and lets others go, and moves none. `Esc` steps out one level at a time, the last opened first:
 the function selected off the journey (but after `X` on it, the module first, keeping
 it), then the module expanded, then the journey, for browsing with its start selected
 and the camera back where it stood before the journey. `Shift`-click on a
