@@ -1288,9 +1288,11 @@ fn panel_agrees(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
         let drawn = bar.unit.as_deref().and_then(|u| s.node(u));
         // Each numbered bar has its call on the graph: a call only guessed among
         // several functions, with no one function of its own, on each of them. The
-        // start's bar carries no number.
+        // start's bar carries no number. A bar's own function behind the camera has
+        // no place on the screen, so the snap lists no node to carry it.
+        let behind = bar.unit.is_some() && drawn.is_none();
         if let Some(number) = bar.number.as_ref().filter(|n| !n.is_empty()) {
-            if !s.nodes.iter().any(|n| n.numbers.contains(number)) {
+            if !behind && !s.nodes.iter().any(|n| n.numbers.contains(number)) {
                 let why = "numbered in the panel, but no function on the graph carries the number";
                 offenders.push((2.0, json!({ "bar": number, "name": bar.name, "why": why })));
             }
