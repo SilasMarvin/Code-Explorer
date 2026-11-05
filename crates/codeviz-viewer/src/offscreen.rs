@@ -56,7 +56,8 @@ fn make_image(
     mut egui: ResMut<EguiGlobalSettings>,
 ) {
     let size = window.physical_size();
-    let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Bgra8UnormSrgb, None);
+    // The format egui's pipeline draws into an image with.
+    let mut image = Image::new_target_texture(size.x, size.y, TextureFormat::Rgba8UnormSrgb, None);
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     commands.insert_resource(Offscreen(ImageRenderTarget {
         handle: images.add(image),

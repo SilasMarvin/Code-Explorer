@@ -27,13 +27,14 @@ worst offender. The session is in `$CODEVIZ_SESSIONS/try/`; look at
 try` prints the summary again.
 
 Run `tools/drive` from the worktree whose viewer you want, or pass `--wt DIR`. Never
-start the viewer any other way: the runner kills it past 3000 MB or its time limit, and
-holds a lock so only one viewer renders at a time across every agent. A session
-opens no window at all: it draws into an image the window's size, at the Retina
-display's scale (2), and each snap captures that image, scaled back to window points.
-Nothing shows on screen or takes the keyboard, and a display that sleeps or locks, a
-full-screen app or another Space changes no picture. The session's input comes from
-the script alone, never the real mouse or keyboard. `live` opens a window as usual.
+start the viewer any other way: the runner kills it past 3000 MB or its time limit. A
+session opens no window at all: it draws into an image the window's size, at the
+Retina display's scale (2), and each snap captures that image, scaled back to window
+points. Nothing shows on screen or takes the keyboard, and a display that sleeps or
+locks, a full-screen app or another Space changes no picture. Its input comes from the
+script alone, never the real mouse or keyboard, and it takes no lock. `live` and
+`idle` open a real window, and hold a lock so only one renders at a time across every
+agent.
 
 ## Commands
 

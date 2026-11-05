@@ -27,8 +27,9 @@
       The older form of `run`.
 
 The viewer is DIR/.bin/codeviz (build it with `cx DIR build`), run from DIR; DIR is this
-repo unless --wt says otherwise. Every run is killed past 3000 MB or its time limit, and
-takes a lock so only one viewer window renders at a time across all agents.
+repo unless --wt says otherwise. Every run is killed past 3000 MB or its time limit.
+A session draws offscreen and takes no lock; `live` and `idle`, which open a real
+window, take a lock so only one renders at a time across all agents.
 
 Script steps (one per line; `#` comments; `#: view DATA [FLAGS]` gives the view args):
   key K               x . , up down left right [ ] enter esc space tab backspace /,
@@ -117,7 +118,8 @@ def alive(pid):
 
 
 def locked(fn):
-    """Runs fn holding the render lock: one viewer window at a time, machine-wide."""
+    """Runs fn holding the render lock: one real viewer window at a time, machine-wide
+    (`live`, `idle`). A session draws offscreen and takes no lock."""
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     said = False
     while True:
@@ -249,7 +251,7 @@ def run_session(name, script, wt=REPO, view_args=None, quiet=False, into=None):
     argv = [str(exe), *view_args, "--script", str(script), "--screenshot", str(out)]
     if not quiet:
         print(f"running {name}: {shlex.join(view_args)}", file=sys.stderr)
-    code = locked(lambda: guarded(argv, Path(wt).resolve(), log, time_limit(text)))
+    code = guarded(argv, Path(wt).resolve(), log, time_limit(text))
     if code != 0:
         raise Trouble(f"codeviz exited {code}:\n{viewer_errors(log)}")
     shrink_pngs(out)
