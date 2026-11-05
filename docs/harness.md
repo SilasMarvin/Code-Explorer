@@ -265,7 +265,7 @@ that put it there), names, and calls.
 | check | holds when | applies |
 |---|---|---|
 | `dots-in-spheres` | every dot lies inside its module's sphere, in the world (1% slack) | always |
-| `dots-apart` | no two dots on screen overlap: centres at least the radii plus 1 point apart (lit pairs listed first) | unless the camera is where the user's hands put it: turned, dots at different depths line up, and the lit one shows over the rest (`lit-over`) |
+| `dots-apart` | no two dots of one module lie nearer each other in the world than twice the room their module keeps round each function (`room` on the module), as laid out; on screen, dots at different depths may line up, the lit one showing over the rest (`lit-over`) | a module saying its room |
 | `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius; expanded, the module's functions nothing lights (`opened`, not hovered) are smaller in the world than its smallest lit one (on screen perspective shows a nearer dot bigger and a further one smaller) | always |
 | `spheres-apart` | no two spheres intersect, in the world | two spheres or more |
 | `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion (the expanded one aside) | always |

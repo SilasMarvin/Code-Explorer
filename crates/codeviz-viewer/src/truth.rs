@@ -197,11 +197,12 @@ pub(crate) fn scene(view: &View) -> Value {
                 "body": format!("{:?}", ball.body).to_lowercase(),
                 "functions": nucleus.count(cluster),
                 "named": nucleus.opened(cluster),
-                "shown": nucleus.shows_body(ball.body),
+                "shown": true,
                 "at": point(at),
                 "world": fine3(ball.center),
                 "radius": round(radius),
                 "world_radius": fine(ball.radius),
+                "room": nucleus.room(cluster).map(fine),
                 "on_screen": view.on_screen(at),
                 "label": label.map(|i| labels[i].text.clone()),
                 "label_rect": label.map(|i| rect(labels[i].rect)),
@@ -241,7 +242,107 @@ pub(crate) fn scene(view: &View) -> Value {
         "help": help.flatten(),
         "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect), "size": t.size })).collect::<Vec<_>>(),
         "content": of(explorer),
+        "layout": layout(explorer),
     })
+}
+
+/// How many shuffles of the layout calls are measured against.
+const SHUFFLES: u64 = 8;
+
+/// What the layout is, whatever the view lights: a `digest` of where every module
+/// and function sits, the same for the same layout; and how long calls run in it
+/// against the same positions shuffled (`modules`: between modules' middles, their
+/// spheres shuffled among themselves; `inside` and `across`: function to function,
+/// calls within a module and between two, functions shuffled within their modules),
+/// each the mean length in the world: what tells that what calls what sits near it.
+fn layout(explorer: &Explorer) -> Value {
+    let nucleus = explorer.nucleus();
+    let graph = explorer.graph();
+    let balls: Vec<(Vec3, f32)> = nucleus.balls().map(|(_, b)| (b.center, b.radius)).collect();
+    let points: Vec<Option<Vec3>> = (0..graph.len()).map(|t| nucleus.point(t)).collect();
+    // FNV-1a over every position's bits.
+    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+    let floats = (balls.iter())
+        .flat_map(|&(c, r)| [c.x, c.y, c.z, r])
+        .chain(points.iter().flatten().flat_map(Vec3::to_array));
+    for value in floats {
+        for byte in value.to_bits().to_le_bytes() {
+            digest = (digest ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    let module = |t: usize| nucleus.module_of(t);
+    let mean = |lengths: &mut dyn Iterator<Item = f32>| {
+        let (sum, count) = lengths.fold((0.0, 0.0), |(s, n), l| (s + l, n + 1.0));
+        (count > 0.0).then(|| fine(sum / count))
+    };
+    let modules_calls: Vec<(usize, usize)> = (graph.calls.iter())
+        .filter_map(|&(a, b)| Some((module(a)?, module(b)?)))
+        .filter(|(a, b)| a != b)
+        .collect();
+    let within = |inside: bool| -> Vec<(usize, usize)> {
+        (graph.calls.iter().copied())
+            .filter(|&(a, b)| module(a).is_some() && module(b).is_some())
+            .filter(|&(a, b)| (module(a) == module(b)) == inside)
+            .collect()
+    };
+    let (inside, across) = (within(true), within(false));
+    // Each shuffle's spheres, and each module's functions, in another order.
+    let shuffled_balls: Vec<Vec<usize>> = (0..SHUFFLES)
+        .map(|k| shuffle((0..balls.len()).collect(), k))
+        .collect();
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); balls.len()];
+    for tile in 0..graph.len() {
+        if let Some(m) = module(tile) {
+            members[m].push(tile);
+        }
+    }
+    let shuffled_points: Vec<Vec<usize>> = (0..SHUFFLES)
+        .map(|k| {
+            let mut to: Vec<usize> = (0..graph.len()).collect();
+            for list in &members {
+                for (&from, into) in list.iter().zip(shuffle(list.clone(), k)) {
+                    to[from] = into;
+                }
+            }
+            to
+        })
+        .collect();
+    let between = |a: Vec3, b: Vec3| a.distance(b);
+    let point = |t: usize| points[t].unwrap_or_default();
+    let function_lengths = |calls: &[(usize, usize)]| {
+        json!({
+            "mean": mean(&mut calls.iter().map(|&(a, b)| between(point(a), point(b)))),
+            "shuffled": mean(&mut shuffled_points.iter().flat_map(|to| {
+                calls.iter().map(|&(a, b)| between(point(to[a]), point(to[b])))
+            })),
+            "calls": calls.len(),
+        })
+    };
+    json!({
+        "digest": format!("{digest:016x}"),
+        "modules": {
+            "mean": mean(&mut modules_calls.iter().map(|&(a, b)| between(balls[a].0, balls[b].0))),
+            "shuffled": mean(&mut shuffled_balls.iter().flat_map(|to| {
+                modules_calls.iter().map(|&(a, b)| between(balls[to[a]].0, balls[to[b]].0))
+            })),
+            "calls": modules_calls.len(),
+        },
+        "inside": function_lengths(&inside),
+        "across": function_lengths(&across),
+    })
+}
+
+/// `items` in another order, the same every time for the same `seed`.
+fn shuffle(mut items: Vec<usize>, seed: u64) -> Vec<usize> {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    for i in (1..items.len()).rev() {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let j = ((state >> 33) % (i as u64 + 1)) as usize;
+        items.swap(i, j);
+    }
+    items
 }
 
 /// The last stretch of each call coming into a function's dot that its name keeps

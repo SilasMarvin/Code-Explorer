@@ -1,10 +1,8 @@
-//! Every size a sphere or a dot is drawn at, decided once: a module's sphere by how
-//! many functions it holds, the same everywhere; a function's dot by its role alone,
+//! Every size a dot is drawn at, decided once: a function's dot by its role alone,
 //! kept within bounds on screen however near or far the view, at the depth the camera
-//! looks at, and nearer or further back as perspective has it. Text sizes are
+//! looks at, and nearer or further back as perspective has it. A module's sphere is
+//! [`codeviz_layout::place::module_radius`]'s, the same everywhere; text sizes are
 //! [`crate::text`]'s; arrows' widths and heads [`crate::arrows`]'.
-
-pub(crate) use codeviz_layout::atlas::module_radius;
 
 /// What a function is to the view, which alone sets how big it is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

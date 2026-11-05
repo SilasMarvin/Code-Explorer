@@ -152,7 +152,6 @@ fn spot(
 fn module_at(nucleus: &Nucleus, ray: Ray3d) -> Option<usize> {
     nucleus
         .balls()
-        .filter(|(_, ball)| nucleus.shows_body(ball.body))
         .filter_map(|(cluster, ball)| {
             let to_middle = ball.center - ray.origin;
             let along = to_middle.dot(*ray.direction);

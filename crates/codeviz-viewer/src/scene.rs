@@ -10,7 +10,6 @@ use crate::{
     explorer::{Explorer, Step},
     framing::{self, GraphView},
     graph_view::{self, NodeMaterials},
-    idle::Awake,
     nucleus, pick,
     ui::{self, Chrome, KeyHelp},
 };
@@ -41,9 +40,7 @@ impl Plugin for ScenePlugin {
                         .chain(),
                     keyboard.run_if(not(egui_wants_any_keyboard_input)),
                     pick::double_click.run_if(not(egui_wants_any_pointer_input)),
-                    nucleus::follow,
                     pick::hover,
-                    place_nodes,
                     nucleus::place_bodies,
                     framing::frame,
                     graph_view::style_nodes,
@@ -187,24 +184,5 @@ fn close_topmost(explorer: &mut Explorer, help: &mut KeyHelp, chrome: &mut Chrom
         help.0 = false;
     } else {
         explorer.step_out();
-    }
-}
-
-/// Moves the nodes wherever the nucleus puts them, as it eases round a new start.
-fn place_nodes(
-    explorer: Res<Explorer>,
-    mut placed: Local<Option<u64>>,
-    mut nodes: Query<(&Tile, &mut Transform)>,
-    mut awake: ResMut<Awake>,
-) {
-    if *placed == Some(explorer.moved()) {
-        return;
-    }
-    *placed = Some(explorer.moved());
-    awake.0 = true;
-    for (tile, mut transform) in &mut nodes {
-        if let Some(at) = explorer.tile_point(tile.0) {
-            transform.translation = at;
-        }
     }
 }

@@ -21,7 +21,7 @@ use codeviz_core::{
     scenarios,
 };
 use codeviz_ir::{Certainty, Mode, UnitId};
-use codeviz_layout::{CodebaseMap, ForceConfig, ForceGraph};
+use codeviz_layout::{CallGraph, CodebaseMap};
 
 use crate::{
     camera::Pose,
@@ -162,28 +162,6 @@ impl Track {
     }
 }
 
-/// The forces the codebase's graph settles under once, at the start: each module's
-/// functions pull together, so each module's own map, which seeds where its functions
-/// sit inside its sphere, keeps the calls among them short.
-fn forces() -> ForceConfig {
-    ForceConfig {
-        repulsion: 50.0,
-        link_length: 8.0,
-        flatten: 0.1,
-        cohesion: 0.15,
-        separation: 0.4,
-        cross_spring: 0.3,
-        ..ForceConfig::default()
-    }
-}
-
-/// Simulation steps always run before the graph is gathered into spheres.
-const PRESETTLE_STEPS: usize = 200;
-/// At most this many more steps for it to settle.
-const SETTLE_STEPS: usize = 600;
-/// Below this mean speed the graph counts as settled.
-const SETTLED_SPEED: f32 = 0.002;
-
 /// Whether a journey is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewMode {
@@ -200,9 +178,8 @@ pub(crate) struct Explorer {
     track: Track,
     /// Every function, grouped by container; graph nodes are its tiles.
     map: CodebaseMap,
-    /// The codebase as a graph of calls, settled once to seed where each module's
-    /// functions sit inside its sphere.
-    graph: ForceGraph,
+    /// The codebase as a graph of calls.
+    graph: CallGraph,
     /// What each module sphere is called, by cluster: its name, told apart from
     /// another module's of the same name.
     module_names: Vec<String>,
@@ -299,15 +276,7 @@ impl Explorer {
     /// Browsing, with nothing selected: the whole codebase, framed whole.
     pub(crate) fn new(system: System) -> Self {
         let map = codeviz_layout::map(&system);
-        let mut graph = ForceGraph::new(&system, &map, forces());
-        for _ in 0..PRESETTLE_STEPS {
-            graph.step();
-        }
-        for _ in 0..SETTLE_STEPS {
-            if graph.step() < SETTLED_SPEED {
-                break;
-            }
-        }
+        let graph = CallGraph::new(&system, &map);
         let nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
         let module_names = {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
@@ -332,7 +301,7 @@ impl Explorer {
                 module_homonyms[cluster].insert(unit.name.clone());
             }
         }
-        let mut explorer = Self {
+        Self {
             system,
             track: Track::default(),
             map,
@@ -363,16 +332,7 @@ impl Explorer {
             return_pose: Some(Return::Whole),
             frame_asked: false,
             expanded_on: None,
-        };
-        // As long as each name is drawn.
-        let chars = (0..explorer.map.tiles.len())
-            .map(|tile| {
-                let unit = &explorer.map.tiles[tile].unit;
-                explorer.function_name(unit).chars().count()
-            })
-            .collect();
-        explorer.nucleus.name_chars(chars);
-        explorer
+        }
     }
 
     pub(crate) fn system(&self) -> &System {
@@ -770,7 +730,7 @@ impl Explorer {
     }
 
     /// The codebase as a graph of calls.
-    pub(crate) fn graph(&self) -> &ForceGraph {
+    pub(crate) fn graph(&self) -> &CallGraph {
         &self.graph
     }
 
@@ -789,11 +749,9 @@ impl Explorer {
         &self.nucleus
     }
 
-    /// Gathers the graph into spheres round where the view now is, at once, with
-    /// nothing easing there: as the window opens.
+    /// Lights what the view is on: as the window opens.
     pub(crate) fn gather(&mut self) {
         self.sync_nucleus();
-        while self.nucleus.advance(1.0) {}
     }
 
     /// X, Esc while expanded, or a double click off every function of the module
@@ -870,16 +828,11 @@ impl Explorer {
     }
 
     /// The module the pointer is on: the module of the function under it, else the
-    /// module whose sphere it is over, in a journey only one that shows some of it.
+    /// module whose sphere it is over.
     pub(crate) fn module_pointed(&self) -> Option<usize> {
-        let sphere = self.module_under_pointer.filter(|&cluster| {
-            self.nucleus
-                .ball(cluster)
-                .is_some_and(|ball| self.nucleus.shows_body(ball.body))
-        });
         self.under_pointer
             .and_then(|tile| self.graph.cluster(tile))
-            .or(sphere)
+            .or(self.module_under_pointer)
     }
 
     /// Shrinks back what is expanded and forgets where the camera stood before, as R
@@ -998,7 +951,7 @@ impl Explorer {
             nucleus.expand(graph, Some(module));
         }
         let marked = nucleus.set_cursor(graph, cursor);
-        let set_aside = nucleus.set_aside(graph, aside);
+        let set_aside = nucleus.set_aside(aside);
         if recentered || marked || set_aside {
             self.moved += 1;
         }
@@ -1039,15 +992,6 @@ impl Explorer {
             }
         }
         self.track.homonyms = shared;
-    }
-
-    /// Eases the nucleus along by `dt` seconds. Returns whether anything moved.
-    pub(crate) fn ease_nucleus(&mut self, dt: f32) -> bool {
-        let moved = self.nucleus.advance(dt);
-        if moved {
-            self.moved += 1;
-        }
-        moved
     }
 
     /// The function set aside in a journey, if any.
@@ -1560,7 +1504,7 @@ impl Explorer {
 /// Functions whose name with its type or module reads the same as another's in
 /// their module (two impls of one trait for a type, as `From<&str>` and
 /// `From<String>`), each with the impl it is in, from its id.
-fn twins(system: &System, map: &CodebaseMap, graph: &ForceGraph) -> HashMap<UnitId, String> {
+fn twins(system: &System, map: &CodebaseMap, graph: &CallGraph) -> HashMap<UnitId, String> {
     let mut by_name: HashMap<(usize, String), Vec<&UnitId>> = HashMap::new();
     for (tile, at) in map.tiles.iter().enumerate() {
         if let Some(cluster) = graph.cluster(tile) {
@@ -2059,15 +2003,12 @@ pub(crate) mod tests {
 
         // Gathered round the journey, a click moves the cursor and nothing else.
         explorer.gather();
-        explorer.ease_nucleus(1.0);
         let middle = explorer.nucleus().start();
         assert_eq!(middle, Some(tile(&explorer, "a")), "the journey's start");
         explorer.click(tile(&explorer, "a"), None);
-        explorer.ease_nucleus(1.0);
         assert_eq!(at(&explorer), "a");
         assert_eq!(explorer.nucleus().start(), middle);
         assert!(explorer.go_back());
-        explorer.ease_nucleus(1.0);
         assert_eq!(explorer.nucleus().start(), middle);
         assert_eq!(at(&explorer), "c", "Back puts the cursor back");
     }
@@ -2199,18 +2140,15 @@ pub(crate) mod tests {
             tile(&explorer, "b"),
         );
         explorer.gather();
-        explorer.ease_nucleus(1.0);
         assert_eq!(explorer.nucleus().start(), Some(main));
 
         explorer.step(Step::Into);
-        explorer.ease_nucleus(1.0);
         assert_eq!(explorer.current(), Some(a), "the cursor moved");
         assert_eq!(explorer.nucleus().start(), Some(main), "the middle did not");
         assert_eq!(explorer.cursor(), Some(a), "the cursor is marked");
         assert_eq!(explorer.nucleus().cursor(), Some(a));
 
         explorer.click(b, None);
-        explorer.ease_nucleus(1.0);
         assert_eq!(
             explorer.nucleus().start(),
             Some(main),
@@ -2222,11 +2160,9 @@ pub(crate) mod tests {
             "the cursor is the one pink node"
         );
         explorer.step(Step::Back);
-        explorer.ease_nucleus(1.0);
         assert_eq!(explorer.nucleus().start(), Some(main));
 
         enter(&mut explorer);
-        explorer.ease_nucleus(1.0);
         assert_eq!(
             explorer.nucleus().start(),
             explorer.current(),
@@ -2240,7 +2176,6 @@ pub(crate) mod tests {
         let c = tile(&explorer, "c");
         explorer.gather();
         explorer.toggle_expand(None);
-        explorer.ease_nucleus(1.0);
         assert!(explorer.nucleus().opened_up(c), "c drawn plain");
         let shown = explorer.disclosure().tiles().len();
         explorer.click(c, None);
@@ -2255,7 +2190,6 @@ pub(crate) mod tests {
         let [main, a, b] = ["main", "a", "b"].map(|name| tile(&explorer, name));
         explorer.gather();
         explorer.toggle_expand(None);
-        explorer.ease_nucleus(1.0);
         let named = |explorer: &Explorer| {
             let nucleus = explorer.nucleus();
             [main, a, b].map(|t| nucleus.level(t).is_some() || nucleus.start() == Some(t))
@@ -2263,7 +2197,6 @@ pub(crate) mod tests {
         let before = named(&explorer);
 
         explorer.click(a, None);
-        explorer.ease_nucleus(1.0);
         let nucleus = explorer.nucleus();
         assert_eq!(
             nucleus.start(),
@@ -2274,10 +2207,8 @@ pub(crate) mod tests {
         assert_eq!(named(&explorer), before, "naming the same journey");
 
         explorer.step(Step::Next);
-        explorer.ease_nucleus(1.0);
         assert_eq!(explorer.cursor(), Some(b), "a key moves it the same way");
         explorer.go_to(explorer.journey().unwrap().root());
-        explorer.ease_nucleus(1.0);
         assert_eq!(explorer.cursor(), Some(main), "and a bar");
     }
 
@@ -2340,7 +2271,6 @@ pub(crate) mod tests {
         let a = tile(&explorer, "a");
         explorer.leave_journey();
         explorer.click(a, None);
-        while explorer.ease_nucleus(1.0) {}
         let points = |explorer: &Explorer| -> Vec<Option<Vec3>> {
             (0..explorer.map().tiles.len())
                 .map(|t| explorer.tile_point(t))
@@ -2355,7 +2285,6 @@ pub(crate) mod tests {
             explorer.graph().cluster(a),
             "the selection's module"
         );
-        while explorer.ease_nucleus(1.0) {}
         let module = explorer.graph().cluster(a);
         let others = |points: &[Option<Vec3>]| -> Vec<Option<Vec3>> {
             points
@@ -2611,15 +2540,10 @@ pub(crate) mod tests {
             explorer.nucleus().expanded_module(),
             module(&explorer, draw)
         );
-        // Esc lets it go: the expansion goes back to the cursor's module, which shows.
+        // Esc lets it go: the expansion goes back to the cursor's module.
         assert!(explorer.clear_aside());
         let back = module(&explorer, main);
         assert_eq!(explorer.nucleus().expanded_module(), back);
-        let shown = explorer
-            .nucleus()
-            .ball(back.unwrap())
-            .is_some_and(|ball| explorer.nucleus().shows_body(ball.body));
-        assert!(shown, "the module expanded is drawn");
         // X with the aside set expands the aside's module; Esc then shrinks it back,
         // keeping the aside; letting go of it then expanded goes back to the cursor's.
         explorer.toggle_expand(None);
@@ -2746,7 +2670,6 @@ pub(crate) mod tests {
         let mut explorer = explorer();
         let [a, b, c] = ["a", "b", "c"].map(|name| tile(&explorer, name));
         explorer.gather();
-        explorer.ease_nucleus(1.0);
         let names = |explorer: &Explorer| {
             let nucleus = explorer.nucleus();
             [a, b, c].map(|t| nucleus.level(t).is_some())
@@ -2755,7 +2678,6 @@ pub(crate) mod tests {
         assert_eq!(explorer.disclosure().tiles()[&b], ["2"]);
 
         explorer.click(c, None);
-        explorer.ease_nucleus(1.0);
         assert_eq!(explorer.current(), Some(c), "the cursor on c");
         assert_eq!(
             names(&explorer),
@@ -2765,7 +2687,6 @@ pub(crate) mod tests {
         assert_eq!(explorer.nucleus().cursor(), Some(c), "and rings the cursor");
         let a = explorer.stack(explorer.cursor_span().unwrap())[1];
         open_by_hand(&mut explorer, a, false);
-        explorer.ease_nucleus(1.0);
         assert_eq!(
             names(&explorer),
             [true, true, false],
@@ -2773,7 +2694,6 @@ pub(crate) mod tests {
         );
 
         explorer.set_disclose(Disclose(2));
-        explorer.ease_nucleus(1.0);
         assert_eq!(names(&explorer), [true, true, true], "two levels down");
         assert_eq!(explorer.disclosure().tiles()[&c], ["1.1"]);
         assert_eq!(explorer.nucleus().level(c), Some(2));
@@ -2784,9 +2704,7 @@ pub(crate) mod tests {
         let mut explorer = explorer();
         let [main, a, b, c] = ["main", "a", "b", "c"].map(|name| tile(&explorer, name));
         explorer.gather();
-        explorer.ease_nucleus(1.0);
         explorer.leave_journey();
-        explorer.ease_nucleus(1.0);
         assert!(explorer.browsing());
         assert_eq!(explorer.selection(), Some(main), "the cursor's function");
         assert!(
@@ -2802,8 +2720,6 @@ pub(crate) mod tests {
         for tile in [a, c, b, main] {
             let at = point(&explorer, tile);
             explorer.click(tile, None);
-            while explorer.ease_nucleus(0.5) {}
-            explorer.ease_nucleus(1.0);
             assert_eq!(explorer.selection(), Some(tile));
             assert_eq!(
                 explorer.nucleus().start(),
@@ -3116,16 +3032,13 @@ pub(crate) mod tests {
         let mut explorer = opened(system, "x:main");
         let x = tile(&explorer, "x");
         explorer.gather();
-        explorer.ease_nucleus(1.0);
         assert!(!explorer.nucleus().lit(x), "off the journey, not shown");
         let a = tile(&explorer, "a");
         explorer.click(a, None);
         explorer.toggle_outside();
-        explorer.ease_nucleus(1.0);
         assert!(explorer.outside_shown());
         assert!(explorer.nucleus().outside(x), "brought in");
         explorer.click(x, None);
-        explorer.ease_nucleus(1.0);
         assert!(!explorer.browsing(), "still in the journey");
         assert_eq!(explorer.aside(), Some(x), "selected in place");
         assert_eq!(at(&explorer), "a", "the cursor stays");

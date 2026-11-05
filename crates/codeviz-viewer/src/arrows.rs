@@ -112,7 +112,6 @@ impl<'a> Screen<'a> {
         let nucleus = explorer.nucleus();
         screen.spheres = nucleus
             .balls()
-            .filter(|(_, ball)| nucleus.shows_body(ball.body))
             .filter_map(|(cluster, ball)| {
                 let (at, radius) = screen.disc(ball.center, ball.radius)?;
                 Some((cluster, at, radius))

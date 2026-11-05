@@ -1846,7 +1846,6 @@ dependencies = [
 name = "codeviz-layout"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "codeviz-core",
  "codeviz-ir",
  "glam",

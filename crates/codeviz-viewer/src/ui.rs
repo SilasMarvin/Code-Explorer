@@ -207,10 +207,7 @@ fn draw_ui(
         // shows has changed and the view has come to rest, and kept however the
         // camera then turns or zooms, so no caller comes and goes mid-gesture.
         let lineless_for = lineless_key(&explorer);
-        if drawn.lineless_for != Some(lineless_for)
-            && explorer.nucleus().settled()
-            && !orbit.easing()
-        {
+        if drawn.lineless_for != Some(lineless_for) && !orbit.easing() {
             drawn.lineless_for = Some(lineless_for);
             let lineless = drawn.routes.lineless(explorer.nucleus());
             if explorer.bypass_change_detection().set_lineless(lineless) {

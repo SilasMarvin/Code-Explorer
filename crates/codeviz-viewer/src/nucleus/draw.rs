@@ -1,5 +1,4 @@
-//! The nucleus in the scene: a sphere per module, where the nucleus has it, eased: a
-//! lit, matte, see-through ball in the module's hue, shaded darker towards its
+//! The nucleus in the scene: a sphere per module, where the nucleus has it: a lit, matte, see-through ball in the module's hue, shaded darker towards its
 //! silhouette so it reads as round, with one faint rim on that silhouette; nothing
 //! shines off it and nothing glows. The light rides with the camera, so every side
 //! looks alike however the map turns, and what lies further back shows a little
@@ -12,17 +11,10 @@ use bevy::{
 
 use super::{Body, Nucleus};
 use crate::{
-    camera::{OrbitCamera, frame_time},
+    camera::OrbitCamera,
     colors::{MODULE_SHADES, module_color, module_shade},
     explorer::Explorer,
 };
-
-/// Eases the spheres and the functions to where the nucleus now has them.
-pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>) {
-    explorer
-        .bypass_change_detection()
-        .ease_nucleus(frame_time(&time));
-}
 
 /// A module's sphere in the scene.
 #[derive(Component, Debug)]
@@ -106,18 +98,12 @@ pub(crate) fn place_bodies(
             let wanted = match ball.body {
                 Body::Nucleus => &looks.nucleus[color],
                 Body::Open => &looks.open[color],
-                // A closed sphere is hidden.
-                Body::Faint | Body::Closed => &looks.faint[color],
+                Body::Faint => &looks.faint[color],
             };
             if &material.0 != wanted {
                 material.0 = wanted.clone();
             }
-            // A journey shows the modules it runs through, and nothing else.
-            visibility.set_if_neq(if nucleus.shows_body(ball.body) {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            });
+            visibility.set_if_neq(Visibility::Inherited);
         }
     }
 }
@@ -127,7 +113,6 @@ pub(crate) fn place_bodies(
 fn depth_span(nucleus: &Nucleus, eye: Vec3) -> Option<(f32, f32)> {
     nucleus
         .balls()
-        .filter(|(_, ball)| nucleus.shows_body(ball.body))
         .map(|(_, ball)| {
             let away = ball.center.distance(eye);
             ((away - ball.radius).max(0.0), away + ball.radius)
@@ -182,7 +167,6 @@ pub(crate) fn draw(
             Body::Nucleus => 0.6,
             Body::Open => 0.5,
             Body::Faint => 0.3,
-            Body::Closed => continue,
         };
         let Some((middle, radius, facing)) = silhouette(ball.center, ball.radius, eye) else {
             continue;
