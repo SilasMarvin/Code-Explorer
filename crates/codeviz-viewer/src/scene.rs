@@ -57,7 +57,7 @@ impl Plugin for ScenePlugin {
             .add_systems(
                 PostUpdate,
                 (graph_view::size_nodes, nucleus::depth_fog)
-                    .after(camera::apply_camera)
+                    .after(camera::remember_pose)
                     .before(TransformSystems::Propagate),
             );
     }

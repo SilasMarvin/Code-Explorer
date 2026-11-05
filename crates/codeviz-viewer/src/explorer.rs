@@ -256,6 +256,9 @@ pub(crate) struct Explorer {
     said: u64,
     /// Where the camera stands, as last seen.
     pose: Option<Pose>,
+    /// How far the camera stands this frame from what it looks at: the depth at which
+    /// dots show at their role's size, nearer ones bigger, further ones smaller.
+    view_depth: Option<f32>,
     /// Where the camera stood browsing when a journey was last entered from there,
     /// and the module expanded then: Esc from the journey puts both back.
     browsing_seen: Seen,
@@ -354,6 +357,7 @@ impl Explorer {
             notice: None,
             said: 0,
             pose: None,
+            view_depth: None,
             browsing_seen: Seen::default(),
             expand_pose: None,
             return_pose: Some(Return::Whole),
@@ -693,6 +697,16 @@ impl Explorer {
     /// Notes where the camera stands, for the history and for leaving a journey.
     pub(crate) fn see(&mut self, pose: Pose) {
         self.pose = Some(pose);
+    }
+
+    /// Notes how far the camera stands this frame from what it looks at.
+    pub(crate) fn see_view_depth(&mut self, depth: f32) {
+        self.view_depth = Some(depth);
+    }
+
+    /// How far the camera stands from what it looks at, as last noted.
+    pub(crate) fn view_depth(&self) -> Option<f32> {
+        self.view_depth
     }
 
     /// In a journey, whether every outside caller into it shows.

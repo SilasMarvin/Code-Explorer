@@ -193,7 +193,8 @@ pub(crate) fn dot(explorer: &Explorer, tile: usize) -> Dot {
 
 /// How big a function is drawn in the world, seen from `view` through `camera`: its
 /// role's size, less where its module's functions sit close, kept within that role's
-/// bounds on screen.
+/// bounds on screen at the depth the camera looks at, nearer bigger and further back
+/// smaller as perspective has it ([`Dot::shown`]).
 pub(crate) fn drawn_radius(
     explorer: &Explorer,
     tile: usize,
@@ -218,14 +219,29 @@ pub(crate) fn radius_as(
     view: &GlobalTransform,
 ) -> f32 {
     let world = dot.radius() * explorer.nucleus().dot_scale(tile);
+    let Some(at) = explorer.tile_point(tile) else {
+        return world;
+    };
     let shows = |at: Vec3| camera.world_to_viewport(view, at).ok();
-    let per_unit = explorer
-        .tile_point(tile)
-        .and_then(|at| Some(shows(at)?.distance(shows(at + view.up() * world)?) / world));
+    let per_unit = shows(at)
+        .zip(shows(at + view.up() * world))
+        .map(|(a, b)| a.distance(b) / world);
     match per_unit {
-        Some(per_unit) if per_unit > f32::EPSILON => dot.clamp(world * per_unit) / per_unit,
+        Some(per_unit) if per_unit > f32::EPSILON => {
+            dot.shown(world * per_unit, nearer(explorer, view, at)) / per_unit
+        }
         _ => world,
     }
+}
+
+/// How many times nearer the camera seen through `view` the point `at` lies than
+/// what the camera looks at: above 1 nearer, below 1 further back.
+pub(crate) fn nearer(explorer: &Explorer, view: &GlobalTransform, at: Vec3) -> f32 {
+    let depth = (at - view.translation()).dot(*view.forward());
+    explorer
+        .view_depth()
+        .filter(|_| depth > f32::EPSILON)
+        .map_or(1.0, |middle| middle / depth)
 }
 
 pub(crate) fn node_look(explorer: &Explorer, tile: usize) -> NodeLook {

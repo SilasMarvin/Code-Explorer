@@ -112,6 +112,34 @@ class DriveTest(unittest.TestCase):
         self.assertEqual(dark["snaps"]["01-open"]["look"]["offenders"][0]["what"], "faint links")
 
 
+    def test_judges_a_sphere_shaded_as_a_ball(self):
+        ground = (15, 18, 23)
+        snap = {"window": [200, 100], "state": {"mode": "browse", "expanded": None},
+                "content": {"selection": None}, "nodes": [], "labels": [],
+                "module_arrows": [],
+                "modules": [{"body": "faint", "on_screen": True, "at": [100.0, 50.0],
+                             "radius": 40.0}]}
+
+        def judged(fall):
+            def color(x, y):
+                off = ((x - 100) ** 2 + (y - 50) ** 2) ** 0.5 / 40
+                lift = 0 if off > 1 else round(30 - fall * off)
+                return tuple(c + lift for c in ground)
+
+            with tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                write_png(out / "01-open.png", 200, 100, color)
+                (out / "01-open.json").write_text(json.dumps(snap))
+                summary = {"ok": True, "snaps": {"01-open": {}}, "checks": {}}
+                drive.judge_look(out, summary)
+                return summary["snaps"]["01-open"]["look"]
+
+        self.assertEqual(judged(20)["measured"]["sphere shading"], 12.0)
+        self.assertNotIn("offenders", judged(20))
+        flat = judged(0)
+        self.assertEqual(flat["offenders"][0]["what"], "sphere shading")
+
+
 def write_png(path, width, height, color):
     """An RGB PNG whose pixel (x, y) is color(x, y)."""
     rows = b"".join(b"\0" + bytes(c for x in range(width) for c in color(x, y)) for y in range(height))

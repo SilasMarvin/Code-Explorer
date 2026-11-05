@@ -1148,10 +1148,12 @@ pub(crate) fn apply_camera(
 }
 
 /// Tells the explorer where the camera stands, for its history and for leaving a
-/// journey, without counting as a change to it.
-fn remember_pose(mut explorer: ResMut<Explorer>, cameras: Query<&OrbitCamera>) {
+/// journey, and how far from what it looks at, without counting as a change to it.
+pub(crate) fn remember_pose(mut explorer: ResMut<Explorer>, cameras: Query<&OrbitCamera>) {
     if let Ok(camera) = cameras.single() {
-        explorer.bypass_change_detection().see(camera.pose());
+        let explorer = explorer.bypass_change_detection();
+        explorer.see(camera.pose());
+        explorer.see_view_depth(camera.distance);
     }
 }
 

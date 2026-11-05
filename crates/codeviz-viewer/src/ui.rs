@@ -223,8 +223,7 @@ fn draw_ui(
         let names_for = names_key(ctx, &explorer, (routes_for, turning), graph_area);
         if drawn.names_for != Some(names_for) || drawn.names.is_none() {
             let lines = drawn.routes.lines();
-            let up = transform.up().into();
-            let names = graph_names(&painter, &project, &explorer, (up, &lines, turning));
+            let names = graph_names(&painter, &project, &explorer, (*transform, &lines, turning));
             drawn.calls = arrows::draw(
                 &under,
                 &explorer,

@@ -887,8 +887,8 @@ struct Naming<'a> {
     nucleus: &'a Nucleus,
     /// Where a point in the world shows, on the graph or off it.
     to_screen: &'a dyn Fn(Vec3) -> Option<egui::Pos2>,
-    /// The camera's up, in the world.
-    up: Vec3,
+    /// Where the camera stands and which way it faces, in the world.
+    view: GlobalTransform,
     /// The function drawn white: the journey's start, or browsing, the selection.
     white: Option<usize>,
     cursor: Option<usize>,
@@ -936,7 +936,7 @@ impl<'a> Naming<'a> {
     fn new(
         explorer: &'a Explorer,
         to_screen: &'a dyn Fn(Vec3) -> Option<egui::Pos2>,
-        up: Vec3,
+        view: GlobalTransform,
         (area, hint): (egui::Rect, Option<egui::Rect>),
     ) -> Self {
         let nucleus = explorer.nucleus();
@@ -964,7 +964,7 @@ impl<'a> Naming<'a> {
             explorer,
             nucleus,
             to_screen,
-            up,
+            view,
             white: nucleus.start(),
             cursor: explorer.cursor(),
             aside: explorer.aside(),
@@ -996,11 +996,17 @@ impl<'a> Naming<'a> {
         naming
     }
 
+    /// The camera's up, in the world.
+    fn up(&self) -> Vec3 {
+        self.view.up().into()
+    }
+
     /// How big `tile`'s dot shows in `dot`'s role, at `world` in the world and `at`
     /// on screen.
     fn shows(&self, tile: usize, world: Vec3, at: egui::Pos2, dot: Dot) -> f32 {
         let radius = dot.radius() * self.nucleus.dot_scale(tile);
-        dot.clamp((self.to_screen)(world + self.up * radius).map_or(2.0, |p| p.distance(at)))
+        let own = (self.to_screen)(world + self.up() * radius).map_or(2.0, |p| p.distance(at));
+        dot.shown(own, graph_view::nearer(self.explorer, &self.view, world))
     }
 
     /// Every dot on the graph as names keep off it: one drawn bigger than a speck as
@@ -1093,7 +1099,7 @@ impl<'a> Naming<'a> {
     fn sphere_on_screen(&self, cluster: usize) -> Option<(egui::Pos2, f32)> {
         let ball = self.nucleus.ball(cluster)?;
         let middle = (self.to_screen)(ball.center)?;
-        let edge = (self.to_screen)(ball.center + self.up * ball.radius).map_or_else(
+        let edge = (self.to_screen)(ball.center + self.up() * ball.radius).map_or_else(
             || self.edge_off_screen(ball.center, ball.radius, middle),
             |e| middle.distance(e),
         );
@@ -1104,7 +1110,7 @@ impl<'a> Naming<'a> {
     /// as the camera sees it, the same as anywhere round it.
     fn edge_off_screen(&self, center: Vec3, radius: f32, middle: egui::Pos2) -> f32 {
         // Measured a little way out instead, and scaled up.
-        (self.to_screen)(center + self.up * radius * 0.05)
+        (self.to_screen)(center + self.up() * radius * 0.05)
             .map_or(0.0, |p| p.distance(middle) / 0.05)
     }
 
@@ -1769,12 +1775,12 @@ pub(crate) fn graph_names(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
-    (up, lines, turning): (Vec3, &[CallLine], bool),
+    (view, lines, turning): (GlobalTransform, &[CallLine], bool),
 ) -> GraphNames {
     let area = painter.clip_rect();
     let hint = (explorer.browsing())
         .then(|| key_help::hint_rect(painter, area, explorer.nucleus().expanded()));
-    let mut naming = Naming::new(explorer, project, up, (area, hint));
+    let mut naming = Naming::new(explorer, project, view, (area, hint));
     let nucleus = naming.nucleus;
     // Lit names keep their places from the names placed last while the view is the
     // same: the same selection or journey, the camera where it was.

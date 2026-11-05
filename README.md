@@ -23,7 +23,10 @@ codeviz view app.json --focus orders::place --expand   # inside the start's modu
 ## The view
 
 One window, one view. Every module is a sphere and every function a dot inside its
-module's sphere; a sphere is as big as the functions it holds. The layout is worked out
+module's sphere; a sphere is as big as the functions it holds. A sphere is a lit,
+matte, see-through ball, shaded towards its edge; a dot is a small shaded ball, and
+what lies further back shows a little dimmer. A lit dot and its name show over
+everything else, whatever lies in front, so a journey reads from any side. The layout is worked out
 once per document and never changes because of a click. The view is always in one of
 two modes, and the top bar says which: `Browsing`, or `Journey ·` and where the journey
 starts.
@@ -35,14 +38,14 @@ it. Everything else is grey, and each
 module's sphere has a muted hue of its own, only to tell modules apart. Each role gets
 one treatment: the selection and the start a white ring, the cursor a pink fill and one
 pink ring. A call that also calls back into the start keeps its call's fill and gets a
-violet ring, and its two arrows run side by side. A function set aside in a journey
+violet ring, and an arrow each way. A function set aside in a journey
 keeps its own fill (grey off the journey, violet if it calls the start) with a white
 ring, and its calls their own colors. What the pointer rests on gets one grey treatment
 wherever it is: a thin ring round its dot, an outline round its bar, and from a bar a
 grey line to its dot; it never lights a call. A call only guessed at is faint on the
-graph as in the panel. Calls bow gently round dots they would otherwise pass
-through, or else break off round them, and two calls from or into one function never
-run along one line; a call crossing the view with neither end in it is faint.
+graph as in the panel. Every call is one straight line from its caller's dot to its
+head, short of its callee's; a dot it passes shows over it; a call crossing the view
+with neither end in it is faint.
 
 ### Browse
 
@@ -132,7 +135,8 @@ between browsing and a journey, shrinks it back.
 
 The wheel or a pinch zooms towards the pointer, in until the module under it fills nine
 tenths of the view, drawn into it whole, out until the whole scene takes about half of
-it; a drag orbits within a range round the usual view; a right drag, or `Shift` with a
+it; a drag turns the map any way round, over the top too, with nothing laid out again
+and names holding their places until you let go; a right drag, or `Shift` with a
 drag, pans, no further than keeps the map in the view, or close in, a module near its
 middle; a drag begun on the graph goes on over the panel. `F` frames the focus: the
 selection and what it lights, the journey, or the module expanded. `R` turns back to the

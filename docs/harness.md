@@ -266,7 +266,7 @@ that put it there), names, and calls.
 |---|---|---|
 | `dots-in-spheres` | every dot lies inside its module's sphere, in the world (1% slack) | always |
 | `dots-apart` | no two dots on screen overlap: centres at least the radii plus 1 point apart (lit pairs listed first) | unless the camera is where the user's hands put it: turned, dots at different depths line up, and the lit one shows over the rest (`lit-over`) |
-| `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius; expanded, the module's functions nothing lights (`opened`, not hovered) show smaller than its smallest lit one | always |
+| `dot-sizes` | a lit dot is at least 3 points across; no dot is over 16 points in radius; expanded, the module's functions nothing lights (`opened`, not hovered) are smaller in the world than its smallest lit one (on screen perspective shows a nearer dot bigger and a further one smaller) | always |
 | `spheres-apart` | no two spheres intersect, in the world | two spheres or more |
 | `sphere-sizes` | the largest sphere is at most 4× the smallest's radius; a module with more functions is bigger, but less than in proportion (the expanded one aside) | always |
 | `labels-near` | every function's name is within 40 points of its dot, edge to edge, and no other dot drawn, lit, plain or a speck, is nearer it (by over 2 points), but for a lit name one drawn faded (alpha under 0.5) or one nothing lights that its opaque pill covers, or some of, and but for a name shown come what may (the start, the cursor and the calls on its path, the selection, the function set aside) with room nowhere round its dot, as `named-when-room` judges room, and the name of the function hovered, which takes its emptiest side; every module's name within 40 points of its sphere's rim | always |
@@ -306,7 +306,9 @@ One check reads the picture rather than the JSON, in the runner (`tools/drive`) 
 window closes: `look`, the mean RGB level above the ground of what is drawn faint, the
 median over each snap, within the ranges in `LOOK` at the top of `tools/drive`. A faint
 line's level is its brightest pixel near its middle over the darker side of it, sampled
-clear of dots and names; a faint sphere's, its fill at 0.6 of its radius. It applies on
+clear of dots and names; a faint sphere's, its fill at 0.6 of its radius; and a faint
+sphere's shading (one 24 points in radius or more), its fill at a quarter of its radius
+over its fill near its edge (0.85), so a sphere drawn flat, or lit from behind, shows. It applies on
 the whole map with nothing selected (the ground, the faint links between modules, the
 faint spheres) and expanded (the faint calls among the module's functions). A range
 missed means the picture as a whole is drawn differently (blending, colour space,

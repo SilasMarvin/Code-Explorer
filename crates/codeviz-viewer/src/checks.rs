@@ -1049,22 +1049,23 @@ fn dot_sizes(s: &Snap) -> Value {
             Some((off, json!({ "function": n.name, "roles": n.roles, "radius": r1(n.radius), "allowed": bound })))
         })
         .collect::<Found>();
-    // One size per role: the expanded module's functions nothing lights show smaller
-    // than what is lit there.
+    // One size per role: the expanded module's functions nothing lights are smaller
+    // than what is lit there, as big in the world, where perspective shows a nearer
+    // one bigger on screen.
     let expanded = |n: &&Node| n.on_screen && n.module == s.state.expanded && s.expanded();
     let least_lit = (s.nodes.iter())
         .filter(expanded)
         .filter(|n| !n.unlit())
-        .map(|n| n.radius)
+        .map(|n| n.world_radius)
         .reduce(f32::min);
     if let Some(least) = least_lit {
         offenders.extend(
             (s.nodes.iter())
                 .filter(expanded)
-                .filter(|n| n.plain() && !n.is("hovered") && n.radius + ROUNDING >= least)
+                .filter(|n| n.plain() && !n.is("hovered") && n.world_radius >= least * 0.99)
                 .map(|n| {
-                    let offender = json!({ "function": n.name, "roles": n.roles, "radius": r1(n.radius), "least_lit": r1(least), "why": "drawn as big as what is lit" });
-                    (n.radius - least + ROUNDING, offender)
+                    let offender = json!({ "function": n.name, "roles": n.roles, "world_radius": r3(n.world_radius), "least_lit": r3(least), "why": "drawn as big as what is lit" });
+                    (n.world_radius / least, offender)
                 }),
         );
     }
@@ -4749,15 +4750,17 @@ mod tests {
             .map(|o| &o["function"])
             .collect();
         assert_eq!(named, [&json!("h"), &json!("f")], "a speck may be small");
-        // Expanded, a function nothing lights as big as a lit one.
+        // Expanded, a function nothing lights as big in the world as a lit one.
         let mut s = scene();
         s["state"]["nucleus"] = json!("expanded");
         s["state"]["expanded"] = json!("a");
         s["nodes"][1]["roles"] = json!(["opened"]);
-        s["nodes"][1]["radius"] = json!(5.0);
+        s["nodes"][1]["world_radius"] = json!(0.25);
         let result = check(&s, "dot-sizes");
         assert_eq!(result["offenders"][0]["function"], "g", "{result}");
-        s["nodes"][1]["radius"] = json!(3.0);
+        // Smaller in the world, it may show bigger on screen, nearer the camera.
+        s["nodes"][1]["world_radius"] = json!(0.15);
+        s["nodes"][1]["radius"] = json!(6.0);
         assert!(passes(&check(&s, "dot-sizes")));
     }
 

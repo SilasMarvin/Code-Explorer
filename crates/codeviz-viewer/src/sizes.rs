@@ -1,6 +1,7 @@
 //! Every size a sphere or a dot is drawn at, decided once: a module's sphere by how
 //! many functions it holds, the same everywhere; a function's dot by its role alone,
-//! kept within bounds on screen however near or far the view. Text sizes are
+//! kept within bounds on screen however near or far the view, at the depth the camera
+//! looks at, and nearer or further back as perspective has it. Text sizes are
 //! [`crate::text`]'s; arrows' widths and heads [`crate::arrows`]'.
 
 pub(crate) use codeviz_layout::atlas::module_radius;
@@ -39,11 +40,25 @@ impl Dot {
     }
 
     /// A radius on screen, in points, kept within its bounds.
-    pub(crate) fn clamp(self, on_screen: f32) -> f32 {
+    fn clamp(self, on_screen: f32) -> f32 {
         let (least, most) = self.bounds();
         on_screen.clamp(least, most)
     }
+
+    /// How big it shows, in points, showing `own` points for its radius in the world,
+    /// `nearer` times as near the camera as what the camera looks at: at that depth
+    /// within its bounds, and as perspective has it nearer or further, so depth reads
+    /// in a still; never past [`PERSPECTIVE`] of its bounds.
+    pub(crate) fn shown(self, own: f32, nearer: f32) -> f32 {
+        let (least, most) = self.bounds();
+        let nearer = nearer.max(f32::EPSILON);
+        (self.clamp(own / nearer) * nearer).clamp(least * PERSPECTIVE.0, most * PERSPECTIVE.1)
+    }
 }
+
+/// How far past its role's bounds a dot's radius on screen goes, smaller further back
+/// and bigger nearer than what the camera looks at.
+const PERSPECTIVE: (f32, f32) = (0.6, 1.4);
 
 /// Expanded, how far apart, in points, two functions' dots must show for their names
 /// to sit comfortably: one row's height up, or across, the name of the one on the left
@@ -121,4 +136,23 @@ pub(crate) fn nearest_share(expanded: f32, share: f32, every: f32, least: f32) -
     (share * every * PLACED_ROOM)
         .min(expanded * NEAREST_SPREAD)
         .max(least)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dot_shows_its_roles_size_at_the_depth_looked_at_and_perspective_about_it() {
+        // Far out, every lit dot is at its least where the camera looks, and smaller
+        // further back, bigger nearer.
+        assert!((Dot::Lit.shown(0.5, 1.0) - 2.5).abs() < 1e-6);
+        assert!((Dot::Lit.shown(0.4, 0.8) - 2.0).abs() < 1e-6);
+        assert!((Dot::Lit.shown(0.6, 1.2) - 3.0).abs() < 1e-6);
+        // Never past its bounds' share.
+        assert!((Dot::Lit.shown(0.1, 0.2) - 2.5 * PERSPECTIVE.0).abs() < 1e-6);
+        assert!((Dot::Focus.shown(100.0, 3.0) - 9.0 * PERSPECTIVE.1).abs() < 1e-6);
+        // In its bounds, as it shows.
+        assert!((Dot::Lit.shown(4.0, 0.9) - 4.0).abs() < 1e-5);
+    }
 }

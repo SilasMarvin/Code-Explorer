@@ -9,6 +9,7 @@ use bevy_egui::{EguiContexts, input::EguiWantsInput};
 use crate::{
     camera::OrbitCamera,
     explorer::{Explorer, Picked},
+    graph_view::{self, NodeLook},
     idle::Awake,
     labels,
     nucleus::Nucleus,
@@ -33,11 +34,13 @@ pub(crate) struct OnScreen {
     pub(crate) depth: f32,
     /// A faint unnamed function in the nucleus.
     pub(crate) speck: bool,
+    /// Lit, and so drawn over the rest whatever lies nearer.
+    pub(crate) over: bool,
 }
 
 /// The function the pointer at `pointer` is on, of `spots`: a named function before a
-/// speck, one whose disc holds the pointer before one it only grazes, then the
-/// nearest the camera.
+/// speck, one whose disc holds the pointer before one it only grazes, one drawn over
+/// the rest before one under it, then the nearest the camera.
 pub(crate) fn pick(spots: &[OnScreen], pointer: Vec2) -> Option<usize> {
     spots
         .iter()
@@ -46,8 +49,8 @@ pub(crate) fn pick(spots: &[OnScreen], pointer: Vec2) -> Option<usize> {
             (off <= spot.radius + SLOP).then_some((spot, off <= spot.radius))
         })
         .min_by(|(a, a_in), (b, b_in)| {
-            (a.speck, !a_in)
-                .cmp(&(b.speck, !b_in))
+            (a.speck, !a_in, !a.over)
+                .cmp(&(b.speck, !b_in, !b.over))
                 .then(a.depth.total_cmp(&b.depth))
         })
         .map(|(spot, _)| spot.tile)
@@ -138,6 +141,10 @@ fn spot(
         radius: at.distance(edge),
         depth: (middle - view.translation()).dot(*view.forward()),
         speck: explorer.nucleus().speck(tile),
+        over: !matches!(
+            graph_view::node_look(explorer, tile),
+            NodeLook::Plain | NodeLook::Faded
+        ),
     })
 }
 
@@ -356,7 +363,18 @@ mod tests {
             radius,
             depth,
             speck,
+            over: false,
         }
+    }
+
+    #[test]
+    fn a_lit_dot_drawn_over_a_nearer_plain_one_is_picked() {
+        let lit = OnScreen {
+            over: true,
+            ..spot(1, 1.0, 6.0, 9.0, false)
+        };
+        let spots = [lit, spot(2, 0.0, 6.0, 3.0, false)];
+        assert_eq!(pick(&spots, Vec2::ZERO), Some(1));
     }
 
     #[test]
