@@ -50,6 +50,18 @@ pub(crate) struct Seen {
     pub(crate) resting: Option<Pose>,
 }
 
+impl Seen {
+    /// Seen the same with the map spread `factor` times as wide ([`Pose::spread`]).
+    #[must_use]
+    pub(crate) fn spread(self, factor: f32) -> Self {
+        Self {
+            pose: self.pose.map(|pose| pose.spread(factor)),
+            resting: self.resting.map(|pose| pose.spread(factor)),
+            ..self
+        }
+    }
+}
+
 impl PartialEq for Seen {
     fn eq(&self, _: &Self) -> bool {
         true
@@ -113,6 +125,14 @@ impl<T: PartialEq> History<T> {
 
     pub(crate) fn can_go_forward(&self) -> bool {
         !self.forward.is_empty()
+    }
+
+    /// Changes every place remembered, behind and ahead, as `change` does.
+    pub(crate) fn change_all(&mut self, change: impl FnMut(&mut T)) {
+        self.back
+            .iter_mut()
+            .chain(&mut self.forward)
+            .for_each(change);
     }
 
     /// Forgets everything, as when the view first opens.

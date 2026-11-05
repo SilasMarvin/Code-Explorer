@@ -981,6 +981,18 @@ impl Pose {
     pub(crate) fn parts(&self) -> (Vec3, f32, (f32, f32)) {
         (self.target, self.distance, self.angles)
     }
+
+    /// The same pose with the map spread `factor` times as wide about the world's
+    /// middle: it looks at the point that moved out with the map, from as many times
+    /// as far, so every module's middle shows where it showed.
+    #[must_use]
+    pub(crate) fn spread(self, factor: f32) -> Self {
+        Self {
+            target: self.target * factor,
+            distance: self.distance * factor,
+            ..self
+        }
+    }
 }
 
 const ORBIT_SPEED: f32 = 0.005;

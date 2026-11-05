@@ -904,14 +904,33 @@ impl Explorer {
             });
             return;
         };
+        let factor = SPREADS[next] / SPREADS[self.spread];
         self.spread = next;
         self.nucleus.set_spread(&self.graph, SPREADS[next]);
+        self.spread_poses(factor);
         self.moved += 1;
         self.aim += 1;
         self.say(&format!(
             "Spread {}×: - closer, = wider",
             self.spread_shown()
         ));
+    }
+
+    /// Moves every camera pose kept to go back to out with the map spread `factor`
+    /// times as wide ([`Pose::spread`]): Esc, Back and shrinking back then look at the
+    /// map spread as it is now, as they looked at it as it was.
+    fn spread_poses(&mut self, factor: f32) {
+        let spread = |pose: &mut Option<Pose>| *pose = pose.map(|pose| pose.spread(factor));
+        spread(&mut self.pose);
+        spread(&mut self.expand_pose);
+        self.browsing_seen = self.browsing_seen.spread(factor);
+        self.history
+            .change_all(|view| view.pose = view.pose.spread(factor));
+        self.return_pose = self.return_pose.map(|back| match back {
+            Return::To(pose) => Return::To(pose.spread(factor)),
+            Return::Shrunk(pose) => Return::Shrunk(pose.spread(factor)),
+            Return::Whole => Return::Whole,
+        });
     }
 
     /// How far the map is spread, against how it opens: 1 as it opens, 0.5 at its
@@ -2921,6 +2940,37 @@ pub(crate) mod tests {
         );
         explorer.spread(false);
         assert_eq!(ball(&explorer), before, "back as it opened");
+    }
+
+    #[test]
+    fn poses_kept_to_go_back_to_move_out_with_the_spread() {
+        use crate::camera::OrbitCamera;
+        let mut camera = OrbitCamera::default();
+        let browsing = camera.pose();
+        camera.pan_to(Vec3::new(40.0, 0.0, 0.0));
+        let expanding = camera.pose();
+        let mut explorer = explorer();
+        explorer.leave_journey();
+        explorer.see(browsing);
+        explorer.open_at(tile(&explorer, "a"));
+        explorer.see(expanding);
+        explorer.toggle_expand(None);
+        explorer.take_return_pose();
+        explorer.spread(true);
+        explorer.toggle_expand(None);
+        assert_eq!(
+            explorer.take_return_pose(),
+            Some(Return::Shrunk(expanding.spread(1.5)))
+        );
+        let (target, distance, _) = expanding.spread(1.5).parts();
+        assert_eq!(target, expanding.parts().0 * 1.5);
+        assert_eq!(distance, expanding.parts().1 * 1.5, "as far again");
+        explorer.leave_journey();
+        assert_eq!(
+            explorer.take_return_pose(),
+            Some(Return::To(browsing.spread(1.5))),
+            "Esc to browsing looks at the map as it is spread now"
+        );
     }
 
     #[test]
