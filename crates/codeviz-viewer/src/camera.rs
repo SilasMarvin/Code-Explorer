@@ -679,9 +679,15 @@ impl OrbitCamera {
         };
         if factor < 1.0 {
             let aimed = self.aimed(&reach, point);
+            // Expanded, with the pointer off the module, in towards the module.
+            let off = self.off_expanded(&reach, point);
+            let point = off.unwrap_or(point);
             let scale = self.nearest_scale(&reach, point, factor, aimed);
             self.scale_about(point, scale);
             self.held = self.held.filter(|out| !out);
+            if off.is_some() {
+                self.held = Some(false);
+            }
             if self.slide_out(&reach) {
                 self.held = Some(false);
             }
@@ -727,6 +733,16 @@ impl OrbitCamera {
             moved = true;
         }
         moved
+    }
+
+    /// Expanded, with the pointer at `point` off the module expanded, the module's
+    /// middle: what the wheel zooms in towards instead.
+    fn off_expanded(&self, reach: &Reach, point: Vec3) -> Option<Vec3> {
+        let module = *reach.spheres.get(reach.expanded?)?;
+        let (rotation, eye) = (self.rotation(), self.eye());
+        let (pointer, _) = reach.lens.project(rotation, eye, point)?;
+        let (at, _, size) = disc(&reach.lens, rotation, eye, module)?;
+        (((pointer - at) / size).length() > 1.0).then_some(module.0)
     }
 
     /// Scales the whole view by `scale` about `point`.

@@ -682,10 +682,11 @@ fn glide(
 }
 
 /// Glides to look past `middle` from `distance` back, turned to `rotation`, or as
-/// much further back as stands the camera outside every sphere and, with none
-/// expanded, with none over the view bigger than the wheel lets one come to fill it:
-/// the map is laid out in depth, and a sphere between the camera and what it frames
-/// would hold it or hide it.
+/// much further back as stands the camera outside every sphere and, browsing with
+/// none expanded, with none over the view bigger than the wheel lets one come to fill
+/// it: the map is laid out in depth, and a sphere between the camera and what it
+/// frames would hold it or hide it. A journey's lit dots show over any sphere, so it
+/// is framed as near as they need.
 fn glide_outside(
     nucleus: &Nucleus,
     (middle, distance): (Vec3, f32),
@@ -694,13 +695,13 @@ fn glide_outside(
     lens: Lens,
 ) {
     let (shift, back) = (lens.shift(rotation), rotation * Vec3::Z);
-    let expanded = nucleus.expanded();
+    let hidden = nucleus.browsing() && !nucleus.expanded();
     let mut distance = distance;
     for _ in 0..OUTSIDE_STEPS {
         let eye = middle + (back - shift) * distance;
         if (nucleus.balls()).all(|(_, b)| {
             eye.distance(b.center) >= b.radius * OUTSIDE
-                && (expanded || !overfills(&lens, rotation, eye, (b.center, b.radius)))
+                && !(hidden && overfills(&lens, rotation, eye, (b.center, b.radius)))
         }) {
             break;
         }

@@ -101,6 +101,9 @@ const FRONT_SLACK: f32 = 0.05;
 const ZOOM_DRIFT: (f32, f32) = (4.0, 0.05);
 /// Zoomed out, the least share of the free area's smaller side the whole map spans.
 const ZOOM_OUT_LEAST: f32 = 0.4;
+/// After R, the least share of the free area the whole map spans across or down,
+/// whichever it comes nearer filling: framed snugly, room left for names.
+const R_FILLS: f32 = 0.65;
 /// Zoomed in, the most share of the free area's smaller side the diameter of the
 /// sphere under the pointer spans; and the share past which it lies inside the free
 /// area, as it does at the near bound. The wheel stops at nine tenths framed by the
@@ -1711,6 +1714,15 @@ fn framed(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     match last {
         Some(Kind::FrameAll) => {
             offenders.extend(outside(free, EDGE, s.spheres().map(Module::disc)));
+            // Snugly: the map spans most of the free area across or down.
+            if let Some(map) = map_extent(s) {
+                let fills = (map.width() / free.width()).max(map.height() / free.height());
+                if fills < R_FILLS {
+                    let why = "R leaves the map small in the free area";
+                    let offender = json!({ "why": why, "fills": r2(fills), "least": R_FILLS });
+                    offenders.push((R_FILLS - fills, offender));
+                }
+            }
             if let Some(camera) = s.state.camera
                 && ((camera.yaw - VIEW.0).abs() > FRONT_SLACK
                     || (camera.pitch - VIEW.1).abs() > FRONT_SLACK)
@@ -5092,7 +5104,14 @@ mod tests {
     fn r_shows_every_sphere_from_the_front() {
         let mut s = scene();
         let framed = |s: &Value| after(s, s, &[Kind::FrameAll, Kind::Still], "framed");
-        assert!(passes(&framed(&s)));
+        let small = framed(&s);
+        assert_eq!(
+            small["offenders"][0]["why"],
+            "R leaves the map small in the free area"
+        );
+        s["modules"][0]["at"] = json!([200.0, 500.0]);
+        s["modules"][1]["at"] = json!([1400.0, 500.0]);
+        assert!(passes(&framed(&s)), "snugly");
         s["modules"][1]["at"] = json!([1580.0, 500.0]);
         s["state"]["camera"]["yaw"] = json!(-0.35);
         assert_eq!(VIEW.0, -0.45, "the scene's camera is at the usual view");
