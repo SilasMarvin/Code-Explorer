@@ -214,7 +214,7 @@ impl Lens {
 const DRAWN_FROM: f32 = 1.5;
 
 /// How far outside a sphere's surface, as a share of its radius, the camera keeps.
-pub(crate) const OUTSIDE: f32 = 1.1;
+const OUTSIDE: f32 = 1.1;
 
 /// Zoomed in as far as the wheel goes, the sphere under the pointer's diameter
 /// against the free area's smaller side; the module expanded, as near as its
@@ -644,17 +644,8 @@ impl OrbitCamera {
         let mut distance = distance;
         for _ in 0..reach.spheres.len() {
             let before = distance;
-            for &(middle, radius) in &reach.spheres {
-                // Where along `back` from what it looks at the camera leaves the sphere.
-                let to = looking_at - middle;
-                let along = to.dot(back);
-                let room = along * along - (to.length_squared() - (radius * OUTSIDE).powi(2));
-                if room >= 0.0 {
-                    let (enter, leave) = (-along - room.sqrt(), -along + room.sqrt());
-                    if distance > enter && distance < leave {
-                        distance = leave;
-                    }
-                }
+            for &sphere in &reach.spheres {
+                distance = leaves(looking_at, back, distance, sphere).unwrap_or(distance);
             }
             if distance <= before {
                 break;
@@ -939,6 +930,25 @@ fn disc(
     let (at, depth) = lens.project(rotation, eye, middle)?;
     let size = Vec2::new(radius / (depth * lens.tan.x), radius / (depth * lens.tan.y));
     Some((at, depth, size))
+}
+
+/// Where a camera `distance` along `along` from `from`, inside `sphere` or nearer
+/// its surface than [`OUTSIDE`] allows, comes out of it going further along; none
+/// where it stands clear.
+pub(crate) fn leaves(
+    from: Vec3,
+    along: Vec3,
+    distance: f32,
+    (middle, radius): (Vec3, f32),
+) -> Option<f32> {
+    let reach = radius * OUTSIDE;
+    if (from + along * distance).distance(middle) >= reach {
+        return None;
+    }
+    let to = from - middle;
+    let (a, b) = (along.length_squared(), to.dot(along));
+    let room = b * b - a * (to.length_squared() - reach * reach);
+    Some((-b + room.max(0.0).sqrt()) / a.max(f32::EPSILON))
 }
 
 /// Whether `sphere`, seen from `eye` turned to `rotation`, shows over the free area

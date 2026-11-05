@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, input::EguiWantsInput};
 
 use crate::{
-    camera::{Lens, NEAREST_FILL, OUTSIDE, OrbitCamera, Reach, overfills},
+    camera::{Lens, NEAREST_FILL, OrbitCamera, Reach, leaves, overfills},
     disclosure::Disclose,
     explorer::{Explorer, Return},
     nucleus::{Ball, Nucleus, VIEW, view_rotation},
@@ -100,9 +100,9 @@ const CURSOR_ROOM: f32 = 0.85;
 /// in.
 const VISIBLY: f32 = 1.3;
 
-/// A framing that would stand the camera inside a sphere, or with one over the view
-/// bigger than the wheel lets one come to fill it, stands it further back, a step at a
-/// time, at most so many.
+/// A framing that would stand the camera inside a sphere stands it just outside, and
+/// browsing, one with a sphere over the view bigger than the wheel lets one come to
+/// fill it further back a step at a time: at most so many steps.
 const OUTSIDE_STEPS: usize = 64;
 const OUTSIDE_STEP: f32 = 1.05;
 
@@ -696,16 +696,19 @@ fn glide_outside(
 ) {
     let (shift, back) = (lens.shift(rotation), rotation * Vec3::Z);
     let hidden = nucleus.browsing() && !nucleus.expanded();
+    let along = back - shift;
     let mut distance = distance;
     for _ in 0..OUTSIDE_STEPS {
-        let eye = middle + (back - shift) * distance;
-        if (nucleus.balls()).all(|(_, b)| {
-            eye.distance(b.center) >= b.radius * OUTSIDE
-                && !(hidden && overfills(&lens, rotation, eye, (b.center, b.radius)))
-        }) {
+        let spheres = || nucleus.balls().map(|(_, b)| (b.center, b.radius));
+        if let Some(out) = spheres().find_map(|ball| leaves(middle, along, distance, ball)) {
+            distance = out;
+        } else if hidden
+            && spheres().any(|ball| overfills(&lens, rotation, middle + along * distance, ball))
+        {
+            distance *= OUTSIDE_STEP;
+        } else {
             break;
         }
-        distance *= OUTSIDE_STEP;
     }
     camera.glide_to(middle - shift * distance, distance);
 }
@@ -754,8 +757,39 @@ fn reach(
 const NEAREST_FRAMING: f32 = 1.0;
 
 /// The middle of `points` across the view turned to `rotation`, and how far back
-/// from it the camera must be ([`distance_from`]).
+/// from it the camera must be ([`distance_from`]): first the middle of the box round
+/// them, then moved across until, in perspective, they show as far past the free
+/// area's middle one way as the other, each by its share.
 fn place(points: &[(Vec3, Vec2)], rotation: Quat, lens: Lens) -> Option<(Vec3, f32)> {
+    let (mut middle, mut distance) = boxed(points, rotation, lens)?;
+    let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
+    for _ in 0..PLACE_ROUNDS {
+        let eye = middle + (rotation * Vec3::Z - lens.shift(rotation)) * distance;
+        let (low, high) = (points.iter())
+            .filter_map(|&(p, share)| {
+                let (at, _) = lens.project(rotation, eye, p)?;
+                Some((at - lens.centre) / (lens.half * share))
+            })
+            .fold((Vec2::MAX, Vec2::MIN), |(l, h), at| (l.min(at), h.max(at)));
+        // In the view's units, by their shares on the whole, at the middle's depth.
+        #[expect(clippy::cast_precision_loss, reason = "a count of points")]
+        let share = points.iter().map(|&(_, share)| share).sum::<Vec2>() / points.len() as f32;
+        let off = (low + high) / 2.0 * lens.half * share * lens.tan * distance;
+        if !off.is_finite() || off.length() < distance * 1e-4 {
+            break;
+        }
+        middle += right * off.x + up * off.y;
+        distance = distance_from(points, middle, rotation, lens);
+    }
+    Some((middle, distance))
+}
+
+/// How many times [`place`] moves the middle across to centre what it frames.
+const PLACE_ROUNDS: usize = 4;
+
+/// The middle of the box round `points` turned to `rotation`, and how far back from
+/// it the camera must be ([`distance_from`]).
+fn boxed(points: &[(Vec3, Vec2)], rotation: Quat, lens: Lens) -> Option<(Vec3, f32)> {
     if points.is_empty() {
         return None;
     }
