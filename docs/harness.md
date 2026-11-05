@@ -126,7 +126,7 @@ with why, marks the session failed, and the session goes on.
 | `expect nucleus modules\|expanded` | a module is expanded, or not |
 | `expect expanded MODULE\|none` | the module expanded, by the name its sphere carries |
 | `expect depth N` | the journey shows N levels: its deepest call shown, in a branch opened alone too |
-| `expect search\|help\|back\|forward\|outside_callers true\|false`, `expect state spread 1.0\|1.5\|2.0\|3.0` | that field of `state` reads so |
+| `expect search\|help\|back\|forward\|outside_callers true\|false`, `expect state spread 0.5\|0.75\|1.0\|1.5` | that field of `state` reads so |
 | `expect state FIELD VALUE` | the same, spelt out |
 | `expect selection UNIT\|none` | the function selected while browsing |
 | `expect cursor UNIT\|none`, `expect start UNIT\|none` | the journey's cursor, its start (`none` while browsing) |
@@ -173,7 +173,7 @@ scene's units.
   (`modules`, `expanded`), `expanded` (the module expanded, by name), `depth`, `deepest` (in a journey, how many levels below the start its deepest call is), `outside_callers`,
   `outside_waiting` (of the callers I brings in, how many have no room to be drawn), `hovered` (the function the
   pointer has rested on, as drawn) and `under_pointer` (what the pointer is on now),
-  `spread` (how far `-` and `=` have spread the map: 1.0 as laid out, 1.5, 2.0, 3.0),
+  `spread` (how far `-` and `=` have spread the map against how it opens: 0.5, 0.75, 1.0, 1.5),
   `search`, `help`, `back`, `forward`, `camera` (where it stands that frame, on its
   way or not: `target`, `distance`, `yaw`, `pitch`, `held`: the wheel turns since it
   last turned the other way panned to hold the map, or the sphere they zoom to, in
@@ -381,7 +381,7 @@ such a camera alone.
 | `axum-visual`, `ord-visual` | how a journey is drawn: no call through a lit dot or name, hovering lighting no call, the function set aside in its own color with a white ring, a guessed call faint; the whole map's links one width, module names above or inside their spheres; two functions alike told apart in the search; both calls of a function that calls the selection and is called by it, browsing |
 | `ord-outside` | I: every caller from off the journey of the cursor's call lit where it sits, none moving as the cursor steps; X in a journey moving none of its dots; a click on a plain function expanded opening no bar; a deep journey in a small window, the panel's rows track; a caller no line reaches not drawn but counted |
 | `ord-branch` | one branch at a time: ↓ on a folded call opening it alone and stepping in, `.` every branch deeper, `,` every branch a level back, a badge stepping in, the depth reading the deepest shown, graph and panel agreeing, "can fail" alike at every depth; the start's bar under its callers in a small window; bars past the panel's side counted there |
-| `ord-spread` | `-` and `=` stepping the map's spread through 1×, 1.5×, 2×, 3× and saying so, at either end too: spheres apart, framed after each step; the whole map at its widest and R; a journey and a module expanded keeping through steps down and up |
+| `ord-spread` | `-` and `=` stepping the map's spread through 0.5×, 0.75×, 1× (as it opens: twice as laid out), 1.5× and saying so, at either end too: spheres apart, framed after each step; the whole map at its widest and R; a journey and a module expanded keeping through steps down and up |
 | `ord-panel` | the panel on a crowded journey: bars keep their numbers and some of their names, five levels fitting across 1200 wide, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk); a name two calls share cutting its type, never down to it, at 1000 wide |
 
 `tools/drive suite` checks every script's names, then runs them one window at a time and

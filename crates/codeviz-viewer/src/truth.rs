@@ -115,8 +115,8 @@ pub(crate) fn state(view: &View) -> Value {
         // In a journey, how many levels below the start its deepest call is.
         "deepest": (!explorer.browsing()).then(|| disclosed.deepest()),
         "outside_callers": explorer.outside_shown(),
-        // How far `-` and `=` have spread the map: 1 as laid out.
-        "spread": nucleus.spread(),
+        // How far `-` and `=` have spread the map, against how it opens.
+        "spread": explorer.spread_shown(),
         "outside_waiting": nucleus.outside_waiting(),
         "hovered": explorer.hovered().map(name),
         "under_pointer": explorer.under_pointer.map(name),

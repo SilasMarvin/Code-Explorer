@@ -164,7 +164,7 @@ const STATE_FIELDS: [(&str, &[&str]); 10] = [
     ("back", &["true", "false"]),
     ("forward", &["true", "false"]),
     ("outside_callers", &["true", "false"]),
-    ("spread", &["1.0", "1.5", "2.0", "3.0"]),
+    ("spread", &["0.5", "0.75", "1.0", "1.5"]),
 ];
 
 /// Every step's verb, to suggest one for a misspelt verb.

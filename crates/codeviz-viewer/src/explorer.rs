@@ -34,6 +34,9 @@ use crate::{
 /// How far `-` and `=` spread the map, step by step: every module's middle this many
 /// times as far from the world's as the layout put it.
 const SPREADS: [f32; 4] = [1.0, 1.5, 2.0, 3.0];
+/// The step the map opens at: twice as wide as laid out, so spheres stacked in depth
+/// still read apart on the whole map. Said as 1×, the others against it.
+const SPREAD: usize = 2;
 
 /// How sure we are that a span really happens as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,7 +286,8 @@ impl Explorer {
     pub(crate) fn new(system: System) -> Self {
         let map = codeviz_layout::map(&system);
         let graph = CallGraph::new(&system, &map);
-        let nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
+        let mut nucleus = Nucleus::gather(&graph, None, Trail::default(), true);
+        nucleus.set_spread(&graph, SPREADS[SPREAD]);
         let module_names = {
             let modules: Vec<Option<(&str, &str)>> = (0..graph.cluster_count())
                 .map(|cluster| {
@@ -318,7 +322,7 @@ impl Explorer {
             moved: 0,
             history: History::default(),
             aim: 0,
-            spread: 0,
+            spread: SPREAD,
             disclose: Disclose::default(),
             disclosed: Arc::default(),
             under_pointer: None,
@@ -904,7 +908,16 @@ impl Explorer {
         self.nucleus.set_spread(&self.graph, SPREADS[next]);
         self.moved += 1;
         self.aim += 1;
-        self.say(&format!("Spread {}×: - closer, = wider", SPREADS[next]));
+        self.say(&format!(
+            "Spread {}×: - closer, = wider",
+            self.spread_shown()
+        ));
+    }
+
+    /// How far the map is spread, against how it opens: 1 as it opens, 0.5 at its
+    /// closest, 1.5 at its widest.
+    pub(crate) fn spread_shown(&self) -> f32 {
+        SPREADS[self.spread] / SPREADS[SPREAD]
     }
 
     /// Tells the nucleus which function the pointer has rested on. Returns whether
@@ -2874,20 +2887,26 @@ pub(crate) mod tests {
         let module = explorer.graph.cluster(main).expect("a module");
         let ball = |e: &Explorer| e.nucleus().ball(module).expect("a sphere");
         let (before, at) = (ball(&explorer), explorer.nucleus().point(main));
-        explorer.spread(false);
+        assert_eq!(explorer.spread_shown(), 1.0, "as it opens");
+        for _ in 0..3 {
+            explorer.spread(false);
+        }
         assert_eq!(
             said(&explorer).as_deref(),
             Some("Spread as close as it goes: = spreads the modules wider")
         );
+        assert_eq!(explorer.spread_shown(), 0.5);
+        let closest = ball(&explorer);
+        assert_eq!(closest.center * 2.0, before.center, "as laid out");
         for _ in 0..3 {
             explorer.spread(true);
         }
         assert_eq!(
             said(&explorer).as_deref(),
-            Some("Spread 3×: - closer, = wider")
+            Some("Spread 1.5×: - closer, = wider")
         );
         let after = ball(&explorer);
-        assert_eq!(after.center, before.center * 3.0);
+        assert_eq!(after.center, closest.center * 3.0);
         assert_eq!(after.radius, before.radius, "no sphere resized");
         let moved = explorer.nucleus().point(main).zip(at).map(|(a, b)| a - b);
         assert!(
@@ -2900,10 +2919,8 @@ pub(crate) mod tests {
             said(&explorer).as_deref(),
             Some("Spread as wide as it goes: - brings the modules closer")
         );
-        for _ in 0..3 {
-            explorer.spread(false);
-        }
-        assert_eq!(ball(&explorer), before, "back as laid out");
+        explorer.spread(false);
+        assert_eq!(ball(&explorer), before, "back as it opened");
     }
 
     #[test]
