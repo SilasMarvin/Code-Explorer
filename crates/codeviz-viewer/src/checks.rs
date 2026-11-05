@@ -1827,11 +1827,17 @@ fn zoom_bounds(s: &Snap, since: &Since) -> Value {
     };
     let free = s.free();
     let mut offenders = Vec::new();
-    // Zoomed in, the sphere under the pointer, nearest the camera (biggest on screen).
-    let under = s.state.pointer.and_then(|p| {
-        s.spheres()
-            .filter(|m| v2(m.at).distance(v2(p)) <= m.radius)
-            .max_by(|a, b| a.radius.total_cmp(&b.radius))
+    // Zoomed in, the sphere the wheel zooms to: the module expanded, whatever lies in
+    // front of it; else the one under the pointer, nearest the camera (biggest on
+    // screen).
+    let expanded =
+        (s.spheres()).find(|m| s.expanded() && s.state.expanded.as_ref() == Some(&m.name));
+    let under = expanded.or_else(|| {
+        s.state.pointer.and_then(|p| {
+            s.spheres()
+                .filter(|m| v2(m.at).distance(v2(p)) <= m.radius)
+                .max_by(|a, b| a.radius.total_cmp(&b.radius))
+        })
     });
     if since.has(Kind::Zoom { out: false })
         && let Some(m) = under
