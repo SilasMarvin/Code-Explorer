@@ -63,7 +63,9 @@ fn keep_awake(
     });
     let moved = now != *shown;
     *shown = now;
-    let busy = std::mem::take(&mut awake.0) || moved || cameras.iter().any(OrbitCamera::easing);
+    let busy = std::mem::take(&mut awake.0)
+        || moved
+        || cameras.iter().any(|c| c.easing() || c.turning_by_hand());
     if busy {
         redraw.write(RequestRedraw);
     }

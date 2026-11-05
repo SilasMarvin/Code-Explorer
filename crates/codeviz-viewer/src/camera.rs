@@ -25,13 +25,14 @@ use bevy::{
         gestures::PinchGesture,
         mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
     },
+    pbr::DistanceFog,
     prelude::*,
     render::render_resource::BlendState,
     window::PrimaryWindow,
 };
 use bevy_egui::{EguiGlobalSettings, PrimaryEguiContext, input::EguiWantsInput};
 
-use crate::{explorer::Explorer, nucleus};
+use crate::{colors, explorer::Explorer, nucleus};
 
 pub(crate) struct OrbitCameraPlugin;
 
@@ -97,6 +98,9 @@ pub(crate) struct OrbitCamera {
     /// other, or an orbit or pan, drew the map, or the sphere it zoomed to, into the
     /// free area or held it there, beside zooming about the pointer.
     held: Option<bool>,
+    /// Frames left of a turn or pan by hand under way: a drag held, or two fingers
+    /// on a trackpad, which send their moves a frame or two apart.
+    hands: u8,
     /// Who put the camera where it is going: the view framing itself, the hands, or
     /// a pose it had put back.
     placed: Placed,
@@ -251,6 +255,7 @@ impl Default for OrbitCamera {
             trip: None,
             reach: None,
             held: None,
+            hands: 0,
             placed: Placed::Back,
         }
     }
@@ -778,6 +783,12 @@ impl OrbitCamera {
         self.held.is_some()
     }
 
+    /// Whether a hand is turning or panning it now: names hold their places until it
+    /// lets go.
+    pub(crate) fn turning_by_hand(&self) -> bool {
+        self.hands > 0
+    }
+
     /// Whether it stands as far out as the wheel takes it.
     pub(crate) fn farthest(&self) -> bool {
         self.reach
@@ -946,6 +957,9 @@ impl Pose {
 
 const ORBIT_SPEED: f32 = 0.005;
 
+/// Frames a turn or pan on a trackpad counts as under way after its last move.
+const HANDS_LINGER: u8 = 8;
+
 /// `angle` as the same turn between -π and π.
 fn wrap(angle: f32) -> f32 {
     let tau = std::f32::consts::TAU;
@@ -958,12 +972,27 @@ fn spawn_camera(
     mut gizmos: ResMut<GizmoConfigStore>,
 ) {
     gizmos.config_mut::<DefaultGizmoConfigGroup>().0.line.width = 2.0;
-    commands.spawn((
-        Camera3d::default(),
-        OrbitCamera::default(),
-        Projection::Perspective(PerspectiveProjection::default()),
-        Transform::default(),
-    ));
+    // The light rides with the camera, from above and to its left, so every side of
+    // the map is lit alike however it turns; what lies further back is dimmed a
+    // little towards the ground (`nucleus::depth_fog`).
+    commands
+        .spawn((
+            Camera3d::default(),
+            OrbitCamera::default(),
+            Projection::Perspective(PerspectiveProjection::default()),
+            Transform::default(),
+            DistanceFog {
+                color: colors::GROUND,
+                ..default()
+            },
+        ))
+        .with_child((
+            DirectionalLight {
+                illuminance: 5_000.0,
+                ..default()
+            },
+            Transform::default().looking_to(Vec3::new(0.35, -0.45, -1.0), Vec3::Y),
+        ));
     // egui gets its own full-window camera so the 3D camera's viewport can shrink to
     // the space between the panels.
     egui_settings.auto_create_primary_context = false;
@@ -980,13 +1009,6 @@ fn spawn_camera(
             clear_color: ClearColorConfig::Custom(Color::NONE),
             ..default()
         },
-    ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 5_000.0,
-            ..default()
-        },
-        Transform::from_xyz(2.0, 6.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.insert_resource(GlobalAmbientLight {
         brightness: 900.0,
@@ -1076,18 +1098,30 @@ fn camera_input(
                 } else {
                     camera.orbit(scrolled);
                 }
+                camera.hands = HANDS_LINGER;
             }
             MouseScrollUnit::Pixel => {}
         }
         if (zoom - 1.0).abs() > f32::EPSILON {
             said = said.or(camera.zoom(zoom.clamp(0.5, 2.0), pointer));
         }
-        if motion.delta == Vec2::ZERO || !*grabbed {
-            continue;
-        }
         let orbiting = buttons.any_pressed([MouseButton::Left, MouseButton::Middle]) && !shift;
         let panning = buttons.pressed(MouseButton::Right)
             || shift && buttons.any_pressed([MouseButton::Left, MouseButton::Middle]);
+        // A drag that has moved the view holds until the hand lets go; two fingers,
+        // a few frames past their last move.
+        if !*grabbed || !(orbiting || panning) {
+            camera.hands = if buttons.get_just_released().next().is_some() {
+                0
+            } else {
+                camera.hands.saturating_sub(1)
+            };
+        } else if motion.delta != Vec2::ZERO {
+            camera.hands = HANDS_LINGER;
+        }
+        if motion.delta == Vec2::ZERO || !*grabbed {
+            continue;
+        }
         if panning {
             if let Some(offset) = pan(motion.delta) {
                 said = said.or(panned(&mut camera, offset));

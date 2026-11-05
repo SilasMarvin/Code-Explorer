@@ -176,9 +176,9 @@ const BACK: &str = "Back or Forward put back the camera the place had, wherever 
 type Check = fn(&Snap, Option<&Snap>, &Since) -> Value;
 
 /// Every check, by the name testers read, in the order a snapshot lists them.
-const CHECKS: [(&str, Check); 34] = [
+const CHECKS: [(&str, Check); 35] = [
     ("dots-in-spheres", |s, _, _| dots_in_spheres(s)),
-    ("dots-apart", |s, _, _| dots_apart(s)),
+    ("dots-apart", |s, _, since| dots_apart(s, since)),
     ("dot-sizes", |s, _, _| dot_sizes(s)),
     ("spheres-apart", |s, _, _| spheres_apart(s)),
     ("sphere-sizes", |s, _, _| sphere_sizes(s)),
@@ -207,6 +207,7 @@ const CHECKS: [(&str, Check); 34] = [
     ("colours", |s, _, _| colours(s)),
     ("arrows-clear", |s, _, _| arrows_clear(s)),
     ("lines-straight", |s, _, _| lines_straight(s)),
+    ("lit-over", |s, _, _| lit_over(s)),
     ("names-distinct", |s, _, _| names_distinct(s)),
     ("exits-named", |s, _, _| exits_named(s)),
     ("calls-drawn", |s, _, _| calls_drawn(s)),
@@ -459,6 +460,8 @@ struct Node {
     /// back, as the placer had them.
     arrivals: Vec<Vec<[f32; 2]>>,
     color: Option<String>,
+    /// Drawn over everything else in the scene, nearer or not.
+    over: bool,
     rings: Vec<Ring>,
 }
 
@@ -998,7 +1001,13 @@ fn dots_in_spheres(s: &Snap) -> Value {
     verdict(offenders)
 }
 
-fn dots_apart(s: &Snap) -> Value {
+/// No two dots on screen overlap. Turned by hand, dots at different depths may
+/// line up one behind the other, as anything in 3D does: then the lit one shows over
+/// the rest (`lit-over`), and apartness is the world's to judge.
+fn dots_apart(s: &Snap, since: &Since) -> Value {
+    if since.by_hand {
+        return skip(BY_HAND);
+    }
     // A faint dot with no name is nothing a reader tells apart.
     let dots: Vec<&Node> = s
         .nodes
@@ -3418,6 +3427,48 @@ fn lines_straight(s: &Snap) -> Value {
     verdict(offenders)
 }
 
+/// Every lit dot (the start or the selection, the cursor, the calls, the callers, the
+/// function set aside) is drawn over everything unlit in the scene, whatever lies
+/// nearer the camera, so no plain dot or sphere in front ever hides it; nothing
+/// unlit is. Says how many lit dots on screen a nearer unlit dot overlaps
+/// (`overlapped`): those this keeps in sight.
+fn lit_over(s: &Snap) -> Value {
+    let Some(eye) = s.camera.as_ref().map(|c| Vec3::from(c.at)) else {
+        return skip("no camera");
+    };
+    let shown: Vec<&Node> = (s.nodes.iter()).filter(|n| n.on_screen).collect();
+    if shown.is_empty() {
+        return skip("no dot on screen");
+    }
+    let lit = |n: &Node| n.lit() && !n.unlit();
+    let mut offenders = Vec::new();
+    for n in &shown {
+        if n.over != lit(n) {
+            let why = if n.over {
+                "drawn over the rest, though nothing lights it"
+            } else {
+                "lit, but drawn among the rest, where what lies nearer hides it"
+            };
+            offenders.push((
+                1.0,
+                json!({ "function": n.name, "roles": n.roles, "why": why }),
+            ));
+        }
+    }
+    let away = |n: &Node| {
+        n.world
+            .map_or(f32::INFINITY, |w| Vec3::from(w).distance(eye))
+    };
+    let overlapped = (shown.iter().filter(|n| lit(n)))
+        .filter(|n| {
+            shown.iter().any(|m| {
+                !lit(m) && away(m) < away(n) && v2(m.at).distance(v2(n.at)) < m.radius + n.radius
+            })
+        })
+        .count();
+    with(verdict(offenders), "overlapped", json!(overlapped))
+}
+
 /// A call's line ends at a dot drawn, or a caller folded away at its module's sphere.
 fn ends_drawn(s: &Snap, a: &Arrow) -> Found {
     let ends = [
@@ -4373,6 +4424,27 @@ mod tests {
                 .any(|o| o["gaps"].is_array()),
             "{result}"
         );
+    }
+
+    #[test]
+    fn a_lit_dot_is_drawn_over_whatever_lies_nearer() {
+        let mut s = scene();
+        s["camera"] = json!({ "at": [0.0, 0.0, 50.0] });
+        s["nodes"][0]["over"] = json!(true);
+        s["nodes"][2]["over"] = json!(true);
+        assert!(passes(&check(&s, "lit-over")), "{}", check(&s, "lit-over"));
+        // A speck nearer the camera, over f on screen: f still shows, drawn over it.
+        s["nodes"][1]["at"] = json!([382.0, 500.0]);
+        s["nodes"][1]["world"] = json!([-11.0, 0.0, 10.0]);
+        assert_eq!(check(&s, "lit-over")["overlapped"], 1);
+        s["nodes"][0]["over"] = json!(false);
+        let result = check(&s, "lit-over");
+        assert_eq!(result["count"], 1, "{result}");
+        assert_eq!(result["offenders"][0]["function"], "f");
+        // Nothing unlit is drawn over the rest.
+        s["nodes"][0]["over"] = json!(true);
+        s["nodes"][1]["over"] = json!(true);
+        assert_eq!(check(&s, "lit-over")["offenders"][0]["function"], "g");
     }
 
     #[test]

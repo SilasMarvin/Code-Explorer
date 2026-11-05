@@ -19,44 +19,47 @@ pub(crate) struct ScenePlugin;
 
 impl Plugin for ScenePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Startup,
-            (
-                graph_view::create_node_materials,
-                nucleus::create_looks,
-                spawn_nodes,
-            )
-                .chain(),
-        )
-        .add_systems(
-            Update,
-            (
+        app.add_plugins(MaterialPlugin::<graph_view::DotMaterial>::default())
+            .init_gizmo_group::<graph_view::Rings>()
+            .add_systems(
+                Startup,
                 (
-                    pick::point,
-                    pick::click.run_if(not(egui_wants_any_pointer_input)),
+                    graph_view::set_up_rings,
+                    graph_view::create_node_materials,
+                    nucleus::create_looks,
+                    spawn_nodes,
                 )
                     .chain(),
-                keyboard.run_if(not(egui_wants_any_keyboard_input)),
-                pick::double_click.run_if(not(egui_wants_any_pointer_input)),
-                nucleus::follow,
-                pick::hover,
-                place_nodes,
-                nucleus::place_bodies,
-                framing::frame,
-                graph_view::style_nodes,
-                graph_view::draw_graph,
-                nucleus::draw,
             )
-                .chain(),
-        )
-        // Sized once the camera has moved for the frame, before anything is placed
-        // where it is drawn.
-        .add_systems(
-            PostUpdate,
-            graph_view::size_nodes
-                .after(camera::apply_camera)
-                .before(TransformSystems::Propagate),
-        );
+            .add_systems(
+                Update,
+                (
+                    (
+                        pick::point,
+                        pick::click.run_if(not(egui_wants_any_pointer_input)),
+                    )
+                        .chain(),
+                    keyboard.run_if(not(egui_wants_any_keyboard_input)),
+                    pick::double_click.run_if(not(egui_wants_any_pointer_input)),
+                    nucleus::follow,
+                    pick::hover,
+                    place_nodes,
+                    nucleus::place_bodies,
+                    framing::frame,
+                    graph_view::style_nodes,
+                    graph_view::draw_graph,
+                    nucleus::draw,
+                )
+                    .chain(),
+            )
+            // Sized once the camera has moved for the frame, before anything is placed
+            // where it is drawn.
+            .add_systems(
+                PostUpdate,
+                (graph_view::size_nodes, nucleus::depth_fog)
+                    .after(camera::apply_camera)
+                    .before(TransformSystems::Propagate),
+            );
     }
 }
 

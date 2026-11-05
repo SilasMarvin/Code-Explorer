@@ -20,7 +20,9 @@
 //! its opaque pill. In a journey names would rather keep off the dots a deeper level
 //! shows, so a level more takes away no room, but those keep out no name shown. What
 //! the pointer is on is named over the rest, on its emptiest side, taking no room, so
-//! pointing never moves or hides another name.
+//! pointing never moves or hides another name. While a hand turns or pans the camera,
+//! every name keeps its place round its dot or goes, never jumping side to side
+//! mid-turn; when the hand lets go, names are placed afresh.
 
 use std::{
     cell::{Cell, RefCell},
@@ -920,6 +922,11 @@ struct Naming<'a> {
     kept: HashMap<usize, (usize, f32)>,
     /// Where each lit function's name goes now, or waits to: the next [`Kept`].
     places: RefCell<HashMap<usize, (usize, f32)>>,
+    /// While a hand turns the camera, which of its places ([`Naming::module_places`])
+    /// each module's name took when names were last placed: it stays there or goes.
+    modules_kept: Option<HashMap<usize, usize>>,
+    /// Which of its places each module's name takes now: the next [`Kept`].
+    modules_placed: RefCell<HashMap<usize, usize>>,
     /// By cluster, whether the view is near enough to name its plain functions:
     /// [`Naming::roomy`].
     roomy: RefCell<HashMap<usize, bool>>,
@@ -973,6 +980,8 @@ impl<'a> Naming<'a> {
             homes: RefCell::default(),
             kept: HashMap::new(),
             places: RefCell::default(),
+            modules_kept: None,
+            modules_placed: RefCell::default(),
             roomy: RefCell::default(),
         };
         naming.discs = (0..explorer.map().tiles.len())
@@ -1407,18 +1416,21 @@ impl<'a> Naming<'a> {
     ) -> Option<Label> {
         let own = self.own_dots(cluster);
         // Its place in this view, whatever functions' names lie there; where one of
-        // those, placed before it, took that place, it goes rather than moves.
-        let mut spots = self
-            .module_places(painter, cluster)
-            .into_iter()
-            .filter(|&(pill, _, within)| placer.module_room(cluster, &own, pill, within));
-        let free =
-            |&(pill, ..): &(egui::Rect, Arc<egui::Galley>, bool)| placer.over_names(pill) == 0;
-        let (pill, galley, _) = if tier == Tier::Module {
+        // those, placed before it, took that place, it goes rather than moves. While a
+        // hand turns the camera, the place it had, or none.
+        let held = self.modules_kept.as_ref().map(|kept| kept.get(&cluster));
+        let mut spots = (self.module_places(painter, cluster).into_iter().enumerate())
+            .filter(|&(index, _)| held.is_none_or(|kept| kept == Some(&index)))
+            .filter(|(_, (pill, _, within))| placer.module_room(cluster, &own, *pill, *within));
+        let free = |(_, (pill, ..)): &(usize, (egui::Rect, Arc<egui::Galley>, bool))| {
+            placer.over_names(*pill) == 0
+        };
+        let (index, (pill, galley, _)) = if tier == Tier::Module {
             spots.find(free)?
         } else {
             spots.next().filter(free)?
         };
+        self.modules_placed.borrow_mut().insert(cluster, index);
         Some(Label {
             named: Named::Group(cluster),
             side: None,
@@ -1757,7 +1769,7 @@ pub(crate) fn graph_names(
     painter: &egui::Painter,
     project: &impl Fn(Vec3) -> Option<egui::Pos2>,
     explorer: &Explorer,
-    (up, lines): (Vec3, &[CallLine]),
+    (up, lines, turning): (Vec3, &[CallLine], bool),
 ) -> GraphNames {
     let area = painter.clip_rect();
     let hint = (explorer.browsing())
@@ -1774,25 +1786,42 @@ pub(crate) fn graph_names(
     );
     let ctx = painter.ctx();
     let last: Kept = ctx.data(|d| d.get_temp(kept_id())).unwrap_or_default();
-    if last.view.is_some_and(|last| same_view(last, view)) {
+    // While a hand turns the camera, every name holds the place it had round its dot
+    // or goes, so none jumps from side to side mid-turn; let go, they are placed
+    // afresh.
+    let holding = turning && last.view.is_some() && last.start == nucleus.start();
+    if holding || !last.turning && last.view.is_some_and(|last| same_view(last, view)) {
         naming.kept.clone_from(&*last.places);
+    }
+    if holding {
+        naming.modules_kept = Some((*last.modules).clone());
     }
     // First as though nothing were selected and the cursor on no call, for the side
     // each name takes, then as the view is.
-    let (neutral, _) = place(&naming, painter, lines, None);
-    let sides: HashMap<usize, (usize, f32)> = neutral
-        .iter()
-        .filter_map(|l| match (l.named, l.side) {
-            (Named::Node(tile), Some(side)) => Some((tile, side)),
-            _ => None,
-        })
-        .collect();
+    let sides: Arc<HashMap<usize, (usize, f32)>> = if holding {
+        last.sides.clone()
+    } else {
+        let (neutral, _) = place(&naming, painter, lines, None);
+        Arc::new(
+            neutral
+                .iter()
+                .filter_map(|l| match (l.named, l.side) {
+                    (Named::Node(tile), Some(side)) => Some((tile, side)),
+                    _ => None,
+                })
+                .collect(),
+        )
+    };
     let (mut labels, placer) = place(&naming, painter, lines, Some(&sides));
     let laid_out = naming.sizes.take();
     let homes = naming.homes.take();
     let kept = Kept {
         view: Some(view),
+        start: nucleus.start(),
+        turning,
         places: Arc::new(naming.places.take()),
+        sides,
+        modules: Arc::new(naming.modules_placed.take()),
     };
     let kept_off: Vec<(usize, egui::Pos2, f32)> = placer
         .dots
@@ -1893,11 +1922,18 @@ fn same_view(a: View, b: View) -> bool {
 /// Where lit functions' names went when names were last placed, and in what view
 /// ([`View`]): a name there keeps its place, or waits for it, while the view stays
 /// the same; on a fresh selection or journey, with the camera moved or the free area
-/// resized, names are placed afresh.
+/// resized, names are placed afresh. While a hand turns the camera (`turning`), every
+/// name keeps its place: the sides names took in the neutral view, and where each
+/// module's name went, are kept too.
 #[derive(Clone, Default)]
 struct Kept {
     view: Option<View>,
+    /// The journey's start or the selection then.
+    start: Option<usize>,
+    turning: bool,
     places: Arc<HashMap<usize, (usize, f32)>>,
+    sides: Arc<HashMap<usize, (usize, f32)>>,
+    modules: Arc<HashMap<usize, usize>>,
 }
 
 fn kept_id() -> egui::Id {

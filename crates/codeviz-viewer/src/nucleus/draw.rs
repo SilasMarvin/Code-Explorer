@@ -1,8 +1,14 @@
-//! The nucleus in the scene: a sphere per module, drawn as a flat tinted disc facing
-//! the camera with one rim on its edge, where the nucleus has it, eased. The calls
-//! are [`crate::arrows`]'s.
+//! The nucleus in the scene: a sphere per module, where the nucleus has it, eased: a
+//! lit, matte, see-through ball in the module's hue, shaded darker towards its
+//! silhouette so it reads as round, with one faint rim on that silhouette; nothing
+//! shines off it and nothing glows. The light rides with the camera, so every side
+//! looks alike however the map turns, and what lies further back shows a little
+//! dimmer ([`depth_fog`]). The calls are [`crate::arrows`]'s.
 
-use bevy::prelude::*;
+use bevy::{
+    pbr::{DistanceFog, FogFalloff},
+    prelude::*,
+};
 
 use super::{Body, Nucleus};
 use crate::{
@@ -18,93 +24,55 @@ pub(crate) fn follow(time: Res<Time>, mut explorer: ResMut<Explorer>) {
         .ease_nucleus(frame_time(&time));
 }
 
-/// A module's sphere in the scene: a disc facing the camera, as big as the sphere,
-/// so it and its rim are one circle on one centre however near the view.
+/// A module's sphere in the scene.
 #[derive(Component, Debug)]
 pub(crate) struct ModuleSphere(usize);
 
 /// What spheres are drawn with.
 #[derive(Resource, Debug)]
 pub(crate) struct Looks {
-    disc: Handle<Mesh>,
-    /// By module color: the nucleus, and an open module.
+    ball: Handle<Mesh>,
+    /// By module color: the nucleus, an open module, and browsing, so faint the
+    /// module only just reads as one.
     nucleus: Vec<Handle<StandardMaterial>>,
     open: Vec<Handle<StandardMaterial>>,
-    /// Browsing, so faint the module only just reads as one, by color, for each of
-    /// [`DEPTH_SHADES`] from the nearest to the furthest back.
-    faint: Vec<Vec<Handle<StandardMaterial>>>,
+    faint: Vec<Handle<StandardMaterial>>,
 }
 
-/// Browsing, how strong a module's disc is, from the nearest module to the furthest
-/// back: further back reads fainter, so the map reads as having depth in a still.
-const DEPTH_SHADES: [f32; 4] = [0.1, 0.075, 0.055, 0.04];
-
-/// Browsing, how far back each module sits among them all, as `camera` sees them:
-/// 0 for the nearest, 1 for the furthest back.
-fn depths(nucleus: &Nucleus, camera: &Transform) -> Vec<f32> {
-    let forward = *camera.forward();
-    let along: Vec<f32> = (0..nucleus.now.balls.len())
-        .map(|c| {
-            nucleus
-                .ball(c)
-                .map_or(0.0, |b| (b.center - camera.translation).dot(forward))
-        })
-        .collect();
-    let (near, far) = along
-        .iter()
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &d| {
-            (lo.min(d), hi.max(d))
-        });
-    let span = (far - near).max(1e-3);
-    along
-        .iter()
-        .map(|d| ((d - near) / span).clamp(0.0, 1.0))
-        .collect()
-}
+/// How much dimmer, towards the ground, the furthest of the map shows than the
+/// nearest: enough that depth reads in a still, not so much that the back fades.
+const FURTHEST_DIM: f32 = 0.3;
 
 pub(crate) fn create_looks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Flat, lit by nothing: no highlight or glow, only the module's tint.
-    let tint = |color: Color, alpha: f32| StandardMaterial {
+    // Lit and matte: shaded by the light, with no highlight to shine off it.
+    let matte = |color: Color, alpha: f32| StandardMaterial {
         base_color: color.with_alpha(alpha),
-        unlit: true,
+        perceptual_roughness: 1.0,
+        reflectance: 0.0,
         alpha_mode: AlphaMode::Blend,
-        cull_mode: None,
-        double_sided: true,
         ..default()
     };
     let colors: Vec<Color> = (0..MODULE_SHADES).map(module_color).collect();
+    let tinted = |alpha: f32, materials: &mut Assets<StandardMaterial>| {
+        (colors.iter())
+            .map(|&c| materials.add(matte(c, alpha)))
+            .collect()
+    };
     let looks = Looks {
-        disc: meshes.add(Circle::new(1.0).mesh().resolution(96)),
-        nucleus: colors
-            .iter()
-            .map(|&c| materials.add(tint(c, 0.1)))
-            .collect(),
-        open: colors
-            .iter()
-            .map(|&c| materials.add(tint(c, 0.12)))
-            .collect(),
-        faint: DEPTH_SHADES
-            .iter()
-            .map(|&alpha| {
-                colors
-                    .iter()
-                    .map(|&c| materials.add(tint(c, alpha)))
-                    .collect()
-            })
-            .collect(),
+        ball: meshes.add(Sphere::new(1.0).mesh().uv(64, 40)),
+        nucleus: tinted(0.16, &mut materials),
+        open: tinted(0.18, &mut materials),
+        faint: tinted(0.1, &mut materials),
     };
     commands.insert_resource(looks);
 }
 
-/// The orbit camera, apart from the spheres placed.
-type OnlyTheCamera = (With<OrbitCamera>, Without<ModuleSphere>);
-
-/// Spawns a sphere per module, then keeps each where the nucleus has it, facing the
-/// camera, drawn as its body asks.
+/// Spawns a sphere per module, then keeps each where the nucleus has it, drawn as
+/// its body asks.
 pub(crate) fn place_bodies(
     mut commands: Commands,
     explorer: Res<Explorer>,
@@ -115,7 +83,6 @@ pub(crate) fn place_bodies(
         &mut Visibility,
         &mut MeshMaterial3d<StandardMaterial>,
     )>,
-    cameras: Query<&Transform, OnlyTheCamera>,
 ) {
     let nucleus = explorer.nucleus();
     let clusters = explorer.graph().cluster_count();
@@ -123,32 +90,30 @@ pub(crate) fn place_bodies(
         for cluster in 0..clusters {
             commands.spawn((
                 ModuleSphere(cluster),
-                Mesh3d(looks.disc.clone()),
-                MeshMaterial3d(looks.faint[0][module_shade(cluster)].clone()),
+                Mesh3d(looks.ball.clone()),
+                MeshMaterial3d(looks.faint[module_shade(cluster)].clone()),
                 Transform::default(),
                 Visibility::Hidden,
             ));
         }
     }
-    let camera = cameras.single().ok();
-    let facing = camera.map_or(Quat::IDENTITY, |c| c.rotation);
-    let depths = camera
-        .filter(|_| nucleus.browsing())
-        .map(|camera| depths(nucleus, camera));
     for (sphere, mut transform, mut visibility, mut material) in &mut spheres {
         if let Some(ball) = nucleus.ball(sphere.0) {
-            let shown = nucleus.shows_body(ball.body);
-            let placed = Transform::from_translation(ball.center)
-                .with_rotation(facing)
-                .with_scale(Vec3::splat(ball.radius));
+            let placed =
+                Transform::from_translation(ball.center).with_scale(Vec3::splat(ball.radius));
             transform.set_if_neq(placed);
-            let depth = depths
-                .as_ref()
-                .and_then(|d| d.get(sphere.0).copied())
-                .unwrap_or(0.0);
-            dress(&looks, sphere.0, ball.body, depth, &mut material);
+            let color = module_shade(sphere.0);
+            let wanted = match ball.body {
+                Body::Nucleus => &looks.nucleus[color],
+                Body::Open => &looks.open[color],
+                // A closed sphere is hidden.
+                Body::Faint | Body::Closed => &looks.faint[color],
+            };
+            if &material.0 != wanted {
+                material.0 = wanted.clone();
+            }
             // A journey shows the modules it runs through, and nothing else.
-            visibility.set_if_neq(if shown {
+            visibility.set_if_neq(if nucleus.shows_body(ball.body) {
                 Visibility::Inherited
             } else {
                 Visibility::Hidden
@@ -157,36 +122,48 @@ pub(crate) fn place_bodies(
     }
 }
 
-/// Gives a module's sphere the look its body asks for, `depth` back among them all
-/// (0 nearest, 1 furthest).
-fn dress(
-    looks: &Looks,
-    cluster: usize,
-    body: Body,
-    depth: f32,
-    material: &mut MeshMaterial3d<StandardMaterial>,
-) {
-    let color = module_shade(cluster);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
-        reason = "a share of a short list"
-    )]
-    let shade = ((depth * DEPTH_SHADES.len() as f32) as usize).min(DEPTH_SHADES.len() - 1);
-    let wanted = match body {
-        Body::Nucleus => &looks.nucleus[color],
-        Body::Open => &looks.open[color],
-        // A closed sphere is hidden.
-        Body::Faint | Body::Closed => &looks.faint[shade][color],
-    };
-    if &material.0 != wanted {
-        material.0 = wanted.clone();
-    }
+/// How far from `eye` the map shown begins and ends: the nearest and the furthest
+/// of its spheres' surfaces.
+fn depth_span(nucleus: &Nucleus, eye: Vec3) -> Option<(f32, f32)> {
+    nucleus
+        .balls()
+        .filter(|(_, ball)| nucleus.shows_body(ball.body))
+        .map(|(_, ball)| {
+            let away = ball.center.distance(eye);
+            ((away - ball.radius).max(0.0), away + ball.radius)
+        })
+        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
 }
 
-/// A rim round each sphere's disc, on the disc's own centre and edge, so the two read
-/// as one outline; browsing, fainter the further back.
+/// How far towards the ground a point `away` from the camera is dimmed, the map
+/// spanning `span`: none at its nearest, [`FURTHEST_DIM`] at its furthest.
+fn dimmed_at((near, far): (f32, f32), away: f32) -> f32 {
+    ((away - near) / (far - near).max(1e-3)).clamp(0.0, 1.0) * FURTHEST_DIM
+}
+
+/// Dims what lies further back, a little, towards the ground: the map's nearest
+/// surface not at all, its furthest by [`FURTHEST_DIM`], wherever the camera stands.
+/// Run once the camera has moved for the frame.
+pub(crate) fn depth_fog(
+    explorer: Res<Explorer>,
+    mut cameras: Query<(&Transform, &mut DistanceFog), With<OrbitCamera>>,
+) {
+    let Ok((camera, mut fog)) = cameras.single_mut() else {
+        return;
+    };
+    let Some((near, far)) = depth_span(explorer.nucleus(), camera.translation) else {
+        return;
+    };
+    // Linear fog is whole at its end: put the end where the furthest is only
+    // [`FURTHEST_DIM`] of the way there.
+    fog.falloff = FogFalloff::Linear {
+        start: near,
+        end: near + (far - near).max(1e-3) / FURTHEST_DIM,
+    };
+}
+
+/// A rim round each sphere where its surface turns away from the camera, so it
+/// reads as one ball with an edge; dimmer the further back, as the sphere is.
 pub(crate) fn draw(
     explorer: Res<Explorer>,
     cameras: Query<&Transform, With<OrbitCamera>>,
@@ -196,25 +173,70 @@ pub(crate) fn draw(
     let Ok(camera) = cameras.single() else {
         return;
     };
-    let facing = camera.rotation;
-    let depths = nucleus.browsing().then(|| depths(nucleus, camera));
+    let eye = camera.translation;
+    let Some(span) = depth_span(nucleus, eye) else {
+        return;
+    };
     for (cluster, ball) in nucleus.balls() {
-        let near = depths
-            .as_ref()
-            .and_then(|d| d.get(cluster))
-            .map_or(1.0, |depth| 1.0 - 0.6 * depth);
         let alpha = match ball.body {
-            Body::Nucleus => 0.85,
-            Body::Open => 0.7,
-            Body::Faint => 0.35,
+            Body::Nucleus => 0.6,
+            Body::Open => 0.5,
+            Body::Faint => 0.3,
             Body::Closed => continue,
         };
+        let Some((middle, radius, facing)) = silhouette(ball.center, ball.radius, eye) else {
+            continue;
+        };
+        let near = 1.0 - dimmed_at(span, ball.center.distance(eye));
         gizmos
             .circle(
-                Isometry3d::new(ball.center, facing),
-                ball.radius,
+                Isometry3d::new(middle, facing),
+                radius,
                 module_color(cluster).with_alpha(alpha * near),
             )
             .resolution(96);
+    }
+}
+
+/// The circle a sphere of `radius` round `center` shows its edge along, seen from
+/// `eye`: its middle, its radius, and a turn whose Z faces the eye. None from inside.
+fn silhouette(center: Vec3, radius: f32, eye: Vec3) -> Option<(Vec3, f32, Quat)> {
+    let to_eye = eye - center;
+    let away = to_eye.length();
+    if away <= radius {
+        return None;
+    }
+    let share = radius / away;
+    let facing = Quat::from_rotation_arc(Vec3::Z, to_eye / away);
+    Some((
+        center + to_eye * share * share,
+        radius * (1.0 - share * share).sqrt(),
+        facing,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_rim_lies_where_the_sphere_turns_away_from_the_eye() {
+        let (center, radius, eye) = (Vec3::new(1.0, 2.0, 0.0), 3.0, Vec3::new(1.0, 2.0, 10.0));
+        let (middle, rim, facing) = silhouette(center, radius, eye).expect("outside");
+        // Every point of it is on the sphere, and the line to the eye grazes it there.
+        for turn in [0.0_f32, 1.0, 2.5, 4.0] {
+            let point = middle + facing * Vec3::new(turn.cos(), turn.sin(), 0.0) * rim;
+            assert!((point.distance(center) - radius).abs() < 1e-4);
+            assert!((point - center).dot(eye - point).abs() < 1e-3);
+        }
+        assert!(silhouette(center, radius, center).is_none());
+    }
+
+    #[test]
+    fn the_back_of_the_map_shows_dimmer_than_its_front_by_a_little() {
+        let span = (10.0, 30.0);
+        assert!(dimmed_at(span, 10.0).abs() < 1e-6);
+        assert!((dimmed_at(span, 30.0) - FURTHEST_DIM).abs() < 1e-6);
+        assert!(dimmed_at(span, 20.0) > 0.0 && dimmed_at(span, 20.0) < FURTHEST_DIM);
     }
 }

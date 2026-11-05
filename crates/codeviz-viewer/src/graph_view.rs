@@ -4,11 +4,20 @@
 //! names carry: white, violet, blue, amber darker the deeper, pink, and grey for the
 //! rest; its module shows in its sphere alone. Its size says only what it is to the
 //! view ([`Dot`]): a faint speck, lit, or the one in focus. Hovering rings the node,
-//! and shows a speck as big as a lit one, but never repaints it.
+//! and shows a speck as big as a lit one, but never repaints it. Each dot is a small
+//! matte ball, shaded by the light; a lit one, and its rings, show over everything
+//! unlit whatever lies nearer, so a journey reads from any side.
 
 use std::collections::HashMap;
 
-use bevy::prelude::*;
+use bevy::{
+    mesh::MeshVertexBufferLayoutRef,
+    pbr::{ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline},
+    prelude::*,
+    render::render_resource::{
+        AsBindGroup, CompareFunction, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+    },
+};
 
 use crate::{
     arrows::Spine,
@@ -42,14 +51,67 @@ pub(crate) enum NodeLook {
 /// How bright a dimmed node is, against its full brightness.
 const DIM: f32 = 0.12 + 0.88 / 3.0;
 
+/// What a function's dot is drawn with: a matte ball, lit or not ([`Over`]).
+pub(crate) type DotMaterial = ExtendedMaterial<StandardMaterial, Over>;
+
+/// Whether a dot shows over everything else in the scene, nearer or not: one lit is
+/// never hidden by a plain dot or a sphere in front of it. Drawn after the rest
+/// ([`OVER_SORT`]), it takes no notice of what lies nearer.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
+#[bind_group_data(OverKey)]
+pub(crate) struct Over {
+    pub(crate) over: bool,
+}
+
+#[repr(C)]
+#[derive(Eq, PartialEq, Hash, Copy, Clone)]
+pub(crate) struct OverKey {
+    over: bool,
+}
+
+impl From<&Over> for OverKey {
+    fn from(material: &Over) -> Self {
+        Self {
+            over: material.over,
+        }
+    }
+}
+
+impl MaterialExtension for Over {
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if key.bind_group_data.over
+            && let Some(depth) = descriptor.depth_stencil.as_mut()
+        {
+            depth.depth_compare = Some(CompareFunction::Always);
+        }
+        Ok(())
+    }
+}
+
+/// How much nearer than it is a dot drawn over the rest counts, as the see-through
+/// things are drawn back to front: past anything in the scene, so it comes last.
+const OVER_SORT: f32 = 1.0e6;
+
 /// Every look, in full and dimmed.
 pub(crate) fn node_materials(
-    materials: &mut Assets<StandardMaterial>,
-) -> HashMap<(NodeLook, bool), Handle<StandardMaterial>> {
+    materials: &mut Assets<DotMaterial>,
+) -> HashMap<(NodeLook, bool), Handle<DotMaterial>> {
     let mut table = HashMap::new();
     for (look, material) in node_looks() {
-        table.insert((look, false), materials.add(material.clone()));
-        table.insert((look, true), materials.add(dimmed(&material, DIM)));
+        let over = !matches!(look, NodeLook::Plain | NodeLook::Faded);
+        let mut add = |base: StandardMaterial| {
+            materials.add(DotMaterial {
+                base,
+                extension: Over { over },
+            })
+        };
+        table.insert((look, false), add(material.clone()));
+        table.insert((look, true), add(dimmed(&material, DIM)));
     }
     table
 }
@@ -57,7 +119,7 @@ pub(crate) fn node_materials(
 /// `material` at `share` of its brightness: darker, and fainter where it is see-through.
 fn dimmed(material: &StandardMaterial, share: f32) -> StandardMaterial {
     let base = LinearRgba::from(material.base_color);
-    let alpha = if material.alpha_mode == AlphaMode::Blend {
+    let alpha = if base.alpha < 1.0 {
         base.alpha * share
     } else {
         base.alpha
@@ -74,25 +136,33 @@ fn dimmed(material: &StandardMaterial, share: f32) -> StandardMaterial {
     }
 }
 
-/// How each look is drawn at full brightness: flat, with only enough light of its
-/// own to read on the dark, and no glow.
+/// How each look is drawn at full brightness: a matte ball shaded by the light, with
+/// only enough light of its own to keep its color on its dark side, no highlight and
+/// no glow. A lit one is drawn among the see-through things, after all of them.
 fn node_looks() -> HashMap<NodeLook, StandardMaterial> {
-    let flat = |color: Color| StandardMaterial {
+    let matte = |color: Color| StandardMaterial {
         base_color: color,
-        emissive: LinearRgba::from(color) * 0.5,
+        emissive: LinearRgba::from(color) * 0.3,
+        perceptual_roughness: 1.0,
+        reflectance: 0.0,
         ..default()
+    };
+    let lit = |color: Color| StandardMaterial {
+        alpha_mode: AlphaMode::Blend,
+        depth_bias: OVER_SORT,
+        ..matte(color)
     };
     let grey = FURTHER.mix(&Color::BLACK, 0.35);
     let mut table = HashMap::new();
-    table.insert(NodeLook::Start, flat(SELECTED));
-    table.insert(NodeLook::Cursor, flat(CURSOR));
+    table.insert(NodeLook::Start, lit(SELECTED));
+    table.insert(NodeLook::Cursor, lit(CURSOR));
     for flow in [Flow::Into]
         .into_iter()
         .chain((1..=SHADES).map(Flow::journey))
     {
-        table.insert(NodeLook::Role(flow), flat(flow.color()));
+        table.insert(NodeLook::Role(flow), lit(flow.color()));
     }
-    table.insert(NodeLook::Plain, flat(grey));
+    table.insert(NodeLook::Plain, matte(grey));
     table.insert(
         NodeLook::Faded,
         StandardMaterial {
@@ -201,11 +271,7 @@ pub(crate) fn look_color(look: NodeLook) -> Color {
 pub(crate) fn style_nodes(
     explorer: Res<Explorer>,
     materials: Res<NodeMaterials>,
-    mut nodes: Query<(
-        &Tile,
-        &mut MeshMaterial3d<StandardMaterial>,
-        &mut Visibility,
-    )>,
+    mut nodes: Query<(&Tile, &mut MeshMaterial3d<DotMaterial>, &mut Visibility)>,
 ) {
     if !explorer.is_changed() {
         return;
@@ -267,11 +333,11 @@ pub(crate) fn guessed(explorer: &Explorer, tile: usize) -> bool {
 }
 
 #[derive(Resource, Debug)]
-pub(crate) struct NodeMaterials(pub(crate) HashMap<(NodeLook, bool), Handle<StandardMaterial>>);
+pub(crate) struct NodeMaterials(pub(crate) HashMap<(NodeLook, bool), Handle<DotMaterial>>);
 
 pub(crate) fn create_node_materials(
     mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<DotMaterial>>,
 ) {
     commands.insert_resource(NodeMaterials(node_materials(&mut materials)));
 }
@@ -312,7 +378,7 @@ pub(crate) fn size_nodes(
 pub(crate) fn draw_graph(
     explorer: Res<Explorer>,
     cameras: Query<(&Camera, &GlobalTransform), With<OrbitCamera>>,
-    mut gizmos: Gizmos,
+    mut gizmos: Gizmos<Rings>,
     mut marks: ResMut<Marks>,
 ) {
     marks.rings.clear();
@@ -362,6 +428,18 @@ pub(crate) fn draw_graph(
         };
         ring(tile, HOVER, out);
     }
+}
+
+/// The rings round dots: drawn over everything in the scene, as the lit dots they
+/// ring are.
+#[derive(Default, Reflect, GizmoConfigGroup)]
+pub(crate) struct Rings;
+
+/// Sets the rings to show over the rest, at the width the other lines are drawn.
+pub(crate) fn set_up_rings(mut gizmos: ResMut<GizmoConfigStore>) {
+    let (config, _) = gizmos.config_mut::<Rings>();
+    config.depth_bias = -1.0;
+    config.line.width = 2.0;
 }
 
 /// How far out a ring sits, against its function's radius.

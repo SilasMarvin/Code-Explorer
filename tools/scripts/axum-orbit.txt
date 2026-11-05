@@ -1,0 +1,46 @@
+#: view demo/out/axum-server.json
+# Full orbit (FIX15): a drag turns the map any way round, a whole turn in yaw and
+# over the pole in pitch, with no stop and nothing laid out again; every call's line
+# stays straight between its dots, the lit dots show over everything unlit whatever
+# lies nearer, names stay by their dots; R turns back to the usual view.
+click orders::place
+key enter
+key .
+snap journey
+drag 314.159 0
+expect check lines-straight pass
+expect check lit-over pass
+expect check labels-near pass
+expect check labels-clear pass
+snap yaw 90
+drag 314.159 0
+expect check lines-straight pass
+expect check lit-over pass
+expect check labels-near pass
+snap yaw 180
+drag 314.159 0
+expect check lit-over pass
+snap yaw 270
+drag 314.159 0
+snap yaw 360
+drag 0 314.159
+expect check lit-over pass
+expect check labels-near pass
+snap pitch at the pole
+drag 0 314.159
+expect check lines-straight pass
+expect check lit-over pass
+expect check labels-near pass
+expect check labels-clear pass
+snap over the pole
+drag 120 0
+expect check lit-over pass
+snap upside down turned
+key r
+expect check framed pass
+snap reset
+key x
+drag 400 200
+expect check lit-over pass
+expect check lines-straight pass
+snap expanded turned

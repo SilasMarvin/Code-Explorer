@@ -219,11 +219,12 @@ fn draw_ui(
                 awake.0 = true;
             }
         }
-        let names_for = names_key(ctx, &explorer, routes_for, graph_area);
+        let turning = orbit.turning_by_hand();
+        let names_for = names_key(ctx, &explorer, (routes_for, turning), graph_area);
         if drawn.names_for != Some(names_for) || drawn.names.is_none() {
             let lines = drawn.routes.lines();
             let up = transform.up().into();
-            let names = graph_names(&painter, &project, &explorer, (up, &lines));
+            let names = graph_names(&painter, &project, &explorer, (up, &lines, turning));
             drawn.calls = arrows::draw(
                 &under,
                 &explorer,
@@ -345,9 +346,15 @@ fn lineless_key(explorer: &Explorer) -> u64 {
 }
 
 /// What the names and the labels where calls leave hang on besides the lines: the
-/// free area, what the view is on and the pointer, the search box, and the fonts
-/// for the first frames, before they are all loaded.
-fn names_key(ctx: &egui::Context, explorer: &Explorer, routes: u64, area: egui::Rect) -> u64 {
+/// free area, what the view is on and the pointer, whether a hand is turning the
+/// camera, the search box, and the fonts for the first frames, before they are all
+/// loaded.
+fn names_key(
+    ctx: &egui::Context,
+    explorer: &Explorer,
+    (routes, turning): (u64, bool),
+    area: egui::Rect,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
     let search = egui::Id::new("search");
@@ -376,6 +383,7 @@ fn names_key(ctx: &egui::Context, explorer: &Explorer, routes: u64, area: egui::
     // paths down from the start, two pink lines and two numbers.
     (
         routes,
+        turning,
         explorer.cursor_span(),
         explorer.aside(),
         explorer.hovered(),

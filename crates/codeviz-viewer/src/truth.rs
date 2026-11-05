@@ -182,6 +182,7 @@ pub(crate) fn scene(view: &View) -> Value {
                 "home": screen.homes.get(&d.tile).map(|r| rect(*r)),
                 "crowded_by": crowding(explorer, &drawn, d),
                 "color": d.color.map(hex),
+                "over": d.over,
                 "rings": rings(view, d),
             })
         })

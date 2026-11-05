@@ -38,7 +38,7 @@ use codeviz_layout::{
     atlas::{self, module_homes, pack, turned},
 };
 
-pub(crate) use draw::{create_looks, draw, follow, place_bodies};
+pub(crate) use draw::{create_looks, depth_fog, draw, follow, place_bodies};
 pub(crate) use journey::rank_callers;
 
 use crate::{

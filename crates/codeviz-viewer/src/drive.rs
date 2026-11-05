@@ -39,6 +39,7 @@ use crate::{
     camera::OrbitCamera,
     checks::{self, Since},
     explorer::Explorer,
+    graph_view::DotMaterial,
     idle::Awake,
     keys::Press,
     labels::node_name,
@@ -1065,6 +1066,8 @@ pub(crate) struct Drawn {
     pub(crate) on_screen: bool,
     /// What it is filled with.
     pub(crate) color: Option<Color>,
+    /// Whether it is drawn over everything else, nearer or not.
+    pub(crate) over: bool,
 }
 
 /// Everything a snapshot reads.
@@ -1075,7 +1078,7 @@ pub(crate) struct View<'w, 's> {
     pub(crate) chrome: Res<'w, Chrome>,
     pub(crate) screen: Res<'w, Screen>,
     pub(crate) marks: Res<'w, Marks>,
-    materials: Res<'w, Assets<StandardMaterial>>,
+    materials: Res<'w, Assets<DotMaterial>>,
     tiles: Query<
         'w,
         's,
@@ -1083,7 +1086,7 @@ pub(crate) struct View<'w, 's> {
             &'static Tile,
             &'static GlobalTransform,
             &'static InheritedVisibility,
-            Option<&'static MeshMaterial3d<StandardMaterial>>,
+            Option<&'static MeshMaterial3d<DotMaterial>>,
         ),
     >,
     cameras: Query<
@@ -1138,7 +1141,10 @@ impl View<'_, '_> {
                     on_screen: self.on_screen(at),
                     color: material
                         .and_then(|m| self.materials.get(&m.0))
-                        .map(|m| m.base_color),
+                        .map(|m| m.base.base_color),
+                    over: material
+                        .and_then(|m| self.materials.get(&m.0))
+                        .is_some_and(|m| m.extension.over),
                 })
             })
             .collect();
@@ -1193,6 +1199,7 @@ impl View<'_, '_> {
             radius: self.screen_radius(world, world_radius),
             on_screen: true,
             color: None,
+            over: false,
         })
     }
 
@@ -2024,13 +2031,20 @@ fn camera_differs(then: &Value, now: &Value) -> Option<String> {
             how.push(format!("target[{axis}] {a} → {b}"));
         }
     }
-    for (field, slack) in [
-        ("distance", SAME_PLACE),
-        ("yaw", SAME_ANGLE),
-        ("pitch", SAME_ANGLE),
+    // An angle a whole turn round is the same angle.
+    let tau = std::f64::consts::TAU;
+    for (field, slack, turns) in [
+        ("distance", SAME_PLACE, false),
+        ("yaw", SAME_ANGLE, true),
+        ("pitch", SAME_ANGLE, true),
     ] {
         let (a, b) = (number(&then[field]), number(&now[field]));
-        if (a - b).abs() > slack {
+        let off = if turns {
+            (a - b) - ((a - b) / tau).round() * tau
+        } else {
+            a - b
+        };
+        if off.abs() > slack {
             how.push(format!("{field} {a} → {b}"));
         }
     }
