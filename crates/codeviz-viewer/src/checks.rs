@@ -35,7 +35,7 @@ use crate::{
     labels::{self, CLEAR as NAME_CLEAR, GAP as NAME_GAP, PILL_PAD as NAME_PILL},
     nucleus::VIEW,
     script::Kind,
-    sizes::EXPANDED_SHARE,
+    sizes::{self, EXPANDED_SHARE},
     text,
 };
 
@@ -108,9 +108,10 @@ const ZOOM_OUT_LEAST: f32 = 0.4;
 const ZOOM_IN_MOST: f32 = 0.95;
 const ZOOM_IN_KEPT: f32 = 0.88;
 /// The module expanded may be zoomed past [`ZOOM_IN_MOST`], until its names fit: the
-/// wheel may stop on it short of this share of the free area's smaller side only
-/// with at least [`NAMES_FIT`] of its functions in the free area named.
-const ZOOM_IN_NAMES: f32 = 2.0;
+/// wheel may stop on it short of this share of the free area's smaller side
+/// ([`sizes::NEAREST_MOST`], less rounding) only with at least [`NAMES_FIT`] of its
+/// functions in the free area named.
+const ZOOM_IN_NAMES: f32 = sizes::NEAREST_MOST - 0.01;
 const NAMES_FIT: f32 = 0.9;
 /// Least a function or sphere moves in the world, or a dot or name on screen in
 /// points, or the camera turns in radians, to count as moved.
@@ -204,7 +205,7 @@ const CHECKS: [(&str, Check); 36] = [
     ("nothing-moved", nothing_moved),
     ("focus-on-screen", focus_on_screen),
     ("camera-outside", |s, _, _| camera_outside(s)),
-    ("map-on-screen", |s, _, since| map_on_screen(s, since)),
+    ("map-on-screen", map_on_screen),
     ("spheres-unclipped", |s, _, since| {
         spheres_unclipped(s, since)
     }),
@@ -1998,7 +1999,7 @@ fn focus_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     verdict(outside(s.free(), EDGE, focus.into_iter().map(Node::disc)))
 }
 
-fn map_on_screen(s: &Snap, since: &Since) -> Value {
+fn map_on_screen(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
     let out = matches!(
         since.last_move(),
         Some(Kind::Zoom { out: true } | Kind::FrameAll | Kind::Pan)
@@ -2032,15 +2033,19 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
         }
         return with(verdict(offenders), "map", map);
     }
-    let area = |m: &&Module| m.radius * m.radius;
-    let all: f32 = s.sized().map(|m| area(&m)).sum();
-    let out: Vec<&Module> = s
-        .sized()
-        .filter(|m| circle_out(free, v2(m.at), m.radius) > EDGE)
-        .collect();
-    let share = 1.0 - out.iter().map(area).sum::<f32>() / all.max(f32::EPSILON);
-    // Dragged, a map that fits stays in the free area whole.
-    let least = if since.has(Kind::Pan) { 1.0 } else { MAP_SHOWN };
+    let (share, out) = map_inside(s);
+    // Dragged, a map that fits stays in the free area whole, or where the view left
+    // some of it out, no less of it than before the drag: a pan never pulls the map
+    // against the hand.
+    let only_dragged = (since.kinds.iter()).all(|k| matches!(k, Kind::Pan | Kind::Still));
+    let was = before
+        .filter(|b| only_dragged && b.free_area == s.free_area)
+        .map_or(1.0, |b| map_inside(b).0);
+    let least = if since.has(Kind::Pan) {
+        was.min(1.0)
+    } else {
+        MAP_SHOWN
+    };
     // Zoomed all the way out, the map is held over the free area's middle, however
     // it was dragged.
     if s.state.camera.is_some_and(|c| c.farthest) && !extent.contains(free.center()) {
@@ -2057,6 +2062,19 @@ fn map_on_screen(s: &Snap, since: &Since) -> Value {
         offenders.push((least - share, offender));
     }
     with(verdict(offenders), "inside", json!(r2(share)))
+}
+
+/// The share of the map (by sphere area) in the free area, and the spheres not.
+fn map_inside(s: &Snap) -> (f32, Vec<&Module>) {
+    let free = s.free();
+    let area = |m: &&Module| m.radius * m.radius;
+    let all: f32 = s.sized().map(|m| area(&m)).sum();
+    let out: Vec<&Module> = s
+        .sized()
+        .filter(|m| circle_out(free, v2(m.at), m.radius) > EDGE)
+        .collect();
+    let share = 1.0 - out.iter().map(area).sum::<f32>() / all.max(f32::EPSILON);
+    (share, out)
 }
 
 /// Where every sphere shown lies on screen, together.
@@ -6110,10 +6128,16 @@ mod tests {
         s["modules"][1]["at"] = json!([1580.0, 500.0]);
         let result = after(&s, &s, &[OUT], "map-on-screen");
         assert!(!passes(&result), "{result}");
+        let whole = scene();
         assert!(
-            !passes(&after(&s, &s, &[Kind::Pan], "map-on-screen")),
+            !passes(&after(&whole, &s, &[Kind::Pan], "map-on-screen")),
             "nor dragged out"
         );
+        // Where the view left some of it out, a drag keeps no less of it in.
+        assert!(passes(&after(&s, &s, &[Kind::Pan], "map-on-screen")));
+        let mut further = s.clone();
+        further["modules"][0]["at"] = json!([1580.0, 500.0]);
+        assert!(!passes(&after(&s, &further, &[Kind::Pan], "map-on-screen")));
         // Bigger than the free area, it cannot all be there.
         s["modules"][0]["radius"] = json!(900.0);
         assert_eq!(after(&s, &s, &[OUT], "map-on-screen")["pass"], Value::Null);

@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, input::EguiWantsInput};
 
 use crate::{
-    camera::{Lens, NEAREST_FILL, OrbitCamera, Reach},
+    camera::{Lens, NEAREST_FILL, OUTSIDE, OrbitCamera, Reach, overfills},
     disclosure::Disclose,
     explorer::{Explorer, Return},
     nucleus::{Ball, Nucleus, VIEW, view_rotation},
@@ -100,12 +100,11 @@ const CURSOR_ROOM: f32 = 0.85;
 /// in.
 const VISIBLY: f32 = 1.3;
 
-/// A framing that would stand the camera inside a sphere stands it further back, a
-/// step at a time, at most so many, until it is clear of every sphere by a share of
-/// that sphere's radius.
+/// A framing that would stand the camera inside a sphere, or with one over the view
+/// bigger than the wheel lets one come to fill it, stands it further back, a step at a
+/// time, at most so many.
 const OUTSIDE_STEPS: usize = 64;
 const OUTSIDE_STEP: f32 = 1.05;
-const OUTSIDE_ROOM: f32 = 1.05;
 
 /// Sends the camera where the view asks, into the free area (the graph's view less
 /// the journey panel), in this order, each having the last word over the one before:
@@ -604,7 +603,14 @@ fn fill(
         share
     };
     let share = Vec2::splat(share * views.size.min_element()) / views.size;
+    // Its nearest and furthest points too: the cursor inside it then never draws the
+    // middle of what is framed off its middle in depth, which would show it off the
+    // free area's.
+    let back = rotation * Vec3::Z;
+    let depth = (nucleus.expanded_module().and_then(|m| nucleus.ball(m)))
+        .map(|b| [b.center + back * b.radius, b.center - back * b.radius]);
     let alone: Vec<(Vec3, Vec2)> = (nucleus.nucleus_points(rotation).into_iter())
+        .chain(depth.into_iter().flatten())
         .chain(also)
         .map(|p| (p, share))
         .collect();
@@ -647,10 +653,7 @@ fn expanded_shares(
         .collect();
     let share = sizes::expanded_share(least, sizes::comfort(&shown, sizes::COMFORTABLE));
     let every = sizes::comfort(&shown, 1.0);
-    Some((
-        share,
-        sizes::nearest_share(share, least, every, NEAREST_FILL),
-    ))
+    Some((share, sizes::nearest_share(least, every, NEAREST_FILL)))
 }
 
 /// Glides to take in everything shown from where the camera turns to.
@@ -679,8 +682,10 @@ fn glide(
 }
 
 /// Glides to look past `middle` from `distance` back, turned to `rotation`, or as
-/// much further back as stands the camera outside every sphere: the map is laid out
-/// in depth, and a sphere between the camera and what it frames would hold it.
+/// much further back as stands the camera outside every sphere and, with none
+/// expanded, with none over the view bigger than the wheel lets one come to fill it:
+/// the map is laid out in depth, and a sphere between the camera and what it frames
+/// would hold it or hide it.
 fn glide_outside(
     nucleus: &Nucleus,
     (middle, distance): (Vec3, f32),
@@ -689,10 +694,14 @@ fn glide_outside(
     lens: Lens,
 ) {
     let (shift, back) = (lens.shift(rotation), rotation * Vec3::Z);
+    let expanded = nucleus.expanded();
     let mut distance = distance;
     for _ in 0..OUTSIDE_STEPS {
         let eye = middle + (back - shift) * distance;
-        if (nucleus.balls()).all(|(_, b)| eye.distance(b.center) >= b.radius * OUTSIDE_ROOM) {
+        if (nucleus.balls()).all(|(_, b)| {
+            eye.distance(b.center) >= b.radius * OUTSIDE
+                && (expanded || !overfills(&lens, rotation, eye, (b.center, b.radius)))
+        }) {
             break;
         }
         distance *= OUTSIDE_STEP;
