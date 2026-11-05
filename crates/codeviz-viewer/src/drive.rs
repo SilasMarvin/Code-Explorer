@@ -1,12 +1,13 @@
 //! A scripted session (`--script FILE --screenshot DIR`): runs a script's steps in
-//! one window, through the input a person's hands would send. Keys go in as the
-//! keyboard sends them; the pointer moves, presses and scrolls as the window reports a
-//! mouse doing so, so picking, egui and the viewer's own handlers all see it, and a
-//! click that lands on the wrong thing lands there. After each step the view settles
-//! before the next. Each `snap` saves `NN-label.png` and `NN-label.json`, what the
-//! picture shows by name and place (see [`crate::truth::scene`]) with the checks run on
-//! it (see [`crate::checks`]); `session.json` logs how each step went, and
-//! `checks.json` sums up the checks, the `expect` lines and the steps that failed.
+//! a window drawn offscreen (`crate::offscreen`), through the input a person's hands
+//! would send. Keys go in as the keyboard sends them; the pointer moves, presses and
+//! scrolls as the window reports a mouse doing so, so picking, egui and the viewer's
+//! own handlers all see it, and a click that lands on the wrong thing lands there.
+//! After each step the view settles before the next. Each `snap` saves
+//! `NN-label.png` and `NN-label.json`, what the picture shows by name and place (see
+//! [`crate::truth::scene`]) with the checks run on it (see [`crate::checks`]);
+//! `session.json` logs how each step went, and `checks.json` sums up the checks, the
+//! `expect` lines and the steps that failed.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -16,6 +17,7 @@ use std::{
 };
 
 use bevy::{
+    camera::RenderTarget,
     ecs::system::SystemParam,
     input::{
         ButtonState, InputSystems,
@@ -25,11 +27,7 @@ use bevy::{
     },
     prelude::*,
     render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk},
-    window::{
-        CursorMoved, CursorOptions, Monitor, PrimaryMonitor, PrimaryWindow, RequestRedraw,
-        WindowEvent, WindowLevel, WindowOccluded, WindowPosition,
-    },
-    winit::WinitSettings,
+    window::{CursorMoved, PrimaryWindow, WindowEvent},
 };
 use bevy_egui::{EguiContext, EguiFullOutput, EguiPostUpdateSet, PrimaryEguiContext, egui};
 use codeviz_core::SpanId;
@@ -44,6 +42,7 @@ use crate::{
     keys::Press,
     labels::node_name,
     nucleus::Flow,
+    offscreen::Offscreen,
     scene::Tile,
     script::{
         Aim, Expect, Gesture, Kind, Line, Name, Step, bar_number, close_matches, snap_label,
@@ -59,11 +58,6 @@ const SETTLE_FRAMES: u32 = 90;
 const SETTLE_TIME: Duration = Duration::from_secs(2);
 /// Frames to wait after the last snapshot so its file write completes.
 const DRAIN_FRAMES: u32 = 30;
-/// Times a snapshot that comes out black is taken again, the window tucked into
-/// another corner first; and frames and time given it to draw there.
-const RETAKES: u32 = 3;
-const RETUCK_FRAMES: u32 = 10;
-const RETUCK_TIME: Duration = Duration::from_millis(500);
 /// Frames in a row with nothing moving before a step counts as settled.
 const CALM_FRAMES: u32 = 6;
 /// Least time a step is given to show, so labels finish fading and sliding.
@@ -222,89 +216,17 @@ impl Plugin for DrivePlugin {
             ..Drive::default()
         })
         .init_resource::<Screen>()
-        // The window is never focused; it draws every frame all the same.
-        .insert_resource(WinitSettings::continuous())
         // Input goes in with the window's own, so the frame's systems see it.
         .add_systems(PreUpdate, act.before(InputSystems))
         .add_systems(
             PostUpdate,
-            (record, advance, let_go_of_cursor)
+            (record, advance)
                 .chain()
                 .after(EguiPostUpdateSet::EndPass)
                 .before(EguiPostUpdateSet::ProcessOutput)
                 .after(TransformSystems::Propagate),
         );
     }
-}
-
-/// Points of the window left on screen, in a screen's bottom corner.
-const PEEK: f32 = 4.0;
-
-/// Shows the window, which opened hidden, over the others but all off screen except
-/// a corner `PEEK` points square: macOS stops drawing a window that is covered or
-/// wholly off screen, and snapshots come out black. The corner is on one screen and
-/// the rest on none; it takes no clicks. Waits for winit to report the screens,
-/// asking for frames meanwhile, as an idle window would not draw them. Hidden again
-/// (a snapshot came out black), it goes to the next such corner.
-pub(crate) fn tuck_away(
-    mut window: Single<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
-    monitors: Query<(&Monitor, Has<PrimaryMonitor>)>,
-    mut redraw: MessageWriter<RequestRedraw>,
-    mut tucks: Local<usize>,
-) {
-    let (window, cursor) = &mut *window;
-    if window.visible {
-        return;
-    }
-    // Screens in points, the main one first.
-    let mut screens: Vec<(Rect, bool)> = monitors
-        .iter()
-        .map(|(monitor, main)| {
-            let scale = monitor.scale_factor;
-            let at = (monitor.physical_position.as_dvec2() / scale).as_vec2();
-            let size = (monitor.physical_size().as_dvec2() / scale).as_vec2();
-            (Rect::from_corners(at, at + size), main)
-        })
-        .collect();
-    screens.sort_by_key(|&(_, main)| !main);
-    let size = window.resolution.size();
-    // The window's top left in a screen's bottom right, or its top right in the
-    // bottom left.
-    let corners: Vec<Vec2> = screens
-        .iter()
-        .flat_map(|(screen, _)| {
-            let y = screen.max.y - PEEK;
-            [
-                Vec2::new(screen.max.x - PEEK, y),
-                Vec2::new(screen.min.x + PEEK - size.x, y),
-            ]
-        })
-        .collect();
-    // How much of the window a place leaves on the screens.
-    let shown = |at: Vec2| -> f32 {
-        let placed = Rect::from_corners(at, at + size);
-        screens
-            .iter()
-            .map(|(screen, _)| screen.intersect(placed))
-            .filter(|seen| !seen.is_empty())
-            .map(|seen| seen.width() * seen.height())
-            .sum()
-    };
-    let fits: Vec<Vec2> = corners
-        .iter()
-        .copied()
-        .filter(|&at| shown(at) <= PEEK * PEEK + 1.0)
-        .collect();
-    let Some(&at) = fits.get(*tucks % fits.len().max(1)).or(corners.first()) else {
-        redraw.write(RequestRedraw);
-        return;
-    };
-    *tucks += 1;
-    let at = (at * window.scale_factor()).round().as_ivec2();
-    window.position = WindowPosition::At(at);
-    window.window_level = WindowLevel::AlwaysOnTop;
-    window.visible = true;
-    cursor.hit_test = false;
 }
 
 /// What the hands do next, a frame at a time.
@@ -345,11 +267,8 @@ enum Phase {
     Settling(u32, Duration),
     /// Saving what shows on each frame, this many more, as the step before plays out.
     Filming(u32),
-    /// Waiting for a snapshot of the window to be taken, asked for on this frame.
+    /// Waiting for a snapshot to be taken, asked for on this frame.
     Capturing(u32),
-    /// The snapshot came out black: the window was tucked into another corner on this
-    /// frame, at this time, to be taken again once it draws there.
-    Retucked(u32, Duration),
     /// Waiting for the last snapshot to reach the disk, since this frame.
     Closing(u32),
     Done,
@@ -366,8 +285,6 @@ struct Drive {
     acts: VecDeque<Act>,
     /// Where the pointer is, in window points, once a step has moved it.
     pointer: Option<Vec2>,
-    /// Where the window had its cursor before the step's pointer stood in for it.
-    real: Option<Vec2>,
     /// What went wrong with the step under way.
     trouble: Vec<String>,
     log: Vec<Value>,
@@ -378,14 +295,8 @@ struct Drive {
     calm: u32,
     /// What the view showed last frame, to tell whether anything changed.
     last_seen: String,
-    /// Snapshots that came out black, by name, not yet taken again; how often the one
-    /// under way has been; and those still black after every retake, which have no
-    /// PNG: the window was not drawn.
-    black: Vec<String>,
-    retakes: u32,
-    not_drawn: Vec<String>,
-    /// Whether macOS counts the window as covered, so it draws nothing into it.
-    covered: bool,
+    /// Snapshots whose image came back empty: nothing was drawn into it.
+    empty: Vec<String>,
     /// What the last snap showed, to say what moved since, and what each step since
     /// may move.
     last_scene: Option<Value>,
@@ -517,9 +428,7 @@ fn act(
 ) {
     let (entity, window) = &mut *window;
     let entity = *entity;
-    // Systems that read the cursor from the window see the step's pointer; it is put
-    // back after the frame, so the window never moves the real one.
-    drive.real = window.cursor_position();
+    // Systems that read the cursor from the window see the step's pointer.
     if let Some(at) = drive.pointer {
         window
             .bypass_change_detection()
@@ -600,16 +509,6 @@ fn act(
                 }
             }
         }
-    }
-}
-
-/// Puts the window's cursor back where the real one is, before the window would act
-/// on the change and move it.
-fn let_go_of_cursor(drive: Res<Drive>, mut window: Single<&mut Window, With<PrimaryWindow>>) {
-    if drive.pointer.is_some() {
-        window
-            .bypass_change_detection()
-            .set_cursor_position(drive.real);
     }
 }
 
@@ -1263,7 +1162,6 @@ impl View<'_, '_> {
 
 /// Runs the script: lets each step's input play out, waits for the view to rest,
 /// takes snapshots, and exits once the last is on disk.
-#[expect(clippy::too_many_arguments, reason = "a Bevy system")]
 fn advance(
     mut commands: Commands,
     mut drive: ResMut<Drive>,
@@ -1272,17 +1170,8 @@ fn advance(
     shots: Query<(), With<Screenshot>>,
     time: Res<Time<Real>>,
     mut exit: MessageWriter<AppExit>,
-    mut covered: MessageReader<WindowOccluded>,
-    mut window: Single<&mut Window, With<PrimaryWindow>>,
 ) {
     drive.frame += 1;
-    if let Some(message) = covered.read().last() {
-        drive.covered = message.occluded;
-        info!(
-            "session: window covered: {} (frame {})",
-            message.occluded, drive.frame
-        );
-    }
     let now = time.elapsed();
     let started = *drive.started.get_or_insert(now);
     let seen = view.seen();
@@ -1348,14 +1237,8 @@ fn advance(
                 begin_next(&mut commands, &mut drive, &view, now);
             }
         }
-        Phase::Capturing(_) | Phase::Retucked(..) => {
-            if photograph(
-                &mut commands,
-                &mut drive,
-                &mut window,
-                shots.is_empty(),
-                now,
-            ) {
+        Phase::Capturing(at) => {
+            if shots.is_empty() && drive.frame >= at + 2 {
                 finish(&mut drive, &view, None);
                 begin_next(&mut commands, &mut drive, &view, now);
             }
@@ -1366,60 +1249,17 @@ fn advance(
                 write(&drive.dir.join("session.json"), &session);
                 write(&drive.dir.join("checks.json"), &summary(&drive));
                 drive.phase = Phase::Done;
-                exit.write(AppExit::Success);
+                // An image with nothing drawn into it is the harness broken, not the view.
+                exit.write(if drive.empty.is_empty() {
+                    AppExit::Success
+                } else {
+                    error!("session: snaps drawn empty: {}", drive.empty.join(", "));
+                    AppExit::from_code(2)
+                });
             }
         }
         Phase::Done => {}
     }
-}
-
-/// Moves a snapshot along. One that comes out black (macOS stopped drawing the
-/// window: the display dimmed or slept, or something lies over its corner) is taken
-/// again with the window tucked into another corner; still black after `RETAKES`, it
-/// is left without a PNG and the session says the window was not drawn, apart from
-/// how the view fared. Returns whether it is done.
-fn photograph(
-    commands: &mut Commands,
-    drive: &mut Drive,
-    window: &mut Window,
-    taken: bool,
-    now: Duration,
-) -> bool {
-    let Some(name) = drive.snaps.last().cloned() else {
-        return true;
-    };
-    match drive.phase {
-        Phase::Capturing(at) if taken && drive.frame >= at + 2 => {
-            let Some(i) = drive.black.iter().position(|b| *b == name) else {
-                drive.retakes = 0;
-                return true;
-            };
-            drive.black.remove(i);
-            if drive.retakes < RETAKES {
-                drive.retakes += 1;
-                info!(
-                    "session: {name} came out black (window covered: {}); retake {} of {RETAKES} from another corner",
-                    drive.covered, drive.retakes
-                );
-                // Hidden, the window is tucked away again, into the next corner.
-                window.visible = false;
-                drive.phase = Phase::Retucked(drive.frame, now);
-                return false;
-            }
-            warn!("session: {name}: the window was not drawn; no PNG");
-            drive.not_drawn.push(name);
-            drive.retakes = 0;
-            return true;
-        }
-        Phase::Retucked(at, since)
-            if drive.frame >= at + RETUCK_FRAMES && now.saturating_sub(since) >= RETUCK_TIME =>
-        {
-            shoot(commands, &drive.dir, &name);
-            drive.phase = Phase::Capturing(drive.frame);
-        }
-        _ => {}
-    }
-    false
 }
 
 /// How far a pan may fall short of the drag, or overshoot it, without a bound saying
@@ -1662,33 +1502,34 @@ fn film(commands: &mut Commands, drive: &mut Drive, view: &View) {
     drive.snaps.push(name);
 }
 
-/// Takes the window as it shows next, saving it as `name` unless it comes out black,
-/// which a window macOS has stopped drawing does.
+/// Takes the image the session draws into as it shows next, saving it as `name`;
+/// one with nothing drawn into it is noted, and fails the session.
 fn shoot(commands: &mut Commands, dir: &std::path::Path, name: &str) {
     let mut save = save_to_disk(dir.join(format!("{name}.png")));
     let name = name.to_owned();
-    commands.spawn(Screenshot::primary_window()).observe(
-        move |captured: On<ScreenshotCaptured>, mut drive: ResMut<Drive>| {
-            if is_black(&captured.image) {
-                drive.black.push(name.clone());
-            } else {
-                save(captured);
-            }
-        },
-    );
+    commands.queue(move |world: &mut World| {
+        let target = world.resource::<Offscreen>().0.clone();
+        world
+            .spawn(Screenshot(RenderTarget::Image(target)))
+            .observe(
+                move |captured: On<ScreenshotCaptured>, mut drive: ResMut<Drive>| {
+                    if is_empty(&captured.image) {
+                        error!("session: {name} came back empty");
+                        drive.empty.push(name.clone());
+                    } else {
+                        save(captured);
+                    }
+                },
+            );
+    });
 }
 
-/// Whether an image is black throughout, judged from a sample of its pixels.
-fn is_black(image: &Image) -> bool {
-    let Some(data) = &image.data else {
-        return true;
-    };
-    // Every 97th pixel, its color bytes but not its alpha.
-    let (pixels, _) = data.as_chunks::<4>();
-    pixels
-        .iter()
-        .step_by(97)
-        .all(|pixel| pixel[..3].iter().all(|&byte| byte < 8))
+/// Whether nothing was drawn into an image: not even the ground it is cleared to.
+fn is_empty(image: &Image) -> bool {
+    image
+        .data
+        .as_ref()
+        .is_none_or(|data| data.iter().all(|&byte| byte == 0))
 }
 
 fn write(path: &std::path::Path, value: &Value) {
@@ -2088,9 +1929,6 @@ fn summary(drive: &Drive) -> Value {
             "step": s["step"], "line": s["line"], "do": s["do"], "note": s["note"],
         })).collect::<Vec<_>>(),
         "snaps": snaps,
-        // Snapshots with no PNG: macOS drew nothing into the window. Their JSON and
-        // checks hold all the same; the session's verdict leaves them out.
-        "window_not_drawn": drive.not_drawn.iter().chain(&drive.black).collect::<Vec<_>>(),
     })
 }
 
