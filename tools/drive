@@ -84,7 +84,7 @@ LOCK = Path(os.environ.get("CODEVIZ_LOCK", TOOLS / "shots" / ".lock"))
 # Offscreen sessions take one of these slots, apart from the window lock: each may use
 # up to LIMIT_MB, and on a 16 GB machine more at once has run it out of memory.
 SLOTS = Path(os.environ.get("CODEVIZ_SLOTS", TOOLS / "shots" / ".session-slots"))
-SESSION_SLOTS = 2
+SESSION_SLOTS = 1
 SCRIPTS = REPO / "tools" / "scripts"
 
 LIMIT_MB = 3000
