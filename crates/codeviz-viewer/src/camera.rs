@@ -942,7 +942,8 @@ pub(crate) fn leaves(
     (middle, radius): (Vec3, f32),
 ) -> Option<f32> {
     let reach = radius * OUTSIDE;
-    if (from + along * distance).distance(middle) >= reach {
+    // Rounding at the surface, where it came out last, counts as out.
+    if (from + along * distance).distance(middle) >= reach * (1.0 - 1e-4) {
         return None;
     }
     let to = from - middle;
