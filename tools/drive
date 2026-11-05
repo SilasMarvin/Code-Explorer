@@ -28,8 +28,8 @@
 
 The viewer is DIR/.bin/codeviz (build it with `cx DIR build`), run from DIR; DIR is this
 repo unless --wt says otherwise. Every run is killed past 3000 MB or its time limit.
-A session draws offscreen and takes no lock; `live` and `idle`, which open a real
-window, take a lock so only one renders at a time across all agents.
+A session draws offscreen and takes one of 2 session slots, machine-wide; `live` and
+`idle`, which open a real window, take a lock so only one renders at a time.
 
 Script steps (one per line; `#` comments; `#: view DATA [FLAGS]` gives the view args):
   key K               x . , up down left right [ ] enter esc space tab backspace /,
@@ -81,6 +81,10 @@ SHOTS = Path(os.environ.get("CODEVIZ_SHOTS", TOOLS / "shots"))
 DATA = os.environ.get("CODEVIZ_DATA", str(TOOLS / "data"))
 # The same lock the older cx-tools `shot` took, so old and new never render at once.
 LOCK = Path(os.environ.get("CODEVIZ_LOCK", TOOLS / "shots" / ".lock"))
+# Offscreen sessions take one of these slots, apart from the window lock: each may use
+# up to LIMIT_MB, and on a 16 GB machine more at once has run it out of memory.
+SLOTS = Path(os.environ.get("CODEVIZ_SLOTS", TOOLS / "shots" / ".session-slots"))
+SESSION_SLOTS = 2
 SCRIPTS = REPO / "tools" / "scripts"
 
 LIMIT_MB = 3000
@@ -117,33 +121,52 @@ def alive(pid):
         return False
 
 
-def locked(fn):
-    """Runs fn holding the render lock: one real viewer window at a time, machine-wide
-    (`live`, `idle`). A session draws offscreen and takes no lock."""
-    LOCK.parent.mkdir(parents=True, exist_ok=True)
-    said = False
+def take(lock):
+    """Takes `lock`, a directory, if it is free or a killed run left it; returns
+    whether it was taken."""
     while True:
         try:
-            LOCK.mkdir()
-            (LOCK / "pid").write_text(str(os.getpid()))
-            break
+            lock.mkdir()
+            (lock / "pid").write_text(str(os.getpid()))
+            return True
         except FileExistsError:
             try:
-                holder = (LOCK / "pid").read_text().strip()
-                age = time.time() - LOCK.stat().st_mtime
+                holder = (lock / "pid").read_text().strip()
+                age = time.time() - lock.stat().st_mtime
                 if (holder and not alive(int(holder))) or age > STALE_LOCK_SECONDS:
-                    shutil.rmtree(LOCK, ignore_errors=True)
+                    shutil.rmtree(lock, ignore_errors=True)
                     continue
             except (FileNotFoundError, ValueError):
                 pass
-            if not said:
-                print(f"waiting for the render lock ({LOCK})", file=sys.stderr)
-                said = True
-            time.sleep(1)
+            return False
+
+
+def holding(locks, fn, waiting):
+    """Runs fn holding the first of `locks` free, saying `waiting` once while none is."""
+    locks[0].parent.mkdir(parents=True, exist_ok=True)
+    said = False
+    while (lock := next((l for l in locks if take(l)), None)) is None:
+        if not said:
+            print(waiting, file=sys.stderr)
+            said = True
+        time.sleep(1)
     try:
         return fn()
     finally:
-        shutil.rmtree(LOCK, ignore_errors=True)
+        shutil.rmtree(lock, ignore_errors=True)
+
+
+def locked(fn):
+    """Runs fn holding the render lock: one real viewer window at a time, machine-wide
+    (`live`, `idle`)."""
+    return holding([LOCK], fn, f"waiting for the render lock ({LOCK})")
+
+
+def in_slot(fn):
+    """Runs fn in one of SESSION_SLOTS session slots, machine-wide: a session draws
+    offscreen, so it takes no render lock, but its memory counts."""
+    return holding([SLOTS / str(i) for i in range(SESSION_SLOTS)], fn,
+                   f"waiting for a session slot ({SLOTS})")
 
 
 def keep_awake(pid):
@@ -251,7 +274,7 @@ def run_session(name, script, wt=REPO, view_args=None, quiet=False, into=None):
     argv = [str(exe), *view_args, "--script", str(script), "--screenshot", str(out)]
     if not quiet:
         print(f"running {name}: {shlex.join(view_args)}", file=sys.stderr)
-    code = guarded(argv, Path(wt).resolve(), log, time_limit(text))
+    code = in_slot(lambda: guarded(argv, Path(wt).resolve(), log, time_limit(text)))
     if code != 0:
         raise Trouble(f"codeviz exited {code}:\n{viewer_errors(log)}")
     shrink_pngs(out)

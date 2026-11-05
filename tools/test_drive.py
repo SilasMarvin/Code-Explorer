@@ -61,6 +61,19 @@ class DriveTest(unittest.TestCase):
         self.assertNotIn("labels-near", text)
         self.assertIn("note, step 5 (line 6) `key x`: the search box has the keyboard", text)
 
+    def test_session_slots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            slots = [Path(tmp) / "0", Path(tmp) / "1"]
+            self.assertTrue(drive.take(slots[0]))
+            self.assertFalse(drive.take(slots[0]), "held by this live process")
+            # The second slot is taken while the first is held, and let go after.
+            ran = drive.holding(slots, lambda: slots[1].exists(), "waiting")
+            self.assertTrue(ran)
+            self.assertFalse(slots[1].exists())
+            # A slot whose holder is gone is taken anew.
+            (slots[0] / "pid").write_text("999999")
+            self.assertTrue(drive.take(slots[0]))
+
     def test_tables_the_suite(self):
         text = drive.table([("a", summary()), ("b", summary(ok=True)),
                             ("c", {"ok": False, "error": "killed"})])

@@ -32,9 +32,10 @@ session opens no window at all: it draws into an image the window's size, at the
 Retina display's scale (2), and each snap captures that image, scaled back to window
 points. Nothing shows on screen or takes the keyboard, and a display that sleeps or
 locks, a full-screen app or another Space changes no picture. Its input comes from the
-script alone, never the real mouse or keyboard, and it takes no lock. `live` and
-`idle` open a real window, and hold a lock so only one renders at a time across every
-agent.
+script alone, never the real mouse or keyboard. At most 2 sessions run at once
+across every agent (`$CODEVIZ_SLOTS`, default `cx-tools/shots/.session-slots/`; a
+third prints `waiting for a session slot` and waits). `live` and `idle` open a real
+window, and hold their own lock so only one renders at a time.
 
 ## Commands
 
@@ -52,7 +53,7 @@ agent.
 gives them when none follow `--`, with `$CODEVIZ_DATA` filled in. Relative paths are from
 the worktree. Environment: `CODEVIZ_SESSIONS` (default
 `/Users/silas/Projects/cx-tools/sessions`), `CODEVIZ_SHOTS` (default `.../cx-tools/shots`),
-`CODEVIZ_DATA` (default `.../cx-tools/data`), `CODEVIZ_LOCK`. The older
+`CODEVIZ_DATA` (default `.../cx-tools/data`), `CODEVIZ_LOCK`, `CODEVIZ_SLOTS`. The older
 `cx-tools/drive WORKTREE NAME SCRIPT -- view ...`, `cx-tools/shot` and `cx-tools/live` are
 thin wrappers over this.
 
@@ -324,6 +325,10 @@ faint spheres) and expanded (the faint calls among the module's functions). A ra
 missed means the picture as a whole is drawn differently (blending, colour space,
 tonemapping, lighting, Bevy features): a Bevy build without `bevy_post_process` drew
 every translucent stroke alpha-squared, links at 1-3 levels for 13-15.
+Known failing until re-measured: `faint spheres` (12-33) was measured on the flat
+discs; the shaded 3D spheres read about 37 (axum, offscreen, ground 18.7 and links 13.3
+as before), so `look` fails on the whole map with nothing selected until the range is
+measured again for 3D.
 
 Another reads the layout across runs: `layout-same`, every snap's `layout.digest` the
 same, and the same as the last session run with this build on this document (kept in
