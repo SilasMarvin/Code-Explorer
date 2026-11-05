@@ -115,9 +115,8 @@ pub(crate) fn spot_takes(index: usize, size: egui::Vec2) -> bool {
 /// How far a name slides along its side from level with its dot, in its height
 /// beside its dot or at a corner, or above or below ([`slid`]) as far as its end
 /// comes to its dot: level, nudged half its height either way, then slid a whole
-/// height. A name a little off
-/// level beside its dot reads better than one moved round it, so every spot is tried
-/// level or nudged before any is slid ([`NUDGED`]).
+/// height. A name a little off level beside its dot reads better than one moved
+/// round it, so every spot is tried level or nudged before any is slid ([`NUDGED`]).
 pub(crate) const SLIDES: [f32; 5] = [0.0, 0.5, -0.5, 1.0, -1.0];
 const NUDGED: f32 = 0.5;
 
