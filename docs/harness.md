@@ -325,10 +325,11 @@ faint spheres) and expanded (the faint calls among the module's functions). A ra
 missed means the picture as a whole is drawn differently (blending, colour space,
 tonemapping, lighting, Bevy features): a Bevy build without `bevy_post_process` drew
 every translucent stroke alpha-squared, links at 1-3 levels for 13-15.
-Known failing until re-measured: `faint spheres` (12-33) was measured on the flat
-discs; the shaded 3D spheres read about 37 (axum, offscreen, ground 18.7 and links 13.3
-as before), so `look` fails on the whole map with nothing selected until the range is
-measured again for 3D.
+Known failing until re-measured: the ranges were measured on the flat discs. On the
+3D spheres, offscreen, the ground (18.7) and axum's faint links (13.3) read as before,
+but faint spheres read 35-60, and on ord, where lines run over stacked translucent
+spheres, faint links 2-6 and faint inner calls 3-9. `look` fails on those snaps until
+the ranges are measured again for 3D.
 
 Another reads the layout across runs: `layout-same`, every snap's `layout.digest` the
 same, and the same as the last session run with this build on this document (kept in
