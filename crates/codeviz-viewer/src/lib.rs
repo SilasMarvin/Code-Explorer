@@ -29,6 +29,7 @@ mod labels;
 mod module_names;
 mod notice;
 mod nucleus;
+mod offscreen;
 mod pick;
 mod scene;
 mod script;
@@ -39,7 +40,7 @@ mod ui;
 
 use std::path::PathBuf;
 
-use bevy::{prelude::*, window::WindowPlugin};
+use bevy::{prelude::*, window::WindowPlugin, winit::WinitPlugin};
 use bevy_egui::EguiPlugin;
 use codeviz_core::System;
 use codeviz_ir::UnitId;
@@ -133,7 +134,7 @@ impl Viewer {
         self
     }
 
-    /// Runs a session in one window instead of interactively: the script's steps,
+    /// Runs a session offscreen instead of interactively: the script's steps,
     /// each through the input a person would give, with the view let settle after
     /// each. The screenshot path is the directory the snapshots go in.
     #[must_use]
@@ -196,25 +197,34 @@ impl Viewer {
             println!("script ok: {steps} steps, every name found");
             return AppExit::Success;
         }
-        // A scripted session opens hidden, without a frame, and without taking the
-        // keyboard or bringing the app to the front; it then tucks the window away.
-        // So does an interactive one with CODEVIZ_TUCKED set, as `tools/drive idle`
-        // measures it, left alone.
-        let scripted = self.screenshot.is_some() && self.script.is_some()
-            || std::env::var_os("CODEVIZ_TUCKED").is_some();
-        let mut app = App::new();
-        app.add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: self.title,
-                resolution: (1600, 1000).into(),
-                focused: !scripted,
-                visible: !scripted,
-                decorations: !scripted,
-                ..default()
-            }),
+        // A scripted session draws into an image with no OS window at all
+        // (`offscreen`). `tools/drive idle` opens the window as a person would, but
+        // hidden and without taking the keyboard (CODEVIZ_HIDDEN).
+        let session = self.screenshot.is_some() && self.script.is_some();
+        let hidden = std::env::var_os("CODEVIZ_HIDDEN").is_some();
+        let mut window = Window {
+            title: self.title,
+            resolution: (1600, 1000).into(),
+            focused: !(session || hidden),
+            visible: !(session || hidden),
             ..default()
-        }))
-        .add_plugins((
+        };
+        if session {
+            // The scale a window on the display would get from winit.
+            window.resolution.set_scale_factor(offscreen::SCALE);
+            window.resolution.set(1600.0, 1000.0);
+        }
+        let plugins = DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(window),
+            ..default()
+        });
+        let mut app = App::new();
+        if session {
+            app.add_plugins(plugins.disable::<WinitPlugin>());
+        } else {
+            app.add_plugins(plugins);
+        }
+        app.add_plugins((
             EguiPlugin::default(),
             camera::OrbitCameraPlugin,
             scene::ScenePlugin,
@@ -225,11 +235,9 @@ impl Viewer {
         .init_resource::<JourneyPanel>()
         .init_resource::<drive::Marks>()
         .init_resource::<idle::Awake>();
-        if scripted {
-            app.add_systems(First, drive::tuck_away);
-        }
         if let (Some(dir), Some(lines)) = (&self.screenshot, self.script) {
             // A session waits for the view to rest, so it keeps drawing.
+            app.add_plugins(offscreen::OffscreenPlugin);
             app.add_plugins(drive::DrivePlugin {
                 dir: dir.clone(),
                 lines,

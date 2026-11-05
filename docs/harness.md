@@ -27,29 +27,33 @@ worst offender. The session is in `$CODEVIZ_SESSIONS/try/`; look at
 try` prints the summary again.
 
 Run `tools/drive` from the worktree whose viewer you want, or pass `--wt DIR`. Never
-start the viewer any other way: the runner kills it past 3000 MB or its time limit, and
-holds a lock so only one viewer window renders at a time across every agent. A
-session's window never takes the keyboard or brings codeviz to the front, and covers
-nothing: borderless, over other windows but off screen except a 4-point corner at a
-screen's bottom right (or bottom left), and click-through. `live` opens as usual.
+start the viewer any other way: the runner kills it past 3000 MB or its time limit. A
+session opens no window at all: it draws into an image the window's size, at the
+Retina display's scale (2), and each snap captures that image, scaled back to window
+points. Nothing shows on screen or takes the keyboard, and a display that sleeps or
+locks, a full-screen app or another Space changes no picture. Its input comes from the
+script alone, never the real mouse or keyboard. At most 2 sessions run at once
+across every agent (`$CODEVIZ_SLOTS`, default `cx-tools/shots/.session-slots/`; a
+third prints `waiting for a session slot` and waits). `live` and `idle` open a real
+window, and hold their own lock so only one renders at a time.
 
 ## Commands
 
 | command | does |
 |---|---|
-| `tools/drive run NAME SCRIPT [--wt DIR] [-- VIEW ARGS]` | one session into `$CODEVIZ_SESSIONS/NAME/`; exit 0 when clean, 1 when anything failed, 2 when it could not run or the window was not drawn |
-| `tools/drive suite [--only TEXT]... [--prefix P]` | every `tools/scripts/*.txt` (or those whose name holds TEXT), names checked first, then one window at a time; prints the table, writes `$CODEVIZ_SESSIONS/<P>suite.json` |
+| `tools/drive run NAME SCRIPT [--wt DIR] [-- VIEW ARGS]` | one session into `$CODEVIZ_SESSIONS/NAME/`; exit 0 when clean, 1 when anything failed, 2 when it could not run (a snap drawn empty among the reasons) |
+| `tools/drive suite [--only TEXT]... [--prefix P]` | every `tools/scripts/*.txt` (or those whose name holds TEXT), names checked first, then one session at a time; prints the table, writes `$CODEVIZ_SESSIONS/<P>suite.json` |
 | `tools/drive check SCRIPT...` | reads each script and looks up what it names, without a window |
 | `tools/drive read NAME` | the summary of a session already run |
 | `tools/drive shot NAME -- VIEW ARGS [--keys "x ."] [--hover UNIT]` | one picture: `$CODEVIZ_SHOTS/NAME.png`, `NAME.json` (the snap), `NAME.truth.json` (its `content`) |
 | `tools/drive live [DIR] [--limit S] -- VIEW ARGS` | an interactive window under the memory guard and the render lock, closed after S seconds (1800) |
-| `tools/drive idle [--wt DIR] [--seconds N] -- VIEW ARGS` | opens the viewer as a person would (no script, drawing only when something changes), but tucked away as a session's window is (`CODEVIZ_TUCKED`), lets it settle 10 s, and prints the share of a core it uses over N seconds (10) left alone |
+| `tools/drive idle [--wt DIR] [--seconds N] -- VIEW ARGS` | opens the viewer as a person would (no script, drawing only when something changes), its window hidden and unfocused (`CODEVIZ_HIDDEN`), lets it settle 10 s, and prints the share of a core it uses over N seconds (10) left alone |
 
 `VIEW ARGS` are `view DATA [FLAGS]`, as for `codeviz view`; a script's `#: view ...` line
 gives them when none follow `--`, with `$CODEVIZ_DATA` filled in. Relative paths are from
 the worktree. Environment: `CODEVIZ_SESSIONS` (default
 `/Users/silas/Projects/cx-tools/sessions`), `CODEVIZ_SHOTS` (default `.../cx-tools/shots`),
-`CODEVIZ_DATA` (default `.../cx-tools/data`), `CODEVIZ_LOCK`. The older
+`CODEVIZ_DATA` (default `.../cx-tools/data`), `CODEVIZ_LOCK`, `CODEVIZ_SLOTS`. The older
 `cx-tools/drive WORKTREE NAME SCRIPT -- view ...`, `cx-tools/shot` and `cx-tools/live` are
 thin wrappers over this.
 
@@ -148,7 +152,7 @@ Snap before the step you want to judge, then `expect` after it: `nothing-moved`,
 - `checks.json`: start here. `ok`; `checks` (each check: `pass`, `passed`, `failed`,
   `not_applied`, `failed_in` snaps); `expects` (each line, `ok`, `why`); `failed_steps`
   (`step`, `line`, `do`, `trouble`); `notes` (`step`, `line`, `do`, `note`); `snaps`
-  (each snap's checks in full); `window_not_drawn` (snaps with no PNG, see "Limits").
+  (each snap's checks in full).
 - `NN-label.png`: the window at that snap, in window points, the same as the JSON's.
 - `NN-label.json`: what that snap shows (below).
 - `session.json`: every step with `ok`, `trouble`, `note`, `pointer` (where the pointer
@@ -322,6 +326,11 @@ faint spheres) and expanded (the faint calls among the module's functions). A ra
 missed means the picture as a whole is drawn differently (blending, colour space,
 tonemapping, lighting, Bevy features): a Bevy build without `bevy_post_process` drew
 every translucent stroke alpha-squared, links at 1-3 levels for 13-15.
+Known failing until re-measured: the ranges were measured on the flat discs. On the
+3D spheres, offscreen, the ground (18.7) and axum's faint links (13.3) read as before,
+but faint spheres read 35-60, and on ord, where lines run over stacked translucent
+spheres, faint links 2-6 and faint inner calls 3-9. `look` fails on those snaps until
+the ranges are measured again for 3D.
 
 Another reads the layout across runs: `layout-same`, every snap's `layout.digest` the
 same, and the same as the last session run with this build on this document (kept in
@@ -399,15 +408,9 @@ tools/test_drive.py` tests the runner's own logic.
 
 ## Limits
 
-- Black PNGs: macOS stops drawing a window when the display dims, sleeps or locks, or
-  when it counts the window covered or wholly off screen. The runner keeps the display
-  awake while a window is open (`caffeinate -d -i -u -w`, which also wakes a dimmed
-  one), and the window keeps a corner on screen and on top. A snap that still comes out
-  black is taken again with the window tucked into another screen corner, up to three
-  times; still black, it has no PNG and is listed in `checks.json`'s
-  `window_not_drawn`. That is not a failure of the view: its JSON and checks hold, the
-  verdict reads `NOT DRAWN` (exit 2) when nothing else failed, and running again,
-  display awake and unlocked, gives the pictures.
+- A snap whose image comes back with nothing drawn into it (all zero, not even the
+  ground) stops the session with exit 2, naming it: the harness is broken, not the
+  view. Every other snap has its PNG.
 - Not faked: trackpad gestures (pinch, two-finger orbit), Shift-drag pan, hovering a
   journey bar, holding a key. `scroll` is a mouse wheel; `drag` a left-button orbit;
   `pan` a right-button drag.
