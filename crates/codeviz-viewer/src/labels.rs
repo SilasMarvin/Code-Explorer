@@ -1737,14 +1737,6 @@ pub(crate) struct GraphNames {
 }
 
 impl GraphNames {
-    /// Each function's name, its pill and the function.
-    pub(crate) fn pills(&self) -> impl Iterator<Item = (egui::Rect, usize)> + '_ {
-        self.labels.iter().filter_map(|l| match l.named {
-            Named::Node(tile) => Some((l.pill, tile)),
-            Named::Group(_) => None,
-        })
-    }
-
     /// Every name's pill, a module's too.
     pub(crate) fn every_pill(&self) -> impl Iterator<Item = egui::Rect> + '_ {
         self.labels.iter().map(|l| l.pill)

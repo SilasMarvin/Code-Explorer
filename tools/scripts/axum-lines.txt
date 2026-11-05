@@ -1,12 +1,13 @@
 #: view demo/out/axum-server.json
-# Calls' lines keep off every dot and ring they do not join, plain ones too, or
-# break round them, and never run along another call (ux11-cons-1/24,
-# ux11-fresh4-1/06, 1/13, 1/22, ux11-cons-2/81); pink is only the call along the
+# Calls' lines run straight between their dots, under any lit dot they cross, which
+# shows over them, never broken (ux11-cons-1/24, ux11-fresh4-1/06, 1/13, 1/22,
+# ux11-cons-2/81; FIX15); pink is only the call along the
 # cursor's path; a lit call crossing the expanded view with neither end in it is
 # faint and unlabelled (ux11-cons-2/59, ux11-journey-3/10).
 click pricing::quote
 snap quote selected
 expect check arrows-clear pass
+expect check lines-straight pass
 key esc
 click POST /users
 key enter
@@ -20,12 +21,14 @@ key right
 expect cursor Store::insert_user
 snap cursor insert_user
 expect check arrows-clear pass
+expect check lines-straight pass
 expect check colours pass
 key esc
 click users::register
 doubleclick-module STORE
 snap store expanded
 expect check arrows-clear pass
+expect check lines-straight pass
 key x
 key esc
 click orders::place
@@ -39,6 +42,7 @@ expect aside users::register
 key x
 snap aside expanded
 expect check arrows-clear pass
+expect check lines-straight pass
 expect check exits-named pass
 key esc
 key esc
@@ -47,3 +51,4 @@ expect expanded orders
 snap orders expanded
 expect check exits-named pass
 expect check arrows-clear pass
+expect check lines-straight pass

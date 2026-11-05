@@ -195,11 +195,6 @@ pub(crate) struct Link {
 
 /// The angle the camera turns to when the nucleus opens.
 pub(crate) const VIEW: atlas::View = (-0.45, -0.38);
-/// Browsing, how far the camera may turn off [`VIEW`], in yaw and in pitch: the map
-/// is kept apart for views up to an eighth of a turn either side, and is flattened
-/// along the view, so further round it would turn edge-on; turned both ways at once,
-/// names crowd well before that.
-pub(crate) const BROWSE_REACH: (f32, f32) = (0.6, 0.3);
 
 /// Where everything is, for one start.
 #[derive(Debug, Clone, Default)]

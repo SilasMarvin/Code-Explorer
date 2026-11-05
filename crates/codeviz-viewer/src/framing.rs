@@ -8,10 +8,10 @@ use bevy::prelude::*;
 use bevy_egui::{egui, input::EguiWantsInput};
 
 use crate::{
-    camera::{Bounds, Lens, NEAREST_FILL, OrbitCamera, Reach},
+    camera::{Lens, NEAREST_FILL, OrbitCamera, Reach},
     disclosure::Disclose,
     explorer::{Explorer, Return},
-    nucleus::{BROWSE_REACH, Ball, Nucleus, VIEW, view_rotation},
+    nucleus::{Ball, Nucleus, VIEW, view_rotation},
     sizes, ui,
 };
 
@@ -168,13 +168,8 @@ pub(crate) fn frame(
     let browsing = nucleus.browsing();
     let resting = |tile: usize| nucleus.resting_point(tile);
 
-    // The orbit is held near the usual view, so the map, flattened along it, never
-    // turns edge-on, nor the ring round a journey; the wheel, between a module filling
-    // the view and the whole scene with room round it.
-    camera.bound(Some(Bounds {
-        middle: VIEW,
-        reach: BROWSE_REACH,
-    }));
+    // The wheel goes between a module filling the view and the whole scene with room
+    // round it; the orbit, any way round.
     if let Some(reach) = reach(nucleus, (views, &chars), &mut last.nearest) {
         camera.limit(reach);
     }

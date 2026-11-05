@@ -1,9 +1,10 @@
 #: view $CODEVIZ_DATA/ord-ws-2.json --focus Explorer::spotlit --depth 4
 # Calls' lines are worked out against the whole journey: a level more or less, `i`,
-# a cursor step and the pointer bend none (rv3-4, ux10-journey-1/05-06, 1/20-21,
-# ux10-look-2/11-12); no line loops past 1.3x straight (ux10-look-2/05).
+# a cursor step and the pointer move none (rv3-4, ux10-journey-1/05-06, 1/20-21,
+# ux10-look-2/11-12); every line is one straight piece between its dots (FIX15).
 snap d4
 expect check arrows-clear pass
+expect check lines-straight pass
 key .
 expect nothing-moved
 snap d5
@@ -21,6 +22,7 @@ snap cursor moved
 key x
 snap expanded
 expect check arrows-clear pass
+expect check lines-straight pass
 expect check exits-named pass
 hover Explorer::can_go_back
 expect nothing-moved

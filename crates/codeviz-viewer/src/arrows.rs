@@ -1,20 +1,17 @@
 //! The calls on the graph, drawn flat over the scene at one size on screen however
-//! near the view: each call a line from its caller's dot to just short of its
-//! callee's, with one filled head there, straight where no dot is in its way and
-//! bowed gently round one that is; browsing with nothing selected, a thin faint line
-//! from each module to every module it calls, behind the spheres it passes. A call's
-//! line is never broken: where no gentle bow clears a dot it runs straight under it,
-//! the dot drawn over the line; it bows a little off a call it would otherwise run
-//! along, so it never reads as another call. A lit call crossing the view with both
-//! its ends off it is faint. In a journey the cursor's path down from the start is
-//! drawn pink ([`Spine`]), and once two levels show, the calls off it but the
-//! cursor's own are drawn dimmer.
+//! near the view: each call one straight line from its caller's dot to just short of
+//! its callee's, with one filled head there; browsing with nothing selected, a thin
+//! faint line from each module to every module it calls, behind the spheres it
+//! passes. A call's line is never broken: across a dot it passes, the dot shows over
+//! it. A lit call crossing the view with both its ends off it is faint. In a journey
+//! the cursor's path down from the start is drawn pink ([`Spine`]), and once two
+//! levels show, the calls off it but the cursor's own are drawn dimmer.
 //!
 //! Where each line runs is worked out once for how things lie and where the camera
-//! stands ([`route`]), against every dot the journey lays out at any depth, so a
-//! level more or less, the callers from outside, a click or the pointer bend no line;
-//! names are placed after, keeping off the lines, and off the last stretch of each
-//! line into their own dot ([`arrival`]).
+//! stands ([`route`]), each end as big as the journey ever draws it, so a level more
+//! or less, a click or the pointer moves no line; names are placed after, keeping off
+//! the lines, and off the last stretch of each line into their own dot
+//! ([`arrival`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -57,69 +54,15 @@ const MAP_HEAD: (f32, f32) = (6.0, 5.0);
 /// dots too near for that.
 const GAP: f32 = 2.5;
 const SHORT_GAP: f32 = 1.0;
-/// Kept clear round a dot a line passes without ending there, past its ring where it
-/// has one, in points.
-const DOT_CLEAR: f32 = 3.0;
 /// How much of its strength a line keeps across a dot it runs under, so the dot
 /// shows over it; and how near a dot's edge, or its ring's, a line passing it runs
 /// under it, in points.
 const UNDER_DOT: f32 = 0.15;
 const GRAZE: f32 = 2.0;
-/// What running along another call costs a line, and running over a lit dot,
-/// against a plain dot's 1: a line keeps off the calls beside it before all, then
-/// off every lit dot it can, and off as many plain ones as it can; those it still
-/// runs over are drawn over it.
-const SHARED_COST: usize = 10_000;
-const LIT_COST: usize = 100;
-/// Two calls from or into one dot run along one line, reading as a chain through
-/// the other's far dot, where one comes within [`SHARED_NEAR`] points of the other
-/// for more than [`SHARED_RUN`] points within [`SHARED_FAR`] of that far dot, and
-/// [`SHARED_ENDS`] from its own ends. Calls fanning out from one dot to dots near
-/// each other run close by it, but apart where each ends.
-pub(crate) const SHARED_NEAR: f32 = 3.0;
-pub(crate) const SHARED_RUN: f32 = 16.0;
-pub(crate) const SHARED_ENDS: f32 = 20.0;
-pub(crate) const SHARED_FAR: f32 = 48.0;
-/// A call from outside the journey runs along one of its lines where it comes
-/// within [`ALONG_NEAR`] points of it for more than [`ALONG_RUN`], away from its own
-/// ends: it would read as one of the journey's calls.
-pub(crate) const ALONG_NEAR: f32 = 10.0;
-pub(crate) const ALONG_RUN: f32 = 40.0;
-/// How many ways clear of everything a line keeps, the gentlest first and bowed no
-/// further than the first, for the one drawn to keep off its own ends' names.
-const CLEAR_WAYS: usize = 4;
 /// The last stretch of a line into its callee's dot, in points: no name of that dot
 /// lies over it, so the head shows and the name does not read as where the call
 /// comes from.
 pub(crate) const ARRIVAL: f32 = 30.0;
-/// How far each of the two lines between the same two ends moves to its right when
-/// calls go both ways, in points: far enough that their heads, side by side, do not
-/// touch, so neither hides the other.
-const BOTH_WAYS: f32 = 4.0;
-/// How far a line may bow out to clear a dot, in points, tried in turn from the
-/// least; and against its length, at most.
-const BENDS: [f32; 9] = [5.0, 9.0, 14.0, 22.0, 32.0, 46.0, 64.0, 90.0, 128.0];
-const MOST_BEND: f32 = 0.6;
-/// How much longer than straight a bowed line may run: past that it goes straight,
-/// under the dot in its way.
-pub(crate) const DETOUR: f32 = 1.3;
-/// With no module expanded, how far a bowed line may stray from the straight line
-/// between its dots, in points: further, it reads as joining something else.
-pub(crate) const CHORD_OFF: f32 = 15.0;
-/// Where along a bent line it bows out most: evenly, nearer its start, nearer its
-/// end, close by either, or one way then the other: where along it each of its two
-/// pulls stands, as a share of its length, and the share of the bend each takes.
-const BOWS: [Bow; 9] = [
-    [(1.0 / 3.0, 1.0), (2.0 / 3.0, 1.0)],
-    [(1.0 / 3.0, 1.6), (2.0 / 3.0, 0.2)],
-    [(1.0 / 3.0, 0.2), (2.0 / 3.0, 1.6)],
-    [(0.1, 1.4), (0.4, 0.6)],
-    [(0.6, 0.6), (0.9, 1.4)],
-    [(1.0 / 3.0, 1.2), (2.0 / 3.0, -1.2)],
-    [(0.15, 1.2), (0.45, -0.6)],
-    [(0.55, 0.6), (0.85, -1.2)],
-    [(0.1, 0.8), (0.9, 0.8)],
-];
 /// Past this many far functions, the exit labels name the modules the calls leave
 /// for, with the first few functions in each.
 const EXITS_APART: usize = 6;
@@ -131,27 +74,10 @@ const EXIT_IN: f32 = 3.0;
 /// How many places near where its calls leave an exit label tries for one no line
 /// crosses, before taking the nearest clear of names and dots.
 const CLEAR_TRIES: usize = 60;
-/// Points a bent line is drawn through.
-const STEPS: usize = 24;
 
 /// One end of a call's line: the middle of its dot (or sphere), and how far from it
 /// the line stops.
 type End = (egui::Pos2, f32);
-
-/// A bent line's two pulls: each where along it, and how far out, as shares.
-type Bow = [(f32, f32); 2];
-
-/// A call routed before that shares a dot with the one routed now: its line, and
-/// where it ends at its other dot.
-type Beside<'a> = (&'a [egui::Pos2], egui::Pos2);
-
-/// A call to route: its caller and callee, whether its line keeps off dots, whether
-/// names keep off it, and its ends.
-type Call = ((usize, usize), bool, bool, [End; 2]);
-
-/// A dot as lines keep off it: its middle on screen, how far, and whether it is a
-/// plain function's of the module expanded, which matters least.
-type Obstacle = (egui::Pos2, f32, bool);
 
 /// Where things show on screen this frame, as the calls are drawn among them.
 struct Screen<'a> {
@@ -248,8 +174,8 @@ impl<'a> Screen<'a> {
     }
 
     /// Whether a function is one the open journey lays out at some depth (its start,
-    /// its callers, its calls at any depth): what its lines keep off, and end at, as
-    /// big as the cursor's whatever it is now, so moving the cursor moves no line.
+    /// its callers, its calls at any depth): what its lines end at as big as the
+    /// cursor's whatever it is now, so moving the cursor moves no line.
     fn laid_out(&self, tile: usize) -> bool {
         let nucleus = self.explorer.nucleus();
         if nucleus.browsing() {
@@ -258,40 +184,6 @@ impl<'a> Screen<'a> {
         nucleus.start() == Some(tile)
             || nucleus.journey_level(tile).is_some()
             || (nucleus.level(tile) == Some(-1) && !nucleus.folded(tile) && !nucleus.outside(tile))
-    }
-
-    /// Every dot a call's line keeps off: the lit ones (browsing, those drawn bigger
-    /// than a speck; in a journey, every one it lays out at any depth), and the plain
-    /// functions of the module expanded; never a speck, a caller from outside or the
-    /// function set aside off the journey, which come and go. Each lit one as big as
-    /// the cursor's, the start and a call that calls back as far as the ring round it
-    /// reaches; a plain one as it is drawn.
-    fn obstacles(&self) -> Vec<(usize, Obstacle)> {
-        let nucleus = self.explorer.nucleus();
-        (0..self.explorer.map().tiles.len())
-            .filter_map(|tile| {
-                let lit = if nucleus.browsing() {
-                    nucleus.drawn(tile) && !nucleus.speck(tile) && !nucleus.opened_up(tile)
-                } else {
-                    self.laid_out(tile)
-                };
-                let plain = !lit && nucleus.opened_up(tile);
-                if !lit && !plain {
-                    return None;
-                }
-                // At most as big as a lit one, whatever it is to the view now.
-                let (at, reach) = if plain {
-                    self.dot_as(tile, Dot::Lit)?
-                } else {
-                    // Rings that come and go with the cursor or the function set aside
-                    // are left to the dot showing over the line there.
-                    let (at, radius) = self.dot_as(tile, Dot::Focus)?;
-                    let ringed = nucleus.start() == Some(tile) || nucleus.calls_back(tile);
-                    (at, if ringed { radius * RING } else { radius })
-                };
-                Some((tile, (at, reach + DOT_CLEAR, plain)))
-            })
-            .collect()
     }
 
     /// Where a call's line runs between, and how far short of each end it stops: its
@@ -349,14 +241,11 @@ fn graph_dot(explorer: &Explorer, tile: usize) -> Dot {
     crate::graph_view::dot(explorer, tile)
 }
 
-/// A call's line as worked out: the way it runs, and the other ways, should the
-/// first run through its own end's name: as clear of everything, gentlest first,
-/// then straight, under the dots in its way, where it runs along no call.
+/// A call's line as worked out: from its caller's dot to just short of its callee's,
+/// and whether names keep off it.
 #[derive(Debug, Clone)]
 struct Route {
     path: Vec<egui::Pos2>,
-    others: Vec<Vec<egui::Pos2>>,
-    /// Whether names keep off it.
     kept: bool,
 }
 
@@ -417,318 +306,43 @@ pub(crate) fn arrival(path: &[egui::Pos2]) -> Vec<egui::Pos2> {
     stretch
 }
 
-/// Works out where every call runs, as [`Routes`] says.
+/// Works out where every call runs, as [`Routes`] says: each one straight between
+/// its ends.
 pub(crate) fn route(explorer: &Explorer, (camera, view): (&Camera, &GlobalTransform)) -> Routes {
     let screen = Screen::new(explorer, camera, view);
     let nucleus = explorer.nucleus();
-    // Each call once: whether its line keeps off the dots in its way (not the faint
-    // ones among an expanded module's functions), and whether names keep off it (not
-    // the calls from outside or among the expanded module's own, which come and go).
-    let mut calls: HashMap<(usize, usize), (bool, bool)> = HashMap::new();
+    // Each call once, and whether names keep off it: not the calls from outside or
+    // among the expanded module's own, which come and go.
+    let mut calls: HashMap<(usize, usize), bool> = HashMap::new();
     for call in nucleus.every_call() {
-        calls.insert(call, (true, true));
+        calls.insert(call, true);
     }
     for link in nucleus.links() {
-        calls
-            .entry((link.from, link.to))
-            .or_insert((link.flow != Flow::Inner, false));
+        calls.entry((link.from, link.to)).or_insert(false);
     }
-    let pairs: HashSet<(usize, usize)> = calls.keys().copied().collect();
-    let obstacles = screen.obstacles();
-    // On the whole map or a journey's nucleus, a line bowed far off its straight
-    // line reads as joining something else.
-    let most_off = if nucleus.expanded() {
-        f32::INFINITY
-    } else {
-        CHORD_OFF
-    };
-    // The calls names keep off first, the shortest first, each keeping off those
-    // before it; the rest after, keeping off those, so what comes and goes bends
-    // none of them.
-    let mut todo: Vec<Call> = calls
+    let lines = calls
         .into_iter()
-        .filter_map(|(pair, (avoid, kept))| Some((pair, avoid, kept, screen.ends(pair)?)))
+        .filter_map(|(pair, kept)| {
+            let path = straight(screen.ends(pair)?)?;
+            Some((pair, Route { path, kept }))
+        })
         .collect();
-    let span = |ends: &[End; 2]| ends[0].0.distance(ends[1].0);
-    todo.sort_by(|a, b| {
-        (!a.2)
-            .cmp(&!b.2)
-            .then(span(&a.3).total_cmp(&span(&b.3)))
-            .then(a.0.cmp(&b.0))
-    });
-    let mut lines: HashMap<(usize, usize), Route> = HashMap::new();
-    let mut taken: Vec<((usize, usize), bool)> = Vec::new();
-    for ((from, to), avoid, kept, ends) in todo {
-        let side = if pairs.contains(&(to, from)) {
-            BOTH_WAYS
-        } else {
-            0.0
-        };
-        let near = |tile: usize| tile != from && tile != to;
-        // How far off its straight line a bow takes it, and what lies that near.
-        let corridor = BENDS[BENDS.len() - 1].min(span(&ends) * MOST_BEND);
-        let obstacles: Vec<Obstacle> = if avoid {
-            obstacles
-                .iter()
-                .filter(|&&(tile, (at, reach, _))| {
-                    near(tile) && off_line(ends[0].0, ends[1].0, at) < corridor + reach
-                })
-                .map(|&(_, o)| o)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // The calls before it sharing one of its dots, and where each ends at its
-        // other: for one names keep off, only those like it, so what comes and goes
-        // bends none of them.
-        let beside: Vec<Beside> = if avoid {
-            taken
-                .iter()
-                .filter(|&&(pair, before)| (before || !kept) && share_a_dot((from, to), pair))
-                .filter_map(|(pair, _)| {
-                    let path = lines.get(pair)?.path.as_slice();
-                    // Its caller shared, it ends at its callee; else at its caller.
-                    let far = if [from, to].contains(&pair.0) {
-                        *path.last()?
-                    } else {
-                        *path.first()?
-                    };
-                    Some((path, far))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // A call from outside keeps off the journey's lines along their whole length,
-        // and is not drawn where it cannot: it would read as another of their calls.
-        let parallel: Vec<&[egui::Pos2]> = if avoid && !kept {
-            taken
-                .iter()
-                .filter(|&&(_, before)| before)
-                .filter_map(|(pair, _)| Some(lines.get(pair)?.path.as_slice()))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let ways = (side, most_off);
-        let Some(mut route) = route_one(ends, ways, &obstacles, (&beside, &parallel)) else {
-            continue;
-        };
-        if parallel.iter().any(|&other| alongside(&route.path, other)) {
-            continue;
-        }
-        route
-            .others
-            .retain(|path| !parallel.iter().any(|&other| alongside(path, other)));
-        route.kept = kept;
-        if avoid {
-            taken.push(((from, to), kept));
-        }
-        lines.insert((from, to), route);
-    }
     Routes { lines }
 }
 
-/// Whether the calls `pair` and `other` share a dot, and so can run along each other
-/// from it, or a bow bend one into the other's way: both ways between the same two
-/// dots lie side by side apart already.
-fn share_a_dot(pair: (usize, usize), other: (usize, usize)) -> bool {
-    other != (pair.1, pair.0)
-        && (pair.0 == other.0 || pair.0 == other.1 || pair.1 == other.0 || pair.1 == other.1)
-}
-
-/// The line of a call between `ends`, moved `side` points to its right: straight
-/// where it passes no dot of `obstacles` and runs along none of the calls `beside`
-/// it; else bowed off them by the gentlest bend, no more than [`DETOUR`] times as
-/// long and straying at most `most_off` points from straight, that runs along none
-/// of the calls beside it, then clears the most lit dots, then the most plain ones,
-/// running under those it still meets; straight where no bow does better. It may
-/// pass under a name, whose pill hides it there. `None` where its ends are too near
-/// for a head.
-fn route_one(
-    ends: [End; 2],
-    (side, most_off): (f32, f32),
-    obstacles: &[Obstacle],
-    (beside, parallel): (&[Beside], &[&[egui::Pos2]]),
-) -> Option<Route> {
-    let [(a, ra), (b, rb)] = ends;
+/// A call's straight line between `ends`, on the line through their middles, each
+/// end's reach short of it; two dots too near for that keep a smaller gap, so the
+/// call still shows. `None` where its ends are too near for a head.
+fn straight([(a, ra), (b, rb)]: [End; 2]) -> Option<Vec<egui::Pos2>> {
     let along = (b - a).normalized();
-    let right = egui::vec2(-along.y, along.x);
-    // Two dots near each other keep a smaller gap, so the call still shows.
     let short = a.distance(b) - ra - rb <= SHORT_HEAD.0 + 2.0;
     let (ra, rb) = if short {
         (ra - GAP + SHORT_GAP, rb - GAP + SHORT_GAP)
     } else {
         (ra, rb)
     };
-    let straight = vec![a + along * ra + right * side, b - along * rb + right * side];
-    if (straight[1] - straight[0]).dot(along) <= SHORT_HEAD.0 {
-        return None;
-    }
-    let cost = |path: &[egui::Pos2], enough: usize| {
-        let hits = cost(path, obstacles, enough);
-        if hits >= enough {
-            return hits;
-        }
-        let along = beside.iter().filter(|&&other| shares(path, other)).count()
-            + parallel
-                .iter()
-                .filter(|&&other| alongside(path, other))
-                .count();
-        hits + SHARED_COST * along
-    };
-    let routed = |path: Vec<egui::Pos2>, others: Vec<Vec<egui::Pos2>>| Route {
-        path,
-        others,
-        kept: true,
-    };
-    let first = cost(&straight, usize::MAX);
-    if first == 0 {
-        return Some(routed(straight, Vec::new()));
-    }
-    let span = a.distance(b);
-    let most = length(&straight) * DETOUR;
-    // A line both ways bows only to its own right, away from the other.
-    let signs: &[f32] = if side > 0.0 { &[1.0] } else { &[1.0, -1.0] };
-    let mut best = (first, None);
-    let mut clear: Vec<Vec<egui::Pos2>> = Vec::new();
-    'search: for &bend in BENDS.iter().filter(|&&bend| bend <= span * MOST_BEND) {
-        if !clear.is_empty() {
-            break;
-        }
-        for bow in &BOWS {
-            for &sign in signs {
-                let pull = |(along, share): (f32, f32)| (along, sign * (bend * share + side));
-                let Some(path) = bowed((a, ra), (b, rb), [pull(bow[0]), pull(bow[1])]) else {
-                    continue;
-                };
-                if length(&path) > most || path.iter().any(|&p| off_line(a, b, p) > most_off) {
-                    continue;
-                }
-                let hits = cost(&path, best.0.max(1));
-                if hits == 0 {
-                    clear.push(path);
-                    if clear.len() == CLEAR_WAYS {
-                        break 'search;
-                    }
-                    best.0 = 0;
-                } else if hits < best.0 {
-                    best = (hits, Some(path));
-                }
-            }
-        }
-    }
-    // Straight is a way too where it runs along no call.
-    let fallback = (first < SHARED_COST).then(|| straight.clone());
-    if !clear.is_empty() {
-        let path = clear.remove(0);
-        return Some(routed(path, clear.into_iter().chain(fallback).collect()));
-    }
-    // The least in the way, under what it still runs over; straight where no bow
-    // does better.
-    Some(match best.1 {
-        Some(path) => routed(path, fallback.into_iter().collect()),
-        None => routed(straight, Vec::new()),
-    })
-}
-
-/// Whether the line through `path` runs along `other`, which shares a dot with it
-/// and ends at `far` at its other: as [`SHARED_RUN`] says.
-fn shares(path: &[egui::Pos2], (other, far): Beside) -> bool {
-    runs_along(path, other, (SHARED_NEAR, SHARED_RUN), Some(far))
-}
-
-/// Whether the line through `path`, a call from outside the journey, runs along
-/// `other`, one of the journey's, anywhere: as [`ALONG_RUN`] says.
-pub(crate) fn alongside(path: &[egui::Pos2], other: &[egui::Pos2]) -> bool {
-    runs_along(path, other, (ALONG_NEAR, ALONG_RUN), None)
-}
-
-/// Whether the line through `path` comes within `near` points of `other` for more
-/// than `run`, away from its own ends, and where `far` is given, within
-/// [`SHARED_FAR`] of it. Each piece of it is looked at only beside the pieces of
-/// `other` near enough.
-fn runs_along(
-    path: &[egui::Pos2],
-    other: &[egui::Pos2],
-    (near, run): (f32, f32),
-    far: Option<egui::Pos2>,
-) -> bool {
-    let (first, last) = (path[0], path[path.len() - 1]);
-    let there =
-        far.map(|far| egui::Rect::from_center_size(far, egui::Vec2::splat(2.0 * SHARED_FAR)));
-    let theirs: Vec<(egui::Pos2, egui::Pos2, egui::Rect)> = other
-        .windows(2)
-        .map(|o| {
-            (
-                o[0],
-                o[1],
-                egui::Rect::from_two_pos(o[0], o[1]).expand(near),
-            )
-        })
-        .filter(|o| there.is_none_or(|there| o.2.intersects(there)))
-        .collect();
-    let mut along = 0.0;
-    for pair in path.windows(2) {
-        let bounds = egui::Rect::from_two_pos(pair[0], pair[1]);
-        let beside: Vec<_> = theirs.iter().filter(|o| o.2.intersects(bounds)).collect();
-        if beside.is_empty() {
-            continue;
-        }
-        let piece = pair[0].distance(pair[1]);
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a few samples"
-        )]
-        let samples = (piece / 4.0).ceil().max(1.0) as usize;
-        #[expect(clippy::cast_precision_loss, reason = "a few samples")]
-        let step = piece / samples as f32;
-        for k in 0..samples {
-            #[expect(clippy::cast_precision_loss, reason = "a few samples")]
-            let at = pair[0] + (pair[1] - pair[0]) * (k as f32 / samples as f32);
-            if far.is_none_or(|far| at.distance(far) < SHARED_FAR)
-                && at.distance(first) >= SHARED_ENDS
-                && at.distance(last) >= SHARED_ENDS
-                && beside.iter().any(|o| off_line(o.0, o.1, at) < near)
-            {
-                along += step;
-                if along > run {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// How near the piece of line from `a` to `b` comes to `at`.
-fn off_line(a: egui::Pos2, b: egui::Pos2, at: egui::Pos2) -> f32 {
-    let along = b - a;
-    let t = ((at - a).dot(along) / along.length_sq().max(f32::EPSILON)).clamp(0.0, 1.0);
-    (a + along * t).distance(at)
-}
-
-/// What the line through `path` running over `obstacles` costs: [`LIT_COST`] a lit
-/// dot, 1 a plain one; counted no further than `enough`.
-fn cost(path: &[egui::Pos2], obstacles: &[Obstacle], enough: usize) -> usize {
-    let bounds = egui::Rect::from_points(path);
-    let mut total = 0;
-    for &(at, radius, plain) in obstacles {
-        if bounds.distance_to_pos(at) >= radius {
-            continue;
-        }
-        if path
-            .windows(2)
-            .any(|p| across(p[0], p[1], at, radius).is_some())
-        {
-            total += if plain { 1 } else { LIT_COST };
-            if total >= enough {
-                return total;
-            }
-        }
-    }
-    total
+    let path = vec![a + along * ra, b - along * rb];
+    ((path[1] - path[0]).dot(along) > SHORT_HEAD.0).then_some(path)
 }
 
 /// Whether the line from `a` to `b` runs through `rect`.
@@ -751,48 +365,6 @@ fn through(a: egui::Pos2, b: egui::Pos2, rect: egui::Rect) -> bool {
         t1 = t1.min(u0.max(u1));
     }
     t0 < t1
-}
-
-/// A line from one dot to another bowed out to its right by its two `pulls`, each
-/// where along it and how far out, in points, ending each dot's reach short of it;
-/// `None` where too little of it is left for a head.
-fn bowed(
-    (from, from_reach): End,
-    (to, to_reach): End,
-    pulls: [(f32, f32); 2],
-) -> Option<Vec<egui::Pos2>> {
-    let along = to - from;
-    let right = egui::vec2(-along.y, along.x).normalized();
-    let pulls = pulls.map(|(share, out)| from + along * share + right * out);
-    #[expect(clippy::cast_precision_loss, reason = "a few steps")]
-    let curve: Vec<egui::Pos2> = (0..=STEPS)
-        .map(|step| {
-            let t = step as f32 / STEPS as f32;
-            let rest = 1.0 - t;
-            let point = from.to_vec2() * (rest * rest * rest)
-                + pulls[0].to_vec2() * (3.0 * rest * rest * t)
-                + pulls[1].to_vec2() * (3.0 * rest * t * t)
-                + to.to_vec2() * (t * t * t);
-            point.to_pos2()
-        })
-        .collect();
-    // Out of each dot's reach: from where the curve leaves the first to where it
-    // comes to the last.
-    let first = curve.iter().position(|p| p.distance(from) >= from_reach)?;
-    let last = curve.iter().rposition(|p| p.distance(to) >= to_reach)?;
-    if first == 0 || last + 1 >= curve.len() || last <= first {
-        return None;
-    }
-    let edge = |inside: egui::Pos2, outside: egui::Pos2, (dot, reach): End| {
-        // Where the step between them crosses the reach, near enough.
-        let (near, far) = (inside.distance(dot), outside.distance(dot));
-        let share = ((reach - near) / (far - near).max(f32::EPSILON)).clamp(0.0, 1.0);
-        inside + (outside - inside) * share
-    };
-    let mut path = vec![edge(curve[first - 1], curve[first], (from, from_reach))];
-    path.extend_from_slice(&curve[first..=last]);
-    path.push(edge(curve[last + 1], curve[last], (to, to_reach)));
-    (length(&path) > SHORT_HEAD.0).then_some(path)
 }
 
 /// How long the line through `path` is.
@@ -959,22 +531,7 @@ pub(crate) fn draw(
         let Some(route) = routes.lines.get(&(link.from, link.to)) else {
             continue;
         };
-        // A line through its own end's name goes another way as clear, if it has one.
-        // Into its callee's name: over its head, or, bowed, looping past it.
-        let own_name = |path: &[egui::Pos2]| {
-            let line = if path.len() > 2 {
-                path.to_vec()
-            } else {
-                arrival(path)
-            };
-            names.pills().any(|(pill, tile)| {
-                tile == link.to && line.windows(2).any(|p| through(p[0], p[1], pill))
-            })
-        };
-        let path = std::iter::once(&route.path)
-            .chain(&route.others)
-            .find(|path| !own_name(path))
-            .unwrap_or(&route.path);
+        let path = &route.path;
         // A lit call crossing the view with neither end in it is faint: no label
         // says what it joins.
         let passing = link.flow != Flow::Inner
@@ -1340,12 +897,6 @@ fn draw_map(shapes: &mut Vec<egui::Shape>, screen: &Screen, nucleus: &Nucleus, m
         if (to - from).dot(along) <= MAP_HEAD.0 {
             continue;
         }
-        let back = tubes.iter().any(|t| t.from == tube.to && t.to == tube.from);
-        let (from, to) = if back {
-            beside(from, to, BOTH_WAYS)
-        } else {
-            (from, to)
-        };
         let own = [Some(tube.from), Some(tube.to)];
         let ink = Ink {
             width: MAP_WIDTH,
@@ -1358,14 +909,6 @@ fn draw_map(shapes: &mut Vec<egui::Shape>, screen: &Screen, nucleus: &Nucleus, m
         });
         marks.tubes.push(TubeMark { index, shape });
     }
-}
-
-/// Moves a line `by` points to its right, so two running opposite ways between the
-/// same ends lie side by side.
-fn beside(from: egui::Pos2, to: egui::Pos2, by: f32) -> (egui::Pos2, egui::Pos2) {
-    let along = (to - from).normalized();
-    let right = egui::vec2(-along.y, along.x) * by;
-    (from + right, to + right)
 }
 
 /// The journey cursor's path down from the start, the spine a reader follows: each
@@ -1551,90 +1094,21 @@ mod tests {
     }
 
     #[test]
-    fn a_bent_line_clears_a_dot_in_the_way_and_ends_short_of_its_dots() {
-        let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(200.0, 0.0));
-        let obstacles = [(egui::pos2(100.0, 0.0), 6.0, false)];
-        assert_eq!(cost(&[a, b], &obstacles, usize::MAX), LIT_COST);
-        let route = route_one(
-            [(a, 8.0), (b, 8.0)],
-            (0.0, f32::INFINITY),
-            &obstacles,
-            (&[], &[]),
-        )
-        .expect("long enough");
-        assert!(route.path.len() > 2, "bent");
-        assert_eq!(cost(&route.path, &obstacles, usize::MAX), 0);
-        assert!(length(&route.path) <= 184.0 * DETOUR);
-        // The other ways: as clear, bowed, then straight, which runs along no call.
-        let (straight, bowed) = route.others.split_last().expect("straight last");
-        assert_eq!(straight.len(), 2);
-        for other in bowed {
-            assert_eq!(cost(other, &obstacles, usize::MAX), 0, "as clear");
-        }
-        assert!((route.path[0].distance(a) - 8.0).abs() < 0.5);
-        assert!((route.path[route.path.len() - 1].distance(b) - 8.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn a_line_no_gentle_bow_clears_goes_straight() {
-        let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(200.0, 0.0));
-        // A wall of dots across the line: clearing it takes more than the bound.
-        let obstacles: Vec<Obstacle> = (-12..=12_i16)
-            .map(|y| (egui::pos2(100.0, f32::from(y) * 10.0), 6.0, false))
-            .collect();
-        let route = route_one(
-            [(a, 8.0), (b, 8.0)],
-            (0.0, f32::INFINITY),
-            &obstacles,
-            (&[], &[]),
-        )
-        .expect("long enough");
-        assert_eq!(route.path.len(), 2, "straight");
-    }
-
-    #[test]
-    fn a_line_strays_no_further_off_straight_than_it_may() {
-        let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(400.0, 0.0));
-        // Clearing this dot takes a wide bow.
-        let obstacles = [(egui::pos2(200.0, 0.0), 20.0, false)];
-        let free = route_one(
-            [(a, 8.0), (b, 8.0)],
-            (0.0, f32::INFINITY),
-            &obstacles,
-            (&[], &[]),
-        )
-        .expect("long enough");
-        let most =
-            |path: &[egui::Pos2]| path.iter().map(|&p| off_line(a, b, p)).fold(0.0, f32::max);
-        assert!(most(&free.path) > CHORD_OFF, "bowed wide where it may");
-        let held = route_one(
-            [(a, 8.0), (b, 8.0)],
-            (0.0, CHORD_OFF),
-            &obstacles,
-            (&[], &[]),
-        )
-        .expect("long enough");
-        assert_eq!(held.path.len(), 2, "else straight, under the dot");
-    }
-
-    #[test]
-    fn a_call_from_outside_keeps_off_a_line_it_would_run_along() {
-        let journey = [egui::pos2(0.0, 0.0), egui::pos2(400.0, 0.0)];
-        let close = [egui::pos2(0.0, 8.0), egui::pos2(400.0, 8.0)];
-        assert!(alongside(&close, &journey), "8 points off, all the way");
-        let apart = [egui::pos2(0.0, 30.0), egui::pos2(400.0, 30.0)];
-        assert!(!alongside(&apart, &journey));
-        // Meeting it only at its own end is no run along it.
-        let meeting = [egui::pos2(400.0, 200.0), egui::pos2(400.0, 4.0)];
-        assert!(!alongside(&meeting, &journey));
-        let route = route_one(
-            [(egui::pos2(0.0, 8.0), 8.0), (egui::pos2(400.0, 8.0), 8.0)],
-            (0.0, f32::INFINITY),
-            &[],
-            (&[], &[&journey]),
-        )
-        .expect("long enough");
-        assert!(!alongside(&route.path, &journey), "bowed off it");
+    fn a_line_runs_straight_between_its_dots_short_of_each() {
+        let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(200.0, 100.0));
+        let path = straight([(a, 8.0), (b, 6.0)]).expect("long enough");
+        assert_eq!(path.len(), 2, "one segment");
+        assert!((path[0].distance(a) - 8.0).abs() < 1e-3);
+        assert!((path[1].distance(b) - 6.0).abs() < 1e-3);
+        let off = |p: egui::Pos2| ((p - a).x * (b - a).y - (p - a).y * (b - a).x).abs();
+        assert!(
+            off(path[0]) < 1e-2 && off(path[1]) < 1e-2,
+            "on the line through both"
+        );
+        assert!(
+            straight([(a, 8.0), (egui::pos2(14.0, 0.0), 8.0)]).is_none(),
+            "too near for a head"
+        );
     }
 
     #[test]
@@ -1652,88 +1126,6 @@ mod tests {
         let under = paint(&mut shapes, &path, ink, &|_, _| vec![(0.4, 0.6, UNDER_DOT)]);
         assert_eq!(under.gaps.len(), 0, "fainter, not broken");
         assert_eq!(hidden.gaps.len(), 1);
-    }
-
-    #[test]
-    fn a_line_bows_round_lit_dots_before_plain_ones() {
-        let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(200.0, 0.0));
-        // Plain dots everywhere a bow could go, a lit one on the straight line.
-        let mut obstacles: Vec<Obstacle> = (1..20_i16)
-            .flat_map(|x| {
-                [-1_i16, 1].map(|s| {
-                    (
-                        egui::pos2(f32::from(x) * 10.0, f32::from(s) * 12.0),
-                        3.0,
-                        true,
-                    )
-                })
-            })
-            .collect();
-        obstacles.push((egui::pos2(100.0, 0.0), 4.0, false));
-        let route = route_one(
-            [(a, 8.0), (b, 8.0)],
-            (0.0, f32::INFINITY),
-            &obstacles,
-            (&[], &[]),
-        )
-        .expect("long enough");
-        assert!(
-            cost(&route.path, &obstacles, usize::MAX) < LIT_COST,
-            "keeps off the lit dot"
-        );
-    }
-
-    #[test]
-    fn a_call_that_would_run_along_another_bows_off_it() {
-        // Two calls from one dot the same way, one ending short of the other's end.
-        let a = egui::pos2(0.0, 0.0);
-        let near = route_one(
-            [(a, 8.0), (egui::pos2(0.0, -150.0), 8.0)],
-            (0.0, f32::INFINITY),
-            &[],
-            (&[], &[]),
-        )
-        .expect("long enough");
-        assert_eq!(near.path.len(), 2, "the first runs straight");
-        let far_end = [(a, 8.0), (egui::pos2(1.0, -300.0), 8.0)];
-        let alone = route_one(far_end, (0.0, f32::INFINITY), &[], (&[], &[])).expect("long enough");
-        assert!(
-            shares(&alone.path, (&near.path, near.path[1])),
-            "straight, it runs along it through its end"
-        );
-        // Calls fanning out to two dots near each other run close only by their
-        // shared dot.
-        let fan = route_one(
-            [(a, 8.0), (egui::pos2(30.0, -300.0), 8.0)],
-            (0.0, f32::INFINITY),
-            &[],
-            (&[], &[]),
-        )
-        .expect("long enough");
-        let other = route_one(
-            [(a, 8.0), (egui::pos2(20.0, -300.0), 8.0)],
-            (0.0, f32::INFINITY),
-            &[],
-            (&[], &[]),
-        )
-        .expect("long enough");
-        assert!(!shares(&fan.path, (&other.path, other.path[1])));
-        let near_end = near.path[1];
-        let beside = route_one(
-            far_end,
-            (0.0, f32::INFINITY),
-            &[],
-            (&[(&near.path, near_end)], &[]),
-        )
-        .expect("long enough");
-        assert!(beside.path.len() > 2, "bowed");
-        assert!(!shares(&beside.path, (&near.path, near_end)));
-        assert!(length(&beside.path) <= length(&alone.path) * DETOUR);
-        // Only calls sharing a dot can, and not both ways between two.
-        assert!(share_a_dot((0, 1), (0, 2)));
-        assert!(share_a_dot((0, 1), (2, 1)));
-        assert!(!share_a_dot((0, 1), (2, 3)));
-        assert!(!share_a_dot((0, 1), (1, 0)));
     }
 
     #[test]
