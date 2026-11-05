@@ -2339,8 +2339,37 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
         let old = text.expand2(NAME_PILL).expand(NAME_CLEAR + ROUNDING);
         let of = unit.or_else(|| o["label"].as_str());
         let taken = (took.iter()).any(|&(t, by)| t.intersects(old) && (by.is_none() || by != of));
-        !(taken || nearer || unit.is_some_and(fell))
+        !(taken || nearer || unit.is_some_and(fell) || outgrew(before, now, unit, text))
     });
+}
+
+/// Whether the function `unit`'s name, at `text` before, grew since (a level more adds
+/// to its badge's count, "2.1.1" to "2.1.1 +3") and the width it grew by, away from
+/// its dot, now runs into another's dot or name: no room where it was, so it waits.
+fn outgrew(before: &Snap, now: &Snap, unit: Option<&str>, text: egui::Rect) -> bool {
+    let Some((then, node)) = unit.and_then(|u| before.node(u).zip(now.node(u))) else {
+        return false;
+    };
+    let Some([width, _]) = node.name_size else {
+        return false;
+    };
+    let grew = width - text.width();
+    if grew <= ROUNDING {
+        return false;
+    }
+    let strip = if then.at[0] <= text.center().x {
+        egui::Rect::from_x_y_ranges(text.max.x..=text.max.x + grew, text.y_range())
+    } else {
+        egui::Rect::from_x_y_ranges(text.min.x - grew..=text.min.x, text.y_range())
+    }
+    .expand2(NAME_PILL);
+    let dots = (now.nodes.iter())
+        .filter(|n| n.on_screen && n.unit.as_deref() != unit)
+        .any(|n| strip.intersects(disc(n.at, n.kept_off.unwrap_or(n.radius))));
+    let names = (now.labels.iter())
+        .filter(|l| naming(l) && l.unit.as_deref() != unit)
+        .any(|l| strip.intersects(rect(l.rect).expand2(NAME_PILL)));
+    dots || names
 }
 
 /// Each of the journey's dots drawn before and now that moved in the world.
