@@ -718,9 +718,10 @@ impl Placer {
     }
 
     /// Whether a module's name at `pill` has room, whatever functions' names lie
-    /// there: on the graph, over no other module's name, over no other sphere and
-    /// none of its own dots, `own_dots`; `within` its sphere, none of them lit, its
-    /// opaque pill hiding the others it lies over.
+    /// there: on the graph, over no other module's name, over no sphere as big as
+    /// its own or bigger (a smaller one's fill and rim it may cross), over no other
+    /// module's dot and none of its own dots, `own_dots`; `within` its sphere, none
+    /// of them lit, its opaque pill hiding the others it lies over.
     fn module_room(
         &self,
         cluster: usize,
@@ -728,20 +729,23 @@ impl Placer {
         pill: egui::Rect,
         within: bool,
     ) -> bool {
+        // How big its own sphere shows.
+        let own = (self.spheres.iter())
+            .find(|&&(c, ..)| c == cluster)
+            .map_or(0.0, |&(.., radius)| radius);
         self.bounds.contains_rect(pill)
             && !self
                 .names_under(pill)
                 .any(|i| self.kinds[i] != Taken::Function)
-            && !self
-                .spheres
-                .iter()
-                .any(|&(c, at, radius)| c != cluster && pill.distance_to_pos(at) < radius - 0.5)
+            && !self.spheres.iter().any(|&(c, at, radius)| {
+                c != cluster && radius >= own && pill.distance_to_pos(at) < radius - 0.5
+            })
             && !self.dot_grid.near(pill.expand(CLEAR)).into_iter().any(|i| {
                 let d = self.dots[i];
+                let own_dot = own_dots.contains(&d.tile);
                 self.sees(&d)
-                    && own_dots.contains(&d.tile)
                     && pill.distance_to_pos(d.at) < d.radius + CLEAR
-                    && (!within || matches!(d.shade, Shade::Lit | Shade::Folded))
+                    && (!own_dot || !within || matches!(d.shade, Shade::Lit | Shade::Folded))
             })
     }
 }
@@ -2243,7 +2247,7 @@ mod tests {
             vec![disc(0, 200.0, 160.0, false)],
             vec![
                 (0, egui::pos2(200.0, 200.0), 50.0),
-                (1, egui::pos2(200.0, 110.0), 25.0),
+                (1, egui::pos2(200.0, 80.0), 60.0),
             ],
         );
         let pill = above(egui::pos2(200.0, 200.0), 50.0, SIZE);
@@ -2251,7 +2255,30 @@ mod tests {
         assert!((pill.max.y - (150.0 - ABOVE)).abs() < 0.5);
         assert!(
             !placer.module_room(0, &[0], pill, false),
-            "over the sphere above"
+            "over the bigger sphere above"
+        );
+        let smaller = |dots| {
+            Placer::new(
+                bounds(),
+                dots,
+                vec![
+                    (0, egui::pos2(200.0, 200.0), 50.0),
+                    (1, egui::pos2(200.0, 110.0), 25.0),
+                ],
+            )
+        };
+        assert!(
+            smaller(Vec::new()).module_room(0, &[], pill, false),
+            "a smaller sphere's fill and rim it may cross"
+        );
+        assert!(
+            !smaller(vec![disc(1, pill.center().x, pill.center().y, false)]).module_room(
+                0,
+                &[],
+                pill,
+                false
+            ),
+            "never its dots"
         );
         let clear = Placer::new(
             bounds(),

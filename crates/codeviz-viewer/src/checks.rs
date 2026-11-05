@@ -2970,7 +2970,8 @@ fn module_names(s: &Snap) -> Value {
             });
             offenders.push((off_middle.max(above.abs()), offender));
         }
-        for other in spheres.iter().filter(|o| o.name != m.name) {
+        // A smaller sphere's fill and rim it may cross, never its dots.
+        for other in (spheres.iter()).filter(|o| o.name != m.name && o.radius >= m.radius) {
             let into = other.radius - r.distance_to_pos(pos(other.at));
             if into > 1.0 {
                 let offender = json!({ "module": m.name, "label": label, "over_sphere": other.name, "by": r1(into) });
@@ -2978,17 +2979,17 @@ fn module_names(s: &Snap) -> Value {
             }
         }
         // Over none of its dots: inside its sphere, none lit, its opaque pill hiding
-        // the others.
-        let own = |n: &&Node| n.on_screen && n.module.as_ref() == Some(&m.name) && n.radius > 0.0;
-        for n in s
-            .nodes
-            .iter()
-            .filter(own)
-            .filter(|n| !(within && n.unlit()))
+        // the others; over no other module's dot.
+        let own = |n: &&Node| n.module.as_ref() == Some(&m.name);
+        for n in (s.nodes.iter())
+            .filter(|n| n.on_screen && n.radius > 0.0)
+            .filter(|n| !(own(n) && within && n.unlit()))
         {
             let into = -n.gap(r.shrink(1.0), n.radius);
             if into > 0.0 {
-                let offender = json!({ "module": m.name, "label": label, "over_its_dot": n.name, "by": r1(into) });
+                let whose = if own(&n) { "over_its_dot" } else { "over_dot" };
+                let offender =
+                    json!({ "module": m.name, "label": label, whose: n.name, "by": r1(into) });
                 offenders.push((into + 100.0, offender));
             }
         }
@@ -3172,16 +3173,21 @@ impl<'a> Room<'a> {
             }
         }
         let (module, within) = module?;
-        if let Some(m) = (self.s.sized())
-            .find(|m| m.name != module && r.distance_to_pos(pos(m.at)) < m.radius - 0.5)
-        {
+        // A smaller sphere's fill and rim it may cross, never its dots.
+        let size = (self.s.sized())
+            .find(|m| m.name == module)
+            .map_or(0.0, |m| m.radius);
+        if let Some(m) = (self.s.sized()).find(|m| {
+            m.name != module && m.radius >= size && r.distance_to_pos(pos(m.at)) < m.radius - 0.5
+        }) {
             return Some(format!("the sphere of {}", m.name));
         }
         (self.drawn.iter())
             .find(|n| {
-                n.module.as_deref() == Some(module) && !(within && n.unlit()) && near(n, kept(n))
+                let mine = n.module.as_deref() == Some(module);
+                !(mine && within && n.unlit()) && near(n, kept(n))
             })
-            .map(|n| format!("its dot {}", n.name))
+            .map(|n| format!("the dot {}", n.name))
     }
 
     /// Every place round `n`'s dot the placer tries, slid along by each of `slides`,
@@ -6405,8 +6411,17 @@ mod tests {
                 .iter()
                 .any(|o| o["over_its_dot"] == "f")
         );
-        // Over the other sphere.
+        // Over the other sphere, smaller: it may cross its fill, never a dot.
         s["modules"][0]["label_rect"] = json!([930.0, 494.0, 970.0, 506.0]);
+        let result = check(&s, "module-names");
+        assert!(
+            !(result["offenders"].as_array().unwrap())
+                .iter()
+                .any(|o| o.get("over_sphere").is_some()),
+            "{result}"
+        );
+        // Over the other sphere, as big.
+        s["modules"][1]["radius"] = json!(100.0);
         let result = check(&s, "module-names");
         assert!(
             result["offenders"]
