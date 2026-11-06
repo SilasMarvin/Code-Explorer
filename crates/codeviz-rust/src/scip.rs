@@ -67,6 +67,17 @@ impl Scip {
                         },
                         Path::to_path_buf,
                     );
+                    if !target.join("debug").is_dir() {
+                        // rust-analyzer builds them with `cargo check`, and carries on
+                        // without them when that fails, saying nothing.
+                        notes.push(format!(
+                            "rust-analyzer could not build the build scripts and proc \
+                             macros of {} (does `cargo check` pass?); calls in code they \
+                             generate are unresolved",
+                            shown(workspace, root)
+                        ));
+                        continue;
+                    }
                     let mut packages: Vec<&Crate> =
                         crates.iter().filter(|c| c.workspace == workspace).collect();
                     packages.dedup_by_key(|c| &c.package);
