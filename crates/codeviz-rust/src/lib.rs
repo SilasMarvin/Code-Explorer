@@ -1,9 +1,11 @@
 //! Rust producer for codeviz: builds an IR [`Document`] from Rust source with tree-sitter.
 //!
-//! [`analyze`] discovers every Cargo package under a directory and parses its `src/`
-//! tree. With [`Resolver::RustAnalyzer`], call sites resolve to what rust-analyzer says
-//! they call. Otherwise, and for any call it leaves unresolved, they resolve
-//! syntactically: module paths, `use` imports, `Self`, `self` and declared types are
+//! [`analyze`] finds every crate under a directory as Cargo does (each package's
+//! library and binaries) and parses the files under each crate root, including items
+//! written inside macros such as `cfg_if!`. With [`Resolver::RustAnalyzer`], call
+//! sites resolve to what rust-analyzer says they call, one run per workspace. Otherwise,
+//! and for any call it leaves unresolved, they resolve syntactically: module paths,
+//! `use` imports and re-exports, `Self`, `self` and declared types are
 //! followed, through smart pointers and into closures. A method call on a value whose
 //! type they do not reveal is left unresolved: it is far more often `Option::map` or
 //! `Vec::len` than a method of ours with the same name. A path matched only by its tail
@@ -13,8 +15,8 @@
 //! Control flow is mapped onto IR steps: `if`/`match` → branch, loops → loop,
 //! `return`/`Err(..)`/`panic!` → exit, and `?` (or a tail call in a function returning
 //! `Result`) marks the call as propagating its error. Functions passed by name and
-//! closures passed as arguments become `register` invocations. Axum
-//! `.route("/path", get(handler))` calls become HTTP entries.
+//! closures passed as arguments become handoffs, as do Bevy systems in `add_systems`
+//! tuples. Axum `.route("/path", get(handler))` calls become HTTP entries.
 //!
 //! [`Certainty::Inferred`]: codeviz_ir::Certainty::Inferred
 
