@@ -7,7 +7,11 @@
 //! the modules it calls or is called from, so the calls between modules run short.
 //! Nothing here draws, nor knows where the camera is.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicUsize, Ordering},
+    thread,
+};
 
 use glam::Vec3;
 
@@ -53,6 +57,14 @@ const SEED: f32 = 0.6;
 const SPECTRAL_ROUNDS: usize = 80;
 /// After settling, at most this many rounds pushing apart children that still touch.
 const CLEARING_ROUNDS: usize = 500;
+/// The cost of placing, not where anything goes. A container of at least this many
+/// children works out each round's pushes on every core, each child's own.
+const PARALLEL: usize = 256;
+/// A container of at least this many children clears ([`clear`]) only the pairs a
+/// grid finds near: no further apart than their radii, the gap and this many typical
+/// children's sizes.
+const GRIDDED: usize = 64;
+const MARGIN: f32 = 1.0;
 
 /// How a container keeps its children: the gap kept clear between two, as a share
 /// of their mean radius, and how hard every child is drawn to the middle at the
@@ -159,18 +171,7 @@ pub fn place(
     for round in 0..ROUNDS {
         #[expect(clippy::cast_precision_loss, reason = "a round count")]
         let cool = 1.0 - round as f32 / ROUNDS as f32;
-        let mut force = vec![Vec3::ZERO; count];
-        for i in 0..count {
-            for j in i + 1..count {
-                let rest = radii[i] + radii[j] + gap;
-                let between = at[j] - at[i];
-                let apart = between.length().max(1e-3 * unit);
-                let push = PUSH * (rest / apart).powi(4).min(16.0);
-                let away = between / apart * push;
-                force[i] -= away;
-                force[j] += away;
-            }
-        }
+        let mut force = pushes(&at, radii, gap, unit);
         for tie in ties {
             let rest = radii[tie.a] + radii[tie.b] + gap;
             let between = at[tie.b] - at[tie.a];
@@ -188,44 +189,221 @@ pub fn place(
             let force = force - *point / bound * spacing.centre;
             *point += (force * unit * GAIN).clamp_length_max(most);
         }
-        clear(&mut at, radii, gap, &room);
+        clear(&mut at, radii, (gap, unit), &room);
     }
     for _ in 0..CLEARING_ROUNDS {
-        if !clear(&mut at, radii, gap, &room) {
+        if !clear(&mut at, radii, (gap, unit), &room) {
             break;
         }
     }
     at
 }
 
-/// Pushes apart every two children nearer than their radii and the gap, half each,
-/// and brings every child back within its `room` of the middle. Returns whether any
-/// two were too near.
-fn clear(at: &mut [Vec3], radii: &[f32], gap: f32, room: &[f32]) -> bool {
+/// How hard every other child pushes each child away, worked out child by child,
+/// on every core for a big container: the same, to the bit, as going through every
+/// two children once, adding each push to one and taking it from the other.
+fn pushes(at: &[Vec3], radii: &[f32], gap: f32, unit: f32) -> Vec<Vec3> {
     let count = at.len();
-    let mut near = false;
-    for i in 0..count {
-        for j in i + 1..count {
-            let rest = radii[i] + radii[j] + gap;
-            let between = at[j] - at[i];
-            let apart = between.length();
-            // Rounding, not leeway: a hair short counts as clear.
-            if apart >= rest * 0.999 {
-                continue;
+    let on = |i: usize| {
+        let mut force = Vec3::ZERO;
+        for j in (0..count).filter(|&j| j != i) {
+            let (a, b) = (i.min(j), i.max(j));
+            let rest = radii[a] + radii[b] + gap;
+            let between = at[b] - at[a];
+            let apart = between.length().max(1e-3 * unit);
+            let push = PUSH * (rest / apart).powi(4).min(16.0);
+            let away = between / apart * push;
+            if j > i {
+                force -= away;
+            } else {
+                force += away;
             }
-            near = true;
-            let away = between
-                .try_normalize()
-                .unwrap_or_else(|| fibonacci(i * 31 + j, 97));
-            let push = away * (rest - apart) / 2.0;
-            at[i] -= push;
-            at[j] += push;
         }
+        force
+    };
+    if count < PARALLEL {
+        return (0..count).map(on).collect();
     }
+    let mut force = vec![Vec3::ZERO; count];
+    let share = count.div_ceil(cores());
+    thread::scope(|scope| {
+        for (part, forces) in force.chunks_mut(share).enumerate() {
+            scope.spawn(move || {
+                for (k, force) in forces.iter_mut().enumerate() {
+                    *force = on(part * share + k);
+                }
+            });
+        }
+    });
+    force
+}
+
+/// How many threads to place on.
+fn cores() -> usize {
+    thread::available_parallelism().map_or(1, usize::from)
+}
+
+/// Pushes apart every two children nearer than their radii and the gap, half each,
+/// in order, and brings every child back within its `room` of the middle. Returns
+/// whether any two were too near. In a big container a grid finds which may be.
+fn clear(at: &mut [Vec3], radii: &[f32], (gap, unit): (f32, f32), room: &[f32]) -> bool {
+    let count = at.len();
+    let near = if count >= GRIDDED {
+        let reach = room.iter().copied().fold(0.0, f32::max);
+        clear_near(at, radii, (gap, MARGIN * unit), reach)
+    } else {
+        let mut near = false;
+        for i in 0..count {
+            for j in i + 1..count {
+                near |= clear_pair(at, radii, gap, (i, j));
+            }
+        }
+        near
+    };
     for (point, &room) in at.iter_mut().zip(room) {
         *point = point.clamp_length_max(room);
     }
     near
+}
+
+/// Pushes `i` and `j` apart, half each, when nearer than their radii and the gap.
+/// Returns whether they were.
+fn clear_pair(at: &mut [Vec3], radii: &[f32], gap: f32, (i, j): (usize, usize)) -> bool {
+    let rest = radii[i] + radii[j] + gap;
+    let between = at[j] - at[i];
+    let apart = between.length();
+    // Rounding, not leeway: a hair short counts as clear.
+    if apart >= rest * 0.999 {
+        return false;
+    }
+    let away = between
+        .try_normalize()
+        .unwrap_or_else(|| fibonacci(i * 31 + j, 97));
+    let push = away * (rest - apart) / 2.0;
+    at[i] -= push;
+    at[j] += push;
+    true
+}
+
+/// [`clear`]'s pushes, the same to the bit, trying only the pairs a grid finds
+/// within `margin` of touching: each child's, in order, found again whenever the
+/// child has moved `margin` since, so none it would push is passed over. The grid
+/// reaches `room` from the middle.
+fn clear_near(at: &mut [Vec3], radii: &[f32], (gap, margin): (f32, f32), room: f32) -> bool {
+    let reach = gap + margin;
+    let side = 2.0 * radii.iter().copied().fold(0.0, f32::max) + reach;
+    let mut grid = Grid::new(at, side, room);
+    let mut near = false;
+    let mut found = Vec::new();
+    for i in 0..at.len() {
+        // The pairs of `i` with those after it are tried in order; those after
+        // `after` are left.
+        let mut after = i;
+        loop {
+            let from = at[i];
+            found.clear();
+            grid.near(from, &mut found);
+            found.retain(|&j| {
+                let within = radii[i] + radii[j] + reach;
+                // A hair over, so rounding never leaves a pair out.
+                j > after && from.distance_squared(at[j]) < within * within * 1.001
+            });
+            found.sort_unstable();
+            let mut drifted = false;
+            for &j in &found {
+                after = j;
+                if clear_pair(at, radii, gap, (i, j)) {
+                    near = true;
+                    grid.moved(j, at[j]);
+                    grid.moved(i, at[i]);
+                    if at[i].distance(from) > margin {
+                        drifted = true;
+                        break;
+                    }
+                }
+            }
+            if !drifted {
+                break;
+            }
+        }
+    }
+    near
+}
+
+/// Children by the cube of space they lie in, kept as they move: cubes of `side`
+/// across a box `reach` from the middle each way, those past it in its outermost.
+struct Grid {
+    side: f32,
+    /// Cubes from the middle to the box's side, along each axis.
+    half: i32,
+    cells: Vec<Vec<usize>>,
+    of: Vec<usize>,
+}
+
+impl Grid {
+    /// The most cubes along an axis.
+    const MOST: i32 = 48;
+
+    fn new(at: &[Vec3], side: f32, reach: f32) -> Self {
+        #[expect(clippy::cast_possible_truncation, reason = "clamped")]
+        let half = ((reach / side).ceil() as i32).clamp(1, Self::MOST / 2);
+        let across = usize::try_from(2 * half).unwrap_or(1);
+        let mut grid = Self {
+            side,
+            half,
+            cells: vec![Vec::new(); across * across * across],
+            of: Vec::with_capacity(at.len()),
+        };
+        for (i, &p) in at.iter().enumerate() {
+            let cell = grid.index(grid.cell(p));
+            grid.cells[cell].push(i);
+            grid.of.push(cell);
+        }
+        grid
+    }
+
+    /// The cube `p` lies in, or the outermost on its way: two points a side apart or
+    /// less are a cube apart or less either way.
+    fn cell(&self, p: Vec3) -> [i32; 3] {
+        let cell = (p / self.side).floor();
+        #[expect(clippy::cast_precision_loss, reason = "a small count")]
+        let (low, high) = (-self.half as f32, (self.half - 1) as f32);
+        cell.clamp(Vec3::splat(low), Vec3::splat(high))
+            .as_ivec3()
+            .to_array()
+    }
+
+    fn index(&self, [x, y, z]: [i32; 3]) -> usize {
+        let across = 2 * self.half;
+        let at = ((x + self.half) * across + (y + self.half)) * across + (z + self.half);
+        usize::try_from(at).unwrap_or(0)
+    }
+
+    fn moved(&mut self, i: usize, to: Vec3) {
+        let cell = self.index(self.cell(to));
+        let was = self.of[i];
+        if cell == was {
+            return;
+        }
+        if let Some(at) = self.cells[was].iter().position(|&k| k == i) {
+            self.cells[was].swap_remove(at);
+        }
+        self.cells[cell].push(i);
+        self.of[i] = cell;
+    }
+
+    /// Every child in the cubes round `p`'s, all within a side of it, into `found`.
+    fn near(&self, p: Vec3, found: &mut Vec<usize>) {
+        let [x, y, z] = self.cell(p);
+        let (low, high) = (-self.half, self.half - 1);
+        for a in (x - 1).max(low)..=(x + 1).min(high) {
+            for b in (y - 1).max(low)..=(y + 1).min(high) {
+                for c in (z - 1).max(low)..=(z + 1).min(high) {
+                    found.extend_from_slice(&self.cells[self.index([a, b, c])]);
+                }
+            }
+        }
+    }
 }
 
 /// Where children start, within `reach` of the middle: those tied to others where
@@ -400,7 +578,6 @@ pub fn layout(graph: &CallGraph) -> Layout {
     let world = container_radius(&radii, IN_WORLD);
     let centres = place(&radii, &ties, &[], (world, IN_WORLD));
 
-    let mut functions = vec![Vec3::ZERO; graph.len()];
     // Each tile's place among its module's members.
     let mut index = vec![usize::MAX; graph.len()];
     for tiles in &members {
@@ -408,13 +585,21 @@ pub fn layout(graph: &CallGraph) -> Layout {
             index[tile] = i;
         }
     }
-    for (cluster, tiles) in members.iter().enumerate() {
+    // Each module's calls, in or out, with the modules at both ends.
+    let mut calls: Vec<Vec<(usize, usize, usize, usize)>> = vec![Vec::new(); clusters];
+    for &(from, to) in &graph.calls {
+        if let (Some(a), Some(b)) = (graph.cluster(from), graph.cluster(to)) {
+            calls[a].push((from, to, a, b));
+            if b != a {
+                calls[b].push((from, to, a, b));
+            }
+        }
+    }
+    let inside = |cluster: usize| {
+        let tiles = &members[cluster];
         let mut inner: BTreeMap<(usize, usize), f32> = BTreeMap::new();
         let mut outer: BTreeMap<(usize, usize), f32> = BTreeMap::new();
-        for &(from, to) in &graph.calls {
-            let (Some(a), Some(b)) = (graph.cluster(from), graph.cluster(to)) else {
-                continue;
-            };
+        for &(from, to, a, b) in &calls[cluster] {
             match (a == cluster, b == cluster) {
                 (true, true) => {
                     let (i, j) = (index[from], index[to]);
@@ -438,13 +623,36 @@ pub fn layout(graph: &CallGraph) -> Layout {
             })
             .collect();
         let ball = sizes[cluster].1;
-        let inside = place(
+        place(
             &vec![ball; tiles.len()],
             &ties,
             &anchors,
             (radii[cluster], IN_MODULE),
-        );
-        for (&tile, at) in tiles.iter().zip(inside) {
+        )
+    };
+    // Each module on its own, on every core, the biggest first.
+    let mut order: Vec<usize> = (0..clusters).collect();
+    order.sort_by_key(|&cluster| std::cmp::Reverse(members[cluster].len()));
+    let next = AtomicUsize::new(0);
+    let placed: Vec<Vec<(usize, Vec<Vec3>)>> = thread::scope(|scope| {
+        let workers: Vec<_> = (0..cores().min(clusters))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    while let Some(&cluster) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        done.push((cluster, inside(cluster)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        (workers.into_iter())
+            .map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+            .collect()
+    });
+    let mut functions = vec![Vec3::ZERO; graph.len()];
+    for (cluster, inside) in placed.into_iter().flatten() {
+        for (&tile, at) in members[cluster].iter().zip(inside) {
             functions[tile] = centres[cluster] + at;
         }
     }
@@ -529,6 +737,55 @@ mod tests {
                     "{i} and {j} apart: {} of {rest}",
                     a.distance(*b)
                 );
+            }
+        }
+    }
+
+    /// `count` children crowded into a ball, of a few sizes, the same every time.
+    fn crowd(count: usize) -> (Vec<Vec3>, Vec<f32>) {
+        #[expect(clippy::cast_precision_loss, reason = "small counts")]
+        let at = (0..count)
+            .map(|i| fibonacci(i * 7 % count, count) * (2.0 + (i % 13) as f32))
+            .collect();
+        let radii = (0..count).map(|i| [1.0, 1.5, 3.0][i % 3]).collect();
+        (at, radii)
+    }
+
+    #[test]
+    fn pushes_on_every_core_are_those_of_every_pair_once() {
+        let (at, radii) = crowd(PARALLEL + 37);
+        let mut once = vec![Vec3::ZERO; at.len()];
+        for i in 0..at.len() {
+            for j in i + 1..at.len() {
+                let rest = radii[i] + radii[j] + 0.5;
+                let between = at[j] - at[i];
+                let apart = between.length().max(1e-3);
+                let away = between / apart * PUSH * (rest / apart).powi(4).min(16.0);
+                once[i] -= away;
+                once[j] += away;
+            }
+        }
+        assert_eq!(pushes(&at, &radii, 0.5, 1.0), once);
+    }
+
+    #[test]
+    fn clearing_by_the_grid_is_clearing_every_pair() {
+        for count in [GRIDDED, 400] {
+            let (mut gridded, radii) = crowd(count);
+            let mut every = gridded.clone();
+            let room = vec![12.0; count];
+            for _ in 0..20 {
+                let mut near = false;
+                for i in 0..count {
+                    for j in i + 1..count {
+                        near |= clear_pair(&mut every, &radii, 0.5, (i, j));
+                    }
+                }
+                for point in &mut every {
+                    *point = point.clamp_length_max(12.0);
+                }
+                assert_eq!(clear(&mut gridded, &radii, (0.5, 1.0), &room), near);
+                assert_eq!(gridded, every);
             }
         }
     }

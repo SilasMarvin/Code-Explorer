@@ -736,7 +736,7 @@ impl Placer {
     /// Whether a module's name at `pill` has room, whatever functions' names lie
     /// there: on the graph, over no other module's name, over no sphere as big as
     /// its own or bigger (a smaller one's fill and rim it may cross), over no other
-    /// module's dot and none of its own dots, `own_dots`; `within` its sphere, none
+    /// module's dot and none of its own dots, `own_dots` (in order); `within` its sphere, none
     /// of them lit, its opaque pill hiding the others it lies over.
     fn module_room(
         &self,
@@ -758,7 +758,7 @@ impl Placer {
             })
             && !self.dot_grid.near(pill.expand(CLEAR)).into_iter().any(|i| {
                 let d = self.dots[i];
-                let own_dot = own_dots.contains(&d.tile);
+                let own_dot = own_dots.binary_search(&d.tile).is_ok();
                 self.sees(&d)
                     && pill.distance_to_pos(d.at) < d.radius + CLEAR
                     && (!own_dot || !within || matches!(d.shade, Shade::Lit | Shade::Folded))
@@ -982,6 +982,8 @@ struct Naming<'a> {
     /// its name sits: as far as the biggest a dot is drawn, whatever this one is to
     /// the view, so a name stays put as the selection or the cursor comes and goes.
     discs: Vec<Option<(egui::Pos2, f32)>>,
+    /// By cluster, the tiles of `discs` drawn on the graph, in order.
+    own: Vec<Vec<usize>>,
     /// A journey's functions at any depth in the panel's number order, the start left
     /// out: the same order at every depth.
     ladder: Vec<usize>,
@@ -1049,6 +1051,7 @@ impl<'a> Naming<'a> {
             path: cursor_path(explorer),
             spine: arrows::Spine::of(explorer),
             discs: Vec::new(),
+            own: Vec::new(),
             ladder: ladder.into_iter().map(|(_, tile)| tile).collect(),
             sizes: RefCell::default(),
             homes: RefCell::default(),
@@ -1067,6 +1070,13 @@ impl<'a> Naming<'a> {
                 Some((at, naming.shows(world, at, Dot::Focus) + GAP))
             })
             .collect();
+        let graph = explorer.graph();
+        naming.own = vec![Vec::new(); graph.cluster_count()];
+        for (tile, disc) in naming.discs.iter().enumerate() {
+            if let (Some(_), Some(cluster)) = (disc, graph.cluster(tile)) {
+                naming.own[cluster].push(tile);
+            }
+        }
         naming
     }
 
@@ -1421,11 +1431,8 @@ impl<'a> Naming<'a> {
     }
 
     /// The dots of a module drawn on the graph.
-    fn own_dots(&self, cluster: usize) -> Vec<usize> {
-        let graph = self.explorer.graph();
-        (0..self.discs.len())
-            .filter(|&t| self.discs[t].is_some() && graph.cluster(t) == Some(cluster))
-            .collect()
+    fn own_dots(&self, cluster: usize) -> &[usize] {
+        self.own.get(cluster).map_or(&[], Vec::as_slice)
     }
 
     /// Lays out the name of `named`, and notes how big it is.
@@ -1496,7 +1503,7 @@ impl<'a> Naming<'a> {
         let pick = || {
             let mut spots = (tried.iter().enumerate())
                 .filter(|&(index, _)| held.is_none_or(|kept| kept == Some(&index)))
-                .filter(|(_, (pill, _, within))| placer.module_room(cluster, &own, *pill, *within));
+                .filter(|(_, (pill, _, within))| placer.module_room(cluster, own, *pill, *within));
             let free = |(_, (pill, ..)): &(usize, &(egui::Rect, Arc<egui::Galley>, bool))| {
                 placer.over_names(*pill) == 0
             };

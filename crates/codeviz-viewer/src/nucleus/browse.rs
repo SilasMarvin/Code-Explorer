@@ -1,7 +1,7 @@
 //! Browsing: what the selection touches lit where it sits; with nothing selected, an
 //! arrow from each module to every module it calls.
 
-use std::collections::HashSet;
+use std::{cmp::Reverse, collections::HashSet};
 
 use codeviz_layout::CallGraph;
 
@@ -9,6 +9,11 @@ use super::{
     Arrangement, Body, Flow, Link, Nucleus, Tube,
     journey::{distances, open_up},
 };
+
+/// The most lines between modules the whole map draws: on a map of a thousand modules
+/// or more, those carrying the fewest calls go, as every one would read as a haze and
+/// cost a frame its time.
+const MOST_TUBES: usize = 1500;
 
 impl Nucleus {
     /// Browsing: what `start` touches lit where it sits: its callers and its own
@@ -44,13 +49,18 @@ impl Nucleus {
     }
 
     /// Browsing with nothing selected, how modules depend on each other: a line from
-    /// each module to every module it calls.
+    /// each module to every module it calls; past [`MOST_TUBES`], to those it calls
+    /// most.
     fn map_tubes(&self) -> Vec<Tube> {
         let mut tubes: Vec<Tube> = self
             .flows
             .iter()
             .map(|(&(from, to), &calls)| Tube { from, to, calls })
             .collect();
+        if tubes.len() > MOST_TUBES {
+            tubes.sort_unstable_by_key(|t| (Reverse(t.calls), t.from, t.to));
+            tubes.truncate(MOST_TUBES);
+        }
         tubes.sort_unstable_by_key(|t| (t.from, t.to));
         tubes
     }
