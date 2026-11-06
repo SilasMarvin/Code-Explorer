@@ -3,7 +3,7 @@
 Agents implement and agents test. The harness runs the real viewer in one window from a
 script of steps a person would take (keys, clicks, hovers, the wheel, typing), and at
 every `snap` writes a PNG, a JSON of what the picture shows by name and place, and the
-result of the checks that prove CORE's building blocks. `expect` lines in the script fail
+result of the checks on what the README promises. `expect` lines in the script fail
 the session when the view is not as they say. `tools/drive suite` runs the regression
 scripts in `tools/scripts/` and prints what passes and what fails.
 
@@ -62,7 +62,7 @@ worktrees share one cargo target directory, build through
 a wrapper that serialises builds (such as `cx WORKTREE build`) rather than cargo directly.
 
 Data for checks: `demo/out/axum-server.json` (small; focus `orders::place`) and
-`$CODEVIZ_DATA/ord-ws-2.json` (this repo, about 2,300 functions; focus
+`$CODEVIZ_DATA/ord-ws-2.json` (a snapshot of this repo, about 2,300 functions, kept outside it; focus
 `Explorer::spotlit`, `Finder::walk`). With no `--focus` the viewer opens browsing;
 `--focus UNIT` opens that journey, `--depth N` and `--expand` as they say.
 
@@ -376,7 +376,7 @@ such a camera alone.
 
 ## The regression suite
 
-`tools/scripts/` holds the core flows of CORE.md on both data sets:
+`tools/scripts/` holds the core flows the README describes, on both data sets:
 
 | script | covers |
 |---|---|
@@ -416,11 +416,11 @@ prints a table (failed steps, `expect`s passed, failing checks, verdict) and, fo
 failing script, its failed steps, expects and checks with the worst offender. The suite
 is how a fixing agent knows it is done: run the scripts its change touches with `--only`,
 then the whole suite. Add a script for a flow the suite lacks; give it a `#: view` line,
-snaps before the steps you judge, and `expect` lines for what CORE promises.
+snaps before the steps you judge, and `expect` lines for what the README promises.
 
 ## Testing the harness
 
-`cx WORKTREE check` runs the viewer's tests, among them the checks on synthetic snapshots
+`mise run check` (or `cargo test --workspace`) runs the viewer's tests, among them the checks on synthetic snapshots
 and the script parser (`checks.rs`, `script.rs`). `python3 -m unittest
 tools/test_drive.py` tests the runner's own logic.
 

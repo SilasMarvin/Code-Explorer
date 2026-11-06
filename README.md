@@ -241,6 +241,9 @@ constructors and dropped either way.
 
 ## Development
 
+The tasks run through [mise](https://mise.jdx.dev); each is a plain cargo command in
+`mise.toml` if you would rather not install it.
+
 ```sh
 mise install                # the pinned toolchain, with rust-analyzer
 mise run check              # fmt, clippy, tests

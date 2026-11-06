@@ -4,7 +4,6 @@
     "name": "codeviz-rust",
     "version": "0.1.0"
   },
-  "root": "file:///Users/silas/Projects/code-explorer/demo/axum-server",
   "units": [
     {
       "id": "rust:axum_server",
