@@ -160,7 +160,10 @@ Snap before the step you want to judge, then `expect` after it: `nothing-moved`,
 - `NN-label.png`: the window at that snap, in window points, the same as the JSON's.
 - `NN-label.json`: what that snap shows (below).
 - `session.json`: every step with `ok`, `trouble`, `note`, `pointer` (where the pointer
-  was as it began), `settled_ms`, `waited_ms` and `then` (the state after it);
+  was as it began), `settled_ms`, `waited_ms`, `then` (the state after it) and
+  `frame_ms` (how long its frames took, `acting` while its input went in and
+  `settling` after: `median`, `p90`, `most`, `frames`; the open step's from the
+  view opening, with `first_frame_ms`, from the viewer starting, layout included);
   `script.txt`, `args.txt`, `viewer.log`.
 
 The JSON says what is there; the PNG says whether a person could see it. Read both.
