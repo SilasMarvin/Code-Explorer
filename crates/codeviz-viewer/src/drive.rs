@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bevy::{
@@ -84,6 +84,9 @@ pub(crate) struct DrivePlugin {
     pub(crate) dir: PathBuf,
     pub(crate) lines: Vec<Line>,
     pub(crate) names: Names,
+    /// When the viewer began opening, before the layout: what the first frame's time
+    /// is from.
+    pub(crate) opened: Instant,
 }
 
 /// The functions and modules a script names, as written, with their tiles and
@@ -213,6 +216,7 @@ impl Plugin for DrivePlugin {
             dir: self.dir.clone(),
             lines: self.lines.clone(),
             names: self.names.clone(),
+            opened: Some(self.opened),
             ..Drive::default()
         })
         .init_resource::<Screen>()
@@ -339,6 +343,13 @@ struct Drive {
     /// For a pan under way, the point the camera looked at as it began, in the
     /// world, and where it showed then: how far the view moves.
     pan_from: Option<(Vec3, Vec2)>,
+    /// When the viewer began opening, and how long its first frame took to come.
+    opened: Option<Instant>,
+    first_frame: Option<Duration>,
+    /// How long each frame took, in milliseconds, since the step under way began:
+    /// while its input went in, and while it settled.
+    acting_ms: Vec<f32>,
+    settling_ms: Vec<f32>,
 }
 
 /// The messages a window sends for a mouse and a keyboard.
@@ -1173,6 +1184,16 @@ fn advance(
     mut exit: MessageWriter<AppExit>,
 ) {
     drive.frame += 1;
+    // The frame before this one, drawn: the first once it has.
+    if drive.frame == 2 {
+        drive.first_frame = drive.opened.map(|at| at.elapsed());
+    }
+    let took = time.delta_secs() * 1000.0;
+    match drive.phase {
+        Phase::Acting => drive.acting_ms.push(took),
+        Phase::Opening | Phase::Settling(..) | Phase::Filming(_) => drive.settling_ms.push(took),
+        _ => {}
+    }
     let now = time.elapsed();
     let started = *drive.started.get_or_insert(now);
     let seen = view.seen();
@@ -1185,7 +1206,11 @@ fn advance(
                 && now.saturating_sub(started) >= SETTLE_TIME
                 && drive.calm >= CALM_FRAMES
             {
-                let entry = json!({ "step": 0, "do": "open", "ok": true, "then": crate::truth::state(&view) });
+                let entry = json!({
+                    "step": 0, "do": "open", "ok": true, "then": crate::truth::state(&view),
+                    "first_frame_ms": drive.first_frame.map(|d| d.as_millis()),
+                    "frame_ms": frame_times(&mut drive),
+                });
                 info!("session: {entry}");
                 drive.log.push(entry);
                 begin_next(&mut commands, &mut drive, &view, now);
@@ -1324,6 +1349,7 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
         entry["settled_ms"] = json!(settled.as_millis());
         entry["waited_ms"] = json!(waited.as_millis());
     }
+    entry["frame_ms"] = frame_times(drive);
     if let Some((by, asked)) = pan {
         entry["view_moved"] = json!(by.length() >= 1.0);
         entry["moved_by"] = json!([by.x.round(), by.y.round()]);
@@ -1357,6 +1383,32 @@ fn finish(drive: &mut Drive, view: &View, settled: Option<(Duration, Duration)>)
     }
     info!("session: {entry}");
     drive.log.push(entry);
+}
+
+/// How long the frames since the step under way began took, in milliseconds: the
+/// median, the slowest tenth's quickest and the slowest, while its input went in and
+/// while it settled. Starts afresh.
+fn frame_times(drive: &mut Drive) -> Value {
+    let sum_up = |mut ms: Vec<f32>| {
+        if ms.is_empty() {
+            return Value::Null;
+        }
+        ms.sort_by(f32::total_cmp);
+        let at = |share: f32| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "an index"
+            )]
+            let index = ((ms.len() - 1) as f32 * share).round() as usize;
+            (f64::from(ms[index]) * 10.0).round() / 10.0
+        };
+        json!({ "frames": ms.len(), "median": at(0.5), "p90": at(0.9), "most": at(1.0) })
+    };
+    json!({
+        "acting": sum_up(std::mem::take(&mut drive.acting_ms)),
+        "settling": sum_up(std::mem::take(&mut drive.settling_ms)),
+    })
 }
 
 /// Whether a step leaves the camera where the user's hands put it: `Some(true)` for a

@@ -86,6 +86,8 @@ struct Screen<'a> {
     view: &'a GlobalTransform,
     /// Every sphere shown, by cluster: its middle and radius on screen.
     spheres: Vec<(usize, egui::Pos2, f32)>,
+    /// `spheres` by where they show.
+    sphere_cells: Cells,
     /// Every dot drawn bigger than a speck, by tile: its middle and radius on screen,
     /// and how far from its middle a line passing it runs under it.
     dots: Vec<Passed>,
@@ -107,6 +109,7 @@ impl<'a> Screen<'a> {
             camera,
             view,
             spheres: Vec::new(),
+            sphere_cells: Cells::default(),
             dots: Vec::new(),
         };
         let nucleus = explorer.nucleus();
@@ -117,6 +120,7 @@ impl<'a> Screen<'a> {
                 Some((cluster, at, radius))
             })
             .collect();
+        screen.sphere_cells = Cells::new(&screen.spheres);
         // A ring round a dot is part of it: the start's, the cursor's, the one set
         // aside's, a call's that calls back. Not the pointer's, which comes and goes.
         let ringed = |tile: usize| {
@@ -212,11 +216,14 @@ impl<'a> Screen<'a> {
         (from, to): (egui::Pos2, egui::Pos2),
         own: [Option<usize>; 2],
     ) -> Vec<(f32, f32)> {
-        self.spheres
-            .iter()
-            .filter(|(c, ..)| !own.contains(&Some(*c)))
-            .filter_map(|&(_, at, radius)| across(from, to, at, radius))
-            .collect()
+        (self
+            .sphere_cells
+            .along(from, to, self.spheres.len())
+            .into_iter())
+        .map(|index| self.spheres[index])
+        .filter(|(c, ..)| !own.contains(&Some(*c)))
+        .filter_map(|(_, at, radius)| across(from, to, at, radius))
+        .collect()
     }
 
     /// The dots drawn bigger than a speck that the line through `path` runs under,
@@ -233,6 +240,90 @@ impl<'a> Screen<'a> {
             })
             .copied()
             .collect()
+    }
+}
+
+/// Spheres on screen filed by the square cells they cover, so a line finds those it
+/// may cross without trying every one; one covering too many cells is tried by
+/// every line.
+#[derive(Debug, Default)]
+struct Cells {
+    cells: HashMap<(i32, i32), Vec<usize>>,
+    big: Vec<usize>,
+}
+
+impl Cells {
+    /// A cell's side, in points; and the most cells a sphere is filed in.
+    const SIDE: f32 = 16.0;
+    const MOST: i32 = 256;
+
+    #[expect(clippy::cast_possible_truncation, reason = "a cell index, clamped")]
+    fn cell(at: f32) -> i32 {
+        (at / Self::SIDE).floor().clamp(-1e6, 1e6) as i32
+    }
+
+    fn new(spheres: &[(usize, egui::Pos2, f32)]) -> Self {
+        let mut cells = Self::default();
+        for (index, &(_, at, radius)) in spheres.iter().enumerate() {
+            let reach = radius + 1.0;
+            let (x0, x1) = (Self::cell(at.x - reach), Self::cell(at.x + reach));
+            let (y0, y1) = (Self::cell(at.y - reach), Self::cell(at.y + reach));
+            if (x1 - x0 + 1) * (y1 - y0 + 1) > Self::MOST {
+                cells.big.push(index);
+                continue;
+            }
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    cells.cells.entry((x, y)).or_default().push(index);
+                }
+            }
+        }
+        cells
+    }
+
+    /// The spheres, by index, filed in any cell the line from `from` to `to` passes
+    /// through: every one it crosses, and some it does not, each once, in order; all
+    /// `count` of them when the line passes through more cells than that.
+    fn along(&self, from: egui::Pos2, to: egui::Pos2, count: usize) -> Vec<usize> {
+        let (a, b) = if from.x <= to.x {
+            (from, to)
+        } else {
+            (to, from)
+        };
+        let (c0, c1) = (Self::cell(a.x), Self::cell(b.x));
+        let rows = (Self::cell(b.y) - Self::cell(a.y)).unsigned_abs() as usize;
+        let columns = (c1 - c0).unsigned_abs() as usize + 1;
+        if rows + 3 * columns > count {
+            return (0..count).collect();
+        }
+        let wide = b.x - a.x;
+        let y_at = |x: f32| {
+            if wide <= f32::EPSILON {
+                a.y
+            } else {
+                a.y + (b.y - a.y) * ((x - a.x) / wide).clamp(0.0, 1.0)
+            }
+        };
+        let mut found = self.big.clone();
+        for column in c0..=c1 {
+            #[expect(clippy::cast_precision_loss, reason = "a cell index")]
+            let left = column as f32 * Self::SIDE;
+            let (x0, x1) = (left.max(a.x), (left + Self::SIDE).min(b.x));
+            let (ya, yb) = if wide <= f32::EPSILON {
+                (a.y, b.y)
+            } else {
+                (y_at(x0), y_at(x1))
+            };
+            let (low, high) = (ya.min(yb) - 1.0, ya.max(yb) + 1.0);
+            for row in Self::cell(low)..=Self::cell(high) {
+                if let Some(list) = self.cells.get(&(column, row)) {
+                    found.extend(list);
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
     }
 }
 
@@ -1068,6 +1159,39 @@ fn link_color(explorer: &Explorer, link: &Link, weight: Weight) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cells_a_line_passes_through_hold_every_sphere_it_crosses() {
+        // A deterministic scatter of spheres, small and big, and lines every way.
+        let mut seed = 7_u32;
+        let mut next = move |most: f32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            #[expect(clippy::cast_precision_loss, reason = "a test's numbers")]
+            let share = (seed >> 8) as f32 / (1 << 24) as f32;
+            share * most
+        };
+        let spheres: Vec<(usize, egui::Pos2, f32)> = (0..400)
+            .map(|i| {
+                let radius = if i % 50 == 0 { 300.0 } else { next(40.0) };
+                (i, egui::pos2(next(1600.0), next(1000.0)), radius)
+            })
+            .collect();
+        let cells = Cells::new(&spheres);
+        for _ in 0..2000 {
+            let from = egui::pos2(next(1800.0) - 100.0, next(1200.0) - 100.0);
+            let to = if next(1.0) < 0.2 {
+                egui::pos2(from.x, next(1000.0))
+            } else {
+                egui::pos2(next(1800.0) - 100.0, next(1200.0) - 100.0)
+            };
+            let found = cells.along(from, to, spheres.len());
+            for &(index, at, radius) in &spheres {
+                if across(from, to, at, radius).is_some() {
+                    assert!(found.contains(&index), "{from:?} {to:?} misses {index}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_line_crosses_a_circle_where_it_runs_inside_it() {

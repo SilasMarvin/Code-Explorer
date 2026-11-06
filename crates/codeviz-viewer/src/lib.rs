@@ -171,6 +171,7 @@ impl Viewer {
     /// Opens the window and blocks until it is closed.
     #[must_use]
     pub fn run(mut self) -> AppExit {
+        let opened = std::time::Instant::now();
         let mut explorer = self.explorer();
         // As deep as the journey goes at most; browsing, no journey to show deeper.
         if let Some(depth) = self.depth.filter(|_| !explorer.browsing()) {
@@ -242,6 +243,7 @@ impl Viewer {
                 dir: dir.clone(),
                 lines,
                 names,
+                opened,
             });
         } else {
             app.add_plugins(idle::IdlePlugin);

@@ -127,8 +127,14 @@ enum Flow {
     Stop,
 }
 
+/// The most spans a journey unrolls. One that would have more unrolls only as many
+/// levels deep as keeps it within this, the calls below stopped at the depth limit:
+/// guessed calls with many targets each multiply as they go down.
+const MOST_SPANS: usize = 100_000;
+
 impl Journey {
-    /// Unrolls `entry`, optionally restricted to one of its [`Scenario`]s.
+    /// Unrolls `entry`, optionally restricted to one of its [`Scenario`]s, as deep as
+    /// `options` says, or as deep as keeps it within [`MOST_SPANS`].
     ///
     /// Returns `None` if `entry` is not in `system`.
     #[must_use]
@@ -144,23 +150,45 @@ impl Journey {
             Some(s) if s.completes() => Filter::Completes,
             Some(s) => Filter::Escape(&s.chain),
         };
-        let mut builder = Builder {
-            system,
-            options,
-            spans: Vec::new(),
-            stack: Vec::new(),
-            clock: 0,
+        let deepest = options.max_depth;
+        let asked = options;
+        let build = |max_depth: u32| {
+            let mut builder = Builder {
+                system,
+                options: JourneyOptions {
+                    max_depth,
+                    ..asked.clone()
+                },
+                spans: Vec::new(),
+                stack: Vec::new(),
+                clock: 0,
+                over: false,
+            };
+            builder.invoke(
+                SpanTarget::Unit(entry.clone()),
+                None,
+                None,
+                &Context::default(),
+                filter,
+            );
+            (builder.spans, builder.over)
         };
-        builder.invoke(
-            SpanTarget::Unit(entry.clone()),
-            None,
-            None,
-            &Context::default(),
-            filter,
-        );
-        Some(Self {
-            spans: builder.spans,
-        })
+        let (spans, over) = build(deepest);
+        if !over {
+            return Some(Self { spans });
+        }
+        // The deepest that fits, between one level and the depth that does not.
+        let (mut fits, mut not) = (1, deepest);
+        let mut best = None;
+        while not - fits > 1 {
+            let depth = fits + (not - fits) / 2;
+            match build(depth) {
+                (spans, false) => (fits, best) = (depth, Some(spans)),
+                _ => not = depth,
+            }
+        }
+        let spans = best.unwrap_or_else(|| build(fits).0);
+        Some(Self { spans })
     }
 
     #[must_use]
@@ -208,6 +236,8 @@ struct Builder<'s> {
     spans: Vec<Span>,
     stack: Vec<UnitId>,
     clock: u32,
+    /// Whether it has unrolled [`MOST_SPANS`]: what follows is left unentered.
+    over: bool,
 }
 
 impl Builder<'_> {
@@ -233,6 +263,10 @@ impl Builder<'_> {
                 Some(StopReason::Registered)
             }
             (SpanTarget::Unit(_), _) if depth >= self.options.max_depth => {
+                Some(StopReason::DepthLimit)
+            }
+            (SpanTarget::Unit(_), _) if self.spans.len() >= MOST_SPANS => {
+                self.over = true;
                 Some(StopReason::DepthLimit)
             }
             _ => None,
