@@ -52,13 +52,7 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     let documents = args
         .paths
         .iter()
-        .map(|path| {
-            if path.is_dir() {
-                crate::analyze::analyze(path, &args.source)
-            } else {
-                crate::ir::read(path)
-            }
-        })
+        .map(|path| document(path, &args.source))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let title = args
         .paths
@@ -67,6 +61,27 @@ pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
         .collect::<Vec<_>>()
         .join(" + ");
     open(documents, &args.display, &title)
+}
+
+/// The document `path` stands for: a directory analyzed, or an IR document read.
+fn document(path: &Path, source: &crate::analyze::Source) -> anyhow::Result<Document> {
+    const PASS: &str = "pass the project's directory, or an IR document (.json)";
+    let shown = path.display();
+    if path.is_dir() {
+        return crate::analyze::analyze(path, source);
+    }
+    if !path.exists() {
+        bail!("{shown} does not exist: {PASS}");
+    }
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("json") => crate::ir::read(path).map_err(|error| {
+            anyhow::anyhow!(
+                "{error:#}\n{PASS}; `codeviz analyze` writes one, docs/ir.md describes it"
+            )
+        }),
+        Some("rs") => bail!("{shown} is a Rust source file: {PASS}"),
+        _ => bail!("{shown} is neither a directory nor an IR document: {PASS}"),
+    }
 }
 
 /// What the window calls `path`: a document's file name without `.json`, a
@@ -142,5 +157,42 @@ fn find_one(system: &System, query: &str) -> anyhow::Result<UnitId> {
                 .collect::<Vec<_>>()
                 .join("\n")
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use super::*;
+
+    #[derive(clap::Parser)]
+    struct Defaults {
+        #[command(flatten)]
+        source: crate::analyze::Source,
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_project_or_a_document_says_what_to_pass() {
+        let dir = std::env::temp_dir().join(format!("codeviz-view-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("other.json"), r#"{ "a": 1 }"#).unwrap();
+        let source = Defaults::parse_from(["test"]).source;
+        let said: Vec<String> = ["main.rs", "missing", "other.json"]
+            .iter()
+            .map(|name| format!("{:#}", document(&dir.join(name), &source).unwrap_err()))
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        for (said, what) in
+            said.iter()
+                .zip(["a Rust source file", "does not exist", "missing field"])
+        {
+            assert!(said.contains(what), "{said}");
+            assert!(
+                said.contains("pass the project's directory, or an IR document (.json)"),
+                "{said}"
+            );
+        }
     }
 }
