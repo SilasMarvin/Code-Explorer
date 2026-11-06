@@ -1566,8 +1566,10 @@ impl Explorer {
 }
 
 /// Functions whose name with its type or module reads the same as another's in
-/// their module (two impls of one trait for a type, as `From<&str>` and
-/// `From<String>`), each with the impl it is in, from its id.
+/// their module, each with what tells it apart: the impl it is in (two impls of one
+/// trait for a type, as `From<&str>` and `From<String>`), and for one function
+/// written once per `#[cfg]`, the condition (`cfg(unix)`), else which it is
+/// (`variant 2`). Twins that differ in neither are told apart by their ids.
 fn twins(system: &System, map: &CodebaseMap, graph: &CallGraph) -> HashMap<UnitId, String> {
     let mut by_name: HashMap<(usize, String), Vec<&UnitId>> = HashMap::new();
     for (tile, at) in map.tiles.iter().enumerate() {
@@ -1576,19 +1578,46 @@ fn twins(system: &System, map: &CodebaseMap, graph: &CallGraph) -> HashMap<UnitI
             by_name.entry((cluster, name)).or_default().push(&at.unit);
         }
     }
-    by_name
-        .into_values()
-        .filter(|ids| ids.len() > 1)
-        .flatten()
-        .map(|id| {
-            let path = id.as_str();
-            let apart = path
-                .split("::")
-                .find_map(|part| part.strip_prefix("{impl#")?.strip_suffix('}'))
-                .map_or_else(|| path.to_owned(), str::to_owned);
-            (id.clone(), apart)
+    let impl_of = |id: &UnitId| {
+        id.as_str()
+            .split("::")
+            .find_map(|part| part.strip_prefix("{impl#")?.strip_suffix('}'))
+            .map(str::to_owned)
+    };
+    let variant_of = |id: &UnitId| {
+        let cfg = system
+            .unit(id)
+            .and_then(|u| u.attributes.get("cfg"))
+            .map(|c| format!("cfg({c})"));
+        cfg.unwrap_or_else(|| {
+            let n = id
+                .as_str()
+                .rsplit_once("{variant#")
+                .and_then(|(_, n)| n.strip_suffix('}')?.parse::<usize>().ok());
+            format!("variant {}", n.unwrap_or(0) + 1)
         })
-        .collect()
+    };
+    let mut twins = HashMap::new();
+    for ids in by_name.into_values().filter(|ids| ids.len() > 1) {
+        let by_impl = ids.iter().any(|id| impl_of(id) != impl_of(ids[0]));
+        let by_variant = ids.iter().any(|id| id.as_str().contains("{variant#"));
+        for id in ids {
+            let parts: Vec<String> = [
+                by_impl.then(|| impl_of(id)).flatten(),
+                by_variant.then(|| variant_of(id)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let apart = if parts.is_empty() {
+                id.to_string()
+            } else {
+                parts.join(", ")
+            };
+            twins.insert(id.clone(), apart);
+        }
+    }
+    twins
 }
 
 /// What a journey key says browsing.
@@ -3018,6 +3047,70 @@ pub(crate) mod tests {
             explorer.function_name(&UnitId::new("x:Track::root")),
             "root",
             "browsing find, only one root is in view"
+        );
+    }
+
+    #[test]
+    fn twins_say_their_impl_or_cfg_never_their_id() {
+        let call = |n: usize, id: &str| {
+            format!(
+                r#"{{ "key": "c{n}#0", "text": "c{n}", "targets": [ {{ "unit": "x:{id}", "certainty": "exact" }} ] }}"#
+            )
+        };
+        let ids = [
+            "Dent::from_path",
+            "Dent::from_path{variant#1}",
+            "Dent::from_path{variant#2}",
+            "Name::{impl#From<&str>}::from",
+            "Name::{impl#From<String>}::from",
+        ];
+        let calls: Vec<String> = ids.iter().enumerate().map(|(n, id)| call(n, id)).collect();
+        let method = |id: &str, name: &str, parent: &str, cfg: &str| {
+            format!(
+                r#"{{ "id": "x:{id}", "name": "{name}", "kind": "method", "role": "invocable", "parent": "x:{parent}"{cfg} }}"#
+            )
+        };
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [
+                {{ "id": "x:main", "name": "main", "kind": "fn", "role": "invocable", "calls": [{}] }},
+                {{ "id": "x:Dent", "name": "Dent", "kind": "struct", "role": "group" }},
+                {{ "id": "x:Name", "name": "Name", "kind": "struct", "role": "group" }},
+                {}, {}, {}, {}, {} ] }}"#,
+            calls.join(","),
+            method(
+                ids[0],
+                "from_path",
+                "Dent",
+                r#", "attributes": { "cfg": "unix" }"#
+            ),
+            method(
+                ids[1],
+                "from_path",
+                "Dent",
+                r#", "attributes": { "cfg": "not(unix)" }"#
+            ),
+            method(ids[2], "from_path", "Dent", ""),
+            method(ids[3], "from", "Name", ""),
+            method(ids[4], "from", "Name", ""),
+        );
+        let system = System::new([Document::from_json(&json).unwrap()]);
+        let explorer = opened(system, "x:main");
+        let names: Vec<String> = explorer
+            .journey()
+            .unwrap()
+            .spans()
+            .skip(1)
+            .map(|(id, _)| explorer.label(id))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Dent.from_path (cfg(unix))",
+                "Dent.from_path (cfg(not(unix)))",
+                "Dent.from_path (variant 3)",
+                "Name.from (From<&str>)",
+                "Name.from (From<String>)",
+            ]
         );
     }
 

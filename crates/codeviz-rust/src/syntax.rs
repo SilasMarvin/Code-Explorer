@@ -50,6 +50,9 @@ pub(crate) fn callee_name(node: Node<'_>) -> Option<Node<'_>> {
         "scoped_identifier" => node.child_by_field_name("name"),
         "field_expression" => node.child_by_field_name("field"),
         "generic_function" => callee_name(node.child_by_field_name("function")?),
+        "parenthesized_expression" => {
+            callee_name(node.named_child(0)?).filter(|n| n.kind() != "field_identifier")
+        }
         _ => None,
     }
 }
@@ -206,6 +209,23 @@ pub(crate) fn is_test_only(node: Node<'_>, source: &[u8]) -> bool {
         sibling.kind() == "attribute_item"
             && (attribute.contains("cfg(test)") || attribute.ends_with("test]"))
     })
+}
+
+/// The conditions of the `#[cfg(..)]`s on an item and on the impls and modules
+/// around it in its file, outermost first: `unix`, `not(unix)`, joined with `, `.
+pub(crate) fn cfg_condition(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let mut conditions: Vec<String> = std::iter::successors(Some(node), Node::parent)
+        .flat_map(preceding)
+        .filter(|s| s.kind() == "attribute_item")
+        .filter_map(|s| {
+            let inner = text(s, source).strip_prefix("#[")?.strip_suffix(']')?;
+            let condition = inner.trim().strip_prefix("cfg")?.trim_start();
+            let condition = condition.strip_prefix('(')?.strip_suffix(')')?;
+            Some(condition.split_whitespace().collect::<Vec<_>>().join(" "))
+        })
+        .collect();
+    conditions.reverse();
+    (!conditions.is_empty()).then(|| conditions.join(", "))
 }
 
 /// The `///` doc comment directly above an item.

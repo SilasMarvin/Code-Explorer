@@ -13,8 +13,8 @@ use crate::{
     Error, body,
     hash::content_hash,
     syntax::{
-        collect_use, compact, doc_comment, is_test_only, location, receiver_type_path, start, text,
-        type_name, unwrapped_type_path,
+        cfg_condition, collect_use, compact, doc_comment, is_test_only, location,
+        receiver_type_path, start, text, type_name, unwrapped_type_path,
     },
 };
 
@@ -532,6 +532,9 @@ impl Extractor {
         attributes.insert("signature".to_owned(), Scalar::from(signature));
         if let Some(trait_name) = owner.and_then(|o| o.trait_name.as_ref()) {
             attributes.insert("trait".to_owned(), Scalar::from(trait_name.as_str()));
+        }
+        if let Some(condition) = cfg_condition(node, source) {
+            attributes.insert("cfg".to_owned(), Scalar::from(condition));
         }
         self.out.units.push(RawUnit {
             parent: Some(parent),

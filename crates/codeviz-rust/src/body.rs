@@ -609,30 +609,7 @@ impl Builder<'_, '_, '_> {
             return;
         };
 
-        let target = match function.kind() {
-            "field_expression" => {
-                if let Some(receiver) = function.child_by_field_name("value") {
-                    self.expr(receiver, false, steps);
-                }
-                function
-                    .child_by_field_name("field")
-                    .map(|field| CallTarget::Method {
-                        name: text(field, source).to_owned(),
-                        receiver: function
-                            .child_by_field_name("value")
-                            .and_then(|v| self.receiver(v)),
-                    })
-            }
-            _ => path_segments(function, source).map(|segments| match segments.as_slice() {
-                [name] if self.stored_closures.contains_key(name) => self
-                    .stored_closures
-                    .get(name)
-                    .map_or(CallTarget::Path(segments.clone()), |path| {
-                        CallTarget::Closure(path.clone())
-                    }),
-                _ => CallTarget::Path(segments),
-            }),
-        };
+        let (callee, target) = self.callee(function, steps);
 
         if let Some(CallTarget::Path(segments)) = &target
             && is_constructor(segments)
@@ -682,7 +659,7 @@ impl Builder<'_, '_, '_> {
         };
         let written = match &target {
             CallTarget::Method { name, .. } => format!(".{name}"),
-            _ => text(function, source).split_whitespace().collect(),
+            _ => text(callee, source).split_whitespace().collect(),
         };
         let handoff_mode = handoff_mode(&target);
         let index = self.record(written, target, Mode::Call, None, node, steps);
@@ -699,6 +676,57 @@ impl Builder<'_, '_, '_> {
             };
             self.record(written, handoff, handoff_mode, Some(index), arg, steps);
         }
+    }
+
+    /// What a call's `function` calls, and the node that names it: a method, turbofish
+    /// and all (`a.collect::<T>()`), or a path, parenthesized or not (`(f)()`). A
+    /// computed callee (`make()()`, `(self.f)()`, `handlers[i]()`) has no target; the
+    /// calls in it are made all the same.
+    fn callee<'t>(
+        &mut self,
+        function: Node<'t>,
+        steps: &mut Vec<Step>,
+    ) -> (Node<'t>, Option<CallTarget>) {
+        let source = self.file.source;
+        let method = match function.kind() {
+            "field_expression" => Some(function),
+            "generic_function" => function
+                .child_by_field_name("function")
+                .filter(|f| f.kind() == "field_expression"),
+            _ => None,
+        };
+        if let Some(callee) = method {
+            let receiver = callee.child_by_field_name("value");
+            if let Some(receiver) = receiver {
+                self.expr(receiver, false, steps);
+            }
+            let target = callee
+                .child_by_field_name("field")
+                .map(|field| CallTarget::Method {
+                    name: text(field, source).to_owned(),
+                    receiver: receiver.and_then(|v| self.receiver(v)),
+                });
+            return (callee, target);
+        }
+        let mut callee = function;
+        while callee.kind() == "parenthesized_expression"
+            && let Some(inner) = callee.named_child(0)
+        {
+            callee = inner;
+        }
+        let Some(segments) = path_segments(callee, source) else {
+            self.expr(function, false, steps);
+            return (function, None);
+        };
+        let target = match segments.as_slice() {
+            [name] => self
+                .stored_closures
+                .get(name)
+                .cloned()
+                .map(CallTarget::Closure),
+            _ => None,
+        };
+        (callee, Some(target.unwrap_or(CallTarget::Path(segments))))
     }
 
     /// Whether `node`, an argument, names functions it passes along: a path, a tuple

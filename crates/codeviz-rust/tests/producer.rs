@@ -905,3 +905,93 @@ fn re_exports_resolve_through_another_crates_prelude() {
         [("rust:proto::ty::Type::table".to_owned(), Certainty::Exact)]
     );
 }
+
+#[test]
+fn every_callee_shape_keeps_its_calls() {
+    let source = "pub struct Wrap<T>(T);
+        impl<T> Wrap<T> { pub fn make() -> u32 { 1 } }
+        pub struct Store { f: fn() -> u32 }
+        impl Store { pub fn f(&self) {} pub fn get(&self) -> &Self { self } pub fn sum<T>(&self) -> u32 { 2 } }
+        fn a(x: &u32) -> Result<u32, ()> { Ok(*x) }
+        fn pick<T>() -> fn() -> u32 { one }
+        fn one() -> u32 { 1 }
+        fn two() -> u32 { 2 }
+        pub fn p(xs: &[u32], s: &Store) -> Result<Vec<u32>, ()> {
+            let v = xs.iter().map(|x| a(x)).collect::<Result<Vec<_>, ()>>()?;
+            pick::<u8>()();
+            (two)();
+            (s.get().f)();
+            Wrap::<u8>::make();
+            s.sum::<u8>();
+            format!(\"{}\", one()).len();
+            Ok(v)
+        }";
+    let mut resolvers = vec![Resolver::Syntax];
+    if rust_analyzer_available() {
+        resolvers.push(Resolver::RustAnalyzer { target_dir: None });
+    }
+    for resolver in resolvers {
+        let options = AnalyzeOptions {
+            resolver: resolver.clone(),
+            ..AnalyzeOptions::default()
+        };
+        let document = analyze_files_with(&[("lib.rs", source)], &options);
+        let ours = |text: &str| {
+            calls(unit(&document, "app::p"))
+                .into_iter()
+                .find(|(t, _)| t == text)
+                .unwrap_or_else(|| panic!("{resolver:?}: no call {text}"))
+                .1
+        };
+        for text in [".iter", ".map", ".collect", ".len", "{closure#0}", ".get"] {
+            ours(text);
+        }
+        assert!(
+            calls(unit(&document, "app::p"))
+                .iter()
+                .all(|(t, _)| t != ".f"),
+            "{resolver:?}: a field called is not a method of its name"
+        );
+        assert_eq!(ours("pick::<u8>"), ["rust:app::pick"], "{resolver:?}");
+        assert_eq!(ours("one"), ["rust:app::one"], "{resolver:?}");
+        assert_eq!(ours("two"), ["rust:app::two"], "{resolver:?}");
+        assert_eq!(ours("Wrap::<u8>::make"), ["rust:app::Wrap::make"]);
+        assert_eq!(ours(".sum"), ["rust:app::Store::sum"], "{resolver:?}");
+        assert_eq!(
+            calls(unit(&document, "app::p::{closure#0}")),
+            [("a".to_owned(), vec!["rust:app::a".to_owned()])],
+            "{resolver:?}"
+        );
+    }
+}
+
+#[test]
+fn a_function_written_per_cfg_says_its_condition() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "#[cfg(unix)] pub fn open() {}
+         #[cfg(not(any(unix, windows)))]
+         #[inline] pub fn open() {}
+         pub struct File;
+         #[cfg(windows)]
+         impl File { pub fn open() {} }
+         #[cfg(not(windows))]
+         impl File { #[cfg(feature = \"io\")] pub fn open() {} }",
+    )]);
+    let cfg = |id: &str| {
+        unit(&document, id)
+            .attributes
+            .get("cfg")
+            .map(ToString::to_string)
+    };
+    assert_eq!(cfg("app::open").as_deref(), Some("unix"));
+    assert_eq!(
+        cfg("app::open{variant#1}").as_deref(),
+        Some("not(any(unix, windows))")
+    );
+    assert_eq!(cfg("app::File::open").as_deref(), Some("windows"));
+    assert_eq!(
+        cfg("app::File::open{variant#1}").as_deref(),
+        Some("not(windows), feature = \"io\"")
+    );
+}
