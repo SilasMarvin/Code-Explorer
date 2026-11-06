@@ -57,11 +57,12 @@ UNIT is found as --focus finds it (an id suffix like orders::place, or an entry 
 a name that matches nothing, or many, stops the script before the window opens, with
 the nearest names. See docs/harness.md for the JSON fields and every check.
 
-Environment: CODEVIZ_TOOLS, the directory everything below defaults into (default
-target/drive in this repo; the render lock and session slots are only machine-wide when
-every run shares it); CODEVIZ_SESSIONS (default $CODEVIZ_TOOLS/sessions), CODEVIZ_SHOTS
-($CODEVIZ_TOOLS/shots), CODEVIZ_DATA ($CODEVIZ_TOOLS/data; `$CODEVIZ_DATA` in a `#: view`
-line), CODEVIZ_LOCK, CODEVIZ_SLOTS.
+Environment: CODEVIZ_TOOLS, the directory everything below defaults into when set;
+CODEVIZ_SESSIONS (default $CODEVIZ_TOOLS/sessions, else target/drive/sessions in this
+repo), CODEVIZ_SHOTS (likewise shots), CODEVIZ_DATA (default $CODEVIZ_TOOLS/data, else
+unset: a `#: view` line naming $CODEVIZ_DATA then stops the run), CODEVIZ_LOCK and
+CODEVIZ_SLOTS (default $CODEVIZ_TOOLS/shots/, else $XDG_CACHE_HOME/codeviz-drive/ or
+~/.cache/codeviz-drive/: machine-wide, so every worktree shares them).
 """
 import json
 import math
@@ -77,15 +78,19 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-TOOLS = Path(os.environ.get("CODEVIZ_TOOLS", REPO / "target" / "drive"))
-SESSIONS = Path(os.environ.get("CODEVIZ_SESSIONS", TOOLS / "sessions"))
-SHOTS = Path(os.environ.get("CODEVIZ_SHOTS", TOOLS / "shots"))
-DATA = os.environ.get("CODEVIZ_DATA", str(TOOLS / "data"))
+TOOLS = os.environ.get("CODEVIZ_TOOLS")
+OUT = Path(TOOLS) if TOOLS else REPO / "target" / "drive"
+SESSIONS = Path(os.environ.get("CODEVIZ_SESSIONS", OUT / "sessions"))
+SHOTS = Path(os.environ.get("CODEVIZ_SHOTS", OUT / "shots"))
+DATA = str(Path(TOOLS) / "data") if TOOLS else None
+# The lock and the slots are machine-wide whatever the worktree: outside every repo.
+LOCKS = (Path(TOOLS) / "shots" if TOOLS else
+         Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "codeviz-drive")
 # The same lock the older cx-tools `shot` took, so old and new never render at once.
-LOCK = Path(os.environ.get("CODEVIZ_LOCK", TOOLS / "shots" / ".lock"))
+LOCK = Path(os.environ.get("CODEVIZ_LOCK", LOCKS / ".lock"))
 # Offscreen sessions take one of these slots, apart from the window lock: each may use
 # up to LIMIT_MB, and on a 16 GB machine more at once has run it out of memory.
-SLOTS = Path(os.environ.get("CODEVIZ_SLOTS", TOOLS / "shots" / ".session-slots"))
+SLOTS = Path(os.environ.get("CODEVIZ_SLOTS", LOCKS / ".session-slots"))
 SESSION_SLOTS = 1
 SCRIPTS = REPO / "tools" / "scripts"
 
@@ -220,7 +225,11 @@ def header_args(script_text):
     for line in script_text.splitlines():
         line = line.strip()
         if line.startswith("#:"):
-            os.environ.setdefault("CODEVIZ_DATA", DATA)
+            if DATA and "CODEVIZ_DATA" not in os.environ:
+                os.environ["CODEVIZ_DATA"] = DATA
+            if "CODEVIZ_DATA" in line and "CODEVIZ_DATA" not in os.environ:
+                raise Trouble("this script's `#: view` line needs $CODEVIZ_DATA: set it (or "
+                              "CODEVIZ_TOOLS) to the directory holding its documents")
             return shlex.split(os.path.expandvars(line[2:].strip()))
     return []
 
@@ -726,9 +735,6 @@ def main(argv):
         print(__doc__)
         return 0
     command, args = argv[0], argv[1:]
-    if "CODEVIZ_TOOLS" not in os.environ:
-        print(f"tools/drive: CODEVIZ_TOOLS is not set; sessions, data and locks are under {TOOLS}",
-              file=sys.stderr)
     if Path(command).is_dir() and len(args) >= 2:
         # The older form: WORKTREE NAME SCRIPT -- VIEW ARGS.
         command, args = "run", [*args[:2], "--wt", command, *args[2:]]

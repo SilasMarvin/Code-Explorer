@@ -234,3 +234,8 @@ mise run demo               # the demo, on the journey of POST /users/{id}/order
 `tools/drive` runs the viewer from a script of a person's steps and checks every
 picture it takes; `tools/drive suite` runs the regression scripts in `tools/scripts/`.
 See [docs/harness.md](docs/harness.md).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option.
