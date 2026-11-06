@@ -51,13 +51,13 @@ window, and hold their own lock so only one renders at a time.
 
 `VIEW ARGS` are `view DATA [FLAGS]`, as for `codeviz view`; a script's `#: view ...` line
 gives them when none follow `--`, with `$CODEVIZ_DATA` filled in. Relative paths are from
-the worktree. Environment: `CODEVIZ_TOOLS`, when set the directory the rest default
-into; `CODEVIZ_SESSIONS` (default `$CODEVIZ_TOOLS/sessions`, else `target/drive/sessions`
+the worktree. Environment: `CODEVIZ_TOOLS`, when set the directory sessions, shots and
+data default into; `CODEVIZ_SESSIONS` (default `$CODEVIZ_TOOLS/sessions`, else `target/drive/sessions`
 in the repo), `CODEVIZ_SHOTS` (likewise `shots`), `CODEVIZ_DATA` (default
 `$CODEVIZ_TOOLS/data`, else unset: a `#: view` line naming it then stops the run with one
-line), `CODEVIZ_LOCK` and `CODEVIZ_SLOTS` (default under `$CODEVIZ_TOOLS/shots/`, else
-`$XDG_CACHE_HOME/codeviz-drive/` or `~/.cache/codeviz-drive/`, outside every repo, so
-worktrees without the variable still share one lock and one set of slots). Where several
+line), `CODEVIZ_LOCK` and `CODEVIZ_SLOTS` (default `$XDG_CACHE_HOME/codeviz-drive/`, else
+`~/.cache/codeviz-drive/`, whether or not `CODEVIZ_TOOLS` is set, so every run on the
+machine shares one lock and one set of slots). Where several
 worktrees share one cargo target directory, build through
 a wrapper that serialises builds (such as `cx WORKTREE build`) rather than cargo directly.
 
