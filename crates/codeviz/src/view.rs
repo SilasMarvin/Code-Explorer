@@ -1,6 +1,6 @@
 //! Opens IR documents in the Bevy viewer.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use codeviz_core::System;
@@ -9,9 +9,12 @@ use codeviz_viewer::{Script, Viewer};
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ViewArgs {
-    /// IR documents to load; later documents override earlier ones.
-    #[arg(required = true)]
-    documents: Vec<PathBuf>,
+    /// A Rust project's directory (analyzed first), or IR documents (.json); later
+    /// documents override earlier ones.
+    #[arg(default_value = ".")]
+    paths: Vec<PathBuf>,
+    #[command(flatten)]
+    source: crate::analyze::Source,
     #[command(flatten)]
     display: Display,
 }
@@ -19,8 +22,9 @@ pub(crate) struct ViewArgs {
 /// What the viewer opens on and how it shows it.
 #[derive(Debug, clap::Args)]
 struct Display {
-    /// Open the journey that starts at this function (entry label or unit id suffix).
-    /// Without it, the view opens browsing the whole codebase.
+    /// Open the journey that starts at this function: an entry's label (`POST /users`)
+    /// or the end of its path (`orders::place`). Without it, the view opens browsing
+    /// the whole codebase.
     #[arg(long, value_name = "UNIT")]
     focus: Option<String>,
     /// Open the journey this many levels deep instead of one.
@@ -31,33 +35,53 @@ struct Display {
     #[arg(long, requires = "focus")]
     expand: bool,
     /// With --script, the directory each snap's PNG and JSON go in.
-    #[arg(long, value_name = "DIR", requires = "script")]
+    #[arg(long, value_name = "DIR", requires = "script", hide = true)]
     screenshot: Option<PathBuf>,
     /// Run a session from this file in one window, a step per line (`key x`, `click
     /// UNIT`, `expect mode journey`, `snap LABEL`; see docs/harness.md), checking every
     /// snap. Run it through tools/drive, which guards memory and time.
-    #[arg(long, value_name = "FILE", requires = "screenshot")]
+    #[arg(long, value_name = "FILE", requires = "screenshot", hide = true)]
     script: Option<PathBuf>,
     /// Read this session script and look up every function and module it names, then
     /// exit without opening the window.
-    #[arg(long, value_name = "FILE", conflicts_with = "script")]
+    #[arg(long, value_name = "FILE", conflicts_with = "script", hide = true)]
     check_script: Option<PathBuf>,
 }
 
 pub(crate) fn run(args: &ViewArgs) -> anyhow::Result<()> {
     let documents = args
-        .documents
+        .paths
         .iter()
-        .map(crate::ir::read)
+        .map(|path| {
+            if path.is_dir() {
+                crate::analyze::analyze(path, &args.source)
+            } else {
+                crate::ir::read(path)
+            }
+        })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let title = args
-        .documents
+        .paths
         .iter()
-        .filter_map(|p| p.file_stem())
-        .map(|s| s.to_string_lossy())
+        .map(|path| name(path))
         .collect::<Vec<_>>()
         .join(" + ");
     open(documents, &args.display, &title)
+}
+
+/// What the window calls `path`: a document's file name without `.json`, a
+/// directory's own name.
+fn name(path: &Path) -> String {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let name = if path.is_dir() {
+        path.file_name()
+    } else {
+        path.file_stem()
+    };
+    name.map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Opens `documents` and blocks until the window closes.

@@ -7,7 +7,71 @@ importers, trace importers, people, agents). Core algorithms and the viewer read
 It deliberately does **not** describe data flow, types, or values.
 
 Status: `0.x`. No stability promise until 1.0. The Rust types in `crates/codeviz-ir`
-are the source of truth; `codeviz schema` prints the generated JSON Schema.
+are the source of truth.
+
+`codeviz analyze` writes one from Rust source. Anything else, a service map, a CI
+pipeline, a language codeviz does not read, can be written by hand or by a script.
+
+## A minimal document
+
+A checkout that loads the cart, fails when it is empty, reserves stock, charges and
+sends a receipt without waiting for it:
+
+```json
+{
+  "schema": "codeviz/0.1",
+  "producer": { "name": "by-hand", "version": "1" },
+  "units": [
+    { "id": "app:shop", "name": "shop", "kind": "module", "role": "group" },
+    { "id": "app:shop::checkout", "name": "checkout", "kind": "fn", "role": "invocable",
+      "parent": "app:shop",
+      "calls": [
+        { "key": "load_cart#0", "text": "load_cart",
+          "targets": [ { "unit": "app:shop::load_cart", "certainty": "declared" } ] },
+        { "key": "stock::reserve#0", "text": "stock::reserve", "propagates": true,
+          "targets": [ { "unit": "app:stock::reserve", "certainty": "declared" } ] },
+        { "key": "payments::charge#0", "text": "payments::charge", "propagates": true,
+          "targets": [ { "unit": "app:payments::charge", "certainty": "declared" } ] },
+        { "key": "email::send_receipt#0", "text": "email::send_receipt", "mode": "spawn",
+          "targets": [ { "unit": "app:email::send_receipt", "certainty": "declared" } ] }
+      ],
+      "body": [
+        { "step": "call", "call": "load_cart#0" },
+        { "step": "branch", "guard": "cart is empty", "arms": [
+          { "label": "yes", "body": [ { "step": "exit", "kind": "error", "label": "nothing to buy" } ] },
+          { "label": "no", "body": [] }
+        ] },
+        { "step": "call", "call": "stock::reserve#0" },
+        { "step": "call", "call": "payments::charge#0" },
+        { "step": "call", "call": "email::send_receipt#0" }
+      ] },
+    { "id": "app:shop::load_cart", "name": "load_cart", "kind": "fn", "role": "invocable",
+      "parent": "app:shop" },
+    { "id": "app:stock", "name": "stock", "kind": "module", "role": "group" },
+    { "id": "app:stock::reserve", "name": "reserve", "kind": "fn", "role": "invocable",
+      "parent": "app:stock" },
+    { "id": "app:payments", "name": "payments", "kind": "module", "role": "group" },
+    { "id": "app:payments::charge", "name": "charge", "kind": "fn", "role": "invocable",
+      "parent": "app:payments" },
+    { "id": "app:email", "name": "email", "kind": "module", "role": "group" },
+    { "id": "app:email::send_receipt", "name": "send_receipt", "kind": "fn", "role": "invocable",
+      "parent": "app:email" }
+  ],
+  "entries": [ { "unit": "app:shop::checkout", "label": "POST /checkout", "kind": "http" } ]
+}
+```
+
+Save it as `shop.json`, then:
+
+```sh
+codeviz validate shop.json                          # 9 units, 1 entry, 0 errors, 0 warnings
+codeviz view shop.json --focus 'POST /checkout'     # that journey, a level deep
+```
+
+A function shows inside its `parent` module's sphere; a module is a `group` unit. The
+required fields are `schema` and `producer`; a unit's `id`, `name`, `kind` and `role`;
+a call's `key` and `text`; an entry's `unit`, `label` and `kind`. Everything else is
+optional and defaults as described below.
 
 ## Documents
 
@@ -39,8 +103,8 @@ warn on a newer minor version.
 
 Every unit has a `UnitId`: `<scheme>:<path>`.
 
-- `scheme` is lowercase `[a-z0-9-]+` and names the namespace: `rust`, `python`,
-  `buildkite`, `arch`, ….
+- `scheme` is lowercase `[a-z0-9-]+` and names the namespace: `rust`, `buildkite`,
+  `arch`, ….
 - `path` is opaque to consumers. Producers choose it, using the domain's own qualified
   names where they exist, and must keep it **deterministic** and **free of line
   numbers**: the same unit must get the same id in every snapshot so documents can be
@@ -52,7 +116,6 @@ Recommended paths:
 | Domain | Example |
 | --- | --- |
 | Rust | `rust:shop::services::users::find_user`, `rust:shop::models::User::{impl#Debug}::fmt`, `rust:shop::main::{closure#0}` |
-| Python | `python:shop.services.orders.place_order`, `python:shop.models.Order.total`, `python:shop.app.make.<locals>.helper` (`__qualname__` style) |
 | Buildkite | `buildkite:deploy/build-image` (pipeline slug / step key) |
 | Architecture | `arch:orders-service` |
 

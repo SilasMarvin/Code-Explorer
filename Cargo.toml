@@ -8,13 +8,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/silas/code-explorer"
+repository = "https://github.com/SilasMarvin/Code-Explorer"
 
 [workspace.dependencies]
 codeviz-core = { path = "crates/codeviz-core" }
 codeviz-ir = { path = "crates/codeviz-ir" }
 codeviz-layout = { path = "crates/codeviz-layout" }
-codeviz-python = { path = "crates/codeviz-python" }
 codeviz-rust = { path = "crates/codeviz-rust" }
 codeviz-viewer = { path = "crates/codeviz-viewer" }
 
@@ -61,7 +60,6 @@ tokio = { version = "1.53.3", features = ["macros", "rt-multi-thread", "net"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 tree-sitter = "0.27.1"
-tree-sitter-python = "0.25.0"
 tree-sitter-rust = "0.24.2"
 walkdir = "2.5.0"
 
