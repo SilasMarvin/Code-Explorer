@@ -1,7 +1,7 @@
 //! Cross-file pass: resolves written call targets and assembles the IR document.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fmt::Write as _,
 };
@@ -17,7 +17,12 @@ use crate::{
 
 /// Bound on `use` indirection, so import cycles cannot loop forever.
 const MAX_IMPORT_HOPS: usize = 8;
+/// Bound on re-export chains: preludes that glob-import crates that re-export
+/// modules run deep, and each `use` followed counts.
+const MAX_REEXPORT_HOPS: usize = 24;
 pub(crate) const SCHEME: &str = "rust";
+/// A module, a name it may bring into scope, and whether that names a function.
+type ReexportKey = (Vec<String>, String, bool);
 /// Methods from std or a dependency that return the value they are called on, or the
 /// same type: Bevy's `ResMut::bypass_change_detection` gives back the resource.
 const SAME_TYPE: [&str; 3] = ["clone", "to_owned", "bypass_change_detection"];
@@ -59,8 +64,14 @@ struct Index<'a> {
     semantic: Option<Semantic<'a>>,
     /// Every unit's name, and every name a `use` gives.
     names: HashSet<&'a str>,
-    /// Paths looked up through re-exports, to where they lead.
-    reexports: RefCell<HashMap<Vec<String>, Option<Vec<String>>>>,
+    /// Names looked up through a module's `use`s, to where they are defined.
+    reexports: RefCell<HashMap<ReexportKey, Vec<Vec<String>>>>,
+    /// The names being looked up, and whether a lookup was cut short by one of them
+    /// or by the hop bound, so that its not finding a name is not remembered.
+    pending: RefCell<HashSet<ReexportKey>>,
+    cut: Cell<bool>,
+    /// Each module's glob imports, as the modules they name.
+    globs: RefCell<HashMap<Vec<String>, Vec<Vec<String>>>>,
 }
 
 /// rust-analyzer's resolution, tied to the extracted units.
@@ -145,6 +156,9 @@ impl<'a> Index<'a> {
                 )
                 .collect(),
             reexports: RefCell::new(HashMap::new()),
+            pending: RefCell::new(HashSet::new()),
+            cut: Cell::new(false),
+            globs: RefCell::new(HashMap::new()),
         }
     }
 
@@ -502,65 +516,141 @@ impl<'a> Index<'a> {
         self.by_path.get(&self.reexported(path, 0)?)
     }
 
-    /// The path a function is defined at, for one it may be re-exported at. The path
-    /// is followed from its crate root a segment at a time; where a segment is not
-    /// defined in the module reached, that module's `use`s are followed instead.
+    /// The path a function is defined at, for one it may be re-exported at.
     fn reexported(&self, path: &[String], hops: usize) -> Option<Vec<String>> {
-        if self.by_path.contains_key(path) {
+        self.walk(path, true, hops)
+    }
+
+    /// Whether `path` is defined: as a function, or as a module or type.
+    fn defines(&self, path: &[String], function: bool) -> bool {
+        if function {
+            self.by_path.contains_key(path)
+        } else {
+            self.by_id.contains_key(path)
+        }
+    }
+
+    /// Follows `path` from its crate root a segment at a time; where a segment is not
+    /// defined in the module reached, that module's `use`s say where it is.
+    fn walk(&self, path: &[String], function: bool, hops: usize) -> Option<Vec<String>> {
+        if self.defines(path, function) {
             return Some(path.to_vec());
         }
-        if hops > MAX_IMPORT_HOPS {
-            return None;
+        let (root, segments) = path.split_first()?;
+        self.walk_from(vec![root.clone()], segments, function, hops)
+    }
+
+    /// The rest of a walk from `reached`, trying each item a `use` there may mean
+    /// until one leads all the way.
+    fn walk_from(
+        &self,
+        reached: Vec<String>,
+        segments: &[String],
+        function: bool,
+        hops: usize,
+    ) -> Option<Vec<String>> {
+        let Some((segment, rest)) = segments.split_first() else {
+            return Some(reached);
+        };
+        let last = function && rest.is_empty();
+        let mut next = reached.clone();
+        next.push(segment.clone());
+        if self.defines(&next, last)
+            && let Some(found) = self.walk_from(next, rest, function, hops)
+        {
+            return Some(found);
         }
-        if let Some(known) = self.reexports.borrow().get(path) {
+        self.name_in(&reached, segment, last, hops)
+            .into_iter()
+            .find_map(|candidate| self.walk_from(candidate, rest, function, hops))
+    }
+
+    /// The items `name` may mean in `module` through its `use`s, most likely first: an
+    /// import, a module a glob names that defines it, then what such modules pass on.
+    fn name_in(
+        &self,
+        module: &[String],
+        name: &str,
+        function: bool,
+        hops: usize,
+    ) -> Vec<Vec<String>> {
+        if !self.names.contains(name) {
+            // Nothing of ours has that name: `String`, `Vec`, `serde`.
+            return Vec::new();
+        }
+        if hops > MAX_REEXPORT_HOPS {
+            self.cut.set(true);
+            return Vec::new();
+        }
+        let key = (module.to_vec(), name.to_owned(), function);
+        if let Some(known) = self.reexports.borrow().get(&key) {
+            if self.pending.borrow().contains(&key) {
+                self.cut.set(true);
+            }
             return known.clone();
         }
-        // Re-exports can cycle (`pub use a::*` above `use super::*`): a path being
+        let outer_cut = self.cut.replace(false);
+        self.pending.borrow_mut().insert(key.clone());
+        // Re-exports can cycle (`pub use a::*` above `use super::*`): a name being
         // looked up is not found again inside its own lookup.
-        self.reexports.borrow_mut().insert(path.to_vec(), None);
-        let found = self.reexported_walk(path, hops);
-        self.reexports
-            .borrow_mut()
-            .insert(path.to_vec(), found.clone());
+        self.reexports.borrow_mut().insert(key.clone(), Vec::new());
+        let scope = self.extraction.scopes.get(module);
+        // An import names an item in another module, which may itself be one of
+        // several that module's `use`s bring in.
+        let mut found = Vec::new();
+        if let Some(full) = scope
+            .and_then(|scope| scope.imports.get(name))
+            .and_then(|import| self.absolute(module, import.clone(), 0))
+        {
+            found.extend(self.walk(&full, function, hops + 1));
+            if let Some((last, head)) = full.split_last()
+                && let Some(from) = self.walk(head, false, hops + 1)
+            {
+                found.extend(self.name_in(&from, last, function, hops + 1));
+            }
+        }
+        let globbed = self.globbed(module, hops);
+        for globbed in &globbed {
+            let mut candidate = globbed.clone();
+            candidate.push(name.to_owned());
+            if self.defines(&candidate, function) {
+                found.push(candidate);
+            }
+        }
+        for globbed in &globbed {
+            found.extend(self.name_in(globbed, name, function, hops + 1));
+        }
+        let mut seen = HashSet::new();
+        found.retain(|candidate| seen.insert(candidate.clone()));
+        self.pending.borrow_mut().remove(&key);
+        if self.cut.get() {
+            // A lookup in progress or the hop bound cut this one short: what it found
+            // may be incomplete from here, though not from elsewhere.
+            self.reexports.borrow_mut().remove(&key);
+        } else {
+            self.reexports.borrow_mut().insert(key, found.clone());
+        }
+        self.cut.set(self.cut.get() || outer_cut);
         found
     }
 
-    fn reexported_walk(&self, path: &[String], hops: usize) -> Option<Vec<String>> {
-        let (root, segments) = path.split_first()?;
-        let mut reached = vec![root.clone()];
-        for (index, segment) in segments.iter().enumerate() {
-            let mut next = reached.clone();
-            next.push(segment.clone());
-            let last = index + 1 == segments.len();
-            if (!last && self.by_id.contains_key(next.as_slice()))
-                || (last && self.by_path.contains_key(&next))
-            {
-                reached = next;
-                continue;
-            }
-            if !self.names.contains(segment.as_str()) {
-                // Nothing of ours has that name: `String`, `Vec`, `serde`.
-                return None;
-            }
-            let scope = self.extraction.scopes.get(&reached)?;
-            let rest = segments.get(index + 1..).unwrap_or_default();
-            let imported = scope.imports.get(segment).cloned();
-            let globbed = scope.globs.iter().map(|glob| {
-                glob.iter()
-                    .chain(std::iter::once(segment))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            });
-            return imported
-                .into_iter()
-                .chain(globbed)
-                .filter_map(|through| self.absolute(&reached, through, 0))
-                .find_map(|mut full| {
-                    full.extend(rest.iter().cloned());
-                    self.reexported(&full, hops + 1)
-                });
+    /// The modules `module`'s glob imports name, as defined.
+    fn globbed(&self, module: &[String], hops: usize) -> Vec<Vec<String>> {
+        if let Some(known) = self.globs.borrow().get(module) {
+            return known.clone();
         }
-        None
+        let Some(scope) = self.extraction.scopes.get(module) else {
+            return Vec::new();
+        };
+        let globbed: Vec<Vec<String>> = scope
+            .globs
+            .iter()
+            .filter_map(|glob| self.walk(&self.absolute(module, glob.clone(), 0)?, false, hops + 1))
+            .collect();
+        self.globs
+            .borrow_mut()
+            .insert(module.to_vec(), globbed.clone());
+        globbed
     }
 
     /// Rewrites a path as written in `module` into a full path from a crate root.

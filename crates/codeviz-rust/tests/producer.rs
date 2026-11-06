@@ -835,3 +835,54 @@ fn re_exported_paths_resolve_exactly() {
         );
     }
 }
+
+#[test]
+fn re_exports_resolve_through_another_crates_prelude() {
+    // nushell's commands `use nu_engine::command_prelude::*`, which re-exports
+    // `nu_protocol::Type`, which is `pub use ty::*` at nu_protocol's root.
+    let package = |name: &str| format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n");
+    let root = tree(
+        "prelude",
+        &[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"proto\", \"engine\", \"cli\"]\n",
+            ),
+            ("proto/Cargo.toml", &package("proto")),
+            (
+                "proto/src/lib.rs",
+                "mod ty; mod one_of; pub use one_of::*; pub use ty::*;",
+            ),
+            (
+                "proto/src/ty.rs",
+                "pub enum Type { A } impl Type { pub fn table() {} }",
+            ),
+            // Another `Type`, which has no `table`.
+            (
+                "proto/src/one_of.rs",
+                "mod inner { pub struct Type; } pub use inner::*;",
+            ),
+            ("engine/Cargo.toml", &package("engine")),
+            ("engine/src/lib.rs", "pub mod command_prelude;"),
+            ("engine/src/command_prelude.rs", "pub use proto::{Type};"),
+            ("cli/Cargo.toml", &package("cli")),
+            ("cli/src/lib.rs", "mod commands;"),
+            (
+                "cli/src/commands.rs",
+                "use engine::command_prelude::*; pub fn f() { Type::table(); }",
+            ),
+        ],
+    );
+    let analysis = analyze(&root, &AnalyzeOptions::default()).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let call = &unit(&analysis.document, "cli::commands::f").calls[0];
+    let targets: Vec<(String, Certainty)> = call
+        .targets
+        .iter()
+        .map(|t| (t.unit.to_string(), t.certainty))
+        .collect();
+    assert_eq!(
+        targets,
+        [("rust:proto::ty::Type::table".to_owned(), Certainty::Exact)]
+    );
+}
