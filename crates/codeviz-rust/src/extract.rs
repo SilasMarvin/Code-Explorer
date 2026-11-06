@@ -287,7 +287,80 @@ impl Extractor {
     ) {
         let mut cursor = parent.walk();
         for child in parent.named_children(&mut cursor) {
-            self.item(file, child, module, owner);
+            match child.kind() {
+                "macro_invocation" => self.macro_items(file, child, module, owner),
+                "expression_statement"
+                    if child
+                        .named_child(0)
+                        .is_some_and(|c| c.kind() == "macro_invocation") =>
+                {
+                    if let Some(invocation) = child.named_child(0) {
+                        self.macro_items(file, invocation, module, owner);
+                    }
+                }
+                _ => {
+                    self.item(file, child, module, owner);
+                }
+            }
+        }
+    }
+
+    /// Items written inside a macro invocation where items go, such as tokio's
+    /// `cfg_rt! { pub mod runtime; .. }` or `cfg_if! { if #[cfg(unix)] { .. } }`:
+    /// tree-sitter leaves them as tokens, so the tokens are parsed again as items, in
+    /// place. Whatever does not parse as an item is looked through for items inside.
+    fn macro_items(
+        &mut self,
+        file: &File<'_>,
+        invocation: Node<'_>,
+        module: &[String],
+        owner: Option<&Owner>,
+    ) {
+        let Some(tree) = invocation
+            .named_children(&mut invocation.walk())
+            .find(|c| c.kind() == "token_tree")
+        else {
+            return;
+        };
+        let (Some(open), Some(close)) = (
+            tree.child(0),
+            tree.child(tree.child_count().saturating_sub(1)),
+        ) else {
+            return;
+        };
+        if open.end_byte() >= close.start_byte() {
+            return;
+        }
+        let inside = tree_sitter::Range {
+            start_byte: open.end_byte(),
+            end_byte: close.start_byte(),
+            start_point: open.end_position(),
+            end_point: close.start_position(),
+        };
+        if self.parser.set_included_ranges(&[inside]).is_err() {
+            return;
+        }
+        let parsed = self.parser.parse(file.source, None);
+        let _ = self.parser.set_included_ranges(&[]);
+        if let Some(parsed) = parsed {
+            self.expanded_items(file, parsed.root_node(), module, owner);
+        }
+    }
+
+    fn expanded_items(
+        &mut self,
+        file: &File<'_>,
+        node: Node<'_>,
+        module: &[String],
+        owner: Option<&Owner>,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "macro_invocation" {
+                self.macro_items(file, child, module, owner);
+            } else if !self.item(file, child, module, owner) {
+                self.expanded_items(file, child, module, owner);
+            }
         }
     }
 

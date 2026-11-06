@@ -26,11 +26,14 @@ mod resolve;
 mod scip;
 mod syntax;
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
 use codeviz_ir::{Document, Producer};
 
-pub use discover::Package;
+pub use discover::Crate;
 pub use scip::rust_analyzer_available;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -56,13 +59,16 @@ pub enum Resolver {
 #[derive(Debug)]
 pub struct Analysis {
     pub document: Document,
-    pub packages: Vec<Package>,
+    pub crates: Vec<Crate>,
     pub files_parsed: usize,
+    /// What was analyzed, and what was skipped or resolved less well than asked, in
+    /// lines to show whoever ran it.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no Cargo packages with a src/ directory found under {}", .0.display())]
+    #[error("no Cargo package with a library or binary found under {}", .0.display())]
     NoPackages(PathBuf),
     #[error("failed to read {}", path.display())]
     Io {
@@ -88,41 +94,57 @@ pub enum Error {
     Language(#[from] tree_sitter::LanguageError),
     #[error("cannot run rust-analyzer")]
     RustAnalyzer(#[source] std::io::Error),
-    #[error("rust-analyzer failed: {0}")]
-    RustAnalyzerFailed(String),
     #[error("cannot read rust-analyzer's index")]
     Scip(#[source] prost::DecodeError),
 }
 
-/// Builds an IR document for every package under `root`.
+/// Builds an IR document for every crate under `root`, or, when `root` is inside a
+/// package, for the part of it under `root`.
 ///
 /// # Errors
-/// Fails if no package is found, or a manifest or source file cannot be read or parsed,
-/// or rust-analyzer was asked for and failed.
+/// Fails if no crate is found, or a source file cannot be read or parsed, or
+/// rust-analyzer was asked for and cannot be run. A workspace rust-analyzer fails on
+/// is resolved from the syntax, and a note says so.
 pub fn analyze(root: &Path, options: &AnalyzeOptions) -> Result<Analysis, Error> {
-    let packages = discover::packages(root)?;
-    if packages.is_empty() {
+    let mut discovery = discover::crates(root)?;
+    if discovery.crates.is_empty()
+        && let Some(package) = discover::enclosing_package(root)
+    {
+        discovery = discover::crates(package)?;
+    }
+    let mut notes = discovery.notes;
+    let crates = discovery.crates;
+    let files = discover::source_files(&crates, options.include_tests)?;
+    let files: Vec<_> = files
+        .into_iter()
+        .filter(|f| f.path.starts_with(root))
+        .collect();
+    if files.is_empty() {
         return Err(Error::NoPackages(root.to_path_buf()));
     }
+    let crates: Vec<Crate> = crates
+        .into_iter()
+        .filter(|c| files.iter().any(|f| f.module.first() == Some(&c.name)))
+        .collect();
+    notes.insert(0, summary(root, &crates, files.len()));
     let scip = match &options.resolver {
         Resolver::Syntax => None,
-        Resolver::RustAnalyzer { target_dir } => {
-            Some(scip::Scip::index(root, target_dir.as_deref())?)
-        }
+        Resolver::RustAnalyzer { target_dir } => Some(scip::Scip::index(
+            root,
+            &crates,
+            target_dir.as_deref(),
+            &mut notes,
+        )?),
     };
 
     let mut extractor = extract::Extractor::new(options.include_tests)?;
-    let mut files_parsed = 0;
-    for package in &packages {
-        for file in discover::source_files(package, options.include_tests)? {
-            let source = std::fs::read(&file.path).map_err(|source| Error::Io {
-                path: file.path.clone(),
-                source,
-            })?;
-            let relative = file.path.strip_prefix(root).unwrap_or(&file.path);
-            extractor.extract(&source, relative, &file.module)?;
-            files_parsed += 1;
-        }
+    for file in &files {
+        let source = std::fs::read(&file.path).map_err(|source| Error::Io {
+            path: file.path.clone(),
+            source,
+        })?;
+        let relative = file.path.strip_prefix(root).unwrap_or(&file.path);
+        extractor.extract(&source, relative, &file.module)?;
     }
 
     let mut document = Document::new(Producer {
@@ -130,7 +152,7 @@ pub fn analyze(root: &Path, options: &AnalyzeOptions) -> Result<Analysis, Error>
         version: env!("CARGO_PKG_VERSION").to_owned(),
     });
     document.root = Some(format!("file://{}", root.display()));
-    let crate_names = packages.iter().map(|p| p.crate_name.clone()).collect();
+    let crate_names = crates.iter().map(|c| c.name.clone()).collect();
     resolve::assemble(
         &mut extractor.finish(),
         &crate_names,
@@ -140,7 +162,38 @@ pub fn analyze(root: &Path, options: &AnalyzeOptions) -> Result<Analysis, Error>
     document.canonicalize();
     Ok(Analysis {
         document,
-        packages,
-        files_parsed,
+        crates,
+        files_parsed: files.len(),
+        notes,
     })
+}
+
+/// `3 crates (2 libraries, 1 binary) in 2 packages, 41 files`, and the part of a
+/// package `root` is inside.
+fn summary(root: &Path, crates: &[Crate], files: usize) -> String {
+    let mut packages: Vec<&Path> = crates.iter().map(|c| c.package.as_path()).collect();
+    packages.dedup();
+    let libraries = crates.iter().filter(|c| c.library).count();
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let mut line = format!(
+        "{} ({}, {}) in {}, {}",
+        plural(crates.len(), "crate", "crates"),
+        plural(libraries, "library", "libraries"),
+        plural(crates.len() - libraries, "binary", "binaries"),
+        plural(packages.len(), "package", "packages"),
+        plural(files, "file", "files"),
+    );
+    if let ([package], Some(krate)) = (packages.as_slice(), crates.first())
+        && let Ok(inside) = root.strip_prefix(package)
+        && !inside.as_os_str().is_empty()
+    {
+        let _ = write!(
+            line,
+            ": only {} of package {}",
+            inside.display(),
+            krate.package_name
+        );
+    }
+    line
 }

@@ -280,8 +280,26 @@ fn control_flow_becomes_steps() {
                match q { 1 => Ok(one()), _ => Err(String::new()) }
            }
            fn tick() {}
-           fn one() -> u32 { 1 }"#,
+           fn one() -> u32 { 1 }
+           pub enum Outcome { Err(u32), Done }
+           pub fn outcome(q: u32) -> Outcome { if q == 0 { return Outcome::Err(q); } Outcome::Done }"#,
     )]);
+    // `return Outcome::Err(..)` is one exit, an error: not an error and then a return.
+    let Some(Step::Branch { arms, .. }) = unit(&document, "app::outcome")
+        .body
+        .as_ref()
+        .unwrap()
+        .first()
+    else {
+        panic!("no branch");
+    };
+    assert!(matches!(
+        arms[0].body.as_slice(),
+        [Step::Exit {
+            kind: ExitKind::Error,
+            ..
+        }]
+    ));
     let body = unit(&document, "app::check").body.clone().unwrap();
     let [
         Step::Branch { arms, .. },
@@ -415,28 +433,207 @@ fn a_variable_passed_along_is_not_a_method_of_the_same_name() {
     );
 }
 
-#[test]
-fn packages_a_workspace_excludes_are_skipped() {
-    let root = std::env::temp_dir().join(format!("codeviz-rust-exclude-{}", std::process::id()));
+/// A fresh directory named for the test, with `files` written into it.
+fn tree(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("codeviz-rust-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    for (dir, name) in [("app", "app"), ("fixtures/old", "app")] {
-        fs::create_dir_all(root.join(dir).join("src")).unwrap();
-        fs::write(
-            root.join(dir).join("Cargo.toml"),
-            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
-        )
-        .unwrap();
-        fs::write(root.join(dir).join("src/main.rs"), "fn main() {}").unwrap();
+    for (path, text) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
     }
-    fs::write(
-        root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"app\"]\nexclude = [\"fixtures\"]\n",
-    )
-    .unwrap();
+    root
+}
+
+fn ids(document: &Document) -> Vec<String> {
+    document.units.iter().map(|u| u.id.to_string()).collect()
+}
+
+const PACKAGE: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n";
+
+#[test]
+fn packages_outside_their_workspace_and_broken_manifests_are_skipped() {
+    let member = |name: &str| format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n");
+    let app = format!(
+        "{}[dependencies]\nshared = {{ path = \"../shared\" }}\n",
+        member("app")
+    );
+    let root = tree(
+        "workspace",
+        &[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"app\"]\nexclude = [\"old\"]\n",
+            ),
+            ("app/Cargo.toml", &app),
+            ("app/src/main.rs", "fn main() {}"),
+            // A path dependency is a member without being listed.
+            ("shared/Cargo.toml", &member("shared")),
+            ("shared/src/lib.rs", "pub fn f() {}"),
+            ("old/Cargo.toml", &member("old")),
+            ("old/src/lib.rs", "pub fn f() {}"),
+            ("app/tests/fixtures/sample/Cargo.toml", &member("sample")),
+            ("app/tests/fixtures/sample/src/lib.rs", "pub fn f() {}"),
+            ("broken/Cargo.toml", "[package\nname ="),
+        ],
+    );
     let analysis = analyze(&root, &AnalyzeOptions::default()).unwrap();
     fs::remove_dir_all(&root).unwrap();
-    assert_eq!(analysis.packages.len(), 1, "{:?}", analysis.packages);
-    assert!(analysis.packages[0].src_dir.ends_with("app/src"));
+    let crates: Vec<&str> = analysis.crates.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(crates, ["app", "shared"]);
+    let notes = analysis.notes.join("\n");
+    assert!(
+        notes.contains("skipped failed to parse manifest"),
+        "{notes}"
+    );
+    assert!(notes.contains("app/tests/fixtures/sample, old"), "{notes}");
+}
+
+#[test]
+fn every_library_and_binary_is_a_crate() {
+    let manifest = format!("{PACKAGE}[[bin]]\nname = \"rg\"\npath = \"core/main.rs\"\n");
+    let root = tree(
+        "targets",
+        &[
+            ("Cargo.toml", &manifest),
+            ("build.rs", "fn main() {}"),
+            (
+                "core/main.rs",
+                "mod flags; fn main() { flags::parse(); app::run(); }",
+            ),
+            ("core/flags.rs", "pub fn parse() {}"),
+            (
+                "src/lib.rs",
+                "pub mod store; pub fn run() { store::open(); }",
+            ),
+            ("src/store.rs", "pub fn open() {}"),
+            // Named like the package, the default binary shares the library's crate.
+            ("src/main.rs", "fn main() { app::run(); }"),
+            ("src/bin/extra.rs", "fn main() { app::store::open(); }"),
+            (
+                "src/bin/multi/main.rs",
+                "mod part; fn main() { part::go(); }",
+            ),
+            ("src/bin/multi/part.rs", "pub fn go() {}"),
+            ("examples/demo.rs", "fn main() {}"),
+        ],
+    );
+    let analysis = analyze(&root, &AnalyzeOptions::default()).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let document = &analysis.document;
+    assert_eq!(codeviz_ir::validate(document), Vec::new());
+    let crates: Vec<&str> = document
+        .units
+        .iter()
+        .filter(|u| u.kind == "crate")
+        .map(|u| u.name.as_str())
+        .collect();
+    assert_eq!(crates, ["app", "extra", "multi", "rg"]);
+    assert_eq!(
+        calls(unit(document, "rg::main")),
+        [
+            (
+                "flags::parse".to_owned(),
+                vec!["rust:rg::flags::parse".to_owned()]
+            ),
+            ("app::run".to_owned(), vec!["rust:app::run".to_owned()]),
+        ]
+    );
+    assert_eq!(
+        calls(unit(document, "multi::main")),
+        [(
+            "part::go".to_owned(),
+            vec!["rust:multi::part::go".to_owned()]
+        )]
+    );
+    let entries: Vec<&str> = document.entries.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(entries, ["app main", "extra main", "multi main", "rg main"]);
+    assert!(
+        !ids(document)
+            .iter()
+            .any(|id| id.contains("bin") || id.contains("demo")),
+        "{:?}",
+        ids(document)
+    );
+}
+
+#[test]
+fn items_written_inside_macros_are_found() {
+    let document = analyze_files(&[
+        (
+            "lib.rs",
+            "macro_rules! cfg_rt { ($($item:item)*) => { $($item)* } }
+             cfg_rt! {
+                 pub mod rt;
+                 pub fn spawn() { rt::run(); }
+             }
+             cfg_if::cfg_if! {
+                 if #[cfg(unix)] { pub fn unix_only() {} } else { pub fn elsewhere() {} }
+             }
+             pub struct S;
+             impl S { cfg_rt! { pub fn inside(&self) { spawn(); } } }
+             pub fn body() { cfg_rt! { helper(); } }
+             fn helper() {}",
+        ),
+        ("rt.rs", "pub fn run() {}"),
+    ]);
+    for id in [
+        "app::unix_only",
+        "app::elsewhere",
+        "app::S::inside",
+        "app::rt::run",
+    ] {
+        unit(&document, id);
+    }
+    assert_eq!(
+        calls(unit(&document, "app::spawn")),
+        [("rt::run".to_owned(), vec!["rust:app::rt::run".to_owned()])]
+    );
+    assert_eq!(
+        calls(unit(&document, "app::body")),
+        [("helper".to_owned(), vec!["rust:app::helper".to_owned()])],
+        "in a body, a macro's tokens are still calls"
+    );
+}
+
+#[test]
+fn a_directory_inside_a_package_is_that_part_of_it() {
+    let root = tree(
+        "inside",
+        &[
+            ("Cargo.toml", PACKAGE),
+            ("src/lib.rs", "pub mod svc; pub fn top() {}"),
+            (
+                "src/svc/mod.rs",
+                "pub mod users; pub fn helper() { crate::top(); }",
+            ),
+            ("src/svc/users.rs", "pub fn find() { super::helper(); }"),
+        ],
+    );
+    let analysis = analyze(&root.join("src/svc"), &AnalyzeOptions::default()).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let document = &analysis.document;
+    assert_eq!(
+        calls(unit(document, "app::svc::users::find")),
+        [(
+            "super::helper".to_owned(),
+            vec!["rust:app::svc::helper".to_owned()]
+        )]
+    );
+    assert!(document.unit(&UnitId::new("rust:app::top")).is_none());
+    assert_eq!(
+        unit(document, "app::svc::users::find")
+            .location
+            .as_ref()
+            .unwrap()
+            .uri,
+        "users.rs"
+    );
+    assert!(
+        analysis.notes[0].ends_with("only src/svc of package app"),
+        "{:?}",
+        analysis.notes
+    );
 }
 
 #[test]
@@ -500,4 +697,64 @@ fn rust_analyzer_resolves_what_names_alone_cannot() {
         [("apply".to_owned(), vec![])],
         "a parameter is not a function of the same name"
     );
+}
+
+#[test]
+fn rust_analyzer_indexes_each_workspace_and_says_what_it_could_not() {
+    if !rust_analyzer_available() {
+        eprintln!("skipped: rust-analyzer is not installed");
+        return;
+    }
+    let package = |name: &str| {
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+    };
+    // Only rust-analyzer knows what `v[0]` is.
+    let shapes = "pub struct Circle;
+        impl Circle { pub fn area(&self) -> u32 { 1 } }
+        pub fn total() -> u32 { let v = vec![Circle]; v[0].area() }";
+    let root = tree(
+        "workspaces",
+        &[
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"app\", \"bad\"]\nresolver = \"2\"\n",
+            ),
+            ("app/Cargo.toml", &package("app")),
+            ("app/src/lib.rs", shapes),
+            ("bad/Cargo.toml", &package("bad")),
+            ("bad/build.rs", "fn main() { panic!(\"no libfoo\"); }"),
+            ("bad/src/lib.rs", "pub fn b() {}"),
+            // A workspace of its own, as axum's examples are.
+            (
+                "examples/Cargo.toml",
+                "[workspace]\nmembers = [\"demo\"]\nresolver = \"2\"\n",
+            ),
+            ("examples/demo/Cargo.toml", &package("demo")),
+            ("examples/demo/src/lib.rs", shapes),
+        ],
+    );
+    let options = AnalyzeOptions {
+        resolver: Resolver::RustAnalyzer {
+            target_dir: Some(root.join("target")),
+        },
+        ..AnalyzeOptions::default()
+    };
+    let analysis = analyze(&root, &options).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    for name in ["app", "demo"] {
+        assert_eq!(
+            calls(unit(&analysis.document, &format!("{name}::total"))).last(),
+            Some(&(
+                ".area".to_owned(),
+                vec![format!("rust:{name}::Circle::area")]
+            )),
+        );
+    }
+    let notes = analysis.notes.join("\n");
+    assert!(notes.contains("indexed the workspace ("), "{notes}");
+    assert!(
+        notes.contains("indexed the workspace in examples ("),
+        "{notes}"
+    );
+    assert!(notes.contains("the build script of bad failed"), "{notes}");
 }

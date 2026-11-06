@@ -7,11 +7,13 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Instant,
 };
 
 use prost::Message;
 
-use crate::Error;
+use crate::{Crate, Error};
 
 /// A position in a file: its path relative to the analyzed root, then the zero-based
 /// line and byte column, as tree-sitter counts them.
@@ -28,44 +30,77 @@ pub(crate) struct Scip {
 }
 
 impl Scip {
-    /// Runs rust-analyzer over `root`. Build scripts and proc macros are built into
-    /// `target_dir`, or the workspace's own target directory when that is `None`.
+    /// Runs rust-analyzer over each workspace the crates are in. Build scripts and proc
+    /// macros are built into `target_dir`, or each workspace's own target directory
+    /// when that is `None`. A workspace it fails on is left out, with a note; so is
+    /// what a failed build script would have generated.
     ///
     /// # Errors
-    /// Fails if rust-analyzer cannot be run, fails, or writes an index this cannot read.
-    pub(crate) fn index(root: &Path, target_dir: Option<&Path>) -> Result<Self, Error> {
-        let output = std::env::temp_dir().join(format!("codeviz-{}.scip", std::process::id()));
-        let mut command = Command::new(rust_analyzer());
-        command.arg("scip").arg(root).arg("--output").arg(&output);
-        if let Some(dir) = target_dir {
-            command.env("CARGO_TARGET_DIR", dir);
+    /// Fails if rust-analyzer cannot be run, or writes an index this cannot read.
+    pub(crate) fn index(
+        root: &Path,
+        crates: &[Crate],
+        target_dir: Option<&Path>,
+        notes: &mut Vec<String>,
+    ) -> Result<Self, Error> {
+        let mut workspaces: Vec<&Path> = crates.iter().map(|c| c.workspace.as_path()).collect();
+        workspaces.sort();
+        workspaces.dedup();
+        let mut scip = Self::default();
+        for workspace in workspaces {
+            let started = Instant::now();
+            match run(workspace, target_dir)? {
+                Ok(bytes) => {
+                    scip.decode(&bytes, workspace, root)?;
+                    notes.push(format!(
+                        "rust-analyzer: indexed {} ({:.1}s)",
+                        shown(workspace, root),
+                        started.elapsed().as_secs_f64()
+                    ));
+                    let target = target_dir.map_or_else(
+                        || {
+                            std::env::var_os("CARGO_TARGET_DIR")
+                                .map_or_else(|| workspace.join("target"), PathBuf::from)
+                        },
+                        Path::to_path_buf,
+                    );
+                    let mut packages: Vec<&Crate> =
+                        crates.iter().filter(|c| c.workspace == workspace).collect();
+                    packages.dedup_by_key(|c| &c.package);
+                    for krate in packages {
+                        if build_script_failed(krate, &target) {
+                            notes.push(format!(
+                                "the build script of {} failed; what it generates is missing, \
+                                 and calls into it are unresolved",
+                                krate.package_name
+                            ));
+                        }
+                    }
+                }
+                Err(reason) => notes.push(format!(
+                    "rust-analyzer failed on {}: {reason}; its calls are resolved from the syntax",
+                    shown(workspace, root)
+                )),
+            }
         }
-        let run = command.output().map_err(Error::RustAnalyzer)?;
-        let bytes = std::fs::read(&output);
-        let _ = std::fs::remove_file(&output);
-        if !run.status.success() {
-            // Its log runs long; the cause is at the end.
-            let log = String::from_utf8_lossy(&run.stderr);
-            let tail: Vec<&str> = log.trim().lines().rev().take(5).collect();
-            return Err(Error::RustAnalyzerFailed(
-                tail.into_iter().rev().collect::<Vec<_>>().join("\n"),
-            ));
-        }
-        let bytes = bytes.map_err(|source| Error::Io {
-            path: output,
-            source,
-        })?;
-        Self::decode(&bytes)
+        Ok(scip)
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    /// Adds an index of `workspace`, keeping the files under `root` with their paths
+    /// made relative to it.
+    fn decode(&mut self, bytes: &[u8], workspace: &Path, root: &Path) -> Result<(), Error> {
         let index = Index::decode(bytes).map_err(Error::Scip)?;
-        let mut scip = Self::default();
         for document in index.documents {
             let utf8 = matches!(document.position_encoding, 0 | UTF8);
-            if !utf8 {
+            let path = workspace.join(&document.relative_path);
+            let Some(relative) = path.strip_prefix(root).ok().filter(|_| utf8) else {
                 continue;
-            }
+            };
+            let relative = relative
+                .iter()
+                .map(|s| s.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
             for occurrence in document.occurrences {
                 let (Some(&line), Some(&column)) =
                     (occurrence.range.first(), occurrence.range.get(1))
@@ -75,22 +110,21 @@ impl Scip {
                 let (Ok(line), Ok(column)) = (u32::try_from(line), u32::try_from(column)) else {
                     continue;
                 };
-                let position = (document.relative_path.clone(), line, column);
-                let symbols = if occurrence.symbol_roles & DEFINITION == 0 {
-                    scip.references.entry(position).or_default()
-                } else if occurrence.symbol.starts_with("local ") {
-                    continue;
-                } else {
-                    scip.definitions
+                let position = (relative.clone(), line, column);
+                if occurrence.symbol_roles & DEFINITION == 0 {
+                    self.references
+                        .entry(position)
+                        .or_default()
+                        .push(occurrence.symbol);
+                } else if !occurrence.symbol.starts_with("local ") {
+                    self.definitions
                         .entry(occurrence.symbol)
                         .or_default()
                         .push(position);
-                    continue;
-                };
-                symbols.push(occurrence.symbol);
+                }
             }
         }
-        Ok(scip)
+        Ok(())
     }
 
     /// What the reference at `position` names, or `None` if rust-analyzer did not
@@ -98,6 +132,93 @@ impl Scip {
     pub(crate) fn symbols_at(&self, position: &Position) -> Option<&[String]> {
         self.references.get(position).map(Vec::as_slice)
     }
+}
+
+/// A workspace as a note names it: from the analyzed root when it is inside.
+fn shown(workspace: &Path, root: &Path) -> String {
+    match workspace.strip_prefix(root) {
+        Ok(inside) if inside.as_os_str().is_empty() => "the workspace".to_owned(),
+        Ok(inside) => format!("the workspace in {}", inside.display()),
+        Err(_) => format!("the workspace in {}", workspace.display()),
+    }
+}
+
+/// `rust-analyzer scip` over one workspace: the index it writes, or why it failed.
+fn run(workspace: &Path, target_dir: Option<&Path>) -> Result<Result<Vec<u8>, String>, Error> {
+    // Analyses may run side by side in one process.
+    static RUNS: AtomicUsize = AtomicUsize::new(0);
+    let n = RUNS.fetch_add(1, Ordering::Relaxed);
+    let output = std::env::temp_dir().join(format!("codeviz-{}-{n}.scip", std::process::id()));
+    let mut command = Command::new(rust_analyzer());
+    command
+        .arg("scip")
+        .arg(workspace)
+        .arg("--output")
+        .arg(&output)
+        .current_dir(workspace);
+    if let Some(dir) = target_dir {
+        command.env("CARGO_TARGET_DIR", dir);
+    }
+    let run = command.output().map_err(Error::RustAnalyzer)?;
+    let bytes = std::fs::read(&output);
+    let _ = std::fs::remove_file(&output);
+    if !run.status.success() {
+        return Ok(Err(failure(&String::from_utf8_lossy(&run.stderr))));
+    }
+    bytes.map(Ok).map_err(|source| Error::Io {
+        path: output,
+        source,
+    })
+}
+
+/// The cause in rust-analyzer's log: the first error it reports, without the
+/// backtrace and progress lines around it.
+fn failure(log: &str) -> String {
+    let lines: Vec<&str> = log
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("rust-analyzer: Loading"))
+        .collect();
+    let first = lines
+        .iter()
+        .position(|l| l.contains("ERROR") || l.starts_with("Error"))
+        .unwrap_or(0);
+    let cause: Vec<&str> = lines
+        .iter()
+        .skip(first)
+        .take_while(|l| !l.starts_with("Stack backtrace") && !l.starts_with("0:"))
+        .take(4)
+        .copied()
+        .collect();
+    let cause = cause.join(" ");
+    match cause.char_indices().nth(400) {
+        Some((cut, _)) => format!("{}…", &cause[..cut]),
+        None if cause.is_empty() => "no reason given".to_owned(),
+        None => cause,
+    }
+}
+
+/// Whether the last run of the crate's build script under `target` failed: Cargo
+/// writes its `output` only when it succeeds. rust-analyzer carries on without what
+/// it generates, and says nothing.
+fn build_script_failed(krate: &Crate, target: &Path) -> bool {
+    if !krate.package.join("build.rs").is_file() {
+        return false;
+    }
+    let prefix = format!("{}-", krate.package_name);
+    let runs = std::fs::read_dir(target.join("debug/build"))
+        .into_iter()
+        .flatten();
+    let last = runs
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .filter_map(|e| {
+            let stamp = e.path().join("invoked.timestamp");
+            let modified = stamp.metadata().and_then(|m| m.modified()).ok()?;
+            Some((modified, e.path()))
+        })
+        .max();
+    last.is_some_and(|(_, dir)| !dir.join("output").is_file())
 }
 
 /// The rust-analyzer to run: `$RUST_ANALYZER`, or the one on the path.

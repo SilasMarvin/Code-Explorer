@@ -540,7 +540,10 @@ impl Builder<'_, '_, '_> {
         if let Some(value) = value {
             self.expr(value, true, steps);
         }
-        steps.push(exit(ExitKind::Return, None));
+        // `return Outcome::Err(..)` has already ended in an error.
+        if !matches!(steps.last(), Some(Step::Exit { .. })) {
+            steps.push(exit(ExitKind::Return, None));
+        }
     }
 
     /// `x?`: the outermost call inside `x` may end this function with its error.
