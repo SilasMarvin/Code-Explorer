@@ -67,19 +67,20 @@ pub(crate) fn analyze(path: &Path, source: &Source) -> anyhow::Result<Document> 
     let parsed = match codeviz_rust::analyze(&root, &syntax) {
         Ok(analysis) => analysis,
         Err(codeviz_rust::Error::NoPackages(_)) => bail!(
-            "no Cargo package with a src/ directory under {}: point codeviz at a Rust \
-             project, a directory with a Cargo.toml",
+            "no Cargo package with a library or binary under {}: point codeviz at a Rust \
+             project, a directory with a Cargo.toml or inside one",
             root.display()
         ),
         Err(error) => return Err(error.into()),
     };
+    let (summary, notes) = parsed.notes.split_first().unzip();
     say(&format!(
-        "found {}, {}, {} ({:.1} s)",
-        plural(parsed.packages.len(), "package"),
-        plural(parsed.files_parsed, "source file"),
+        "found {}, {} ({:.1} s)",
+        summary.map_or("", String::as_str),
         plural(functions(&parsed.document), "function"),
         start.elapsed().as_secs_f64(),
     ));
+    notes.into_iter().flatten().for_each(|note| say(note));
 
     let document = match source.resolve {
         Resolve::Syntax => parsed.document,
@@ -95,7 +96,7 @@ pub(crate) fn analyze(path: &Path, source: &Source) -> anyhow::Result<Document> 
             "rust-analyzer not found: `rustup component add rust-analyzer`, or pass \
              --resolve syntax"
         ),
-        resolve => match rust_analyzer(&root, source.include_tests) {
+        resolve => match rust_analyzer(&root, source.include_tests, &parsed.notes) {
             Ok(document) => document,
             Err(error) if resolve == Resolve::Auto => {
                 let error = anyhow::Error::new(error);
@@ -126,7 +127,11 @@ pub(crate) fn analyze(path: &Path, source: &Source) -> anyhow::Result<Document> 
 
 /// Runs the analysis again with rust-analyzer resolving calls, saying how long it takes
 /// while it runs.
-fn rust_analyzer(root: &Path, include_tests: bool) -> Result<Document, codeviz_rust::Error> {
+fn rust_analyzer(
+    root: &Path,
+    include_tests: bool,
+    said: &[String],
+) -> Result<Document, codeviz_rust::Error> {
     say(
         "rust-analyzer: type-checking the workspace to resolve calls (it builds build \
          scripts and proc macros first, so a large workspace takes minutes)",
@@ -143,6 +148,9 @@ fn rust_analyzer(root: &Path, include_tests: bool) -> Result<Document, codeviz_r
         "rust-analyzer: done ({:.1} s)",
         start.elapsed().as_secs_f64()
     ));
+    for note in analysis.notes.iter().filter(|n| !said.contains(n)) {
+        say(note);
+    }
     Ok(analysis.document)
 }
 

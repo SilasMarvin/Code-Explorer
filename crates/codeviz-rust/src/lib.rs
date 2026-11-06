@@ -26,10 +26,7 @@ mod resolve;
 mod scip;
 mod syntax;
 
-use std::{
-    fmt::Write as _,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use codeviz_ir::{Document, Producer};
 
@@ -126,7 +123,10 @@ pub fn analyze(root: &Path, options: &AnalyzeOptions) -> Result<Analysis, Error>
         .into_iter()
         .filter(|c| files.iter().any(|f| f.module.first() == Some(&c.name)))
         .collect();
-    notes.insert(0, summary(root, &crates, files.len()));
+    if let Some(part) = part_of_package(root, &crates) {
+        notes.insert(0, part);
+    }
+    notes.insert(0, summary(&crates, files.len()));
     let scip = match &options.resolver {
         Resolver::Syntax => None,
         Resolver::RustAnalyzer { target_dir } => Some(scip::Scip::index(
@@ -168,32 +168,34 @@ pub fn analyze(root: &Path, options: &AnalyzeOptions) -> Result<Analysis, Error>
     })
 }
 
-/// `3 crates (2 libraries, 1 binary) in 2 packages, 41 files`, and the part of a
-/// package `root` is inside.
-fn summary(root: &Path, crates: &[Crate], files: usize) -> String {
+/// `3 crates (2 libraries, 1 binary) in 2 packages, 41 files`: the first note.
+fn summary(crates: &[Crate], files: usize) -> String {
     let mut packages: Vec<&Path> = crates.iter().map(|c| c.package.as_path()).collect();
     packages.dedup();
     let libraries = crates.iter().filter(|c| c.library).count();
     let plural =
         |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
-    let mut line = format!(
+    format!(
         "{} ({}, {}) in {}, {}",
         plural(crates.len(), "crate", "crates"),
         plural(libraries, "library", "libraries"),
         plural(crates.len() - libraries, "binary", "binaries"),
         plural(packages.len(), "package", "packages"),
         plural(files, "file", "files"),
-    );
-    if let ([package], Some(krate)) = (packages.as_slice(), crates.first())
-        && let Ok(inside) = root.strip_prefix(package)
-        && !inside.as_os_str().is_empty()
-    {
-        let _ = write!(
-            line,
-            ": only {} of package {}",
-            inside.display(),
-            krate.package_name
-        );
-    }
-    line
+    )
+}
+
+/// `only src/sync of package tokio`, when `root` is inside a package.
+fn part_of_package(root: &Path, crates: &[Crate]) -> Option<String> {
+    let krate = crates.first()?;
+    let inside = root.strip_prefix(&krate.package).ok()?;
+    (!inside.as_os_str().is_empty() && crates.iter().all(|c| c.package == krate.package)).then(
+        || {
+            format!(
+                "only {} of package {}",
+                inside.display(),
+                krate.package_name
+            )
+        },
+    )
 }
