@@ -108,6 +108,7 @@ struct ManifestWorkspace {
 struct ManifestPackage {
     name: String,
     autobins: Option<bool>,
+    metadata: Option<toml::Value>,
 }
 
 #[derive(Deserialize)]
@@ -147,6 +148,7 @@ pub(crate) fn crates(root: &Path, include_tests: bool) -> Result<Discovery, Erro
         .flat_map(|(dir, manifest)| manifest.path_dependencies(dir))
         .collect();
     let mut skipped = Vec::new();
+    let mut fuzz = Vec::new();
     for (dir, manifest) in &manifests {
         let Some(package) = &manifest.package else {
             continue;
@@ -161,6 +163,10 @@ pub(crate) fn crates(root: &Path, include_tests: bool) -> Result<Discovery, Erro
                 .is_ok_and(|inside| inside.iter().any(|s| s == "tests"));
         if outside || fixture {
             skipped.push(dir.strip_prefix(root).unwrap_or(dir).display().to_string());
+            continue;
+        }
+        if dir != root && is_fuzz(dir, package, manifest) {
+            fuzz.push(dir.strip_prefix(root).unwrap_or(dir).display().to_string());
             continue;
         }
         let workspace = workspace.map_or_else(|| dir.clone(), |(dir, _)| dir);
@@ -178,6 +184,12 @@ pub(crate) fn crates(root: &Path, include_tests: bool) -> Result<Discovery, Erro
                         workspace: workspace.clone(),
                     }),
             );
+    }
+    if !fuzz.is_empty() {
+        discovery.notes.push(format!(
+            "skipped cargo-fuzz targets (point codeviz at one to analyze it): {}",
+            fuzz.join(", ")
+        ));
     }
     if !skipped.is_empty() {
         let more = skipped.len().saturating_sub(3);
@@ -203,6 +215,20 @@ pub(crate) fn enclosing_package(dir: &Path) -> Option<&Path> {
     dir.ancestors().skip(1).find(|ancestor| {
         read_manifest(&ancestor.join("Cargo.toml")).is_ok_and(|m| m.package.is_some())
     })
+}
+
+/// A cargo-fuzz package: marked so in its metadata, or a `fuzz` directory that
+/// depends on `libfuzzer-sys`.
+fn is_fuzz(dir: &Path, package: &ManifestPackage, manifest: &Manifest) -> bool {
+    let marked = package
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("cargo-fuzz"))
+        .and_then(toml::Value::as_bool)
+        == Some(true);
+    marked
+        || (dir.file_name().is_some_and(|n| n == "fuzz")
+            && manifest.dependencies.contains_key("libfuzzer-sys"))
 }
 
 fn read_manifest(path: &Path) -> Result<Manifest, Error> {

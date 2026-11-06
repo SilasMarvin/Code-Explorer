@@ -475,6 +475,19 @@ fn packages_outside_their_workspace_and_broken_manifests_are_skipped() {
             ("app/tests/fixtures/sample/Cargo.toml", &member("sample")),
             ("app/tests/fixtures/sample/src/lib.rs", "pub fn f() {}"),
             ("broken/Cargo.toml", "[package\nname ="),
+            // cargo-fuzz targets, each its own workspace.
+            (
+                "fuzz/Cargo.toml",
+                "[package]\nname = \"app-fuzz\"\nversion = \"0.0.0\"\n\
+                 [package.metadata]\ncargo-fuzz = true\n[workspace]\nmembers = [\".\"]\n",
+            ),
+            ("fuzz/src/lib.rs", "pub fn f() {}"),
+            (
+                "shared/fuzz/Cargo.toml",
+                "[package]\nname = \"shared-fuzz\"\nversion = \"0.0.0\"\n\
+                 [dependencies]\nlibfuzzer-sys = \"0.4\"\n[workspace]\n",
+            ),
+            ("shared/fuzz/src/lib.rs", "pub fn f() {}"),
         ],
     );
     let analysis = analyze(&root, &AnalyzeOptions::default()).unwrap();
@@ -487,6 +500,12 @@ fn packages_outside_their_workspace_and_broken_manifests_are_skipped() {
         "{notes}"
     );
     assert!(notes.contains("app/tests/fixtures/sample, old"), "{notes}");
+    assert!(
+        notes.contains(
+            "skipped cargo-fuzz targets (point codeviz at one to analyze it): fuzz, shared/fuzz"
+        ),
+        "{notes}"
+    );
 }
 
 #[test]

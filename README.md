@@ -212,15 +212,32 @@ Producers depend only on `codeviz-ir`. Core, layout and the viewer never see a p
 Rust calls are resolved by `rust-analyzer scip`, which type-checks the workspace: a
 method call goes to the method that actually runs, a call into std or a dependency goes
 nowhere, and a call through a trait object or generic bound goes to every
-implementation in the analyzed source. It builds build scripts and proc macros first,
-so it takes seconds where the syntax takes a fraction of one. `rustup component add
-rust-analyzer` installs it. Without it, or with `--resolve syntax`, and for any call it leaves unresolved (code
-outside the Cargo workspace, or in a crate that does not build), calls are resolved
-from the syntax alone: module paths, `use` imports, `self` and declared types are
-followed (through smart pointers, Bevy's `Res`/`ResMut`, and into closures), and a
-method call on a value of unknown type is left unresolved, since it is far more often
-`Option::map` or `Vec::len` than a workspace method of the same name. Capitalized call
-targets are treated as constructors and dropped either way.
+implementation in the analyzed source. `rustup component add rust-analyzer` installs
+it. It runs once for each Cargo workspace under the directory you point codeviz at (a
+workspace nested inside another, like axum's `examples/`, is a run of its own;
+cargo-fuzz targets are skipped), from the workspace's directory, so its
+`rust-toolchain.toml` applies.
+
+rust-analyzer builds build scripts and proc macros first, with `cargo check`, into the
+project's own `target/` directory, as `cargo build` would. That takes seconds on a
+small project and minutes on a large one, and a build script can cost more than that:
+helix's fetches and compiles about 300 tree-sitter grammars (2 GB) the first time.
+Later runs reuse what the first built.
+
+`codeviz analyze` and `codeviz view` say on stderr what they found and did: the crates,
+packages and files analyzed, any skipped (test fixtures, packages outside their
+workspace, unreadable manifests), each workspace rust-analyzer indexed and how long it
+took, and what it could not do: a workspace it failed on, a build script that failed,
+or build scripts and proc macros it could not build at all (when `cargo check` fails,
+for example on a git dependency it cannot fetch). Those calls fall back to the syntax.
+
+Without rust-analyzer, or with `--resolve syntax`, and for any call it leaves
+unresolved, calls are resolved from the syntax alone: module paths, `use` imports and
+re-exports, `self` and declared types are followed (through smart pointers, Bevy's
+`Res`/`ResMut`, and into closures), and a method call on a value of unknown type is
+left unresolved, since it is far more often `Option::map` or `Vec::len` than a
+workspace method of the same name. Capitalized call targets are treated as
+constructors and dropped either way.
 
 ## Development
 
