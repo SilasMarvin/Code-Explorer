@@ -1395,7 +1395,11 @@ fn frame_times(drive: &mut Drive) -> Value {
         }
         ms.sort_by(f32::total_cmp);
         let at = |share: f32| {
-            #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "an index")]
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "an index"
+            )]
             let index = ((ms.len() - 1) as f32 * share).round() as usize;
             (f64::from(ms[index]) * 10.0).round() / 10.0
         };

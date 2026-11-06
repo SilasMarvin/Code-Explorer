@@ -216,11 +216,14 @@ impl<'a> Screen<'a> {
         (from, to): (egui::Pos2, egui::Pos2),
         own: [Option<usize>; 2],
     ) -> Vec<(f32, f32)> {
-        (self.sphere_cells.along(from, to, self.spheres.len()).into_iter())
-            .map(|index| self.spheres[index])
-            .filter(|(c, ..)| !own.contains(&Some(*c)))
-            .filter_map(|(_, at, radius)| across(from, to, at, radius))
-            .collect()
+        (self
+            .sphere_cells
+            .along(from, to, self.spheres.len())
+            .into_iter())
+        .map(|index| self.spheres[index])
+        .filter(|(c, ..)| !own.contains(&Some(*c)))
+        .filter_map(|(_, at, radius)| across(from, to, at, radius))
+        .collect()
     }
 
     /// The dots drawn bigger than a speck that the line through `path` runs under,
@@ -282,7 +285,11 @@ impl Cells {
     /// through: every one it crosses, and some it does not, each once, in order; all
     /// `count` of them when the line passes through more cells than that.
     fn along(&self, from: egui::Pos2, to: egui::Pos2, count: usize) -> Vec<usize> {
-        let (a, b) = if from.x <= to.x { (from, to) } else { (to, from) };
+        let (a, b) = if from.x <= to.x {
+            (from, to)
+        } else {
+            (to, from)
+        };
         let (c0, c1) = (Self::cell(a.x), Self::cell(b.x));
         let rows = (Self::cell(b.y) - Self::cell(a.y)).unsigned_abs() as usize;
         let columns = (c1 - c0).unsigned_abs() as usize + 1;

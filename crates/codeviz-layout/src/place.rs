@@ -238,6 +238,32 @@ fn pushes(at: &[Vec3], radii: &[f32], gap: f32, unit: f32) -> Vec<Vec3> {
     force
 }
 
+/// `work` done on each of `jobs`, on every core, each job by one thread, taken in
+/// order as threads come free.
+fn on_every_core<T: Send>(jobs: &[usize], work: impl Fn(usize) -> T + Sync) -> Vec<(usize, T)> {
+    let next = AtomicUsize::new(0);
+    thread::scope(|scope| {
+        let workers: Vec<_> = (0..cores().min(jobs.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    while let Some(&job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        done.push((job, work(job)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        (workers.into_iter())
+            .flat_map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
+}
+
 /// How many threads to place on.
 fn cores() -> usize {
     thread::available_parallelism().map_or(1, usize::from)
@@ -596,7 +622,6 @@ pub fn layout(graph: &CallGraph) -> Layout {
         }
     }
     let inside = |cluster: usize| {
-        let tiles = &members[cluster];
         let mut inner: BTreeMap<(usize, usize), f32> = BTreeMap::new();
         let mut outer: BTreeMap<(usize, usize), f32> = BTreeMap::new();
         for &(from, to, a, b) in &calls[cluster] {
@@ -624,34 +649,17 @@ pub fn layout(graph: &CallGraph) -> Layout {
             .collect();
         let ball = sizes[cluster].1;
         place(
-            &vec![ball; tiles.len()],
+            &vec![ball; members[cluster].len()],
             &ties,
             &anchors,
             (radii[cluster], IN_MODULE),
         )
     };
-    // Each module on its own, on every core, the biggest first.
+    // Each module on its own, the biggest first.
     let mut order: Vec<usize> = (0..clusters).collect();
     order.sort_by_key(|&cluster| std::cmp::Reverse(members[cluster].len()));
-    let next = AtomicUsize::new(0);
-    let placed: Vec<Vec<(usize, Vec<Vec3>)>> = thread::scope(|scope| {
-        let workers: Vec<_> = (0..cores().min(clusters))
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut done = Vec::new();
-                    while let Some(&cluster) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
-                        done.push((cluster, inside(cluster)));
-                    }
-                    done
-                })
-            })
-            .collect();
-        (workers.into_iter())
-            .map(|worker| worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
-            .collect()
-    });
     let mut functions = vec![Vec3::ZERO; graph.len()];
-    for (cluster, inside) in placed.into_iter().flatten() {
+    for (cluster, inside) in on_every_core(&order, inside) {
         for (&tile, at) in members[cluster].iter().zip(inside) {
             functions[tile] = centres[cluster] + at;
         }

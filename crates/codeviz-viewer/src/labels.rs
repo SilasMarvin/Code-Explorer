@@ -408,6 +408,9 @@ struct Placer {
     dot_grid: Grid,
     /// Every sphere shown: its cluster, middle and radius on screen.
     spheres: Vec<(usize, egui::Pos2, f32)>,
+    /// `spheres` by where they show within `bounds`, and by cluster.
+    sphere_grid: Grid,
+    sphere_of: HashMap<usize, usize>,
     /// The calls the view could draw at any depth, each caller and callee and the
     /// line it runs along: a name would rather not lie across one.
     lines: Vec<CallLine>,
@@ -425,6 +428,18 @@ impl Placer {
                 index,
             );
         }
+        let mut sphere_grid = Grid::default();
+        for (index, &(_, at, radius)) in spheres.iter().enumerate() {
+            // Only names inside the bounds ask what lies under them.
+            let rect = egui::Rect::from_center_size(at, egui::Vec2::splat(2.0 * radius));
+            let within = rect.intersect(bounds);
+            if within.is_positive() {
+                sphere_grid.insert(within, index);
+            }
+        }
+        let sphere_of = (spheres.iter().enumerate())
+            .map(|(index, &(cluster, ..))| (cluster, index))
+            .collect();
         Self {
             bounds,
             taken: Vec::new(),
@@ -434,6 +449,8 @@ impl Placer {
             ghosts: Cell::new(true),
             dot_grid,
             spheres,
+            sphere_grid,
+            sphere_of,
             lines: Vec::new(),
             arrivals: HashMap::new(),
         }
@@ -746,14 +763,13 @@ impl Placer {
         within: bool,
     ) -> bool {
         // How big its own sphere shows.
-        let own = (self.spheres.iter())
-            .find(|&&(c, ..)| c == cluster)
-            .map_or(0.0, |&(.., radius)| radius);
+        let own = (self.sphere_of.get(&cluster)).map_or(0.0, |&index| self.spheres[index].2);
         self.bounds.contains_rect(pill)
             && !self
                 .names_under(pill)
                 .any(|i| self.kinds[i] != Taken::Function)
-            && !self.spheres.iter().any(|&(c, at, radius)| {
+            && !self.sphere_grid.near(pill).into_iter().any(|index| {
+                let (c, at, radius) = self.spheres[index];
                 c != cluster && radius >= own && pill.distance_to_pos(at) < radius - 0.5
             })
             && !self.dot_grid.near(pill.expand(CLEAR)).into_iter().any(|i| {

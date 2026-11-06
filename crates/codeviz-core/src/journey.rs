@@ -150,12 +150,14 @@ impl Journey {
             Some(s) if s.completes() => Filter::Completes,
             Some(s) => Filter::Escape(&s.chain),
         };
+        let deepest = options.max_depth;
+        let asked = options;
         let build = |max_depth: u32| {
             let mut builder = Builder {
                 system,
                 options: JourneyOptions {
                     max_depth,
-                    ..options.clone()
+                    ..asked.clone()
                 },
                 spans: Vec::new(),
                 stack: Vec::new(),
@@ -171,12 +173,12 @@ impl Journey {
             );
             (builder.spans, builder.over)
         };
-        let (spans, over) = build(options.max_depth);
+        let (spans, over) = build(deepest);
         if !over {
             return Some(Self { spans });
         }
         // The deepest that fits, between one level and the depth that does not.
-        let (mut fits, mut not) = (1, options.max_depth);
+        let (mut fits, mut not) = (1, deepest);
         let mut best = None;
         while not - fits > 1 {
             let depth = fits + (not - fits) / 2;
