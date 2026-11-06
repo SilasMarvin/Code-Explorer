@@ -758,3 +758,34 @@ fn rust_analyzer_indexes_each_workspace_and_says_what_it_could_not() {
     );
     assert!(notes.contains("the build script of bad failed"), "{notes}");
 }
+
+#[test]
+fn bevy_systems_in_tuples_and_run_conditions_are_registered() {
+    let document = analyze_files(&[(
+        "lib.rs",
+        "pub fn plugin(app: &mut App) {
+             app.add_systems(Update, ((pause, spawn).chain().run_if(paused), tick::<u8>));
+             app.add_plugins((other_plugin, Plain));
+         }
+         fn pause() {} fn spawn() {} fn paused() -> bool { true } fn tick<T>() {}
+         fn other_plugin(app: &mut App) {}",
+    )]);
+    let passed: Vec<(String, Option<Mode>)> = unit(&document, "app::plugin")
+        .calls
+        .iter()
+        .filter(|c| !c.targets.is_empty())
+        .map(|c| (c.text.clone(), Some(c.mode)))
+        .collect();
+    let register = Some(Mode::Register);
+    assert_eq!(
+        passed,
+        [
+            ("pause".to_owned(), register),
+            ("spawn".to_owned(), register),
+            ("paused".to_owned(), register),
+            ("tick::<u8>".to_owned(), register),
+            // Plugins are built as they are added.
+            ("other_plugin".to_owned(), Some(Mode::Call)),
+        ]
+    );
+}

@@ -53,7 +53,10 @@ const ROUTE_METHODS: [&str; 8] = [
 const SPAWNERS: [&str; 4] = ["spawn", "spawn_blocking", "spawn_local", "spawn_on"];
 /// Callees that keep a closure or function argument to invoke later. Anything else
 /// is assumed to call its argument during the call (`map`, `and_then`, `for_each`).
-const REGISTRARS: [&str; 16] = [
+const REGISTRARS: [&str; 19] = [
+    "add_systems",
+    "add_observer",
+    "observe",
     "route",
     "route_service",
     "get",
@@ -70,6 +73,21 @@ const REGISTRARS: [&str; 16] = [
     "add_listener",
     "connect",
     "set_handler",
+];
+
+/// Bevy's system configuration: `(a, b).chain()`, `a.run_if(c)` still hand over
+/// the systems they are called on, and the conditions passed to them.
+const SYSTEM_COMBINATORS: [&str; 10] = [
+    "chain",
+    "chain_ignore_deferred",
+    "run_if",
+    "distributive_run_if",
+    "in_set",
+    "after",
+    "before",
+    "pipe",
+    "ambiguous_with",
+    "ambiguous_with_all",
 ];
 
 pub(crate) fn build(
@@ -642,14 +660,19 @@ impl Builder<'_, '_, '_> {
                         let path = self.closure(arg);
                         handoffs.push((CallTarget::Closure(path), arg));
                     }
-                    "identifier" | "scoped_identifier" => {
-                        if let Some(segments) = path_segments(arg, source)
-                            && !is_constructor(&segments)
-                        {
-                            handoffs.push((CallTarget::Reference(segments), arg));
+                    _ => {
+                        let mut passed = Vec::new();
+                        if !self.passed_functions(arg, &mut passed, steps) {
+                            self.expr(arg, false, steps);
+                        }
+                        for function in passed {
+                            if let Some(segments) = path_segments(function, source)
+                                && !is_constructor(&segments)
+                            {
+                                handoffs.push((CallTarget::Reference(segments), function));
+                            }
                         }
                     }
-                    _ => self.expr(arg, false, steps),
                 }
             }
         }
@@ -675,6 +698,62 @@ impl Builder<'_, '_, '_> {
                 _ => text(arg, source).to_owned(),
             };
             self.record(written, handoff, handoff_mode, Some(index), arg, steps);
+        }
+    }
+
+    /// Whether `node`, an argument, names functions it passes along: a path, a tuple
+    /// of them, or Bevy system configuration over them. Those are added to `out`; the
+    /// rest of it is evaluated into `steps`.
+    fn passed_functions<'t>(
+        &mut self,
+        node: Node<'t>,
+        out: &mut Vec<Node<'t>>,
+        steps: &mut Vec<Step>,
+    ) -> bool {
+        match node.kind() {
+            "identifier" | "scoped_identifier" | "generic_function" => {
+                out.push(node);
+                true
+            }
+            "tuple_expression" => {
+                let mut cursor = node.walk();
+                let elements: Vec<Node<'t>> = node.named_children(&mut cursor).collect();
+                for element in elements {
+                    if !self.passed_functions(element, out, steps) {
+                        self.expr(element, false, steps);
+                    }
+                }
+                true
+            }
+            "call_expression" => {
+                let Some(method) = node
+                    .child_by_field_name("function")
+                    .filter(|f| f.kind() == "field_expression")
+                else {
+                    return false;
+                };
+                let configures = method
+                    .child_by_field_name("field")
+                    .is_some_and(|f| SYSTEM_COMBINATORS.contains(&text(f, self.source())));
+                let Some(systems) = method.child_by_field_name("value").filter(|_| configures)
+                else {
+                    return false;
+                };
+                if !self.passed_functions(systems, out, steps) {
+                    return false;
+                }
+                if let Some(arguments) = node.child_by_field_name("arguments") {
+                    let mut cursor = arguments.walk();
+                    let args: Vec<Node<'t>> = arguments.named_children(&mut cursor).collect();
+                    for arg in args {
+                        if !self.passed_functions(arg, out, steps) {
+                            self.expr(arg, false, steps);
+                        }
+                    }
+                }
+                true
+            }
+            _ => false,
         }
     }
 
