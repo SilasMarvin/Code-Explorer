@@ -785,3 +785,53 @@ fn bevy_systems_in_tuples_and_run_conditions_are_registered() {
         ]
     );
 }
+
+#[test]
+fn re_exported_paths_resolve_exactly() {
+    // nushell calls `Value::int` through `pub use value::*` at its crate root.
+    let document = analyze_files(&[
+        (
+            "lib.rs",
+            "mod value; mod shapes; pub use value::*; pub use shapes::Circle as Round;
+             pub fn make() { crate::Value::int(); Round::new(); }
+             mod user { use crate::{Value, Round}; pub fn go() { Value::int(); Round::new(); } }",
+        ),
+        (
+            "value.rs",
+            "pub struct Value; impl Value { pub fn int() {} }",
+        ),
+        (
+            "shapes.rs",
+            "pub struct Circle; impl Circle { pub fn new() {} }",
+        ),
+    ]);
+    for caller in ["app::make", "app::user::go"] {
+        let resolved: Vec<(String, Option<Certainty>)> = unit(&document, caller)
+            .calls
+            .iter()
+            .map(|c| {
+                (
+                    c.targets
+                        .first()
+                        .map(|t| t.unit.to_string())
+                        .unwrap_or_default(),
+                    c.targets.first().map(|t| t.certainty),
+                )
+            })
+            .collect();
+        assert_eq!(
+            resolved,
+            [
+                (
+                    "rust:app::value::Value::int".to_owned(),
+                    Some(Certainty::Exact)
+                ),
+                (
+                    "rust:app::shapes::Circle::new".to_owned(),
+                    Some(Certainty::Exact)
+                ),
+            ],
+            "{caller}"
+        );
+    }
+}

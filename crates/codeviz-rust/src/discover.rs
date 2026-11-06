@@ -65,12 +65,14 @@ struct Manifest {
 impl Manifest {
     /// The directories of the packages it depends on by path.
     fn path_dependencies<'m>(&'m self, dir: &'m Path) -> impl Iterator<Item = PathBuf> + 'm {
+        let shared = self.workspace.as_ref().map(|w| &w.dependencies);
         [
             &self.dependencies,
             &self.dev_dependencies,
             &self.build_dependencies,
         ]
         .into_iter()
+        .chain(shared)
         .flat_map(BTreeMap::values)
         .filter_map(|dependency| dependency.get("path")?.as_str())
         .map(move |path| normalize(&dir.join(path)))
@@ -96,6 +98,8 @@ fn normalize(path: &Path) -> PathBuf {
 struct ManifestWorkspace {
     #[serde(default)]
     members: Vec<String>,
+    #[serde(default)]
+    dependencies: BTreeMap<String, toml::Value>,
     #[serde(default)]
     exclude: Vec<String>,
 }

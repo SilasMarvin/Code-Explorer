@@ -216,7 +216,8 @@ pub(crate) struct Extraction {
     pub(crate) routes: Vec<RouteHint>,
     /// Struct path → its fields.
     pub(crate) fields: HashMap<Vec<String>, Fields>,
-    groups: HashSet<Vec<String>>,
+    /// Group path to its unit's index.
+    groups: HashMap<Vec<String>, usize>,
 }
 
 pub(crate) struct Extractor {
@@ -271,7 +272,8 @@ impl Extractor {
     }
 
     fn group(&mut self, path: &[String], kind: UnitKind, module: &[String]) {
-        if self.out.groups.insert(path.to_vec()) {
+        if !self.out.groups.contains_key(path) {
+            self.out.groups.insert(path.to_vec(), self.out.units.len());
             self.out
                 .units
                 .push(RawUnit::group(path.to_vec(), kind, module.to_vec()));
@@ -450,7 +452,12 @@ impl Extractor {
     fn type_unit(&mut self, module: &[String], name: &str, kind: &'static str) {
         let mut path = module.to_vec();
         path.push(name.to_owned());
-        if let Some(existing) = self.out.units.iter_mut().find(|u| u.path == path) {
+        if let Some(existing) = self
+            .out
+            .groups
+            .get(&path)
+            .and_then(|&index| self.out.units.get_mut(index))
+        {
             // A struct definition is more specific than an impl seen first.
             if existing.kind == UnitKind::Type("type") {
                 existing.kind = UnitKind::Type(kind);

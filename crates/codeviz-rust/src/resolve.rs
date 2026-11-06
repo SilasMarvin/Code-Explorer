@@ -1,6 +1,7 @@
 //! Cross-file pass: resolves written call targets and assembles the IR document.
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fmt::Write as _,
 };
@@ -46,6 +47,8 @@ struct Index<'a> {
     crate_names: &'a HashSet<String>,
     /// Lookup path (`crate::module::[Type::]name`) to functions.
     by_path: HashMap<Vec<String>, Vec<usize>>,
+    /// A function's name to its functions, for matching a path by its tail.
+    by_name: HashMap<&'a str, Vec<usize>>,
     /// Method name to methods a by-name match may pick: inherent methods and methods
     /// of traits declared in the analyzed source.
     methods: HashMap<&'a str, Vec<usize>>,
@@ -54,6 +57,10 @@ struct Index<'a> {
     /// Id path to unit, for the function a closure is written in.
     by_id: HashMap<&'a [String], usize>,
     semantic: Option<Semantic<'a>>,
+    /// Every unit's name, and every name a `use` gives.
+    names: HashSet<&'a str>,
+    /// Paths looked up through re-exports, to where they lead.
+    reexports: RefCell<HashMap<Vec<String>, Option<Vec<String>>>>,
 }
 
 /// rust-analyzer's resolution, tied to the extracted units.
@@ -95,12 +102,14 @@ impl<'a> Index<'a> {
         let mut methods: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut by_type: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
         let mut by_id: HashMap<&[String], usize> = HashMap::new();
+        let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
         for (index, unit) in extraction.units.iter().enumerate() {
             by_id.insert(&unit.path, index);
             if !matches!(unit.kind, UnitKind::Function { .. }) {
                 continue;
             }
             by_path.entry(unit.lookup_path()).or_default().push(index);
+            by_name.entry(unit.name.as_str()).or_default().push(index);
             if let Some(owner) = &unit.owner {
                 by_type
                     .entry((owner.type_name.as_str(), unit.name.as_str()))
@@ -119,10 +128,23 @@ impl<'a> Index<'a> {
             extraction,
             crate_names,
             by_path,
+            by_name,
             methods,
             by_type,
             by_id,
             semantic: None,
+            names: extraction
+                .units
+                .iter()
+                .map(|u| u.name.as_str())
+                .chain(
+                    extraction
+                        .scopes
+                        .values()
+                        .flat_map(|s| s.imports.keys().map(String::as_str)),
+                )
+                .collect(),
+            reexports: RefCell::new(HashMap::new()),
         }
     }
 
@@ -212,7 +234,7 @@ impl<'a> Index<'a> {
         for candidate in std::iter::once(segments.clone()).chain(globbed) {
             if let Some(ids) = self
                 .absolute(&caller.module, candidate, 0)
-                .and_then(|path| self.by_path.get(&path))
+                .and_then(|path| self.lookup(&path))
             {
                 return (ids.clone(), Certainty::Exact);
             }
@@ -221,11 +243,19 @@ impl<'a> Index<'a> {
         // Re-exports and aliases are not modeled; match the path's tail instead. A bare
         // name never names a method: that takes `Type::method` or a receiver.
         let bare = segments.len() == 1;
-        let matches = self
-            .by_path
-            .iter()
-            .filter(|(path, _)| path.ends_with(&segments))
-            .flat_map(|(_, ids)| ids.iter().copied())
+        let named = segments
+            .last()
+            .and_then(|name| self.by_name.get(name.as_str()));
+        let matches = named
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&i| {
+                self.extraction
+                    .units
+                    .get(i)
+                    .is_some_and(|u| u.lookup_path().ends_with(&segments))
+            })
             .filter(|&i| {
                 !bare
                     || self
@@ -466,6 +496,73 @@ impl<'a> Index<'a> {
         }
     }
 
+    /// The functions at a full path, following re-exports: `nu_protocol::Value::int`
+    /// is `nu_protocol::value::Value::int` when the crate root has `pub use value::*`.
+    fn lookup(&self, path: &[String]) -> Option<&Vec<usize>> {
+        self.by_path.get(&self.reexported(path, 0)?)
+    }
+
+    /// The path a function is defined at, for one it may be re-exported at. The path
+    /// is followed from its crate root a segment at a time; where a segment is not
+    /// defined in the module reached, that module's `use`s are followed instead.
+    fn reexported(&self, path: &[String], hops: usize) -> Option<Vec<String>> {
+        if self.by_path.contains_key(path) {
+            return Some(path.to_vec());
+        }
+        if hops > MAX_IMPORT_HOPS {
+            return None;
+        }
+        if let Some(known) = self.reexports.borrow().get(path) {
+            return known.clone();
+        }
+        // Re-exports can cycle (`pub use a::*` above `use super::*`): a path being
+        // looked up is not found again inside its own lookup.
+        self.reexports.borrow_mut().insert(path.to_vec(), None);
+        let found = self.reexported_walk(path, hops);
+        self.reexports
+            .borrow_mut()
+            .insert(path.to_vec(), found.clone());
+        found
+    }
+
+    fn reexported_walk(&self, path: &[String], hops: usize) -> Option<Vec<String>> {
+        let (root, segments) = path.split_first()?;
+        let mut reached = vec![root.clone()];
+        for (index, segment) in segments.iter().enumerate() {
+            let mut next = reached.clone();
+            next.push(segment.clone());
+            let last = index + 1 == segments.len();
+            if (!last && self.by_id.contains_key(next.as_slice()))
+                || (last && self.by_path.contains_key(&next))
+            {
+                reached = next;
+                continue;
+            }
+            if !self.names.contains(segment.as_str()) {
+                // Nothing of ours has that name: `String`, `Vec`, `serde`.
+                return None;
+            }
+            let scope = self.extraction.scopes.get(&reached)?;
+            let rest = segments.get(index + 1..).unwrap_or_default();
+            let imported = scope.imports.get(segment).cloned();
+            let globbed = scope.globs.iter().map(|glob| {
+                glob.iter()
+                    .chain(std::iter::once(segment))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+            return imported
+                .into_iter()
+                .chain(globbed)
+                .filter_map(|through| self.absolute(&reached, through, 0))
+                .find_map(|mut full| {
+                    full.extend(rest.iter().cloned());
+                    self.reexported(&full, hops + 1)
+                });
+        }
+        None
+    }
+
     /// Rewrites a path as written in `module` into a full path from a crate root.
     fn absolute(
         &self,
@@ -525,7 +622,7 @@ impl<'a> Index<'a> {
         for route in &self.extraction.routes {
             let Some(handler) = self
                 .absolute(&route.module, route.handler.clone(), 0)
-                .and_then(|path| self.by_path.get(&path))
+                .and_then(|path| self.lookup(&path))
                 .and_then(|ids| ids.first())
                 .and_then(|&i| self.extraction.units.get(i))
             else {
