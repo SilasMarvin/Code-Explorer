@@ -185,14 +185,14 @@ fn summary(crates: &[Crate], files: usize) -> String {
     )
 }
 
-/// `only src/sync of package tokio`, when `root` is inside a package.
+/// `analyzing only src/sync of package tokio`, when `root` is inside a package.
 fn part_of_package(root: &Path, crates: &[Crate]) -> Option<String> {
     let krate = crates.first()?;
     let inside = root.strip_prefix(&krate.package).ok()?;
     (!inside.as_os_str().is_empty() && crates.iter().all(|c| c.package == krate.package)).then(
         || {
             format!(
-                "only {} of package {}",
+                "analyzing only {} of package {}",
                 inside.display(),
                 krate.package_name
             )

@@ -47,16 +47,19 @@ impl Scip {
         workspaces.sort();
         workspaces.dedup();
         let mut scip = Self::default();
+        let several = workspaces.len() > 1;
         for workspace in workspaces {
             let started = Instant::now();
             match run(workspace, target_dir)? {
                 Ok(bytes) => {
                     scip.decode(&bytes, workspace, root)?;
-                    notes.push(format!(
-                        "rust-analyzer: indexed {} ({:.1}s)",
-                        shown(workspace, root),
-                        started.elapsed().as_secs_f64()
-                    ));
+                    if several {
+                        notes.push(format!(
+                            "rust-analyzer: indexed {} ({:.1}s)",
+                            shown(workspace, root),
+                            started.elapsed().as_secs_f64()
+                        ));
+                    }
                     let target = target_dir.map_or_else(
                         || {
                             std::env::var_os("CARGO_TARGET_DIR")

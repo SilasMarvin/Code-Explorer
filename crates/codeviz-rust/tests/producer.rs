@@ -629,7 +629,7 @@ fn a_directory_inside_a_package_is_that_part_of_it() {
             .uri,
         "users.rs"
     );
-    assert_eq!(analysis.notes[1], "only src/svc of package app");
+    assert_eq!(analysis.notes[1], "analyzing only src/svc of package app");
 }
 
 #[test]
