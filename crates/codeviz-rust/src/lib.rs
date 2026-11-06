@@ -103,11 +103,11 @@ pub enum Error {
 /// rust-analyzer was asked for and cannot be run. A workspace rust-analyzer fails on
 /// is resolved from the syntax, and a note says so.
 pub fn analyze(root: &Path, options: &AnalyzeOptions) -> Result<Analysis, Error> {
-    let mut discovery = discover::crates(root)?;
+    let mut discovery = discover::crates(root, options.include_tests)?;
     if discovery.crates.is_empty()
         && let Some(package) = discover::enclosing_package(root)
     {
-        discovery = discover::crates(package)?;
+        discovery = discover::crates(package, options.include_tests)?;
     }
     let mut notes = discovery.notes;
     let crates = discovery.crates;

@@ -117,8 +117,9 @@ struct Target {
 }
 
 /// Every crate of every package under `root`, except packages a workspace under
-/// `root` does not count among its members.
-pub(crate) fn crates(root: &Path) -> Result<Discovery, Error> {
+/// `root` does not count among its members, and those under a `tests` directory
+/// unless `include_tests`.
+pub(crate) fn crates(root: &Path, include_tests: bool) -> Result<Discovery, Error> {
     let mut discovery = Discovery::default();
     let mut manifests = BTreeMap::new();
     for entry in walk(root) {
@@ -151,10 +152,14 @@ pub(crate) fn crates(root: &Path) -> Result<Discovery, Error> {
             continue;
         };
         let workspace = workspace_of(dir, &manifests);
-        if let Some((workspace, false)) = &workspace
-            && workspace.starts_with(root)
-            && !depended.contains(dir)
-        {
+        let outside = matches!(&workspace, Some((workspace, false)) if workspace.starts_with(root))
+            && !depended.contains(dir);
+        // A package under `tests/` is a fixture, such as this repository's own.
+        let fixture = !include_tests
+            && dir
+                .strip_prefix(root)
+                .is_ok_and(|inside| inside.iter().any(|s| s == "tests"));
+        if outside || fixture {
             skipped.push(dir.strip_prefix(root).unwrap_or(dir).display().to_string());
             continue;
         }
@@ -178,7 +183,7 @@ pub(crate) fn crates(root: &Path) -> Result<Discovery, Error> {
         let more = skipped.len().saturating_sub(3);
         skipped.truncate(3);
         let mut line = format!(
-            "skipped packages inside a workspace that is not theirs: {}",
+            "skipped test fixtures and packages their workspace leaves out: {}",
             skipped.join(", ")
         );
         if more > 0 {
