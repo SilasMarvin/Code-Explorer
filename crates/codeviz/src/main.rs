@@ -1,5 +1,6 @@
-//! `codeviz`: build, check and explore codeviz IR documents.
+//! `codeviz`: explore a Rust project's call flow in 3D.
 
+mod analyze;
 mod ir;
 mod view;
 
@@ -8,7 +9,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    after_help = "Start with `codeviz view path/to/your/project`; press H in the window for the keys."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -16,17 +21,17 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Analyze source code and write an IR document.
-    Analyze(ir::AnalyzeArgs),
-    /// Open IR documents in the 3D viewer.
+    /// Open a Rust project (analyzed first) or IR documents in the 3D viewer.
     View(view::ViewArgs),
-    /// Check IR documents against the rules in docs/ir.md.
+    /// Analyze a Rust project and write its IR document.
+    Analyze(analyze::AnalyzeArgs),
+    /// Check IR documents, such as one written by hand, for errors.
     Validate(ir::ValidateArgs),
 }
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Analyze(args) => ir::analyze(&args),
+        Command::Analyze(args) => analyze::run(&args),
         Command::View(args) => view::run(&args),
         Command::Validate(args) => ir::validate(&args),
     };

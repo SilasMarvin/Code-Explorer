@@ -9,7 +9,7 @@ scripts in `tools/scripts/` and prints what passes and what fails.
 
 ## Five minutes from zero
 
-    cx /path/to/worktree build                  # /Users/silas/Projects/cx-tools/cx
+    cargo build --workspace && mkdir -p .bin && cp target/debug/codeviz .bin/
     cat > /tmp/try.txt <<'EOF'
     #: view demo/out/axum-server.json
     snap open
@@ -33,7 +33,7 @@ Retina display's scale (2), and each snap captures that image, scaled back to wi
 points. Nothing shows on screen or takes the keyboard, and a display that sleeps or
 locks, a full-screen app or another Space changes no picture. Its input comes from the
 script alone, never the real mouse or keyboard. At most 2 sessions run at once
-across every agent (`$CODEVIZ_SLOTS`, default `cx-tools/shots/.session-slots/`; a
+across every agent (`$CODEVIZ_SLOTS`; a
 third prints `waiting for a session slot` and waits). `live` and `idle` open a real
 window, and hold their own lock so only one renders at a time.
 
@@ -51,11 +51,15 @@ window, and hold their own lock so only one renders at a time.
 
 `VIEW ARGS` are `view DATA [FLAGS]`, as for `codeviz view`; a script's `#: view ...` line
 gives them when none follow `--`, with `$CODEVIZ_DATA` filled in. Relative paths are from
-the worktree. Environment: `CODEVIZ_SESSIONS` (default
-`/Users/silas/Projects/cx-tools/sessions`), `CODEVIZ_SHOTS` (default `.../cx-tools/shots`),
-`CODEVIZ_DATA` (default `.../cx-tools/data`), `CODEVIZ_LOCK`, `CODEVIZ_SLOTS`. The older
-`cx-tools/drive WORKTREE NAME SCRIPT -- view ...`, `cx-tools/shot` and `cx-tools/live` are
-thin wrappers over this.
+the worktree. Environment: `CODEVIZ_TOOLS`, when set the directory sessions, shots and
+data default into; `CODEVIZ_SESSIONS` (default `$CODEVIZ_TOOLS/sessions`, else `target/drive/sessions`
+in the repo), `CODEVIZ_SHOTS` (likewise `shots`), `CODEVIZ_DATA` (default
+`$CODEVIZ_TOOLS/data`, else unset: a `#: view` line naming it then stops the run with one
+line), `CODEVIZ_LOCK` and `CODEVIZ_SLOTS` (default `$XDG_CACHE_HOME/codeviz-drive/`, else
+`~/.cache/codeviz-drive/`, whether or not `CODEVIZ_TOOLS` is set, so every run on the
+machine shares one lock and one set of slots). Where several
+worktrees share one cargo target directory, build through
+a wrapper that serialises builds (such as `cx WORKTREE build`) rather than cargo directly.
 
 Data for checks: `demo/out/axum-server.json` (small; focus `orders::place`) and
 `$CODEVIZ_DATA/ord-ws-2.json` (this repo, about 2,300 functions; focus

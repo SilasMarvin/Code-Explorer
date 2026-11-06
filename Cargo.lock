@@ -328,9 +328,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -1795,9 +1795,9 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "clipboard-win"
-version = "5.4.1"
+version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
 ]
@@ -1819,7 +1819,6 @@ dependencies = [
  "clap",
  "codeviz-core",
  "codeviz-ir",
- "codeviz-python",
  "codeviz-rust",
  "codeviz-viewer",
  "serde_json",
@@ -1849,19 +1848,6 @@ dependencies = [
  "codeviz-core",
  "codeviz-ir",
  "glam",
-]
-
-[[package]]
-name = "codeviz-python"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "codeviz-ir",
- "thiserror 2.0.21",
- "tree-sitter",
- "tree-sitter-python",
- "walkdir",
 ]
 
 [[package]]
@@ -4858,16 +4844,6 @@ name = "tree-sitter-language"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0af592be68c579aa78a16846bd19422978c3c52e438523d45ff5d1bff1f9d4a"
-
-[[package]]
-name = "tree-sitter-python"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bf85fd39652e740bf60f46f4cda9492c3a9ad75880575bf14960f775cb74a1c"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
 
 [[package]]
 name = "tree-sitter-rust"
