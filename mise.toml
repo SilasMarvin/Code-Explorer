@@ -10,10 +10,9 @@ run = [
 ]
 
 [tasks.demo-docs]
-description = "Regenerate the demo IR documents"
+description = "Regenerate the demo IR document"
 run = [
   "cargo run -q -p codeviz -- analyze demo/axum-server -o demo/out/axum-server.json",
-  "cargo run -q -p codeviz -- analyze demo/python-service -o demo/out/python-service.json",
   "cargo run -q -p codeviz -- validate demo/out/*.json",
 ]
 

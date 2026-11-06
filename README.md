@@ -1,24 +1,65 @@
 # codeviz
 
-Explore a codebase's call flow in 3D. Point it at a directory, pick a function (an Axum
-handler, say), and follow everything it calls.
+A 3D map of a Rust codebase's call flow. Point it at a project, pick a function (an Axum
+handler, say), and follow everything it calls, level by level.
+
+## Install
+
+You need Rust 1.99 or newer (`rustup update`), and on macOS the Xcode command line tools
+(`xcode-select --install`).
 
 ```sh
-mise install
-mise run demo-docs                       # regenerate the demo IR documents
-mise run demo                            # the Rust demo, on the journey of POST /users/{id}/orders
-
-codeviz analyze <dir> -o app.json        # Rust or Python source → IR
-codeviz analyze <dir> --resolve syntax   # skip rust-analyzer: fast, misses some method calls
-codeviz validate app.json
-codeviz view app.json other.json         # browse the merged codebase
-codeviz view app.json --focus orders::place            # open that function's journey
-codeviz view app.json --focus orders::place --depth 2  # two levels of it
-codeviz view app.json --focus orders::place --expand   # inside the start's module
+cargo install --locked --git https://github.com/SilasMarvin/Code-Explorer codeviz
+rustup component add rust-analyzer      # optional: resolves method calls exactly
 ```
 
-`--focus` takes an entry's label (`POST /users`) or the end of a unit's id
-(`orders::place`).
+From a clone, `cargo install --locked --path crates/codeviz` does the same. The first
+build compiles Bevy and takes several minutes. If cargo cannot fetch the repository
+(it is private, so you need access to it), add `--config net.git-fetch-with-cli=true`
+so cargo fetches with your own git login.
+
+On Linux, building needs only a C compiler (`build-essential` on Debian and Ubuntu,
+`gcc` elsewhere): the window and graphics libraries are loaded at run time, not linked.
+Running needs an X11 or Wayland desktop and a Vulkan driver (`mesa-vulkan-drivers` on
+Debian and Ubuntu, `vulkan-radeon`/`vulkan-intel` on Arch, or your GPU vendor's). No
+ALSA or udev packages are needed.
+
+## Use
+
+```sh
+cd path/to/your/project
+codeviz view .                                   # analyze it and open the map
+codeviz view . --focus orders::place             # open that function's journey
+codeviz view . --focus 'POST /users' --depth 2   # an Axum route's, two levels deep
+codeviz analyze . -o app.json                    # write the IR document instead
+codeviz view app.json                            # and open it later, without analyzing
+```
+
+`view` and `analyze` say on stderr what they found and how long each part took.
+rust-analyzer type-checks the workspace and builds its build scripts and proc macros
+first (into the project's `target/`), so on a large workspace the first run takes
+minutes; `--resolve syntax` skips it. `--focus` takes an entry's label (`POST /users`)
+or the end of a function's path (`orders::place`). In a clone of this repository,
+`codeviz view demo/out/axum-server.json --focus orders::place` opens a small Axum
+service on one handler's journey.
+
+| Key | Does |
+| --- | --- |
+| click | select a function: its callers light violet, its calls blue |
+| `Enter` | open a journey at the selection |
+| arrows | move the journey's cursor: `↓` into a call, `↑` out, `←` `→` between siblings |
+| `.` `,` | show a level more, or less, of the journey |
+| `X` | fly into a module, and back out |
+| `F` | frame what is in focus |
+| `R` | turn back to the usual view and frame everything |
+| `-` `=` | spread the map closer or wider |
+| `/` | search |
+| `H` | list the keys that work in the mode you are in |
+| `Esc` | step out one level: the selection, the expanded module, the journey |
+| `Backspace` | back to the view before (`Shift+Backspace` forward) |
+
+Drag to turn the map, right-drag or `Shift`-drag to pan, the wheel or a pinch to zoom.
+Hand-written documents work too: [docs/ir.md](docs/ir.md) has a minimal one.
 
 ## The view
 
@@ -146,15 +187,6 @@ a level more draws it back when what comes in would show off the view, and expan
 in a journey it follows the cursor.
 `H` lists the keys that do something in the mode you are in.
 
-## Scripted sessions
-
-`tools/drive` runs the viewer from a script, a step a line (`key x`, `click UNIT`,
-`bar 1.2`, `expect mode journey`, `snap LABEL`, …), each sent as a person's mouse and
-keyboard would send it, in one window under a memory and time guard. Every `snap` writes
-a PNG, a JSON of what is drawn where by name, and the checks run on it (dots inside their
-spheres, names by their dots, nothing moving after a click, …). `tools/drive suite` runs
-the regression scripts in `tools/scripts/`. See [docs/harness.md](docs/harness.md).
-
 ## The model
 
 Producers write an [IR document](docs/ir.md): units (things that run), their
@@ -169,7 +201,6 @@ viewer shows the happy path, and marks the calls where another outcome can fail.
 | `codeviz-ir` | The IR types, JSON (de)serialization and validation. |
 | `codeviz-core` | Merges documents; unrolls journeys; enumerates scenarios. |
 | `codeviz-rust` | Rust producer (tree-sitter, calls resolved by rust-analyzer). |
-| `codeviz-python` | Python producer (tree-sitter). |
 | `codeviz-layout` | The codebase map and the force-directed graph that seeds each module's interior. Renderer-agnostic. |
 | `codeviz-viewer` | Bevy + egui viewer. |
 | `codeviz` | CLI. |
@@ -182,11 +213,24 @@ Rust calls are resolved by `rust-analyzer scip`, which type-checks the workspace
 method call goes to the method that actually runs, a call into std or a dependency goes
 nowhere, and a call through a trait object or generic bound goes to every
 implementation in the analyzed source. It builds build scripts and proc macros first,
-so it takes seconds where the syntax takes a fraction of one. `mise install` installs
-it. Without it, or with `--resolve syntax`, and for any call it leaves unresolved (code
+so it takes seconds where the syntax takes a fraction of one. `rustup component add
+rust-analyzer` installs it. Without it, or with `--resolve syntax`, and for any call it leaves unresolved (code
 outside the Cargo workspace, or in a crate that does not build), calls are resolved
 from the syntax alone: module paths, `use` imports, `self` and declared types are
 followed (through smart pointers, Bevy's `Res`/`ResMut`, and into closures), and a
 method call on a value of unknown type is left unresolved, since it is far more often
 `Option::map` or `Vec::len` than a workspace method of the same name. Capitalized call
 targets are treated as constructors and dropped either way.
+
+## Development
+
+```sh
+mise install                # the pinned toolchain, with rust-analyzer
+mise run check              # fmt, clippy, tests
+mise run demo-docs          # regenerate demo/out/axum-server.json
+mise run demo               # the demo, on the journey of POST /users/{id}/orders
+```
+
+`tools/drive` runs the viewer from a script of a person's steps and checks every
+picture it takes; `tools/drive suite` runs the regression scripts in `tools/scripts/`.
+See [docs/harness.md](docs/harness.md).

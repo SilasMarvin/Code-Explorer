@@ -524,9 +524,9 @@ mod tests {
 
     #[test]
     fn unit_id_parts() {
-        let id = UnitId::new("python:shop.app.main");
-        assert_eq!(id.scheme(), Some("python"));
-        assert_eq!(id.path(), Some("shop.app.main"));
+        let id = UnitId::new("rust:shop::app::main");
+        assert_eq!(id.scheme(), Some("rust"));
+        assert_eq!(id.path(), Some("shop::app::main"));
     }
 }
 

@@ -57,9 +57,11 @@ UNIT is found as --focus finds it (an id suffix like orders::place, or an entry 
 a name that matches nothing, or many, stops the script before the window opens, with
 the nearest names. See docs/harness.md for the JSON fields and every check.
 
-Environment: CODEVIZ_SESSIONS (default /Users/silas/Projects/cx-tools/sessions),
-CODEVIZ_SHOTS (default /Users/silas/Projects/cx-tools/shots), CODEVIZ_DATA (default
-/Users/silas/Projects/cx-tools/data; `$CODEVIZ_DATA` in a `#: view` line), CODEVIZ_LOCK.
+Environment: CODEVIZ_TOOLS, the directory everything below defaults into (default
+target/drive in this repo; the render lock and session slots are only machine-wide when
+every run shares it); CODEVIZ_SESSIONS (default $CODEVIZ_TOOLS/sessions), CODEVIZ_SHOTS
+($CODEVIZ_TOOLS/shots), CODEVIZ_DATA ($CODEVIZ_TOOLS/data; `$CODEVIZ_DATA` in a `#: view`
+line), CODEVIZ_LOCK, CODEVIZ_SLOTS.
 """
 import json
 import math
@@ -75,7 +77,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-TOOLS = Path("/Users/silas/Projects/cx-tools")
+TOOLS = Path(os.environ.get("CODEVIZ_TOOLS", REPO / "target" / "drive"))
 SESSIONS = Path(os.environ.get("CODEVIZ_SESSIONS", TOOLS / "sessions"))
 SHOTS = Path(os.environ.get("CODEVIZ_SHOTS", TOOLS / "shots"))
 DATA = os.environ.get("CODEVIZ_DATA", str(TOOLS / "data"))
@@ -206,7 +208,8 @@ def guarded(argv, cwd, log, limit=None, window=True):
 def binary(wt):
     path = Path(wt).resolve() / ".bin" / "codeviz"
     if not path.exists():
-        raise Trouble(f"no viewer at {path}; build it: /Users/silas/Projects/cx-tools/cx {Path(wt).resolve()} build")
+        raise Trouble(f"no viewer at {path}; build it: `cargo build --workspace` and copy "
+                      f"target/debug/codeviz there (docs/harness.md)")
     return path
 
 
@@ -723,6 +726,9 @@ def main(argv):
         print(__doc__)
         return 0
     command, args = argv[0], argv[1:]
+    if "CODEVIZ_TOOLS" not in os.environ:
+        print(f"tools/drive: CODEVIZ_TOOLS is not set; sessions, data and locks are under {TOOLS}",
+              file=sys.stderr)
     if Path(command).is_dir() and len(args) >= 2:
         # The older form: WORKTREE NAME SCRIPT -- VIEW ARGS.
         command, args = "run", [*args[:2], "--wt", command, *args[2:]]
