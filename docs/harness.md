@@ -134,7 +134,7 @@ with why, marks the session failed, and the session goes on.
 | `expect nucleus modules\|expanded` | a module is expanded, or not |
 | `expect expanded MODULE\|none` | the module expanded, by the name its sphere carries |
 | `expect depth N` | the journey shows N levels: its deepest call shown, in a branch opened alone too |
-| `expect search\|help\|back\|forward\|outside_callers true\|false`, `expect state spread 0.5\|0.75\|1.0\|1.5` | that field of `state` reads so |
+| `expect search\|help\|back\|forward\|outside_callers true\|false`, `expect state spread 0.5\|0.75\|1.0\|1.5`, `expect state shown all\|2\|1\|0` | that field of `state` reads so |
 | `expect state FIELD VALUE` | the same, spelt out |
 | `expect selection UNIT\|none` | the function selected while browsing |
 | `expect cursor UNIT\|none`, `expect start UNIT\|none` | the journey's cursor, its start (`none` while browsing) |
@@ -184,7 +184,8 @@ scene's units.
   (`modules`, `expanded`), `expanded` (the module expanded, by name), `depth`, `deepest` (in a journey, how many levels below the start its deepest call is), `outside_callers`,
   `outside_waiting` (of the callers I brings in, how many have no room to be drawn), `hovered` (the function the
   pointer has rested on, as drawn) and `under_pointer` (what the pointer is on now),
-  `spread` (how far `-` and `=` have spread the map against how it opens: 0.5, 0.75, 1.0, 1.5),
+  `spread` (how far `Shift+-` and `Shift+=` have spread the map against how it opens: 0.5, 0.75, 1.0, 1.5),
+  `shown` (which modules `-` and `=` leave shown: `all`, else within how many calls, 2, 1 or 0, of a module holding something lit),
   `search`, `help`, `back`, `forward`, `camera` (where it stands that frame, on its
   way or not: `target`, `distance`, `yaw`, `pitch`, `held`: the wheel turns since it
   last turned the other way panned to hold the map, or the sphere they zoom to, in
@@ -259,7 +260,7 @@ scene's units.
 - `content`: what the view means to show: the `start` or the `selection`, its
   callers, its calls (in a journey the disclosed ones, with numbers and modules;
   browsing the selection's own, unnumbered).
-- `layout`: what the layout is, whatever the view lights and however far `-` and `=`
+- `layout`: what the layout is, whatever the view lights and however far `Shift+-` and `Shift+=`
   spread it: `digest` (of where every module and function sits), and the mean length in the world of the calls between
   modules' middles (`modules`), within a module and between two, function to function
   (`inside`, `across`), each with `shuffled`, the same with the modules, or each
@@ -269,6 +270,11 @@ scene's units.
   `modules`, `labels` (`compared`, `moved`, `gone`: names gone whose dot or sphere
   still shows), `arrows` (`compared`, `moved`: calls drawn in both whose line runs
   more than 3 points elsewhere), `appeared`, `gone`.
+- `shown_modules`: which modules `-` and `=` leave shown, by name: `level` (`all`, else
+  how many calls out); short of all, `lit` (the modules holding what the view lights),
+  `within` (those within the level's calls of them, either way, worked out afresh from
+  the codebase's calls; the module expanded too), `drawn` (those given a sphere, on
+  screen or not), `total`.
 - `checks`: each check's result (below). `log`: the steps so far.
 
 ## The checks
@@ -302,7 +308,7 @@ the way down to it; a start with callers has their row above its bar, and the st
 | `framed` | after R: every sphere inside the free area, the map spanning at least 65% of it across or down, camera at the usual view the map opens at (yaw and pitch within 0.05 of it); after F: every lit dot (or the expanded module) inside it with a 4-point margin; after a window sized anew with the camera where the user's hands put it, the camera's target and distance as at the snap before | when F or R is the last step since the snap before that moves the view, a `window` after it aside (a window sized anew frames again as the view was last framed); or only `window` and still steps since, after an F or R before the snap before with nothing moving the view between, or with the camera where the hands put it |
 | `zoom-to-pointer` | the sphere nearest the pointer (else any sphere, else any dot, drawn in both snaps) moved as a zoom about the pointer moves it (within 4 points plus 5% of its distance) | one wheel turn, nothing else that moves, since the snap before; not one that panned to hold the map, or the sphere it zooms to, in the free area (`state.camera.held`) |
 | `zoom-bounds` | some of the map is on screen, and zoomed out it still spans 40% of the free area; zoomed in, the sphere under the pointer (expanded, the module expanded, whatever lies in front of it) spans at most 95% of the free area's smaller side, and from 88% lies inside it; the module expanded may span more, as its functions' names need, over the free area's middle then, and the wheel stops on it under twice the free area's smaller side only with 90% of its functions in the free area named | after a wheel turn |
-| `nothing-moved` | no dot, sphere or name moved, nor the camera, nor a call's line (more than 3 points, unless a click selected another function), since the snap before (names matched by function, not by what they say), and no name went while its dot or sphere still shows (unless a click selected another function, which may also move a lit function's name to another side of its dot and a module's name inside its sphere, or a depth change drew the camera back; and but for a name that gave way to one placed before it, as a step that names others first may (the cursor's path, a level more, I): one whose old place now lies under a name that came or moved there or a dot that came, or reads nearer a dot that came than its own, or one that was the cursor's or on its path and is no longer, or lit and now plain, or one whose name grew (a level more adding to its badge's count) so that the width it gained, away from its dot, runs into another's dot or name, may go, never move (one shown come what may moves instead), but a module's holding anything lit, named wherever there is room, may move); after `,` `.` ↓ or a badge the camera may only draw back, about the free area's middle (what showed there stays within 8 points of it), and only when something that came in would have been off the free area from where it was, or a sphere that came in (any, when the panel grew) cut by it or without room for its name; the world may not move; after X in a journey, no journey dot moved in the world; expanded in a journey, a click or a cursor step may pan the camera, and nothing else may move | every step since is one that must move nothing, or X in a journey; not a cursor step, nor ← → ↓ along the start's callers, that took the expansion to another module |
+| `nothing-moved` | no dot, sphere or name moved, nor the camera, nor a call's line (more than 3 points, unless a click selected another function), since the snap before (names matched by function, not by what they say), and no name went while its dot or sphere still shows (unless a click selected another function, which may also move a lit function's name to another side of its dot and a module's name inside its sphere, or a depth change drew the camera back; and but for a name that gave way to one placed before it, as a step that names others first may (the cursor's path, a level more, I): one whose old place now lies under a name that came or moved there, a dot that came or a sphere `=` showed again, or reads nearer a dot that came than its own, or one that was the cursor's or on its path and is no longer, or lit and now plain, or one whose name grew (a level more adding to its badge's count) so that the width it gained, away from its dot, runs into another's dot or name, may go, never move (one shown come what may moves instead), but a module's holding anything lit, named wherever there is room, may move); after `,` `.` ↓ or a badge the camera may only draw back, about the free area's middle (what showed there stays within 8 points of it), and only when something that came in would have been off the free area from where it was, or a sphere that came in (any, when the panel grew) cut by it or without room for its name; the world may not move; after X in a journey, no journey dot moved in the world; expanded in a journey, a click or a cursor step may pan the camera, and nothing else may move | every step since is one that must move nothing, or X in a journey; not a cursor step, nor ← → ↓ along the start's callers, that took the expansion to another module |
 | `focus-on-screen` | the selection, the start and the cursor, where drawn (expanded, those in the module expanded), lie inside the free area, shrunk back too; a function picked browsing since (a click, a search), or set aside in a journey since, is drawn and lies inside it, in whatever module; after only expands and shrinks back (X, a double click), browsing, the selection is the one before; in a journey, after nothing but those, the cursor and the function set aside are | unless an expand since framed a module, Back or Forward put back a camera, or the camera is where the user's hands put it; then still the cursor, when it moved expanded in a journey; the selection after an expand always |
 | `camera-outside` | the camera is inside no sphere | always |
 | `map-on-screen` | when the whole map would fit in the free area, 90% of it (by sphere area) is there, all of it after a pan (or, where the view left some of it out, no less than before the pan: a pan never pulls the map against the hand); when it would not, after a pan, some sphere covers some of the free area's middle third, across and up (the box round them is no bound); zoomed out as far as the wheel goes (`farthest`), it covers the free area's middle | when the last step since that moves the view is a wheel turn out, a pan, or R |
@@ -321,6 +327,7 @@ the way down to it; a start with callers has their row above its bar, and the st
 | `calls-drawn` | each call into the selection (or the start) and each of its own, between two dots on screen apart by more than their radii, a head and its gaps, is drawn | a selection or a journey, a call between two dots on screen |
 | `bars-in-view` | bars below the journey panel's foot, or past its sides, cut off or out of view, have a track down its side, or along its foot, showing which part is in view, and those past each side a mark at that side saying how many; the cursor's bar shows wholly, or across the panel when wider | a journey panel |
 | `fails-kept` | what can fail says so at any depth and on any step: each call shown in both this snap and the one before (by number and name), the start, and each function whose name says all it says in both ("can fail" in its label or not) | the same journey as the snap before |
+| `modules-shown` | short of every module (`-`): no sphere, dot, module name, call, line between modules or exit label belongs to a module outside `within`; each function lit (start, selection, cursor, aside, callers, calls, what I brings in) lies in a module of `lit`; the modules drawn are exactly `within` | a level short of all |
 | `outside-callers` | each caller I brings in has its own line start at its dot, drawn; one drawn has a line of its own: one whose call no line takes is not drawn, decided when what shows changes and kept as the camera turns or zooms; one on screen unnamed, or one with no room or no line to be drawn (`outside_waiting`), is counted in the bar along the top, unless another notice speaks there | I on |
 
 Two checks are the runner's rather than the viewer's. One reads the picture rather than the JSON, in the runner (`tools/drive`) once the
@@ -358,12 +365,12 @@ What a step may move decides which checks judge it:
 
 | kind | steps | may move |
 |---|---|---|
-| still | `hover`, `hover-label`, `key` ↑ ← →, `[`, `]`, `i`, `wait`, `expect`, `frames` | nothing; expanded in a journey, a cursor that moves may pan the camera to keep it in view, or take the expansion to its module |
+| still | `hover`, `hover-label`, `key` ↑ ← →, `[`, `]`, `i`, `-`, `=`, `wait`, `expect`, `frames` | nothing; expanded in a journey, a cursor that moves may pan the camera to keep it in view, or take the expansion to its module |
 | click | `click UNIT`, `click-label`, `bar` | nothing; expanded in a journey it may re-centre |
 | depth | `key ,`, `key .`, `key down` (on a call whose calls are folded it opens them), `chip` | the camera, drawn back about the free area's middle to bring on what would show off the free area; nothing in the world |
 | expand | `key x`, `doubleclick`, `doubleclick-module` | the view |
 | zoom, orbit, pan | `scroll`, `drag`, `pan` | the camera, by hand |
-| frame | `key f`, `key r`, `button Fit`; `key -`, `key =` (the map spread anew, then framed as F frames it) | the camera |
+| frame | `key f`, `key r`, `button Fit`; `key shift+-`, `key shift+=` (the map spread anew, then framed as F frames it) | the camera |
 | resize | `window` | the camera, framing the view again as it was last framed, unless the hands moved it since: then it keeps its target and distance |
 | back | `backspace`, `shift+backspace` | the view, put back as the place had it, the camera perhaps where the hands put it |
 | moves | everything else (`enter`, `esc`, `/`, `type`, `search-pick`, `shift+click`, `button`, `click X Y`, `click-empty`) | the view |
@@ -408,7 +415,9 @@ such a camera alone.
 | `axum-visual`, `ord-visual` | how a journey is drawn: no call through a lit dot or name, hovering lighting no call, the function set aside in its own color with a white ring, a guessed call faint; the whole map's links one width, module names above or inside their spheres; two functions alike told apart in the search; both calls of a function that calls the selection and is called by it, browsing |
 | `ord-outside` | I: every caller from off the journey of the cursor's call lit where it sits, none moving as the cursor steps; X in a journey moving none of its dots; a click on a plain function expanded opening no bar; a deep journey in a small window, the panel's rows track; a caller no line reaches not drawn but counted |
 | `ord-branch` | one branch at a time: ↓ on a folded call opening it alone and stepping in, `.` every branch deeper, `,` every branch a level back, a badge stepping in, the depth reading the deepest shown, graph and panel agreeing, "can fail" alike at every depth; the start's bar under its callers in a small window; bars past the panel's side counted there |
-| `ord-spread` | `-` and `=` stepping the map's spread through 0.5×, 0.75×, 1× (as it opens: twice as laid out), 1.5× and saying so, at either end too: spheres apart, framed after each step; the whole map at its widest and R; a journey and a module expanded keeping through steps down and up |
+| `ord-spread` | `Shift+-` and `Shift+=` stepping the map's spread through 0.5×, 0.75×, 1× (as it opens: twice as laid out), 1.5× and saying so, at either end too: spheres apart, framed after each step; the whole map at its widest and R; a journey and a module expanded keeping through steps down and up |
+| `ord-hide` | `-` stepping a journey's modules down to those within 2 calls of what it lights, 1, then those alone, and `=` back up, nothing moving and the camera still, each level drawing exactly its modules; the level holding through a cursor step, a level more and less, `I`, R and F, an expand and Back; Esc to browsing keeping it round the start, and with nothing selected every module showing again |
+| `axum-hide` | the same browsing with a selection: `-` with nothing selected saying what it needs; a click and a search pick of a function in a module hidden showing its module; R framing what shows; `Shift+=` spreading with the level kept |
 | `ord-panel` | the panel on a crowded journey: bars keep their numbers and some of their names, five levels fitting across 1200 wide, one cursor bar, `,` takes a cursor folded away up to the call still drawn; a smaller window; Esc selects the start; `↺ calls itself` (Finder::walk); a wide journey that scrolls (Index::walk); a name two calls share cutting its type, never down to it, at 1000 wide |
 
 `tools/drive suite` checks every script's names, then runs them one window at a time and

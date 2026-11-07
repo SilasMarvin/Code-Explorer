@@ -51,6 +51,7 @@ impl Nucleus {
             folded,
             tubes: Vec::new(),
             links,
+            shown: None,
         }
     }
 

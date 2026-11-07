@@ -176,11 +176,19 @@ fn keyboard(
     if keys.just_pressed(KeyCode::Slash) {
         chrome.search = true;
     }
-    // - and = spread the map closer or wider.
+    // - and = show fewer modules or more; with Shift, spread the map closer or wider.
     if keys.just_pressed(KeyCode::Minus) {
-        explorer.spread(false);
+        if shift {
+            explorer.spread(false);
+        } else {
+            explorer.show_modules(true);
+        }
     } else if keys.just_pressed(KeyCode::Equal) {
-        explorer.spread(true);
+        if shift {
+            explorer.spread(true);
+        } else {
+            explorer.show_modules(false);
+        }
     }
 }
 

@@ -45,6 +45,7 @@ impl Nucleus {
             folded: HashSet::new(),
             tubes,
             links,
+            shown: None,
         }
     }
 

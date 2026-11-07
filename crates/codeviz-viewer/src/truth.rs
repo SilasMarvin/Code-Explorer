@@ -16,7 +16,7 @@ use crate::{
     explorer::{Explorer, is_conditional},
     journey_panel::{bar_fill, caller_fill, guessed},
     labels::{Named, node_name},
-    nucleus::{Flow, Link},
+    nucleus::{Flow, Link, Reach},
 };
 
 /// The view's content, as JSON.
@@ -115,8 +115,14 @@ pub(crate) fn state(view: &View) -> Value {
         // In a journey, how many levels below the start its deepest call is.
         "deepest": (!explorer.browsing()).then(|| disclosed.deepest()),
         "outside_callers": explorer.outside_shown(),
-        // How far `-` and `=` have spread the map, against how it opens.
+        // How far `Shift+-` and `Shift+=` have spread the map, against how it opens.
         "spread": explorer.spread_shown(),
+        // Which modules `-` and `=` leave shown: all, or within so many calls of what
+        // the view lights.
+        "shown": match explorer.nucleus().reach() {
+            Reach::All => "all".to_owned(),
+            Reach::Within(hops) => hops.to_string(),
+        },
         "outside_waiting": nucleus.outside_waiting(),
         "hovered": explorer.hovered().map(name),
         "under_pointer": explorer.under_pointer.map(name),
@@ -245,13 +251,68 @@ pub(crate) fn scene(view: &View) -> Value {
         "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect), "size": t.size })).collect::<Vec<_>>(),
         "content": of(explorer),
         "layout": layout(explorer),
+        "shown_modules": shown_modules(explorer),
+    })
+}
+
+/// Which modules `-` and `=` leave shown, by name: the level (`all`, else how many
+/// calls out); and short of all, the modules holding what the view lights (`lit`),
+/// those within the level's calls of them, worked out here afresh from the codebase's
+/// calls (`within`, the module expanded among them), and those the view draws a
+/// sphere for (`drawn`), on screen or not.
+fn shown_modules(explorer: &Explorer) -> Value {
+    let nucleus = explorer.nucleus();
+    let Reach::Within(hops) = nucleus.reach() else {
+        return json!({ "level": "all" });
+    };
+    let graph = explorer.graph();
+    let clusters = graph.cluster_count();
+    let lit = nucleus.lit_modules();
+    let mut near = vec![Vec::new(); clusters];
+    for &(from, to) in &graph.calls {
+        if let (Some(a), Some(b)) = (graph.cluster(from), graph.cluster(to)) {
+            near[a].push(b);
+            near[b].push(a);
+        }
+    }
+    let mut hops_to: Vec<Option<u32>> = vec![None; clusters];
+    let mut queue: std::collections::VecDeque<usize> = lit.iter().copied().collect();
+    for &c in &lit {
+        hops_to[c] = Some(0);
+    }
+    while let Some(c) = queue.pop_front() {
+        let at = hops_to[c].unwrap_or(0);
+        if at == hops {
+            continue;
+        }
+        for &n in &near[c] {
+            if hops_to[n].is_none() {
+                hops_to[n] = Some(at + 1);
+                queue.push_back(n);
+            }
+        }
+    }
+    if let Some(expanded) = nucleus.expanded_module() {
+        hops_to[expanded].get_or_insert(0);
+    }
+    let names = |cs: &mut dyn Iterator<Item = usize>| -> Vec<String> {
+        let mut names: Vec<String> = cs.map(|c| explorer.cluster_name(c)).collect();
+        names.sort();
+        names
+    };
+    json!({
+        "level": hops.to_string(),
+        "total": clusters,
+        "lit": names(&mut lit.iter().copied()),
+        "within": names(&mut (0..clusters).filter(|&c| hops_to[c].is_some())),
+        "drawn": names(&mut nucleus.balls().map(|(c, _)| c)),
     })
 }
 
 /// How many shuffles of the layout calls are measured against.
 const SHUFFLES: u64 = 8;
 
-/// What the layout is, whatever the view lights and however far `-` and `=` spread
+/// What the layout is, whatever the view lights and however far `Shift+-` and `Shift+=` spread
 /// it: a `digest` of where every module and function sits, the same for the same
 /// layout; and how long calls run in it against the same positions shuffled
 /// (`modules`: between modules' middles, their spheres shuffled among themselves;

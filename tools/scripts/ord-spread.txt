@@ -1,5 +1,5 @@
 #: view $CODEVIZ_DATA/ord-ws-2.json
-# - and = spread the map a step closer or wider (0.5×, 0.75×, 1× as it opens, 1.5×):
+# Shift+- and Shift+= spread the map a step closer or wider (0.5×, 0.75×, 1× as it opens, 1.5×):
 # every module moves out from the world's middle with its functions, no sphere
 # resized, nothing laid out again; the view frames itself again. The whole map as it
 # opens, at its closest and its widest; a journey and a module expanded keeping
@@ -8,24 +8,24 @@ expect state spread 1.0
 expect check spheres-apart
 expect check module-names
 snap whole
-key -
+key shift+-
 expect notice Spread 0.75×
-key -
+key shift+-
 expect notice Spread 0.5×
 expect state spread 0.5
 expect check spheres-apart
 snap whole closest
-key -
+key shift+-
 expect notice as close as it goes
-key =
-key =
-key =
+key shift+=
+key shift+=
+key shift+=
 expect notice Spread 1.5×
 expect state spread 1.5
 expect check spheres-apart
 expect check spheres-unclipped
 snap whole widest
-key =
+key shift+=
 expect notice as wide as it goes
 key r
 expect check framed
@@ -39,15 +39,15 @@ expect start Explorer::spotlit
 key .
 expect depth 2
 snap journey widest
-key -
+key shift+-
 expect notice Spread 1×
 expect start Explorer::spotlit
 expect depth 2
 expect check journey-fills
 expect check lines-straight
 snap journey 1x
-key -
-key -
+key shift+-
+key shift+-
 expect state spread 0.5
 expect start Explorer::spotlit
 expect depth 2
@@ -57,8 +57,8 @@ snap journey closest
 key x
 expect nucleus expanded
 snap expanded
-key =
-key =
+key shift+=
+key shift+=
 expect nucleus expanded
 expect state spread 1.0
 expect check expanded-drawn

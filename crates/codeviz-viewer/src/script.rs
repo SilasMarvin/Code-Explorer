@@ -130,7 +130,8 @@ pub(crate) enum Kind {
     Orbit,
     /// A pan by a right-button drag.
     Pan,
-    /// `f`: frames what the view is on; `-` and `=`, the map spread anew, too.
+    /// `f`: frames what the view is on; `shift+-` and `shift+=`, the map spread anew,
+    /// too.
     FrameFocus,
     /// `r`: frames everything from the front.
     FrameAll,
@@ -154,7 +155,7 @@ pub(crate) struct Line {
 
 /// Fields of the snapshot's `state` an `expect` may name, with the values each takes
 /// (none listed: any).
-const STATE_FIELDS: [(&str, &[&str]); 10] = [
+const STATE_FIELDS: [(&str, &[&str]); 11] = [
     ("mode", &["browse", "journey"]),
     ("nucleus", &["modules", "expanded"]),
     ("expanded", &[]),
@@ -165,6 +166,7 @@ const STATE_FIELDS: [(&str, &[&str]); 10] = [
     ("forward", &["true", "false"]),
     ("outside_callers", &["true", "false"]),
     ("spread", &["0.5", "0.75", "1.0", "1.5"]),
+    ("shown", &["all", "2", "1", "0"]),
 ];
 
 /// Every step's verb, to suggest one for a misspelt verb.
@@ -565,8 +567,12 @@ impl Step {
                 // ↓ on a call whose calls are folded opens them, as a badge does.
                 (KeyCode::Comma | KeyCode::Period | KeyCode::ArrowDown, false) => Kind::Depth,
                 (KeyCode::KeyX, false) => Kind::Expand,
-                // - and = spread the map, then frame what the view is on as F does.
-                (KeyCode::KeyF | KeyCode::Minus | KeyCode::Equal, false) => Kind::FrameFocus,
+                // Shift with - and = spreads the map, then frames what the view is on as
+                // F does; - and = alone hide modules or show them, moving nothing.
+                (KeyCode::KeyF, false) | (KeyCode::Minus | KeyCode::Equal, true) => {
+                    Kind::FrameFocus
+                }
+                (KeyCode::Minus | KeyCode::Equal, false) => Kind::Still,
                 (KeyCode::KeyR, false) => Kind::FrameAll,
                 (KeyCode::Backspace, _) => Kind::Back,
                 _ => Kind::Moves,
@@ -854,7 +860,10 @@ mod tests {
         assert_eq!(kind("key ."), Kind::Depth);
         assert_eq!(kind("key x"), Kind::Expand);
         assert_eq!(kind("key f"), Kind::FrameFocus);
-        assert_eq!(kind("key ="), Kind::FrameFocus);
+        assert_eq!(kind("key shift+="), Kind::FrameFocus);
+        assert_eq!(kind("key shift+-"), Kind::FrameFocus);
+        assert_eq!(kind("key ="), Kind::Still, "showing modules moves nothing");
+        assert_eq!(kind("key -"), Kind::Still);
         assert_eq!(kind("key r"), Kind::FrameAll);
         assert_eq!(kind("key esc"), Kind::Moves);
         assert_eq!(kind("key backspace"), Kind::Back);

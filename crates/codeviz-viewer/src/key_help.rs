@@ -64,10 +64,11 @@ fn hint_at(foot: egui::Rect, size: egui::Vec2) -> egui::Pos2 {
 pub(crate) fn hint(browsing: bool, expanded: bool) -> String {
     let keys = if browsing {
         "click a function to select it, nothing moves · Enter opens its journey · \
-         Backspace back · / search · R whole map · H help"
+         - = hide far modules · Backspace back · / search · R whole map · H help"
     } else {
         "click a call to go to it · ] [ ↓ ↑ ← → step · ↑ from the start: its callers · \
-         , . less or more · I who else calls it · Esc leaves for browsing · H help"
+         , . less or more · I who else calls it · - = hide far modules · Esc leaves for browsing · \
+         H help"
     };
     match (browsing, expanded) {
         (_, true) => format!("X or Esc: back out · {keys}"),
@@ -99,7 +100,7 @@ impl When {
 
 /// Every key, what it does, and in which view; H lists those that apply to the view
 /// open. One line each.
-const KEYS: [(&str, &str, When); 26] = [
+const KEYS: [(&str, &str, When); 28] = [
     ("click", "select a function; nothing moves", When::Browse),
     (
         "click",
@@ -162,7 +163,17 @@ const KEYS: [(&str, &str, When); 26] = [
     ),
     ("wheel", "zoom towards the pointer", When::Always),
     ("drag, right drag", "turn the view, move it", When::Always),
-    ("-  =", "spread the modules closer / wider", When::Always),
+    (
+        "-  =",
+        "hide modules far from the selection / show them",
+        When::Browse,
+    ),
+    (
+        "-  =",
+        "hide modules far from the journey / show them",
+        When::Journey,
+    ),
+    ("Shift -  =", "spread the modules closer / wider", When::Always),
     ("F", "fit the selection on screen", When::Browse),
     ("F", "fit the journey on screen", When::Journey),
     ("R", "the whole map, from the front", When::Browse),

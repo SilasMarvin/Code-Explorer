@@ -52,7 +52,8 @@ service on one handler's journey.
 | `X` | fly into a module, and back out |
 | `F` | frame what is in focus |
 | `R` | turn back to the usual view and frame everything |
-| `-` `=` | spread the map closer or wider |
+| `-` `=` | hide the modules far from the journey or the selection, a step at a time, or show them again |
+| `Shift+-` `Shift+=` | spread the map closer or wider |
 | `/` | search |
 | `H` | list the keys that work in the mode you are in |
 | `Esc` | step out one level: the selection, the expanded module, the journey |
@@ -169,6 +170,21 @@ to it; moving back flies back. `X` again, `Esc`, or a double click off every fun
 shrinks it back and returns the camera to exactly where it stood before the first
 module opened. `Back` and `Forward` keep it expanded; going to another journey, or
 between browsing and a journey, shrinks it back.
+
+### Hiding modules
+
+`-` hides the modules far from what the view lights, a step at a time: first every
+module more than two calls from a module holding something lit, counting calls between
+modules either way, then more than one, then all but those holding something lit; `=`
+shows them again a step at a time. Lit, in a journey, are its start, the row of its
+callers, its calls down to the depth shown and what `I` lights; browsing, the
+selection, its callers and its calls. A module hidden is not drawn at all: no sphere,
+dot, name or line. Nothing is laid out again and nothing moves, the camera neither;
+`F` and `R` frame only what shows. The level holds as the cursor moves, the depth
+changes, a module expands and Back and Forward go, and what shows follows what is lit.
+A search still finds a function in a module hidden; picking it lights it, which shows
+its module. Browsing with nothing selected nothing is lit to hide round: every module
+shows, and `-` says so. The bar along the top says each step as it is taken.
 
 ### Camera
 

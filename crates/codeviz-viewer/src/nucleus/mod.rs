@@ -203,6 +203,27 @@ struct Arrangement {
     folded: HashSet<usize>,
     tubes: Vec<Tube>,
     links: Vec<Link>,
+    /// By cluster, whether the module shows at all, as `-` and `=` have it ([`Reach`]):
+    /// none, every module.
+    shown: Option<Vec<bool>>,
+}
+
+/// Which modules show, as `-` and `=` step it: every module, or only those within so
+/// many calls, in the module-level call graph either way, of a module holding
+/// something the view lights (its start or selection, the cursor, the function set
+/// aside, what calls the start, the calls shown, what I brings in). A module hidden is
+/// not drawn at all; nothing else moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Reach {
+    #[default]
+    All,
+    Within(u32),
+}
+
+impl Reach {
+    /// From every module to the lit ones alone, a step at a time: what `-` steps
+    /// through, and `=` back.
+    pub(crate) const STEPS: [Self; 4] = [Self::All, Self::Within(2), Self::Within(1), Self::Within(0)];
 }
 
 /// The graph as module spheres where the layout has them, lighting what the view is
@@ -241,6 +262,11 @@ pub(crate) struct Nucleus {
     /// The outside callers shown whose call into the journey has no line where the
     /// camera stands: drawn nowhere.
     lineless: HashSet<usize>,
+    /// Which modules show ([`Reach`]).
+    reach: Reach,
+    /// By cluster, the modules it calls or is called from: what [`Reach`] counts calls
+    /// in.
+    neighbours: Vec<Vec<usize>>,
 }
 
 impl Nucleus {
@@ -267,6 +293,15 @@ impl Nucleus {
                 *flows.entry((a, b)).or_insert(0) += 1;
             }
         }
+        let mut neighbours = vec![Vec::new(); clusters];
+        for &(a, b) in flows.keys() {
+            neighbours[a].push(b);
+            neighbours[b].push(a);
+        }
+        for list in &mut neighbours {
+            list.sort_unstable();
+            list.dedup();
+        }
         let placed = place::layout(graph);
         let mut nucleus = Self {
             layout: placed.clone(),
@@ -283,6 +318,8 @@ impl Nucleus {
             browse,
             outside: false,
             lineless: HashSet::new(),
+            reach: Reach::All,
+            neighbours,
         };
         nucleus.now = nucleus.arrange(graph, start);
         nucleus
@@ -339,9 +376,87 @@ impl Nucleus {
         &self.placed
     }
 
+    /// Which modules show.
+    pub(crate) fn reach(&self) -> Reach {
+        self.reach
+    }
+
+    /// Shows every module, or only those within so many calls of what the view
+    /// lights. Nothing moves.
+    pub(crate) fn set_reach(&mut self, reach: Reach) {
+        self.reach = reach;
+        self.reshow();
+    }
+
+    /// Whether a module shows at all ([`Reach`]): a hidden one has no sphere, no
+    /// dots, no name and no line.
+    pub(crate) fn shows_module(&self, cluster: usize) -> bool {
+        self.now
+            .shown
+            .as_ref()
+            .is_none_or(|shown| shown.get(cluster).copied().unwrap_or(false))
+    }
+
+    /// The modules holding what the view lights: the start or the selection, the ends
+    /// of every call it names but the expanded module's own, and in a journey the
+    /// cursor and the function set aside. What [`Reach`] counts from.
+    pub(crate) fn lit_modules(&self) -> Vec<usize> {
+        let journey = |tile: Option<usize>| tile.filter(|_| !self.browse);
+        let mut modules: Vec<usize> = (self.now.start.into_iter())
+            .chain(
+                (self.now.links.iter())
+                    .filter(|l| l.flow != Flow::Inner)
+                    .flat_map(|l| [l.from, l.to]),
+            )
+            .chain(journey(self.cursor))
+            .chain(journey(self.aside))
+            .filter_map(|tile| self.module_of(tile))
+            .collect();
+        modules.sort_unstable();
+        modules.dedup();
+        modules
+    }
+
+    /// Works out again which modules show, from what the view lights now: once per
+    /// change, never per frame. With nothing lit, every one; the module expanded
+    /// always.
+    fn reshow(&mut self) {
+        let Reach::Within(hops) = self.reach else {
+            self.now.shown = None;
+            return;
+        };
+        let lit = self.lit_modules();
+        if lit.is_empty() {
+            self.now.shown = None;
+            return;
+        }
+        let mut shown = vec![false; self.counts.len()];
+        let mut frontier: Vec<usize> = lit
+            .into_iter()
+            .filter(|&c| !std::mem::replace(&mut shown[c], true))
+            .collect();
+        for _ in 0..hops {
+            let mut next = Vec::new();
+            for cluster in frontier {
+                for &near in &self.neighbours[cluster] {
+                    if !std::mem::replace(&mut shown[near], true) {
+                        next.push(near);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        if let Some(expanded) = self.expanded {
+            shown[expanded] = true;
+        }
+        self.now.tubes.retain(|t| shown[t.from] && shown[t.to]);
+        self.now.shown = Some(shown);
+    }
+
     /// Lights what `start` touches instead.
     pub(crate) fn recenter(&mut self, graph: &CallGraph, start: Option<usize>) {
         self.now = self.arrange(graph, start);
+        self.reshow();
     }
 
     /// Lights the open journey from the start instead. Returns whether that changed
@@ -426,6 +541,8 @@ impl Nucleus {
         self.cursor = tile;
         if self.outside && !self.browse {
             self.recenter(graph, self.now.start);
+        } else {
+            self.reshow();
         }
         true
     }
@@ -437,6 +554,7 @@ impl Nucleus {
             return false;
         }
         self.aside = tile;
+        self.reshow();
         true
     }
 
@@ -484,7 +602,8 @@ impl Nucleus {
     /// spheres), nor an outside caller with no line. The one test of what is drawn:
     /// what is pointed at, clicked and named is drawn.
     pub(crate) fn drawn(&self, tile: usize) -> bool {
-        self.placed(tile) && (self.browse || !self.speck(tile) && !self.lineless(tile))
+        self.module_of(tile).is_some_and(|c| self.shows_module(c))
+            && (self.browse || !self.speck(tile) && !self.lineless(tile))
     }
 
     /// Whether a function placed where it shows is only a small, faint speck: not
@@ -511,9 +630,9 @@ impl Nucleus {
             .collect()
     }
 
-    /// A module's sphere.
+    /// A module's sphere, as drawn: none for a module hidden ([`Reach`]).
     pub(crate) fn ball(&self, cluster: usize) -> Option<Ball> {
-        self.now.balls.get(cluster).copied()
+        (self.now.balls.get(cluster).copied()).filter(|_| self.shows_module(cluster))
     }
 
     /// The radius of the ball each of a module's functions keeps to itself: no two
@@ -612,9 +731,8 @@ impl Nucleus {
     /// modules.
     pub(crate) fn frame_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
-        self.now
-            .balls
-            .iter()
+        self.balls()
+            .map(|(_, b)| b)
             .filter(|b| matches!(b.body, Body::Nucleus | Body::Open))
             .flat_map(|b| {
                 [
@@ -634,10 +752,9 @@ impl Nucleus {
             .aside
             .filter(|_| !self.browse)
             .and_then(|tile| self.module_of(tile));
-        (0..self.now.balls.len())
-            .filter(|&c| {
-                matches!(self.now.balls[c].body, Body::Nucleus | Body::Open) || Some(c) == aside
-            })
+        self.balls()
+            .filter(|&(c, ball)| matches!(ball.body, Body::Nucleus | Body::Open) || Some(c) == aside)
+            .map(|(c, _)| c)
             .collect()
     }
 
@@ -665,8 +782,8 @@ impl Nucleus {
     }
 
     /// `modules`' spheres.
-    pub(crate) fn balls_of<'a>(&'a self, modules: &'a [usize]) -> impl Iterator<Item = &'a Ball> {
-        modules.iter().filter_map(|&c| self.now.balls.get(c))
+    pub(crate) fn balls_of<'a>(&'a self, modules: &'a [usize]) -> impl Iterator<Item = Ball> + 'a {
+        modules.iter().filter_map(|&c| self.ball(c))
     }
 
     /// Points round the expanded module alone: what the view takes in to fill
@@ -687,14 +804,13 @@ impl Nucleus {
             .unwrap_or_default()
     }
 
-    /// Points round every sphere, the whole codebase, seen turned to `rotation`: each
-    /// one's sides, top and foot at its middle's depth, where its disc shows.
+    /// Points round every sphere shown, the whole codebase but what `-` hides, seen
+    /// turned to `rotation`: each one's sides, top and foot at its middle's depth,
+    /// where its disc shows.
     pub(crate) fn atlas_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
-        self.now
-            .balls
-            .iter()
-            .flat_map(|b| [right, -right, up, -up].map(|towards| b.center + towards * b.radius))
+        self.balls()
+            .flat_map(|(_, b)| [right, -right, up, -up].map(|towards| b.center + towards * b.radius))
             .collect()
     }
 

@@ -381,7 +381,7 @@ pub(crate) fn create_node_materials(
 type TheCamera = (With<OrbitCamera>, Without<Tile>);
 
 /// Sizes every function drawn as [`drawn_radius`] has it, whenever the view or the
-/// camera changes, and puts it where the map, spread as `-` and `=` have it, has it.
+/// camera changes, and puts it where the map, spread as `Shift+-` and `Shift+=` have it, has it.
 pub(crate) fn size_nodes(
     explorer: Res<Explorer>,
     cameras: Query<(Ref<Camera>, Ref<Transform>), TheCamera>,

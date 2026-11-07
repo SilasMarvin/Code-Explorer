@@ -1,0 +1,66 @@
+#: view demo/out/axum-server.json
+# Browsing with a selection, - and = hide the modules far from it, in the module-level
+# call graph: within 2 calls of the selection's module and its callers' and calls',
+# within 1, those alone; = shows them again. Nothing moves. With nothing selected
+# there is nothing to hide round. A click elsewhere, or a search pick of a function in
+# a module hidden, selects it and what shows follows; Shift+- and Shift+= spread the
+# map, the level kept; Esc, nothing selected, shows every module.
+key -
+expect notice Select a function or open a journey to hide around it
+expect state shown all
+click pricing::quote
+expect selection pricing::quote
+snap selected
+key -
+expect notice Showing the selection's modules + 2 calls out
+expect state shown 2
+expect nothing-moved
+expect check modules-shown
+snap within 2
+key -
+expect notice Showing the selection's modules + 1 call out
+expect state shown 1
+expect nothing-moved
+expect check modules-shown
+snap within 1
+key -
+expect notice Showing the selection's modules only
+expect state shown 0
+expect nothing-moved
+expect check modules-shown
+snap only
+
+click orders::place
+expect selection orders::place
+expect state shown 0
+expect check modules-shown
+snap place only
+key /
+type find_user
+key enter
+expect selection users::find_user
+expect state shown 0
+expect drawn users::find_user
+expect check modules-shown
+expect check focus-on-screen
+snap found
+key r
+expect check framed
+expect check modules-shown
+snap framed
+
+key shift+=
+expect state spread 1.5
+expect state shown 0
+expect check modules-shown
+snap spread
+key shift+-
+expect state spread 1.0
+key =
+expect state shown 1
+expect check modules-shown
+key esc
+expect selection none
+expect state shown all
+expect notice Showing all modules
+snap all

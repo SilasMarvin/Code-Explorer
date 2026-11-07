@@ -1,0 +1,108 @@
+#: view $CODEVIZ_DATA/ord-ws-2.json --focus Explorer::spotlit --depth 2
+# - and = step which modules show: every one; those within 2 calls, in the
+# module-level call graph either way, of a module holding what the journey lights;
+# within 1; those alone. A module hidden draws nothing (no sphere, dots, name, line
+# or exit label), nothing else moves, the camera neither; R frames what shows. The
+# level holds through cursor steps, depth changes and Back, and the shown set follows
+# what is lit; Esc to browsing keeps it round the start selected, and with nothing
+# selected every module shows again.
+expect state shown all
+snap all
+key -
+expect notice Showing journey modules + 2 calls out
+expect state shown 2
+expect nothing-moved
+expect check modules-shown
+snap within 2
+key -
+expect notice Showing journey modules + 1 call out
+expect state shown 1
+expect nothing-moved
+expect check modules-shown
+snap within 1
+key -
+expect notice Showing journey modules only
+expect state shown 0
+expect nothing-moved
+expect check modules-shown
+snap lit only
+key -
+expect notice = shows more
+expect state shown 0
+
+# The level holds as the cursor walks and the depth changes; what shows follows.
+key down
+key right
+expect state shown 0
+expect check modules-shown
+snap lit cursor moved
+key .
+expect depth 3
+expect state shown 0
+expect check modules-shown
+snap lit deeper
+key ,
+expect depth 2
+expect check modules-shown
+key i
+expect check modules-shown
+snap lit outside callers
+key i
+key r
+expect check framed
+expect check modules-shown
+snap lit framed
+key f
+expect check framed
+snap lit fit
+
+# Back up a step at a time: nothing moves, the camera stays.
+key =
+expect notice Showing journey modules + 1 call out
+expect state shown 1
+expect nothing-moved
+expect check modules-shown
+snap back within 1
+key =
+expect state shown 2
+expect nothing-moved
+expect check modules-shown
+snap back within 2
+key =
+expect notice Showing all modules
+expect state shown all
+expect nothing-moved
+snap back all
+key =
+expect notice - hides the modules far from it
+expect state shown all
+
+# Expanded, the module expanded shows; Back keeps the level.
+key -
+key x
+expect nucleus expanded
+expect check modules-shown
+expect check expanded-drawn
+snap expanded within 2
+key x
+key down
+key backspace
+expect state shown 2
+expect check modules-shown
+
+# Esc to browsing selects the start: the level holds round it. Esc again, with
+# nothing selected, shows every module; - then says what it needs.
+key esc
+expect mode browse
+expect selection Explorer::spotlit
+expect state shown 2
+expect check modules-shown
+snap browse within 2
+key esc
+expect selection none
+expect state shown all
+expect notice Showing all modules
+snap browse all
+key -
+expect notice Select a function or open a journey to hide around it
+expect state shown all

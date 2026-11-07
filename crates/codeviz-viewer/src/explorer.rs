@@ -28,10 +28,10 @@ use crate::{
     disclosure::{self, Disclose, Disclosed},
     history::{History, Seen, View},
     module_names,
-    nucleus::{Nucleus, Trail},
+    nucleus::{Nucleus, Reach, Trail},
 };
 
-/// How far `-` and `=` spread the map, step by step: every module's middle this many
+/// How far `Shift+-` and `Shift+=` spread the map, step by step: every module's middle this many
 /// times as far from the world's as the layout put it.
 const SPREADS: [f32; 4] = [1.0, 1.5, 2.0, 3.0];
 /// The step the map opens at: twice as wide as laid out, so spheres stacked in depth
@@ -226,7 +226,7 @@ pub(crate) struct Explorer {
     /// The graph gathered into module spheres: browsing, the whole codebase; in a
     /// journey, round its start's module.
     nucleus: Nucleus,
-    /// How far `-` and `=` have spread the map, by step in [`SPREADS`].
+    /// How far `Shift+-` and `Shift+=` have spread the map, by step in [`SPREADS`].
     spread: usize,
     /// Whether a journey is open, or the view browses.
     mode: ViewMode,
@@ -886,7 +886,7 @@ impl Explorer {
         }
     }
 
-    /// `-` and `=`: spreads the map a step closer or wider ([`SPREADS`]), every module
+    /// `Shift+-` and `Shift+=`: spreads the map a step closer or wider ([`SPREADS`]), every module
     /// moving out from the world's middle with its functions, sizes kept; at once,
     /// whatever the view shows, which then frames itself again as it was pointed.
     /// Says the step, or that it is at the end.
@@ -898,9 +898,9 @@ impl Explorer {
         };
         let Some(next) = next else {
             self.say(if wider {
-                "Spread as wide as it goes: - brings the modules closer"
+                "Spread as wide as it goes: Shift+- brings the modules closer"
             } else {
-                "Spread as close as it goes: = spreads the modules wider"
+                "Spread as close as it goes: Shift+= spreads the modules wider"
             });
             return;
         };
@@ -911,7 +911,7 @@ impl Explorer {
         self.moved += 1;
         self.aim += 1;
         self.say(&format!(
-            "Spread {}×: - closer, = wider",
+            "Spread {}×: Shift+- closer, Shift+= wider",
             self.spread_shown()
         ));
     }
@@ -931,6 +931,62 @@ impl Explorer {
             Return::Shrunk(pose) => Return::Shrunk(pose.spread(factor)),
             Return::Whole => Return::Whole,
         });
+    }
+
+    /// `-` (`fewer`) and `=`: shows a step fewer modules, or more ([`Reach::STEPS`]):
+    /// every module; those within two calls, in the module-level call graph, of a
+    /// module holding what the view lights; within one; those alone. A module hidden
+    /// is not drawn at all, and nothing else moves, the camera neither. Browsing with
+    /// nothing selected there is nothing to hide round, and it says so. Says the step,
+    /// or that it is at the end.
+    pub(crate) fn show_modules(&mut self, fewer: bool) {
+        if self.browsing() && self.selection.is_none() {
+            self.say(if fewer {
+                "Select a function or open a journey to hide around it"
+            } else {
+                "Showing all modules"
+            });
+            return;
+        }
+        let steps = Reach::STEPS;
+        let at = steps
+            .iter()
+            .position(|&r| r == self.nucleus.reach())
+            .unwrap_or(0);
+        let next = if fewer {
+            Some(at + 1).filter(|&i| i < steps.len())
+        } else {
+            at.checked_sub(1)
+        };
+        let Some(next) = next else {
+            let shown = self.modules_shown();
+            self.say(&if fewer {
+                format!("{shown}: = shows more")
+            } else {
+                format!("{shown}: - hides the modules far from it")
+            });
+            return;
+        };
+        self.nucleus.set_reach(steps[next]);
+        self.moved += 1;
+        let shown = self.modules_shown();
+        self.say(&shown);
+    }
+
+    /// Which modules show, in words: `Showing all modules`, `Showing journey modules
+    /// + 1 call out`.
+    pub(crate) fn modules_shown(&self) -> String {
+        let lit = if self.browsing() {
+            "the selection's modules"
+        } else {
+            "journey modules"
+        };
+        match self.nucleus.reach() {
+            Reach::All => "Showing all modules".to_owned(),
+            Reach::Within(0) => format!("Showing {lit} only"),
+            Reach::Within(1) => format!("Showing {lit} + 1 call out"),
+            Reach::Within(hops) => format!("Showing {lit} + {hops} calls out"),
+        }
     }
 
     /// How far the map is spread, against how it opens: 1 as it opens, 0.5 at its
@@ -978,6 +1034,13 @@ impl Explorer {
     /// still returns to where the camera stood before the first. Letting go of the
     /// function set aside takes it back to the cursor's.
     fn sync_nucleus(&mut self) {
+        // Browsing with nothing selected, nothing is lit to hide round: every module
+        // shows again, and `-` starts over from there.
+        if self.browsing() && self.selection.is_none() && self.nucleus.reach() != Reach::All {
+            self.nucleus.set_reach(Reach::All);
+            self.moved += 1;
+            self.say("Showing all modules");
+        }
         let start = self.nucleus_start();
         let cursor = self.cursor();
         let aside = self.aside();
@@ -2941,7 +3004,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             said(&explorer).as_deref(),
-            Some("Spread as close as it goes: = spreads the modules wider")
+            Some("Spread as close as it goes: Shift+= spreads the modules wider")
         );
         assert_eq!(explorer.spread_shown(), 0.5);
         let closest = ball(&explorer);
@@ -2951,7 +3014,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             said(&explorer).as_deref(),
-            Some("Spread 1.5×: - closer, = wider")
+            Some("Spread 1.5×: Shift+- closer, Shift+= wider")
         );
         let after = ball(&explorer);
         assert_eq!(after.center, closest.center * 3.0);
@@ -2965,10 +3028,130 @@ pub(crate) mod tests {
         explorer.spread(true);
         assert_eq!(
             said(&explorer).as_deref(),
-            Some("Spread as wide as it goes: - brings the modules closer")
+            Some("Spread as wide as it goes: Shift+- brings the modules closer")
         );
         explorer.spread(false);
         assert_eq!(ball(&explorer), before, "back as it opened");
+    }
+
+    /// A chain of modules, one call apart: `main` (m0) calls `f1` (m1), which calls
+    /// `f2` (m2), and so on to `f4` (m4); `lone` (m5) calls nothing and nothing calls it.
+    fn chain() -> System {
+        let module = |n: usize| {
+            format!(r#"{{ "id": "m:m{n}", "name": "m{n}", "kind": "module", "role": "group" }}"#)
+        };
+        let function = |n: usize, name: &str, call: Option<&str>| {
+            let calls = call.map_or_else(String::new, |c| {
+                format!(
+                    r#"{{ "key": "{c}#0", "text": "{c}", "targets": [{{ "unit": "f:{c}", "certainty": "exact" }}] }}"#
+                )
+            });
+            format!(
+                r#"{{ "id": "f:{name}", "name": "{name}", "kind": "fn", "role": "invocable", "parent": "m:m{n}", "calls": [{calls}] }}"#
+            )
+        };
+        let units: Vec<String> = (0..6)
+            .map(module)
+            .chain([
+                function(0, "main", Some("f1")),
+                function(1, "f1", Some("f2")),
+                function(2, "f2", Some("f3")),
+                function(3, "f3", Some("f4")),
+                function(4, "f4", None),
+                function(5, "lone", None),
+            ])
+            .collect();
+        let json = format!(
+            r#"{{ "schema": "codeviz/0.1", "producer": {{ "name": "t", "version": "0" }}, "units": [{}] }}"#,
+            units.join(",")
+        );
+        System::new([Document::from_json(&json).unwrap()])
+    }
+
+    #[test]
+    fn minus_hides_modules_by_calls_from_what_is_lit_and_nothing_moves() {
+        let mut explorer = opened(chain(), "f:main");
+        let said = |e: &Explorer| e.notice().map(|(_, text)| text.to_owned());
+        let tile = |e: &Explorer, name: &str| e.map().tile_of(&UnitId::new(format!("f:{name}"))).unwrap();
+        let names = ["main", "f1", "f2", "f3", "f4", "lone"];
+        let tiles = names.map(|name| tile(&explorer, name));
+        let shown = |e: &Explorer| -> Vec<&str> {
+            (names.iter().zip(tiles))
+                .filter(|&(_, t)| {
+                    let module = e.graph().cluster(t).unwrap();
+                    e.nucleus().ball(module).is_some()
+                })
+                .map(|(name, _)| *name)
+                .collect()
+        };
+        let points: Vec<_> = tiles.iter().map(|&t| explorer.nucleus().point(t)).collect();
+        assert_eq!(shown(&explorer), names, "every module, as it opens");
+
+        explorer.show_modules(true);
+        assert_eq!(said(&explorer).as_deref(), Some("Showing journey modules + 2 calls out"));
+        // main and f1 are lit: m0 and m1, then two calls on to m3.
+        assert_eq!(shown(&explorer), ["main", "f1", "f2", "f3"]);
+        assert!(!explorer.nucleus().drawn(tiles[4]), "no dot in a module hidden");
+        explorer.show_modules(true);
+        assert_eq!(shown(&explorer), ["main", "f1", "f2"]);
+        explorer.show_modules(true);
+        assert_eq!(said(&explorer).as_deref(), Some("Showing journey modules only"));
+        assert_eq!(shown(&explorer), ["main", "f1"]);
+        explorer.show_modules(true);
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Showing journey modules only: = shows more")
+        );
+        let now: Vec<_> = tiles.iter().map(|&t| explorer.nucleus().point(t)).collect();
+        assert_eq!(now, points, "nothing moves");
+
+        // What shows follows what is lit: a level more lights f2.
+        explorer.deeper();
+        assert_eq!(shown(&explorer), ["main", "f1", "f2"]);
+        explorer.step(Step::Child);
+        assert_eq!(explorer.nucleus().reach(), Reach::Within(0), "the level holds");
+        explorer.shallower();
+        explorer.go_back();
+        assert_eq!(explorer.nucleus().reach(), Reach::Within(0), "through Back too");
+
+        // Browsing round the start selected, the same; with nothing selected, all.
+        explorer.leave_journey();
+        assert_eq!(explorer.selection(), Some(tiles[0]));
+        assert_eq!(shown(&explorer), ["main", "f1"]);
+        explorer.show_modules(false);
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Showing the selection's modules + 1 call out")
+        );
+        explorer.deselect();
+        assert_eq!(said(&explorer).as_deref(), Some("Showing all modules"));
+        assert_eq!(shown(&explorer), names);
+        explorer.show_modules(true);
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Select a function or open a journey to hide around it")
+        );
+        assert_eq!(explorer.nucleus().reach(), Reach::All);
+        explorer.show_modules(false);
+        assert_eq!(said(&explorer).as_deref(), Some("Showing all modules"));
+    }
+
+    #[test]
+    fn a_function_set_aside_in_a_module_hidden_shows_it() {
+        let mut explorer = opened(chain(), "f:main");
+        let lone = explorer.map().tile_of(&UnitId::new("f:lone")).unwrap();
+        let module = explorer.graph().cluster(lone).unwrap();
+        for _ in 0..3 {
+            explorer.show_modules(true);
+        }
+        assert!(explorer.nucleus().ball(module).is_none());
+        // A search off the journey picks as a click does: set aside, lit, shown.
+        explorer.click(lone, None);
+        assert_eq!(explorer.aside(), Some(lone));
+        assert!(explorer.nucleus().ball(module).is_some());
+        assert!(explorer.nucleus().drawn(lone));
+        explorer.clear_aside();
+        assert!(explorer.nucleus().ball(module).is_none(), "hidden again once let go");
     }
 
     #[test]

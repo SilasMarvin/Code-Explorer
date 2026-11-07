@@ -191,7 +191,7 @@ const BACK: &str = "Back or Forward put back the camera the place had, wherever 
 type Check = fn(&Snap, Option<&Snap>, &Since) -> Value;
 
 /// Every check, by the name testers read, in the order a snapshot lists them.
-const CHECKS: [(&str, Check); 36] = [
+const CHECKS: [(&str, Check); 37] = [
     ("dots-in-spheres", |s, _, _| dots_in_spheres(s)),
     ("dots-apart", |s, _, _| dots_apart(s)),
     ("dot-sizes", |s, _, _| dot_sizes(s)),
@@ -230,6 +230,7 @@ const CHECKS: [(&str, Check); 36] = [
     ("bars-in-view", |s, _, _| bars_in_view(s)),
     ("fails-kept", |s, before, _| fails_kept(s, before)),
     ("outside-callers", |s, _, _| outside_callers(s)),
+    ("modules-shown", |s, _, _| modules_shown(s)),
 ];
 
 /// Every check's name, as `expect check NAME` takes it.
@@ -316,6 +317,19 @@ struct Snap {
     overlays: Vec<Overlay>,
     text: Vec<Text>,
     layout: Option<Facts>,
+    shown_modules: Shown,
+}
+
+/// Which modules `-` and `=` leave shown, by name (`level`: `all`, else how many calls
+/// out): those holding what the view lights, those within the level's calls of them
+/// in the codebase's calls, and those drawn.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Shown {
+    level: String,
+    lit: Vec<String>,
+    within: Vec<String>,
+    drawn: Vec<String>,
 }
 
 /// What the layout is, whatever the view lights: how long calls run in it against
@@ -2309,7 +2323,8 @@ fn nothing_moved(s: &Snap, before: Option<&Snap>, since: &Since) -> Value {
 /// a dot that came, or one came that reads nearer it than its own; or they were the
 /// cursor's, or on its path, and are no longer. A name that goes moves instead when
 /// it shows come what may: in 3D a dot that comes lands where it is, on a name or not;
-/// and one such moves from a place that has no room now. A name may move into room a
+/// and one such moves from a place that has no room now. A module's name over a
+/// sphere `=` showed again goes. A name may move into room a
 /// shrinking panel gave back.
 fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
     let was: HashMap<_, &Label> = (before.labels.iter())
@@ -2343,6 +2358,12 @@ fn gave_way(before: &Snap, now: &Snap, offenders: &mut Found) {
         .chain(
             (now.nodes.iter().filter(came))
                 .map(|n| (disc(n.at, n.kept_off.unwrap_or(n.radius)), None)),
+        )
+        // A sphere `=` showed again: no module's name lies over it.
+        .chain(
+            (now.modules.iter())
+                .filter(|m| before.modules.iter().all(|b| b.name != m.name))
+                .map(|m| (disc(m.at, m.radius), None)),
         )
         .collect();
     // Or one that fell in the naming order: off the cursor's path, or from lit to
@@ -3968,6 +3989,82 @@ fn outside_callers(s: &Snap) -> Value {
     verdict(offenders)
 }
 
+/// Short of every module, those `-` hides draw nothing and those it leaves are
+/// exactly the ones within the level's calls of what the view lights.
+fn modules_shown(s: &Snap) -> Value {
+    let shown = &s.shown_modules;
+    if shown.level.is_empty() || shown.level == "all" {
+        return skip("every module shows");
+    }
+    let within: std::collections::HashSet<&str> = shown.within.iter().map(String::as_str).collect();
+    let lit: std::collections::HashSet<&str> = shown.lit.iter().map(String::as_str).collect();
+    let mut offenders = Vec::new();
+    let mut hidden = |what: &str, name: &str, module: &str| {
+        if !within.contains(module) {
+            let why = format!("{what} of a module hidden");
+            offenders.push((2.0, json!({ "what": what, "name": name, "module": module, "why": why })));
+        }
+    };
+    for m in &s.modules {
+        hidden("sphere", &m.name, &m.name);
+    }
+    for n in &s.nodes {
+        if let Some(module) = n.module.as_deref() {
+            hidden("dot", &n.name, module);
+        }
+    }
+    for l in s.labels.iter().filter(|l| l.names == "module") {
+        if let Some(module) = l.of.as_deref() {
+            hidden("module name", &l.text, module);
+        }
+    }
+    for a in &s.module_arrows {
+        hidden("line between modules", &a.from, &a.from);
+        hidden("line between modules", &a.to, &a.to);
+    }
+    for a in &s.arrows {
+        for unit in [&a.from_unit, &a.to_unit] {
+            if let Some(module) = s.module_of(unit.as_deref()) {
+                hidden("call", &a.from, module);
+            }
+        }
+    }
+    for e in &s.exits {
+        if let Some(module) = s.module_of(e.far_unit.as_deref()) {
+            hidden("exit label", &e.text, module);
+        }
+    }
+    // What the view lights is in a module counted from.
+    let lights = |n: &Node| {
+        ["start", "selection", "cursor", "aside", "caller", "outside"]
+            .iter()
+            .any(|r| n.is(r))
+            || n.roles.iter().any(|r| r.starts_with("journey level"))
+    };
+    for n in s.nodes.iter().filter(|n| lights(n)) {
+        if let Some(module) = n.module.as_deref().filter(|m| !lit.contains(m)) {
+            let why = "a function lit in a module not counted from";
+            offenders.push((1.5, json!({ "function": n.name, "module": module, "why": why })));
+        }
+    }
+    // Exactly the modules within the level's calls are drawn.
+    let drawn: std::collections::HashSet<&str> = shown.drawn.iter().map(String::as_str).collect();
+    for m in within.difference(&drawn) {
+        let why = "within the level's calls of what is lit, but not drawn";
+        offenders.push((1.0, json!({ "module": m, "why": why })));
+    }
+    for m in drawn.difference(&within) {
+        let why = "drawn, but further than the level's calls from what is lit";
+        offenders.push((1.0, json!({ "module": m, "why": why })));
+    }
+    let result = verdict(offenders);
+    with(
+        result,
+        "shown",
+        json!({ "level": shown.level, "lit": lit.len(), "drawn": drawn.len() }),
+    )
+}
+
 // Colors.
 
 fn colours(s: &Snap) -> Value {
@@ -4506,6 +4603,22 @@ mod tests {
 
     fn passes(result: &Value) -> bool {
         result["pass"] == json!(true)
+    }
+
+    #[test]
+    fn a_module_hidden_draws_nothing_and_those_within_reach_all_show() {
+        let mut s = scene();
+        assert!(check(&s, "modules-shown")["pass"].is_null(), "every module shows");
+        s["shown_modules"] = json!({ "level": "1", "lit": ["a"], "within": ["a", "b"], "drawn": ["a", "b"] });
+        assert!(passes(&check(&s, "modules-shown")));
+        // b is further than the level's calls: its sphere, dot and name are offenders.
+        s["shown_modules"] = json!({ "level": "0", "lit": ["a"], "within": ["a"], "drawn": ["a", "b"] });
+        let result = check(&s, "modules-shown");
+        assert_eq!(result["pass"], json!(false));
+        assert_eq!(result["count"], json!(4), "{result}");
+        // A module within reach the view does not draw.
+        s["shown_modules"] = json!({ "level": "1", "lit": ["a"], "within": ["a", "b", "c"], "drawn": ["a", "b"] });
+        assert_eq!(check(&s, "modules-shown")["count"], json!(1));
     }
 
     #[test]

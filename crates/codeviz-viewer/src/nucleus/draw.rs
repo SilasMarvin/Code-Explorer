@@ -159,6 +159,9 @@ pub(crate) fn place_bodies(
                 material.0 = wanted.clone();
             }
             visibility.set_if_neq(Visibility::Inherited);
+        } else {
+            // A module `-` hides is not drawn at all.
+            visibility.set_if_neq(Visibility::Hidden);
         }
     }
 }
