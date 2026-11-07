@@ -173,7 +173,11 @@ const KEYS: [(&str, &str, When); 28] = [
         "hide modules far from the journey / show them",
         When::Journey,
     ),
-    ("Shift -  =", "spread the modules closer / wider", When::Always),
+    (
+        "Shift -  =",
+        "spread the modules closer / wider",
+        When::Always,
+    ),
     ("F", "fit the selection on screen", When::Browse),
     ("F", "fit the journey on screen", When::Journey),
     ("R", "the whole map, from the front", When::Browse),

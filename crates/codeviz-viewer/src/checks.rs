@@ -4002,7 +4002,10 @@ fn modules_shown(s: &Snap) -> Value {
     let mut hidden = |what: &str, name: &str, module: &str| {
         if !within.contains(module) {
             let why = format!("{what} of a module hidden");
-            offenders.push((2.0, json!({ "what": what, "name": name, "module": module, "why": why })));
+            offenders.push((
+                2.0,
+                json!({ "what": what, "name": name, "module": module, "why": why }),
+            ));
         }
     };
     for m in &s.modules {
@@ -4044,7 +4047,10 @@ fn modules_shown(s: &Snap) -> Value {
     for n in s.nodes.iter().filter(|n| lights(n)) {
         if let Some(module) = n.module.as_deref().filter(|m| !lit.contains(m)) {
             let why = "a function lit in a module not counted from";
-            offenders.push((1.5, json!({ "function": n.name, "module": module, "why": why })));
+            offenders.push((
+                1.5,
+                json!({ "function": n.name, "module": module, "why": why }),
+            ));
         }
     }
     // Exactly the modules within the level's calls are drawn.
@@ -4608,16 +4614,22 @@ mod tests {
     #[test]
     fn a_module_hidden_draws_nothing_and_those_within_reach_all_show() {
         let mut s = scene();
-        assert!(check(&s, "modules-shown")["pass"].is_null(), "every module shows");
-        s["shown_modules"] = json!({ "level": "1", "lit": ["a"], "within": ["a", "b"], "drawn": ["a", "b"] });
+        assert!(
+            check(&s, "modules-shown")["pass"].is_null(),
+            "every module shows"
+        );
+        s["shown_modules"] =
+            json!({ "level": "1", "lit": ["a"], "within": ["a", "b"], "drawn": ["a", "b"] });
         assert!(passes(&check(&s, "modules-shown")));
         // b is further than the level's calls: its sphere, dot and name are offenders.
-        s["shown_modules"] = json!({ "level": "0", "lit": ["a"], "within": ["a"], "drawn": ["a", "b"] });
+        s["shown_modules"] =
+            json!({ "level": "0", "lit": ["a"], "within": ["a"], "drawn": ["a", "b"] });
         let result = check(&s, "modules-shown");
         assert_eq!(result["pass"], json!(false));
         assert_eq!(result["count"], json!(4), "{result}");
         // A module within reach the view does not draw.
-        s["shown_modules"] = json!({ "level": "1", "lit": ["a"], "within": ["a", "b", "c"], "drawn": ["a", "b"] });
+        s["shown_modules"] =
+            json!({ "level": "1", "lit": ["a"], "within": ["a", "b", "c"], "drawn": ["a", "b"] });
         assert_eq!(check(&s, "modules-shown")["count"], json!(1));
     }
 

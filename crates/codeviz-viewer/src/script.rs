@@ -561,18 +561,20 @@ impl Step {
                     | KeyCode::ArrowRight
                     | KeyCode::BracketLeft
                     | KeyCode::BracketRight
-                    | KeyCode::KeyI,
+                    | KeyCode::KeyI
+                    // - and = alone hide modules or show them, moving nothing.
+                    | KeyCode::Minus
+                    | KeyCode::Equal,
                     false,
                 ) => Kind::Still,
                 // ↓ on a call whose calls are folded opens them, as a badge does.
                 (KeyCode::Comma | KeyCode::Period | KeyCode::ArrowDown, false) => Kind::Depth,
                 (KeyCode::KeyX, false) => Kind::Expand,
                 // Shift with - and = spreads the map, then frames what the view is on as
-                // F does; - and = alone hide modules or show them, moving nothing.
+                // F does.
                 (KeyCode::KeyF, false) | (KeyCode::Minus | KeyCode::Equal, true) => {
                     Kind::FrameFocus
                 }
-                (KeyCode::Minus | KeyCode::Equal, false) => Kind::Still,
                 (KeyCode::KeyR, false) => Kind::FrameAll,
                 (KeyCode::Backspace, _) => Kind::Back,
                 _ => Kind::Moves,

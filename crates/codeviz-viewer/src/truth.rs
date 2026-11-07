@@ -250,8 +250,7 @@ pub(crate) fn scene(view: &View) -> Value {
         "help": help.flatten(),
         "text": chrome.iter().map(|t| json!({ "text": t.text, "rect": rect(t.rect), "size": t.size })).collect::<Vec<_>>(),
         "content": of(explorer),
-        "layout": layout(explorer),
-        "shown_modules": shown_modules(explorer),
+        "layout": layout(explorer), "shown_modules": shown_modules(explorer),
     })
 }
 

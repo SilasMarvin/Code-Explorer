@@ -223,7 +223,8 @@ pub(crate) enum Reach {
 impl Reach {
     /// From every module to the lit ones alone, a step at a time: what `-` steps
     /// through, and `=` back.
-    pub(crate) const STEPS: [Self; 4] = [Self::All, Self::Within(2), Self::Within(1), Self::Within(0)];
+    pub(crate) const STEPS: [Self; 4] =
+        [Self::All, Self::Within(2), Self::Within(1), Self::Within(0)];
 }
 
 /// The graph as module spheres where the layout has them, lighting what the view is
@@ -753,7 +754,9 @@ impl Nucleus {
             .filter(|_| !self.browse)
             .and_then(|tile| self.module_of(tile));
         self.balls()
-            .filter(|&(c, ball)| matches!(ball.body, Body::Nucleus | Body::Open) || Some(c) == aside)
+            .filter(|&(c, ball)| {
+                matches!(ball.body, Body::Nucleus | Body::Open) || Some(c) == aside
+            })
             .map(|(c, _)| c)
             .collect()
     }
@@ -810,7 +813,9 @@ impl Nucleus {
     pub(crate) fn atlas_points(&self, rotation: Quat) -> Vec<Vec3> {
         let (right, up) = (rotation * Vec3::X, rotation * Vec3::Y);
         self.balls()
-            .flat_map(|(_, b)| [right, -right, up, -up].map(|towards| b.center + towards * b.radius))
+            .flat_map(|(_, b)| {
+                [right, -right, up, -up].map(|towards| b.center + towards * b.radius)
+            })
             .collect()
     }
 

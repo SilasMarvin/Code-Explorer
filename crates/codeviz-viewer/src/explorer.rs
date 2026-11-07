@@ -973,8 +973,8 @@ impl Explorer {
         self.say(&shown);
     }
 
-    /// Which modules show, in words: `Showing all modules`, `Showing journey modules
-    /// + 1 call out`.
+    /// Which modules show, in words: "Showing all modules", "Showing journey modules
+    /// + 1 call out".
     pub(crate) fn modules_shown(&self) -> String {
         let lit = if self.browsing() {
             "the selection's modules"
@@ -3072,7 +3072,8 @@ pub(crate) mod tests {
     fn minus_hides_modules_by_calls_from_what_is_lit_and_nothing_moves() {
         let mut explorer = opened(chain(), "f:main");
         let said = |e: &Explorer| e.notice().map(|(_, text)| text.to_owned());
-        let tile = |e: &Explorer, name: &str| e.map().tile_of(&UnitId::new(format!("f:{name}"))).unwrap();
+        let tile =
+            |e: &Explorer, name: &str| e.map().tile_of(&UnitId::new(format!("f:{name}"))).unwrap();
         let names = ["main", "f1", "f2", "f3", "f4", "lone"];
         let tiles = names.map(|name| tile(&explorer, name));
         let shown = |e: &Explorer| -> Vec<&str> {
@@ -3088,14 +3089,23 @@ pub(crate) mod tests {
         assert_eq!(shown(&explorer), names, "every module, as it opens");
 
         explorer.show_modules(true);
-        assert_eq!(said(&explorer).as_deref(), Some("Showing journey modules + 2 calls out"));
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Showing journey modules + 2 calls out")
+        );
         // main and f1 are lit: m0 and m1, then two calls on to m3.
         assert_eq!(shown(&explorer), ["main", "f1", "f2", "f3"]);
-        assert!(!explorer.nucleus().drawn(tiles[4]), "no dot in a module hidden");
+        assert!(
+            !explorer.nucleus().drawn(tiles[4]),
+            "no dot in a module hidden"
+        );
         explorer.show_modules(true);
         assert_eq!(shown(&explorer), ["main", "f1", "f2"]);
         explorer.show_modules(true);
-        assert_eq!(said(&explorer).as_deref(), Some("Showing journey modules only"));
+        assert_eq!(
+            said(&explorer).as_deref(),
+            Some("Showing journey modules only")
+        );
         assert_eq!(shown(&explorer), ["main", "f1"]);
         explorer.show_modules(true);
         assert_eq!(
@@ -3109,10 +3119,18 @@ pub(crate) mod tests {
         explorer.deeper();
         assert_eq!(shown(&explorer), ["main", "f1", "f2"]);
         explorer.step(Step::Child);
-        assert_eq!(explorer.nucleus().reach(), Reach::Within(0), "the level holds");
+        assert_eq!(
+            explorer.nucleus().reach(),
+            Reach::Within(0),
+            "the level holds"
+        );
         explorer.shallower();
         explorer.go_back();
-        assert_eq!(explorer.nucleus().reach(), Reach::Within(0), "through Back too");
+        assert_eq!(
+            explorer.nucleus().reach(),
+            Reach::Within(0),
+            "through Back too"
+        );
 
         // Browsing round the start selected, the same; with nothing selected, all.
         explorer.leave_journey();
@@ -3151,7 +3169,10 @@ pub(crate) mod tests {
         assert!(explorer.nucleus().ball(module).is_some());
         assert!(explorer.nucleus().drawn(lone));
         explorer.clear_aside();
-        assert!(explorer.nucleus().ball(module).is_none(), "hidden again once let go");
+        assert!(
+            explorer.nucleus().ball(module).is_none(),
+            "hidden again once let go"
+        );
     }
 
     #[test]
