@@ -100,6 +100,12 @@ pub(crate) enum Expect {
     Drawn(String),
     /// A notice, said for a moment, shows these words (any case).
     Notice(String),
+    /// A button showing these words (any case) is drawn (`button`), or none is
+    /// (`no-button`).
+    Button {
+        words: String,
+        shown: bool,
+    },
     /// The camera stands where it stood at the snapshot with this label.
     CameraSameAs(String),
     /// Nothing moved since the last snapshot: nodes, spheres, names, camera.
@@ -196,7 +202,7 @@ const VERBS: [&str; 22] = [
 ];
 
 /// What may follow `expect`.
-const EXPECTS: [&str; 11] = [
+const EXPECTS: [&str; 13] = [
     "selection",
     "cursor",
     "start",
@@ -204,6 +210,8 @@ const EXPECTS: [&str; 11] = [
     "named",
     "drawn",
     "notice",
+    "button",
+    "no-button",
     "camera-same-as",
     "nothing-moved",
     "check",
@@ -378,6 +386,13 @@ fn expect(text: &str, snaps: &[String]) -> Result<Expect, String> {
         "drawn" => unit().map(Expect::Drawn),
         "notice" if rest.is_empty() => Err("`expect notice` needs the words it shows".to_owned()),
         "notice" => Ok(Expect::Notice(rest.to_owned())),
+        "button" | "no-button" if rest.is_empty() => {
+            Err(format!("`expect {what}` needs the words the button shows"))
+        }
+        "button" | "no-button" => Ok(Expect::Button {
+            words: rest.to_owned(),
+            shown: what == "button",
+        }),
         "nothing-moved" => Ok(Expect::NothingMoved),
         "camera-same-as" => {
             let label = snap_label(Some(rest));

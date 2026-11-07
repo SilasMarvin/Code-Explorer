@@ -470,9 +470,10 @@ fn history_buttons(ui: &mut egui::Ui, explorer: &mut Explorer) {
 }
 
 /// Where the view is, always in the same place: `Browsing`, or `Journey ·` and where
-/// it starts; then, with a module expanded, `· inside` it; and beside it, the module
-/// the pointer is on and how many functions it holds.
-fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
+/// it starts; then, with a module expanded, `· inside` it; while `-` hides modules,
+/// how far what shows reaches; and beside it, the module the pointer is on and how
+/// many functions it holds.
+fn mode_label(ui: &mut egui::Ui, explorer: &mut Explorer) {
     let (mut text, mut hint) = match explorer.start_unit() {
         Some(_) => (
             format!("Journey · {}", journey_title(explorer)),
@@ -499,6 +500,7 @@ fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
             ui.label(egui::RichText::new(text).strong().color(TEXT))
                 .on_hover_text(hint);
         });
+    hiding_chip(ui, explorer);
     ui.separator();
     // The sphere under the pointer, off its functions: how many it holds.
     if let Some(module) = explorer
@@ -512,6 +514,24 @@ fn mode_label(ui: &mut egui::Ui, explorer: &Explorer) {
             _ => format!("{name}: {count} functions"),
         };
         ui.label(egui::RichText::new(said).size(text::SMALL).color(MUTED));
+    }
+}
+
+/// While `-` hides modules, a chip saying how far from what is lit the modules shown
+/// reach; a click on it shows every module again.
+fn hiding_chip(ui: &mut egui::Ui, explorer: &mut Explorer) {
+    let Some(text) = explorer.hiding() else {
+        return;
+    };
+    let chip = egui::Button::new(egui::RichText::new(text).size(text::SMALL).color(TEXT))
+        .fill(CHIP)
+        .corner_radius(6.0);
+    if ui
+        .add(chip)
+        .on_hover_text("Modules far from what is lit are hidden: - hides more, = shows more; click to show all")
+        .clicked()
+    {
+        explorer.show_all_modules();
     }
 }
 

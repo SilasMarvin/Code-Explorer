@@ -5,24 +5,29 @@
 # or exit label), nothing else moves, the camera neither; R frames what shows. The
 # level holds through cursor steps, depth changes and Back, and the shown set follows
 # what is lit; Esc to browsing keeps it round the start selected, and with nothing
-# selected every module shows again.
+# selected every module shows again. While hiding, a chip in the top bar says how far;
+# a click on it shows every module.
 expect state shown all
+expect no-button Hiding
 snap all
 key -
 expect notice Showing journey modules + 2 calls out
 expect state shown 2
+expect button Hiding · +2 calls
 expect nothing-moved
 expect check modules-shown
 snap within 2
 key -
 expect notice Showing journey modules + 1 call out
 expect state shown 1
+expect button Hiding · +1 call
 expect nothing-moved
 expect check modules-shown
 snap within 1
 key -
 expect notice Showing journey modules only
 expect state shown 0
+expect button Hiding · journey only
 expect nothing-moved
 expect check modules-shown
 snap lit only
@@ -71,6 +76,7 @@ snap back within 2
 key =
 expect notice Showing all modules
 expect state shown all
+expect no-button Hiding
 expect nothing-moved
 snap back all
 key =
@@ -96,8 +102,18 @@ key esc
 expect mode browse
 expect selection Explorer::spotlit
 expect state shown 2
+expect button Hiding · +2 calls
 expect check modules-shown
 snap browse within 2
+key -
+key -
+expect button Hiding · selection only
+button Hiding
+expect notice Showing all modules
+expect state shown all
+expect no-button Hiding
+snap browse chip clicked
+key -
 key esc
 expect selection none
 expect state shown all

@@ -184,7 +184,9 @@ dot, name or line. Nothing is laid out again and nothing moves, the camera neith
 changes, a module expands, and through Back and Forward; what shows follows what is lit.
 A search still finds a function in a module hidden; picking it lights it, which shows
 its module. Browsing with nothing selected nothing is lit to hide round: every module
-shows, and `-` says so. The bar along the top says each step as it is taken.
+shows, and `-` says so. The bar along the top says each step as it is taken, and
+while modules are hidden a chip there says how far what shows reaches (`Hiding · +1
+call`, `Hiding · journey only`); a click on it shows every module again.
 
 ### Camera
 

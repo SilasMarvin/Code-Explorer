@@ -973,6 +973,31 @@ impl Explorer {
         self.say(&shown);
     }
 
+    /// The top bar's chip while `-` hides modules: `Hiding · +1 call`, `Hiding ·
+    /// journey only`; none while every module shows.
+    pub(crate) fn hiding(&self) -> Option<String> {
+        let lit = if self.browsing() {
+            "selection"
+        } else {
+            "journey"
+        };
+        match self.nucleus.reach() {
+            Reach::All => None,
+            Reach::Within(0) => Some(format!("Hiding · {lit} only")),
+            Reach::Within(1) => Some("Hiding · +1 call".to_owned()),
+            Reach::Within(hops) => Some(format!("Hiding · +{hops} calls")),
+        }
+    }
+
+    /// A click on the chip: every module shows again, as `=` to the end does.
+    pub(crate) fn show_all_modules(&mut self) {
+        if self.nucleus.reach() != Reach::All {
+            self.nucleus.set_reach(Reach::All);
+            self.moved += 1;
+        }
+        self.say("Showing all modules");
+    }
+
     /// Which modules show, in words: "Showing all modules", "Showing journey modules
     /// + 1 call out".
     pub(crate) fn modules_shown(&self) -> String {
@@ -3095,6 +3120,7 @@ pub(crate) mod tests {
         );
         // main and f1 are lit: m0 and m1, then two calls on to m3.
         assert_eq!(shown(&explorer), ["main", "f1", "f2", "f3"]);
+        assert_eq!(explorer.hiding().as_deref(), Some("Hiding · +2 calls"));
         assert!(
             !explorer.nucleus().drawn(tiles[4]),
             "no dot in a module hidden"
@@ -3112,6 +3138,7 @@ pub(crate) mod tests {
             said(&explorer).as_deref(),
             Some("Showing journey modules only: = shows more")
         );
+        assert_eq!(explorer.hiding().as_deref(), Some("Hiding · journey only"));
         let now: Vec<_> = tiles.iter().map(|&t| explorer.nucleus().point(t)).collect();
         assert_eq!(now, points, "nothing moves");
 
@@ -3141,6 +3168,12 @@ pub(crate) mod tests {
             said(&explorer).as_deref(),
             Some("Showing the selection's modules + 1 call out")
         );
+        assert_eq!(explorer.hiding().as_deref(), Some("Hiding · +1 call"));
+        // The chip's click shows every module.
+        explorer.show_all_modules();
+        assert_eq!(explorer.hiding(), None);
+        assert_eq!(shown(&explorer), names);
+        explorer.show_modules(true);
         explorer.deselect();
         assert_eq!(said(&explorer).as_deref(), Some("Showing all modules"));
         assert_eq!(shown(&explorer), names);

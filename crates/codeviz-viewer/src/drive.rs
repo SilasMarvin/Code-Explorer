@@ -1848,6 +1848,17 @@ fn judge(drive: &Drive, view: &View, expect: &Expect) -> Result<(), String> {
         }
         Expect::Drawn(unit) => view.find(drive.names.unit(unit)?).map(|_| ()),
         // Only what the step before said, not a notice left from earlier.
+        Expect::Button { words, shown } => {
+            let wanted = words.to_lowercase();
+            let found = (view.screen.widgets.iter())
+                .find(|w| w.text.to_lowercase().contains(&wanted))
+                .map(|w| w.text.clone());
+            match (found, shown) {
+                (Some(_), true) | (None, false) => Ok(()),
+                (Some(text), false) => Err(format!("a button reads `{text}`")),
+                (None, true) => Err(format!("no button reads `{words}`")),
+            }
+        }
         Expect::Notice(words) => {
             let words = words.to_lowercase();
             match said_since(drive, view) {
