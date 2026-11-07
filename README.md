@@ -181,7 +181,7 @@ callers, its calls down to the depth shown and what `I` lights; browsing, the
 selection, its callers and its calls. A module hidden is not drawn at all: no sphere,
 dot, name or line. Nothing is laid out again and nothing moves, the camera neither;
 `F` and `R` frame only what shows. The level holds as the cursor moves, the depth
-changes, a module expands and Back and Forward go, and what shows follows what is lit.
+changes, a module expands, and through Back and Forward; what shows follows what is lit.
 A search still finds a function in a module hidden; picking it lights it, which shows
 its module. Browsing with nothing selected nothing is lit to hide round: every module
 shows, and `-` says so. The bar along the top says each step as it is taken.
